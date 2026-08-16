@@ -1,0 +1,76 @@
+.globl	_initpic
+.text
+.even
+_initpic:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG	3
+cmp	_aspalig,*2.
+jne	L4
+mov	di,*21.
+push	di
+mov	di,#192.
+push	di
+j	L20001
+L4:mov	di,*23.
+push	di
+mov	di,#192.
+push	di
+L20001:call	_outb
+add	sp,*4.
+mov	di,*8.
+push	di
+mov	di,#194.
+push	di
+call	_outb
+add	sp,*4.
+cmp	_aspalig,*2.
+jne	L6
+mov	di,*8.
+push	di
+mov	di,#194.
+push	di
+call	_outb
+add	sp,*4.
+L6:mov	di,*13.
+push	di
+mov	di,#194.
+push	di
+call	_outb
+add	sp,*4.
+mov	di,#255.
+push	di
+mov	di,#194.
+push	di
+call	_outb
+add	sp,*4.
+mov	di,*11.
+push	di
+mov	di,#192.
+push	di
+call	_outb
+add	sp,*4.
+|RTYP	0
+br	cret
+.globl	_ndpint
+.even
+_ndpint:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG	3
+cmp	_fpp,*0
+je	L10
+mov	di,*8.
+push	di
+push	120.+_u
+call	_psignal
+add	sp,*4.
+j	L9
+L10:call	_novec
+L9:|RTYP	0
+br	cret
+.data
