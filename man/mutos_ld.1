@@ -1,0 +1,410 @@
+.TH MUTOS_LD 1 "2026-08-07" "MUTOS 1700 Toolchain" "MUTOS 1700 Cross-Compiler Toolchain"
+.SH NAME
+mutos_ld \- cross link editor for MUTOS 1700 / Unix V7 object files
+.SH SYNOPSIS
+.B mutos_ld
+[
+.B \-o
+.I output
+]
+[
+.B \-u
+.I symbol
+]
+[
+.B \-e
+.I symbol
+]
+[
+.B \-D
+.I number
+]
+[
+.BR \-x | \-X | \-S | \-r | \-s | \-n | \-d | \-i | \-O | \-t
+]
+.I file
+\&.\|.\|.
+.SH DESCRIPTION
+.B mutos_ld
+combines one or more MUTOS 1700
+.RI ( a.out
+format) object files and archive libraries into a single executable or
+relocatable output file. It is a cross-linker: it runs on a 64-bit Linux
+host but reads and writes the original 16-bit little-endian MUTOS 1700
+.I a.out
+format used on the Robotron A7100/A7150 (an x86-16, 8086/V30-based system
+that is binary- and architecture-compatible with Unix Version 7).
+.PP
+.B mutos_ld
+is a faithful C11 port of the original MUTOS/Unix V7
+.IR ld (1)
+source. Its command-line syntax, two-pass symbol-resolution algorithm,
+common-symbol allocation, and archive/library handling (including
+.B __.SYMDEF
+ranlib tables of contents) match the original exactly. The only
+PDP-11-specific implementation detail that has been replaced is the
+original's double-buffered page-oriented I/O layer, which is not
+observable from the command line or in the output produced.
+.PP
+If no
+.B \-o
+option is given, output is written to the file
+.B a.out
+in the current directory. If the output file already contains
+executable output and the link is successful, its execute permission
+bits are ordinarily meaningful to the shell; no special action is taken
+by
+.B mutos_ld
+itself beyond creating the file.
+.PP
+The last file operand may be an archive library (see
+.B \-l
+below and
+.B ARCHIVES
+).
+.SH OPTIONS
+.TP
+.BI \-o \ output
+Produce the linked output in the file
+.I output
+instead of the default
+.BR a.out .
+.TP
+.BI \-u \ symbol
+Enter
+.I symbol
+as undefined in the symbol table. This forces the loading of an
+archive library member that defines it, even if nothing else in the
+link references it directly. Useful for pulling in library routines
+that are only reached indirectly (e.g. via another library routine).
+.TP
+.BI \-e \ symbol
+Use
+.I symbol
+as the entry point of the output file instead of the address of the
+first
+.B text
+location. As with
+.BR \-u ,
+this also enters
+.I symbol
+into the symbol table as undefined, causing it to be resolved (and
+pulled from a library, if necessary) like any other undefined
+reference.
+.TP
+.BI \-D \ number
+Set the starting address of the
+.B data
+segment to
+.IR number ,
+which must be at least as large as the total size of the
+.B data
+segments of the input files. This can be used to leave room, for
+example, for a
+.B text
+segment that will be grown later, or to force a specific data origin
+expected by a downstream tool.
+.TP
+.BI \-l x
+Search the archive library
+.BI lib x .a
+for members that resolve currently undefined symbols, first in the
+current directory, then in
+.BR /usr/lib .
+May be repeated, and may be freely interleaved with object file
+operands and other
+.BR \-l
+options; libraries are searched left to right, and (as in the
+original) it is often necessary to list a library more than once, or
+after all files that reference symbols it defines, since only the
+members needed to satisfy still-undefined symbols at the time the
+library is reached are pulled in. See
+.B ARCHIVES
+below.
+.TP
+.B \-x
+Do not preserve local (non-external) symbols in the output symbol
+table, only external symbols are kept. This is the default action of
+.IR strip (1)
+applied by the linker itself while writing the output.
+.TP
+.B \-X
+Preserve local symbols in the output symbol table except for those
+whose names begin with the letter
+.BR L .
+Such symbols are conventionally generated internally by compilers and
+assemblers and are rarely of interest for later debugging.
+.TP
+.B \-S
+Strip all line-number and other non-relocatable debugging-style local
+symbols (specifically, any symbol whose type is
+.B N_ABS
+or lies outside the ordinary
+.BR N_TEXT / N_DATA / N_BSS
+range) from the output, while otherwise leaving the local/external
+symbol table intact.
+.TP
+.B \-r
+Produce relocatable output: relocation information is retained in the
+output file so that it can itself be used as an input file to a later
+.B mutos_ld
+invocation. Implies that the link may be left with undefined external
+symbols without this being treated as a fatal error (only a warning is
+issued; see
+.BR DIAGNOSTICS ).
+Also implies
+.BR \-d ,
+and forces off
+.BR \-n ,
+.BR \-s ,
+.BR \-i ,
+and
+.BR \-O ,
+regardless of whether they were given, since those options apply only
+to final, non-relocatable output.
+.TP
+.B \-s
+Suppress output of the symbol table entirely (implies
+.BR \-x ).
+.TP
+.B \-n
+Produce output with a separate, read-only, shareable
+.B text
+segment
+.RB ( NMAGIC ).
+The
+.B data
+segment origin is additionally rounded up to a MUTOS/x86 page-style
+(017777-byte) boundary beyond the padded end of
+.BR text .
+.TP
+.B \-d
+Force common symbol allocation even when the output still contains
+unresolved externals. Ordinarily, common (tentatively defined)
+symbols are only assigned final
+.B bss
+storage once the link is fully resolved; this forces the allocation
+step to run regardless. Automatically enabled by
+.BR \-r .
+.TP
+.B \-i
+Produce output with separate instruction and data
+.RB ( I&D ,
+.BR IMAGIC )
+address spaces: the
+.B data
+segment address space starts fresh at address 0 rather than
+immediately following
+.BR text ,
+even though both segments still occupy consecutive space in the output
+.I file
+itself.
+.TP
+.B \-O
+Produce plain, unpadded, non-shareable output
+.RB ( OMAGIC ).
+Takes precedence over
+.B \-n
+and
+.B \-i
+if given together with either.
+.TP
+.B \-t
+Trace mode: print the name of each input file (and, for archive
+members, the enclosing archive and member name) to standard output as
+it is processed. Intended for debugging link order and library
+resolution.
+.SH ARCHIVES
+An archive library given via
+.B \-l
+(or named directly as a file operand) is recognized by its leading
+archive magic number, and is handled in one of three ways, matching
+the original algorithm exactly:
+.IP 1. 4
+.B Plain archive.
+If the archive has no
+.B __.SYMDEF
+member (or a non-symdef member happens to be first), every member is
+scanned in turn and pulled in if it defines a symbol currently needed.
+.IP 2. 4
+.B Up-to-date table of contents.
+If the archive's first member is an
+.B __.SYMDEF
+table of contents (as produced by
+.IR ranlib (1))
+whose embedded timestamp is not older than the archive file's own
+modification time, the table of contents is used to pull in only the
+members that are actually needed, repeated to a fixed point so that
+symbols newly required by one pulled-in member can themselves trigger
+further members to be pulled in.
+.IP 3. 4
+.B Stale table of contents.
+If the archive file has been modified more recently than the
+timestamp recorded in its
+.B __.SYMDEF
+member (i.e. after the last
+.IR ranlib (1)
+run), a warning is issued and the linker falls back to a full linear
+scan of the remaining members, exactly as case 1.
+.PP
+Within a single link, an archive member is pulled in at most once, and
+only if, at the time it is examined, it defines at least one symbol
+that is still undefined. Passing a library before the object files
+that reference it may therefore fail to resolve those references; list
+libraries after the files (or other libraries) that need them, or
+repeat
+.B \-l
+as necessary.
+.SH FILE FORMAT
+Object and executable files are in the original MUTOS 1700
+.I a.out
+format: a 16-byte header of eight 16-bit little-endian words (magic,
+text size, data size, bss size, symbol table size, entry point, an
+unused/reserved word, and a no-relocation flag), followed by
+.BR text ,
+.BR data ,
+optional text and data relocation tables, and an optional symbol
+table. Unlike classic PDP-11 Unix V7, no word ever needs middle-endian
+handling in this format, since every field here is a plain 16-bit
+quantity; MUTOS's own 32-bit
+.B long
+values (as used elsewhere in the toolchain and in archive headers) do
+use PDP-11 middle-endian byte order, but that does not apply to any
+field of the object/executable header itself.
+.PP
+.B mutos_ld
+always requires its input files to carry relocation information
+(the header's no-relocation flag must be clear); input produced with
+that flag set is rejected with
+.BR "No relocation bits" .
+.PP
+The magic number of the output file is selected according to the
+options given, in this order of precedence:
+.B OMAGIC
+.RB ( \-O ),
+.B IMAGIC
+.RB ( \-i ),
+.B NMAGIC
+.RB ( \-n ),
+otherwise plain
+.BR FMAGIC .
+.PP
+Independently of the selected magic number, MUTOS
+.B mutos_ld
+always pads the end of the
+.B text
+segment up to the next 8-byte boundary (filled with the byte pattern
+.BR "EB FE" ,
+the x86 one-byte "jump to self" trap instruction) before the
+.B data
+segment begins; if
+.B \-n
+or
+.B \-i
+was given, an additional rounding up to a 64-byte boundary is applied
+on top of that, filled with zero bytes. This differs from stock Unix
+V7, where such padding is entirely conditional on
+.B \-n
+/
+.BR \-i .
+.SH DIAGNOSTICS
+Diagnostics are written to standard error, prefixed with
+.B ld:
+and the name of the input file (and, for archive members, the
+enclosing archive member name in parentheses) currently being
+processed.
+.PP
+Warnings (such as an out-of-date archive table of contents, or
+undefined symbols when
+.B \-r
+was given) do not stop the link and do not by themselves cause a
+non-zero low-order exit status bit; fatal errors (such as
+.BR "Premature EOF" ,
+.BR "Bad format" ,
+segment size overflow, or a symbol table overflow) abort the link
+immediately.
+.PP
+If undefined external symbols remain at the end of the link and
+.B \-r
+was not given, each such symbol's name is printed under the heading
+.B Undefined:
+and bit 0 of the process exit status is set; the output file is still
+written.
+.SH EXIT STATUS
+.TP
+.B 0
+Successful link, no diagnostics.
+.TP
+.B 1
+(bit 0 set) One or more undefined external symbols remained, or
+another non-fatal condition (e.g. a segment-size overflow warning) was
+reported.
+.TP
+.B 2
+A fatal error occurred (bad or truncated input, out of memory, cannot
+open/create a file, etc); execution is aborted immediately at the
+point of the error rather than continuing to the end of the link.
+.TP
+.B 4
+No file operands were given at all.
+.SH EXAMPLES
+.TP
+.B mutos_ld \-o hello crt0.o hello.o \-lc
+Link
+.B hello.o
+against the startup module
+.B crt0.o
+and the standard library
+.B libc.a
+(searched as
+.B libc.a
+in the current directory, then
+.BR /usr/lib/libc.a ),
+producing the executable
+.BR hello .
+.TP
+.B mutos_ld \-i \-o hello crt0.o hello.o \-lc
+As above, but build a separate I&D
+.RB ( IMAGIC )
+executable.
+.TP
+.B mutos_ld \-r \-o combined.o a.o b.o
+Combine
+.B a.o
+and
+.B b.o
+into a single relocatable object file
+.B combined.o
+suitable as input to a later
+.B mutos_ld
+invocation.
+.SH SEE ALSO
+.IR mutos_as (1),
+.IR mutos_cc (1),
+.IR mutos_aout.h (5)
+.SH HISTORY
+.B mutos_ld
+is a cross-platform C11 port, for 64-bit Linux hosts, of the original
+Unix Version 7
+.IR ld (1)
+as adapted for the MUTOS 1700 operating system on the Robotron
+A7100/A7150. The porting work (Milestone 1 of the MUTOS 1700
+cross-compiler toolchain project) preserves the original two-pass
+algorithm and command-line interface exactly, replacing only the
+PDP-11-specific double-buffered page I/O layer with straightforward
+whole-file in-memory processing; several MUTOS-specific deviations
+from stock V7 behavior (segment-local relative symbol values,
+unconditional 8-byte text padding, an 11-bit rather than 12-bit
+relocation symbol-index field, and PDP-11 middle-endian archive header
+.B long
+fields) were determined by comparison against object and archive files
+produced by, and linked with, real MUTOS 1700 hardware/toolchain
+output, and are reproduced bit-for-bit.
+.SH BUGS
+Overlay support
+.RB ( \-v
+in the original V7
+.IR ld )
+is not implemented; using it produces a diagnostic and aborts the
+link, since in the original it is tightly coupled to argument
+bookkeeping that has no counterpart in this port's scope.

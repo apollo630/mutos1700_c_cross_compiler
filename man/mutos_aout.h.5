@@ -1,0 +1,554 @@
+.TH MUTOS_AOUT.H 5 "2026-08-07" "MUTOS 1700 Toolchain" "MUTOS 1700 Cross-Compiler Toolchain"
+.SH NAME
+mutos_aout.h \- MUTOS 1700 / Unix V7 a.out object and executable file format
+.SH SYNOPSIS
+.B #include "mutos_aout.h"
+.SH DESCRIPTION
+.B mutos_aout.h
+defines, and provides explicit little-endian (de)serialization helpers
+for, the on-disk
+.I a.out
+object and executable file format used by MUTOS 1700 on the Robotron
+A7100/A7150 (an x86-16, 8086/NEC-V30-based machine that is binary- and
+architecture-compatible with Unix Version 7). It is consumed by every
+component of the MUTOS 1700 cross-compiler toolchain that reads or
+writes object, executable, or archive files on the 64-bit Linux host
+(currently
+.IR mutos_ld (1)).
+.PP
+The header is derived directly from the original Unix V7
+.I a_out.h
+(referred to in this project as
+.IR v7_a_out.h ),
+not from the separate, MUTOS-specific
+.I a_out.h
+found among the historical sources, which additionally defines an
+unrelated
+.BR x.out / "struct exec"
+format used only for MS-DOS compatibility and has no bearing on the
+native MUTOS 1700 target.
+.PP
+.B "Byte order note (important, and easy to get wrong):"
+the MUTOS 1700
+.I a.out
+exec header and symbol table are
+.B entirely
+16-bit based; no field in either one is a 32-bit
+.B long,
+so plain little-endian encoding applies throughout them and PDP-11
+middle-endian encoding is never needed there. The legacy V7
+.IR ar (1)/ranlib (1)
+archive format, by contrast, was carried over into MUTOS
+.B unmodified
+and still uses genuine 32-bit
+.B long
+fields in PDP-11 middle-endian byte order (high-order 16-bit word
+first, each word itself little-endian) for its
+.BR atime ,
+.B asize
+and
+.B cloc
+fields; see
+.B ARCHIVE FORMAT
+below. All multi-byte fields, of either kind, are (de)serialized
+explicitly by this header's inline helper functions rather than via
+direct struct overlay, so that host struct padding and host
+endianness never leak into the on-disk representation.
+.SH "EXEC HEADER"
+Every object file and executable begins with a fixed 16-byte header,
+eight 16-bit little-endian words:
+.PP
+.nf
+.ta 1.4i
+typedef struct {
+    uint16_t magic;   /* a_magic  */
+    uint16_t text;    /* a_text   - text segment size (bytes) */
+    uint16_t data;    /* a_data   - initialized data size */
+    uint16_t bss;     /* a_bss    - uninitialized data size */
+    uint16_t syms;    /* a_syms   - symbol table size (bytes) */
+    uint16_t entry;   /* a_entry  - entry point */
+    uint16_t unused;  /* a_unused - unused */
+    uint16_t flag;    /* a_flag   - 1 = relocation info stripped */
+} mutos_hdr_t;
+.fi
+.PP
+.B MUTOS_HDR_SIZE
+(16) gives the on-disk size of the header in bytes.
+.PP
+.B magic
+selects both the interpretation of the
+.B text
+/
+.B data
+layout and, historically, the memory-management policy the kernel
+applies when loading the file (shared/pure text, separate I&D, etc.);
+see
+.B "MAGIC NUMBERS"
+below.
+.B text,
+.B data
+and
+.B bss
+give the size in bytes of the text, initialized-data, and
+uninitialized-data (bss) segments respectively; MUTOS
+.IR ld (1)
+unconditionally pads the physical end of
+.B text
+up to an 8-byte boundary (and, for
+.B NMAGIC
+/
+.B IMAGIC
+output, further to a 64-byte boundary) before the
+.B data
+segment begins on disk \(em see
+.IR mutos_ld (1)
+for the exact padding rule and fill patterns; this differs from stock
+V7, where such padding is conditional on those same magic numbers.
+.B syms
+gives the size in bytes of the trailing symbol table (a multiple of
+.BR MUTOS_SYM_SIZE ,
+12).
+.B entry
+is the entry point address; by convention the low bit is set to 1 when
+an explicit entry symbol was supplied via
+.IR ld (1)'s
+.B \-e
+option.
+.B unused
+is reserved and always written as 0.
+.B flag
+is nonzero if relocation information has been stripped from the file;
+.IR mutos_ld (1)
+always requires this flag to be clear on its input files and rejects
+any file with it set.
+.SS "Header layout in the file"
+.PP
+.nf
+.ta 2.6i
+offset 0                        header (16 bytes, MUTOS_HDR_SIZE)
+offset 16                       text (a_text bytes)
+offset 16+text                  data (a_data bytes)
+offset 16+text+data             text relocation (a_text bytes)  [if present]
+offset 16+2*text+data           data relocation (a_data bytes)  [if present]
+offset 16+2*(text+data)         symbol table (a_syms bytes)     [if present]
+.fi
+.PP
+The relocation tables are present unless
+.B a_flag
+is set (relocation stripped); the symbol table is present unless
+.B a_syms
+is 0. Both are conventionally omitted together from a final,
+non-relocatable executable produced with
+.IR ld (1)'s
+.B \-s
+option, but the two are controlled independently by the header.
+.SS "MAGIC NUMBERS"
+.TP
+.B A_MAGIC1
+(0407,
+.BR FMAGIC )
+Normal format: text and data are contiguous, loaded read-write, and
+not shared between processes running the same executable.
+.TP
+.B A_MAGIC2
+(0410,
+.BR NMAGIC )
+Read-only, shareable text: the
+.B data
+segment origin is additionally rounded up to a page-style boundary
+past the end of
+.B text
+(see
+.IR mutos_ld (1)).
+.TP
+.B A_MAGIC3
+(0411,
+.BR IMAGIC )
+Separate instruction and data (I&D) address spaces: the
+.B data
+segment's in-memory address space starts fresh at address 0, distinct
+from the
+.B text
+address space, even though
+.B text
+and
+.B data
+remain physically contiguous within the disk file itself.
+.TP
+.B A_MAGIC4
+(0405,
+.BR OMAGIC )
+Overlay / plain unshared binary; no additional segment-origin rounding
+is applied.
+.SH "SYMBOL TABLE ENTRY"
+Each symbol table entry is a fixed 12 bytes
+.RB ( MUTOS_SYM_SIZE ):
+.PP
+.nf
+.ta 1.4i
+typedef struct {
+    char     name[8];
+    uint8_t  type;    /* N_EXT | N_UNDF/N_ABS/N_TEXT/N_DATA/N_BSS */
+    uint8_t  spare;   /* filler byte, always written as 0 */
+    uint16_t value;
+} mutos_sym_t;
+.fi
+.PP
+.B name
+is the symbol name, NUL-padded to 8 bytes (not necessarily
+NUL-terminated if all 8 bytes are significant).
+.B type
+encodes both the symbol's segment/kind and whether it is external; see
+.B "SYMBOL TYPES"
+below.
+.B spare
+corresponds to the upper byte of the original's 16-bit
+.B n_type
+field, which MUTOS never uses; it is always written as 0 and should be
+ignored (not necessarily 0) on read.
+.B value
+is the symbol's value: for a defined symbol, its address relative to
+the start of its segment (in the input; absolute in final output); for
+an external undefined symbol referenced with a nonzero value, its
+requested common-block size in bytes (see
+.B "COMMON SYMBOLS" ).
+.SS "SYMBOL TYPES"
+.TP
+.B N_TYPE
+(0x1F) Mask isolating the segment/kind bits of
+.BR type ,
+before the
+.B N_EXT
+bit.
+.TP
+.B N_UNDF
+(0x00) Undefined.
+.TP
+.B N_ABS
+(0x01) Absolute (segment-independent) value.
+.TP
+.B N_TEXT
+(0x02) Defined relative to the text segment.
+.TP
+.B N_DATA
+(0x03) Defined relative to the data segment.
+.TP
+.B N_BSS
+(0x04) Defined relative to the bss segment.
+.TP
+.B N_COMM
+(0x05) Common symbol; used internally by
+.IR ld (1)
+while resolving tentative (common) definitions and never appears in a
+symbol table actually written to disk (see
+.B "COMMON SYMBOLS" ).
+.TP
+.B N_EXT
+(0x20) External-linkage bit, OR'ed into any of the above; e.g.
+.B "N_EXT|N_TEXT"
+is an external symbol defined in text.
+.SS "COMMON SYMBOLS"
+An external symbol that appears as
+.B "N_EXT|N_UNDF"
+with a nonzero
+.B value
+is a tentative (Fortran/K&R-style "common") definition: the value
+gives the requested size in bytes rather than an address.
+.IR ld (1)
+assigns storage for all such symbols out of a synthetic block appended
+to
+.B bss
+once the link is otherwise fully resolved, at which point each
+becomes an ordinary
+.B "N_EXT|N_BSS"
+definition in the output; the type
+.B N_COMM
+is only ever seen as a transient in-memory state during that
+assignment and is not itself a valid on-disk type.
+.SH "RELOCATION FORMAT"
+Each 16-bit word of the
+.B text
+or
+.B data
+segment has a corresponding 16-bit relocation tag at the same
+segment-relative offset in the section's relocation table. A tag of 0
+means the corresponding content word needs no relocation and is used
+as-is.
+.PP
+A nonzero tag is interpreted as follows:
+.TP
+.B "bit 15 (0x8000)"
+Byte-shift flag. 8086 code is byte-oriented rather than word-aligned,
+so the 16-bit value actually being relocated routinely does not begin
+at the tag's own nominal 2-byte-aligned offset. If this bit is set,
+the relocated word is the one starting one byte
+.B past
+that nominal offset, rather than the nominal offset itself. (This is a
+MUTOS extension; it has no counterpart in stock Unix V7, where every
+relocatable value is word-aligned by construction on the PDP-11.)
+.TP
+.B "bits 1\(en3 (mask 016), relocation type"
+.RS
+.TP
+.B R_ABS
+(0x00) No further symbol reference; only the byte-shift interpretation
+above (and, when the low bit is set, the segment's own PC-relative
+adjustment) applies.
+.TP
+.B R_TEXT
+(0x02) Relocate relative to the final text segment origin.
+.TP
+.B R_DATA
+(0x04) Relocate relative to the final data segment origin.
+.TP
+.B R_BSS
+(0x06) Relocate relative to the final bss segment origin.
+.TP
+.B R_EXT
+(0x08) Relocate relative to an external symbol; see below.
+.RE
+.TP
+.B "bit 0 (0x01)"
+PC-relative flag: if set, the segment's own new origin is subtracted
+from the relocated value after the addition above, as in stock V7.
+.TP
+.B "bits 4\(en14 (mask 0x7FF0, shifted right 4), symbol index"
+Only present, and only meaningful, when the type field (bits 1\(en3) is
+.BR R_EXT :
+a zero-based index into the input file's own local symbol-numbering
+sequence (the order in which symbol table entries occur in that file),
+identifying which symbol the word is relocated against.
+.B "This is a MUTOS extension of the V7 relocation-word layout: the
+symbol-index field here is only 11 bits wide (bits 4\(en14), not 12
+bits (bits 4\(en15) as in stock V7's ld.c"
+\(em bit 15 is reserved for the byte-shift flag described above and is
+never part of the symbol index, even for an
+.B R_EXT
+tag.
+.SH "ARCHIVE FORMAT"
+Archive
+.RB ( .a )
+libraries use the legacy Unix V7
+.IR ar (1)
+layout unmodified, including its PDP-11 middle-endian
+.B long
+fields; this is the one place in the whole MUTOS 1700 toolchain where
+middle-endian encoding is required on disk. An archive begins with the
+16-bit little-endian magic word
+.B MUTOS_ARCMAGIC
+(0177545), followed by a sequence of archive members, each consisting
+of a fixed 26-byte member header immediately followed by that member's
+content (padded with one trailing NUL byte if the content length is
+odd, so that the next member header again starts on an even offset).
+.SS "Member header (struct archdr, 26 bytes)"
+.PP
+.nf
+.ta 1.4i
+typedef struct {
+    char     aname[15];  /* 14 archive bytes + guaranteed NUL terminator */
+    uint32_t atime;      /* PDP-11 middle-endian */
+    uint8_t  auid;
+    uint8_t  agid;
+    uint16_t amode;      /* plain 16-bit little-endian, like a.out fields */
+    uint32_t asize;      /* PDP-11 middle-endian */
+} mutos_archdr_t;
+.fi
+.PP
+.B MUTOS_ARCHDR_SIZE
+(26) gives the on-disk size of the header (note that the in-memory
+.B mutos_archdr_t.aname
+is one byte larger, 15 bytes, to guarantee NUL termination after
+.IR mutos_archdr_read ()
+copies the 14 on-disk bytes).
+.B aname
+is the member's (file) name, NUL-padded to 14 on-disk bytes.
+.B atime
+is the member's modification time, a PDP-11 middle-endian 32-bit Unix
+timestamp.
+.B auid
+and
+.B agid
+are the owning user and group IDs.
+.B amode
+is the member's file mode, an ordinary 16-bit little-endian value
+(unlike
+.B atime
+and
+.BR asize ,
+this field is
+.B not
+a
+.B long
+in the original and is therefore not middle-endian encoded).
+.B asize
+is the member content's size in bytes, PDP-11 middle-endian.
+.SS "__.SYMDEF table of contents"
+An archive processed by
+.IR ranlib (1)
+has, as its first member, one named
+.B __.SYMDEF
+(the literal string used for this comparison is available as the
+historical constant
+.I goodnm
+in the original V7
+.IR ld.c ,
+reproduced verbatim as
+.I "__.SYMDEF"
+in this project). Its content is a packed array of
+.B "struct tab"
+entries (see below); the member's own
+.B atime
+(from its
+.B archdr )
+records when the table of contents was last regenerated, letting
+.IR ld (1)
+detect a stale table by comparing it against the archive file's
+current on-host modification time. See
+.IR mutos_ld (1)
+.B ARCHIVES
+for how the three resulting cases (no
+.BR __.SYMDEF ,
+up-to-date, or stale) are handled during linking.
+.SS "struct tab (ranlib table-of-contents entry, 12 bytes)"
+.PP
+.nf
+.ta 1.4i
+typedef struct {
+    char     cname[9];   /* 8 archive bytes + guaranteed NUL terminator */
+    uint32_t cloc;       /* PDP-11 middle-endian */
+} mutos_tab_t;
+.fi
+.PP
+.B MUTOS_TAB_SIZE
+(12) gives the on-disk size of one table-of-contents entry (with the
+in-memory
+.B mutos_tab_t.cname
+again one byte larger than the on-disk field, for NUL termination).
+.B cname
+is a defined external symbol's name, NUL-padded to 8 on-disk bytes.
+.B cloc
+is the byte offset, within the archive file, of the
+.B archdr
+of the archive member that defines
+.BR cname .
+.SH "SERIALIZATION HELPERS"
+All functions below are
+.B "static inline"
+and operate directly on raw byte buffers, independent of host struct
+layout and host byte order.
+.TP
+.BI "uint16_t mutos_get_u16le(const uint8_t *" p )
+.TQ
+.BI "void mutos_put_u16le(uint8_t *" p ", uint16_t " v )
+Read/write a plain 16-bit little-endian value at
+.IR p .
+Used for every multi-byte field of the exec header, symbol table, and
+the
+.B amode
+field of an archive header.
+.TP
+.BI "uint32_t mutos_get_u32_pdp11(const uint8_t *" p )
+.TQ
+.BI "void mutos_put_u32_pdp11(uint8_t *" p ", uint32_t " v )
+Read/write a 32-bit PDP-11 middle-endian value at
+.IR p :
+the high-order 16-bit word first, each word itself little-endian.
+Used only for the
+.BR atime ,
+.B asize
+and
+.B cloc
+fields of the archive format.
+.TP
+.BI "void mutos_hdr_read(const uint8_t *" buf ", mutos_hdr_t *" h )
+.TQ
+.BI "void mutos_hdr_write(uint8_t *" buf ", const mutos_hdr_t *" h )
+(De)serialize a 16-byte exec header between
+.I buf
+and
+.IR h .
+.TP
+.BI "void mutos_sym_read(const uint8_t *" buf ", mutos_sym_t *" s )
+.TQ
+.BI "void mutos_sym_write(uint8_t *" buf ", const mutos_sym_t *" s )
+(De)serialize a 12-byte symbol table entry between
+.I buf
+and
+.IR s .
+.TP
+.BI "void mutos_archdr_read(const uint8_t *" buf ", mutos_archdr_t *" h )
+(Deserialize only; the toolchain does not currently write archives) a
+26-byte archive member header from
+.I buf
+into
+.IR h ,
+NUL-terminating
+.I h\->aname
+in the process.
+.TP
+.BI "void mutos_tab_read(const uint8_t *" buf ", mutos_tab_t *" t )
+(Deserialize only) a 12-byte
+.B "struct tab"
+entry from
+.I buf
+into
+.IR t ,
+NUL-terminating
+.I t\->cname
+in the process.
+.SH "CONSTANTS SUMMARY"
+.PP
+.nf
+.ta 2.2i
+MUTOS_HDR_SIZE      16   exec header size, bytes
+MUTOS_SYM_SIZE       12   symbol table entry size, bytes
+MUTOS_ARCHDR_SIZE    26   archive member header size, bytes
+MUTOS_TAB_SIZE        12   ranlib table-of-contents entry size, bytes
+MUTOS_ARCMAGIC   0177545   archive file magic (first 16-bit word)
+A_MAGIC1 (FMAGIC)    0407   normal
+A_MAGIC2 (NMAGIC)    0410   read-only shareable text
+A_MAGIC3 (IMAGIC)    0411   separate I&D
+A_MAGIC4 (OMAGIC)    0405   overlay / plain
+.fi
+.SH NOTES
+None of the on-disk formats described here are portable to the host's
+native struct layout by direct overlay: the exec header and symbol
+table pack tightly with no padding, and the archive format mixes
+16-bit little-endian and 32-bit PDP-11-middle-endian fields within the
+same 26-byte header. Always go through the
+.B mutos_*_read()
+/
+.B mutos_*_write()
+helpers above rather than casting a buffer to one of the struct types
+directly; on a 64-bit host, a direct cast would additionally be
+subject to the host compiler's own alignment padding, which does not
+match the on-disk layout at all.
+.SH "SEE ALSO"
+.IR mutos_ld (1)
+.SH HISTORY
+This header was derived from the original Unix Version 7
+.I a_out.h
+(referenced in this project as
+.IR v7_a_out.h ),
+adapted for the MUTOS 1700 target on the Robotron A7100/A7150. Several
+details that are not present in, or that deviate from, stock V7 were
+determined by direct comparison against object, executable, and
+archive files produced by real MUTOS 1700 hardware and toolchain
+output rather than from any surviving written specification: the
+unconditional 8-byte (and conditional 64-byte) text-segment padding
+performed by
+.IR ld (1),
+the pure segment-local (rather than V7's preceding-segment-size-baked-in)
+interpretation of data/bss-relative raw symbol and content values, the
+byte-shift flag and 11-bit (rather than 12-bit) symbol-index field of
+the relocation word format, and the archive format's continued use of
+PDP-11 middle-endian
+.B long
+fields even though the a.out header itself was redefined as pure
+16-bit little-endian.
+.SH BUGS
+Archive
+.B write
+support (as opposed to read/parse support) is not implemented by this
+header's helper functions, since the toolchain does not currently
+produce archives itself.

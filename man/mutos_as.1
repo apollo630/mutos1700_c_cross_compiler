@@ -1,0 +1,351 @@
+.\" mutos_as.1 - manual page for the MUTOS 1700 cross-assembler
+.\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
+.\" View with: man ./mutos_as.1   or   groff -man -Tascii mutos_as.1 | less
+.TH MUTOS_AS 1 "August 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.SH NAME
+mutos_as \- MUTOS 1700 cross-assembler for the 8086/80186
+.SH SYNOPSIS
+.B mutos_as
+.RB [ \-W ]
+.RB [ \-o
+.IR output ]
+.RI [ file " ...]"
+.SH DESCRIPTION
+.B mutos_as
+is a two-pass cross-assembler that translates MUTOS 1700 assembly
+language source into a relocatable
+.BR a.out (5)-format
+object file for the Intel 8086/80186 (NEC V30-compatible)
+instruction set, as used by the MUTOS 1700 embedded system.
+Its output is intended to be processed by
+.BR mutos_ld (1)
+to produce a linked, loadable program, exactly like the object files
+produced by the original hardware toolchain it reproduces.
+.PP
+Source is read from the concatenation of all
+.I file
+operands, in the order given, as if the files had been joined with
+.BR cat (1)
+before assembly; a missing newline at the end of one file is silently
+supplied so that a statement never straddles a file boundary purely
+by accident.
+If no
+.I file
+operand is given, source is read from the standard input instead.
+.PP
+Assembly proceeds in two passes over the source. Pass 1 walks every
+statement to compute instruction sizes and assign an address to every
+label; Pass 2 walks the source again, now with a complete symbol
+table, to emit the final instruction bytes and relocation entries.
+Errors detected in Pass 1 abort assembly before Pass 2 is attempted.
+.SH OPTIONS
+.TP
+.BI \-o " output"
+Write the assembled object file to
+.I output
+instead of the default
+.BR a.out .
+.TP
+.B \-W
+Suppress all diagnostic messages that would otherwise be printed to
+standard error. Errors are still detected and still prevent a
+successful assembly (see
+.B DIAGNOSTICS
+below); only the printed text is affected.
+.PP
+If assembly completes with no errors and no symbol remains
+referenced but undefined, the output file is marked executable
+(mode 0755); otherwise it is left non-executable (mode 0644) and
+must be resolved by
+.BR mutos_ld (1)
+before it can be run.
+.PP
+.B asf
+is recognized as an alternate name for this program (via
+.IR argv [0]),
+matching the historical convention of a separate assembler name for
+source containing K1810WM87 (8087-compatible) arithmetic-coprocessor
+instructions. No concrete coprocessor instruction mnemonics are
+currently implemented, so invoking the program as
+.B asf
+currently behaves identically to invoking it as
+.BR mutos_as .
+.SH "ASSEMBLY LANGUAGE"
+.SS Numbers
+Numeric literals are decimal by default.
+A trailing period
+.RI ( "e.g." " 128." )
+is accepted as a stylistic decimal terminator and has no effect on
+the value.
+A leading slash introduces a hexadecimal literal
+.RI ( "e.g." " /FF" ", /2A0" ).
+There is no octal literal syntax.
+.SS Registers
+The eight 16-bit general registers
+.RB ( ax ", " bx ", " cx ", " dx ", " si ", " di ", " bp ", " sp ),
+their 8-bit halves where applicable
+.RB ( al ", " ah ", " bl ", " bh ", " cl ", " ch ", " dl ", " dh ),
+and the four segment registers
+.RB ( cs ", " ds ", " es ", " ss )
+are recognized by name.
+.SS "Operand size markers"
+An asterisk
+.RB ( * )
+prefix marks an operand as byte-sized; a hash
+.RB ( # )
+prefix marks it as word-sized. Both characters also function as
+ordinary infix operators (multiplication and, contextually,
+immediate-value grouping) when not used as a leading size marker.
+For an
+.B immediate
+operand the marker is honored literally, regardless of the value's
+actual magnitude.
+For a
+.B displacement
+in an indirect memory operand, the marker has no effect: the choice
+between an 8-bit and a 16-bit displacement encoding is made from the
+resolved value alone, except that a displacement expression which
+references any symbol always uses the 16-bit form, since the
+symbol's final value cannot be assumed to keep fitting in a signed
+byte once linked.
+Whether an instruction operates on a byte or a word is otherwise
+selected by the mnemonic: a
+.B b
+suffix
+.RI ( "e.g." " movb" ", " cmpb ", " addb )
+selects the byte form; the unsuffixed mnemonic
+.RI ( "e.g." " mov" ", " cmp ", " add )
+selects the word form, or infers byte size from an explicit
+byte-class register operand where the instruction supports that
+inference (e.g.\& plain
+.B mov al,*0
+still assembles to a byte-sized move).
+.SS "Addressing modes"
+.TP
+.I register
+A bare register name, e.g.\&
+.BR ax ", " bl .
+.TP
+.IR disp "(" reg )
+Register-indirect memory access, optionally with a leading
+displacement expression, e.g.\&
+.BR (si) ", " 4.(bx) ", " \-8.(bp) ", " 174.+_extern(bx) .
+.TP
+.I symbol
+A bare symbolic or absolute address (direct addressing), e.g.\&
+.BR _global_ .
+.TP
+.I immediate
+An immediate value or address-of expression, typically introduced by
+a
+.B *
+or
+.B #
+size marker, e.g.\&
+.BR *4. ", " #_table .
+.TP
+.BI @ reg
+Register-indirect jump/call/branch target (mod=11 addressing) \(em
+distinct from the data-indirect
+.RI ( reg )
+form above \(em used only as the operand of
+.BR jmp ", " br ", " call ", " calli ", and " jmpi .
+.TP
+.BI @ disp ( reg )
+Memory-indirect jump/call/branch target: the word stored at
+.IR disp + reg
+is the real destination, e.g.\& a dispatch-table lookup such as
+.BR "call @8.+_cdevsw(bx)" .
+.PP
+The bare period
+.RB ( . )
+denotes the current location counter.
+A single digit followed by a colon defines a numeric local label
+.RI ( "e.g." " 1:" ),
+referenced elsewhere as
+.I N\c
+.B f
+(nearest following definition) or
+.I N\c
+.B b
+(nearest preceding definition).
+.SS Segments
+Three segments are available:
+.BR .text ,
+.BR .data ,
+and
+.BR .bss ,
+selected by a directive of the same name on its own line; the
+current segment determines both where subsequent bytes are emitted
+and which location counter subsequent labels are defined against.
+.B .bss
+reserves zero-filled space only \(em it has no byte stream of its
+own \(em typically populated with
+.B .blkb
+(see below).
+.SS Directives
+.TP
+.BI .globl\  symbol
+Marks
+.I symbol
+as externally visible.
+.TP
+.BI .comm\  symbol , size
+Declares an uninitialized external symbol of
+.I size
+bytes. Unlike
+.BR .bss ,
+this does not reserve space in the current module directly; the
+symbol is left undefined with
+.I size
+recorded for the linker to allocate, exactly like a C
+tentative-definition global.
+.TP
+.BI .blkb\  count
+Reserves
+.I count
+zero-filled bytes at the current location in the current segment
+(normally
+.BR .bss ).
+.TP
+.BI .word\  expr\  "[, " expr " ...]"
+Emits one 16-bit value per comma-separated expression into the
+current segment.
+.TP
+.BI .byte\  expr\  "[, " expr " ...]"
+Emits one 8-bit value per comma-separated expression into the
+current segment.
+.PP
+A bare expression on its own statement line, with no directive or
+mnemonic at all, is likewise treated as an implicit
+.B .word
+\(em commonly used to build a table of label addresses, e.g.\&
+.PP
+.RS
+.nf
+.I jmptab :
+L10003
+L10004
+L10005
+.fi
+.RE
+.TP
+.BI .asciz\  *string*
+Emits
+.I string
+followed by a terminating NUL byte. The string is delimited by
+matching asterisks rather than double quotes.
+.TP
+.B .even
+Pads the current segment's location counter to the next even
+address with a single zero byte, if it is currently odd.
+.TP
+.IR name " = " value
+Defines
+.I name
+as an absolute constant equal to
+.IR value ,
+resolved at assembly time.
+.TP
+\fB.\fR=\fB.\fR+\fIN\fR
+Advances the current location counter by
+.I N
+bytes, zero-filling the reserved span in the output.
+.SS "Branches and jumps"
+The real conditional jump mnemonics
+.RI ( "e.g." " je" ", " jne ", " jb ", " jae ", " jg ", " jle ,
+and their many synonyms such as
+.BR jz / jnz ", " jc / jnc ", " jnae / jnb ", " jng / jnge )
+always assemble to the short, 2-byte relative form.
+A bare
+.B j
+.I label
+likewise always assembles short.
+.B jmp
+.I label
+always assembles to the long, 3-byte relative form, with no
+size-based selection between the two.
+.PP
+The pseudo-branch mnemonics
+.RB ( beq ", " bne ", " blt ", " bge ", " ble ", " bgt ", " bhi ", " bhis ,
+.BR blo ", " blos ", and their Anlage-B-documented synonym " bloss )
+unconditionally expand to a 5-byte sequence (a negated short
+conditional jump around a following long jump), regardless of how
+close the target actually is.
+.B br
+.I label
+is an unconditional long branch and is a plain synonym for
+.B jmp
+.IR label .
+.SS "Prefixes"
+.B rep
+(and its synonyms
+.BR repe / repz ", " repne / repnz )
+and
+.BI seg\  sr
+are each written as a one-line pseudo-instruction immediately
+preceding the instruction they modify, rather than as a token
+attached to that instruction.
+.SH "OUTPUT FORMAT"
+The object file written is in the MUTOS a.out relocatable format
+(see
+.BR a.out (5)):
+a fixed header, the text segment, the data segment, a text
+relocation table, a data relocation table, and a symbol table, in
+that order.
+The symbol table is written in
+.I creation order
+\(em the order in which each distinct symbol name is first
+mentioned, whether as a label definition or as an operand reference,
+during the left-to-right scan of the source \(em which is also the
+order used to number symbols for the
+.B R_EXT
+field of external relocation entries.
+Both PC-relative relocations (an external
+.BR call / jmp / branch
+target) and absolute relocations (an external, text-, data-, or
+bss-segment symbol's address embedded in an immediate or a memory
+displacement) are emitted as required; a same-segment address
+difference that is provably location-independent
+.RI ( "e.g." " a\-b"
+where
+.I a
+and
+.I b
+are both local text labels) requires no relocation entry and
+receives none.
+.SH DIAGNOSTICS
+Diagnostic messages are printed to standard error in the form
+.RS
+.B "error: "
+.I message
+.B " at line "
+.I N
+.RE
+and are intended to be self-explanatory. All errors detected during
+Pass 1 are reported together, and Pass 2 is not attempted if any
+were found. The program's exit status is 0 on success and 1 if any
+error was detected, a required file could not be opened, or the
+output file could not be written \(em regardless of whether
+.B \-W
+suppressed the corresponding message text.
+.SH LIMITATIONS
+The direct (segment:offset literal) operand form of
+.B calli
+and
+.B jmpi
+is not implemented; only their indirect
+(\fB@\fIreg\fR
+and
+\fB@\fIdisp\fB(\fIreg\fB)\fR)
+forms are available. No concrete K1810WM87/8087 floating-point
+coprocessor instruction mnemonics are implemented (see
+.B asf
+above).
+.SH FILES
+.TP
+.I a.out
+Default output object file.
+.SH "SEE ALSO"
+.BR mutos_ld (1),
+.BR a.out (5)
