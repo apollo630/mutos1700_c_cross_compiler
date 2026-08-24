@@ -303,14 +303,41 @@ static int reg_number(const Token *t)
 }
 
 /* Indirect-addressing rm field for the single-register forms actually
- * observed in the corpus: (si) (di) (bp) (bx) - no compound [bx+si]
- * style forms have been seen, so only these four are supported. */
+ * observed in the corpus: (si) (di) (bp) (bx). */
 static int indirect_rm(const Token *reg)
 {
     if (reg->len == 2 && strncmp(reg->text, "si", 2) == 0) return 4;
     if (reg->len == 2 && strncmp(reg->text, "di", 2) == 0) return 5;
     if (reg->len == 2 && strncmp(reg->text, "bp", 2) == 0) return 6;
     if (reg->len == 2 && strncmp(reg->text, "bx", 2) == 0) return 7;
+    return -1;
+}
+
+/* Base+index compound indirect-addressing rm field, e.g. "(bx)(di)" -
+ * confirmed real via kernel_opt/subr.s ("mov ax,*20.+2(bx)(di)"). Only
+ * these four combinations exist in the 8086 ModRM table (order-
+ * independent here, matching either "(base)(index)" or
+ * "(index)(base)" source order, though every real sample writes base
+ * first). Returns -1 for any other pairing (e.g. "(si)(di)"), which
+ * the real ISA cannot encode. */
+static int base_index_rm(const Token *r1, const Token *r2)
+{
+    bool r1_bx = (r1->len == 2 && strncmp(r1->text, "bx", 2) == 0);
+    bool r1_bp = (r1->len == 2 && strncmp(r1->text, "bp", 2) == 0);
+    bool r2_bx = (r2->len == 2 && strncmp(r2->text, "bx", 2) == 0);
+    bool r2_bp = (r2->len == 2 && strncmp(r2->text, "bp", 2) == 0);
+    bool r1_si = (r1->len == 2 && strncmp(r1->text, "si", 2) == 0);
+    bool r1_di = (r1->len == 2 && strncmp(r1->text, "di", 2) == 0);
+    bool r2_si = (r2->len == 2 && strncmp(r2->text, "si", 2) == 0);
+    bool r2_di = (r2->len == 2 && strncmp(r2->text, "di", 2) == 0);
+    bool has_bx = r1_bx || r2_bx;
+    bool has_bp = r1_bp || r2_bp;
+    bool has_si = r1_si || r2_si;
+    bool has_di = r1_di || r2_di;
+    if (has_bx && has_si) return 0; /* [bx+si] */
+    if (has_bx && has_di) return 1; /* [bx+di] */
+    if (has_bp && has_si) return 2; /* [bp+si] */
+    if (has_bp && has_di) return 3; /* [bp+di] */
     return -1;
 }
 
@@ -366,7 +393,7 @@ static bool expr_has_symbol(const ExprNode *e)
 static void emit_modrm_indirect(CodeBuf *out, int reg_field, const ParsedOperand *mem,
                                  long cur_addr, SymTab *st, bool resolve, RelocList *relocs)
 {
-    int rm = indirect_rm(&mem->reg);
+    int rm = mem->has_index ? base_index_rm(&mem->reg, &mem->reg2) : indirect_rm(&mem->reg);
     int mod;
     long disp = 0;
     if (mem->expr && expr_has_symbol(mem->expr)) {
@@ -408,8 +435,12 @@ static void emit_modrm_indirect(CodeBuf *out, int reg_field, const ParsedOperand
                 disp = resolve_expr(mem->expr, cur_addr, st, resolve);
         }
     }
-    if (rm == 6 && mod == 0)
-        mod = 1; /* bp with no disp still needs mod=01 disp8=0 */
+    if (rm == 6 && mod == 0 && !mem->has_index)
+        mod = 1; /* bp with no disp still needs mod=01 disp8=0 - only
+                   * applies to the SINGLE-register (bp) form (rm==6);
+                   * a base+index [bp+si]/[bp+di] form uses rm==2/3
+                   * (never 6), so this never fires for those anyway -
+                   * has_index checked explicitly for clarity. */
 
     codebuf_put(out, (unsigned char)((mod << 6) | ((reg_field & 7) << 3) | (rm & 7)));
     if (mod == 1) {
@@ -1219,94 +1250,47 @@ static bool encode_ldx(CodeBuf *out, unsigned char opcode, const ParsedOperand *
     return true;
 }
 
-/* Group3 MUL - confirmed real usage: "mul al" (byte form, F6 /4). The
- * word form (F7 /4) and MUL's siblings (DIV/IMUL/IDIV/NOT/NEG) are not
- * needed by the corpus subset seen so far and are not implemented. */
-static bool encode_mul(CodeBuf *out, const ParsedOperand *op)
+/* Group3 single-operand arithmetic/logic: NOT(/2) NEG(/3) MUL(/4)
+ * IMUL(/5) DIV(/6) IDIV(/7) - opcode F6 (byte) / F7 (word), same
+ * ModRM-digit-selects-operation shape for all six, register OR memory
+ * (INDIRECT/DIRECT) operand. Confirmed real via kernel_opt/amx.s AND
+ * kernel_nonopt/amx.s: "imul *-12.(bp)" is a genuine memory operand,
+ * proving the earlier "register-only" note was based on an incomplete
+ * corpus sample - the real 8086 ISA allows r/m8/r/m16 for every
+ * Group3 op, and k5170.s additionally exercises this for "div" with a
+ * memory operand. Byte-vs-word for a REGISTER operand is inferred
+ * from the register class (REG_BYTE); for an INDIRECT/DIRECT operand
+ * there's no register to infer from, AND the operand's own '*'/'#'
+ * marker does NOT indicate operation width either - confirmed real:
+ * "imul *-12.(bp)" (byte-MARKED displacement) still disassembles to
+ * the WORD form F7, not F6. This matches the established asymmetric-
+ * marker principle used throughout this file: on a DISPLACEMENT, the
+ * marker is only ever a mod01-vs-mod10 addressing-mode fallback (see
+ * emit_modrm_indirect's doc comment), never an operation-width
+ * indicator - so a memory operand here can ONLY get the byte form via
+ * an explicit 'b'-suffixed mnemonic (mulb/negb/imulb/divb/idivb/notb,
+ * mirroring incb/decb elsewhere in this file). */
+static bool encode_group3(CodeBuf *out, int digit, const ParsedOperand *op,
+                           long cur_addr, SymTab *st, bool resolve, RelocList *relocs,
+                           bool byte_mode_suffix)
 {
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xE0 | rn)); /* /4, mod=11 */
-    return true;
-}
-
-/* NEG - F6/F7 /3, register form only (mirrors "mul" above; the only
- * real corpus usage, sys1nonopt.s "neg dx", is register-only). */
-static bool encode_neg(CodeBuf *out, const ParsedOperand *op)
-{
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xD8 | rn)); /* /3, mod=11 */
-    return true;
-}
-
-/* IMUL - F6/F7 /5, register form only. Per Assembler_as.pdf Anlage A,
- * this toolchain's "imul"/"imulb" are documented as the classic
- * single-operand 8086 group3 form ("imul 1 A+W" / "imulb 1 A+B"),
- * exactly like "mul"/"mulb" above - NOT the 80186 three-operand
- * IMUL reg,reg/mem,imm extension (opcodes 0x69/0x6B), which this
- * assembler's instruction table simply doesn't list. Mirrors
- * encode_mul/encode_neg's register-only pattern; awaiting v30opt.o
- * golden validation to confirm no memory-operand form is needed. */
-static bool encode_imul(CodeBuf *out, const ParsedOperand *op)
-{
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xE8 | rn)); /* /5, mod=11 */
-    return true;
-}
-
-/* DIV - F6/F7 /6, register form only (mirrors mul/neg/imul above -
- * Assembler_as.pdf Anlage A: "division unsigned div 1 A+W" / "divb 1
- * A+B", same single-operand shape). CONFIRMED real via tty.s "div bx". */
-static bool encode_div(CodeBuf *out, const ParsedOperand *op)
-{
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xF0 | rn)); /* /6, mod=11 */
-    return true;
-}
-
-/* IDIV - F6/F7 /7, register form only (mirrors div above -
- * Assembler_as.pdf Anlage A: "integer division idiv 1 A+W" / "idivb 1
- * A+B", the SIGNED sibling of DIV). NOT yet observed in the real
- * corpus, but same well-established, unambiguous group3 encoding. */
-static bool encode_idiv(CodeBuf *out, const ParsedOperand *op)
-{
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xF8 | rn)); /* /7, mod=11 */
-    return true;
-}
-
-/* NOT - F6/F7 /2, register form only (mirrors neg above -
- * Assembler_as.pdf Anlage A: "logical not not 1 A+W" / "notb 1 A+B").
- * NOT yet observed in the real corpus, but same well-established,
- * unambiguous group3 encoding. */
-static bool encode_not(CodeBuf *out, const ParsedOperand *op)
-{
-    if (op->mode != ADDR_REGISTER) return false;
-    int rn = reg_number(&op->reg);
-    if (rn < 0) return false;
-    bool byte_mode = (op->reg_class == REG_BYTE);
-    codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
-    codebuf_put(out, (unsigned char)(0xD0 | rn)); /* /2, mod=11 */
-    return true;
+    if (op->mode == ADDR_REGISTER) {
+        int rn = reg_number(&op->reg);
+        if (rn < 0) return false;
+        bool byte_mode = byte_mode_suffix || (op->reg_class == REG_BYTE);
+        codebuf_put(out, byte_mode ? 0xF6 : 0xF7);
+        codebuf_put(out, (unsigned char)(0xC0 | (digit << 3) | rn));
+        return true;
+    }
+    if (op->mode == ADDR_INDIRECT || op->mode == ADDR_DIRECT) {
+        codebuf_put(out, byte_mode_suffix ? 0xF6 : 0xF7);
+        if (op->mode == ADDR_INDIRECT)
+            emit_modrm_indirect(out, digit, op, cur_addr, st, resolve, relocs);
+        else
+            emit_modrm_direct(out, digit, op, cur_addr, st, resolve, relocs);
+        return true;
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1804,23 +1788,29 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return encode_ldx(out, 0xC4, &ops[0], &ops[1], cur_addr, st, resolve, relocs);
 
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "mul", 3) == 0 && nops == 1)
-        return encode_mul(out, &ops[0]);
+        return encode_group3(out, 4, &ops[0], cur_addr, st, resolve, relocs, false);
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "mulb", 4) == 0 && nops == 1)
+        return encode_group3(out, 4, &ops[0], cur_addr, st, resolve, relocs, true);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "neg", 3) == 0 && nops == 1)
-        return encode_neg(out, &ops[0]);
+        return encode_group3(out, 3, &ops[0], cur_addr, st, resolve, relocs, false);
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "negb", 4) == 0 && nops == 1)
+        return encode_group3(out, 3, &ops[0], cur_addr, st, resolve, relocs, true);
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 1)
-        return encode_imul(out, &ops[0]);
+        return encode_group3(out, 5, &ops[0], cur_addr, st, resolve, relocs, false);
+    if (mnemonic->len == 5 && strncmp(mnemonic->text, "imulb", 5) == 0 && nops == 1)
+        return encode_group3(out, 5, &ops[0], cur_addr, st, resolve, relocs, true);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "div", 3) == 0 && nops == 1)
-        return encode_div(out, &ops[0]);
+        return encode_group3(out, 6, &ops[0], cur_addr, st, resolve, relocs, false);
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "divb", 4) == 0 && nops == 1)
-        return encode_div(out, &ops[0]);
+        return encode_group3(out, 6, &ops[0], cur_addr, st, resolve, relocs, true);
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "idiv", 4) == 0 && nops == 1)
-        return encode_idiv(out, &ops[0]);
+        return encode_group3(out, 7, &ops[0], cur_addr, st, resolve, relocs, false);
     if (mnemonic->len == 5 && strncmp(mnemonic->text, "idivb", 5) == 0 && nops == 1)
-        return encode_idiv(out, &ops[0]);
+        return encode_group3(out, 7, &ops[0], cur_addr, st, resolve, relocs, true);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "not", 3) == 0 && nops == 1)
-        return encode_not(out, &ops[0]);
+        return encode_group3(out, 2, &ops[0], cur_addr, st, resolve, relocs, false);
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "notb", 4) == 0 && nops == 1)
-        return encode_not(out, &ops[0]);
+        return encode_group3(out, 2, &ops[0], cur_addr, st, resolve, relocs, true);
 
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "incb", 4) == 0 && nops == 1) {
         codebuf_put(out, 0xFE);
