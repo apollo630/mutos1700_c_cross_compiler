@@ -324,6 +324,45 @@ ParsedOperand classify_operand(const Operand *op)
     if (op->tokens[0].type == TOK_STAR) { marker = SZ_BYTE; start = 1; }
     else if (op->tokens[0].type == TOK_HASH) { marker = SZ_WORD; start = 1; }
 
+    /* Trailing "(base)(index)" => base+index indirect addressing, e.g.
+     * "*20.+2(bx)(di)" - confirmed real via kernel_opt/subr.s. Only
+     * the four combinations the 8086 ModRM table actually encodes are
+     * valid: (bx)(si) (bx)(di) (bp)(si) (bp)(di) - checked by
+     * base_index_rm() in encode.c; everything else is a
+     * classification failure. Must be checked BEFORE the single-
+     * register "(reg)" form below, since it also ends in "...(ident)"
+     * and would otherwise false-match on just the trailing "(di)" pair. */
+    if (n >= start + 6 &&
+        op->tokens[n - 6].type == TOK_LPAREN &&
+        op->tokens[n - 5].type == TOK_IDENT &&
+        op->tokens[n - 4].type == TOK_RPAREN &&
+        op->tokens[n - 3].type == TOK_LPAREN &&
+        op->tokens[n - 2].type == TOK_IDENT &&
+        op->tokens[n - 1].type == TOK_RPAREN) {
+
+        RegClass rc1 = reg_lookup(op->tokens[n - 5].text, op->tokens[n - 5].len);
+        RegClass rc2 = reg_lookup(op->tokens[n - 2].text, op->tokens[n - 2].len);
+
+        po.mode = ADDR_INDIRECT;
+        po.size = marker;
+        po.reg = op->tokens[n - 5];
+        po.reg_class = rc1;
+        po.has_index = true;
+        po.reg2 = op->tokens[n - 2];
+        po.reg2_class = rc2;
+
+        int disp_end = n - 6; /* exclusive */
+        if (disp_end > start) {
+            int idx = start;
+            po.expr = expr_parse(op->tokens, disp_end, &idx);
+            po.ok = (po.expr != NULL) && (idx == disp_end) && (rc1 == REG_WORD) && (rc2 == REG_WORD);
+        } else {
+            po.expr = NULL;
+            po.ok = (rc1 == REG_WORD) && (rc2 == REG_WORD);
+        }
+        return po;
+    }
+
     /* Trailing "(reg)" => indirect addressing, with everything from
      * `start` up to the '(' being an optional displacement expression. */
     if (n >= start + 3 &&

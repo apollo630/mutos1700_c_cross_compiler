@@ -113,9 +113,20 @@ typedef struct {
     SizeMarker size;         /* explicit '*'/'#' marker, if any (ADDR_INDIRECT/ADDR_IMMEDIATE) */
 
     /* ADDR_REGISTER: the register itself. ADDR_INDIRECT: the base
-     * register inside the parens. */
+     * register inside the parens (the ONLY register for a single-
+     * paren form like "(bx)"; for a base+index form like "(bx)(di)"
+     * this is the FIRST (base) register - see reg2/has_index below). */
     Token      reg;
     RegClass   reg_class;
+
+    /* ADDR_INDIRECT base+index form only, e.g. "disp(bx)(di)" -
+     * confirmed real via kernel_opt/subr.s ("mov ax,*20.+2(bx)(di)").
+     * has_index is false for every single-register indirect form
+     * ("(bx)", "(di)", etc.) - reg2/reg2_class are only meaningful
+     * when true. */
+    bool       has_index;
+    Token      reg2;
+    RegClass   reg2_class;
 
     /* ADDR_INDIRECT: optional displacement (NULL if none, e.g. "(bp)").
      * ADDR_IMMEDIATE / ADDR_DIRECT: the expression itself. */
