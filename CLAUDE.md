@@ -1,3 +1,6 @@
+# Git repository
+* `git@github.com:apollo630/mutos1700_c_cross_compiler.git`
+
 # Project Guide, Architecture Map & Blueprint
 
 ## 📂 Directory Structure & Context
