@@ -1219,6 +1219,49 @@ static bool encode_pushpop(CodeBuf *out, bool is_push, const ParsedOperand *op,
     return false;
 }
 
+/* ENTER framesize,nestlevel (80186) - stack-frame setup: pushes BP,
+ * then (only for nestlevel>0) copies a chain of outer-frame pointers,
+ * sets BP=SP, and reserves `framesize` bytes of stack. Not in
+ * Assembler_as.pdf's Anlage A/B/C (K1810WM86-only manual, no 80186/
+ * V30 coverage - per explicit user confirmation) and not exercised
+ * anywhere in the real corpus (nested Pascal-style stack frames are
+ * not something a C compiler like the one that generated this corpus
+ * emits) - speculative 80186/V30 addition toward the project's stated
+ * goal of broad future coverage, using the standard, unambiguous
+ * Intel encoding. UNCONFIRMED by any real sample.
+ *
+ * IMPORTANT: the nested-frame-pointer-chaining behavior for
+ * nestlevel>0 is a RUNTIME CPU semantic, not something the assembler
+ * computes - the assembled BYTE ENCODING is always exactly 4 bytes
+ * (opcode + 16-bit framesize + 8-bit nestlevel) regardless of what
+ * value nestlevel holds, so there is no special-casing needed here
+ * for nestlevel>0 despite its much more involved runtime behavior. */
+static bool encode_enter(CodeBuf *out, const ParsedOperand *framesize,
+                          const ParsedOperand *nestlevel, long cur_addr,
+                          SymTab *st, bool resolve, RelocList *relocs)
+{
+    if (!framesize->expr || !nestlevel->expr) return false;
+    if ((framesize->mode != ADDR_DIRECT && framesize->mode != ADDR_IMMEDIATE) ||
+        (nestlevel->mode != ADDR_DIRECT && nestlevel->mode != ADDR_IMMEDIATE))
+        return false;
+
+    long fs = resolve_expr(framesize->expr, cur_addr, st, resolve);
+    long nl = resolve_expr(nestlevel->expr, cur_addr, st, resolve);
+    codebuf_put(out, 0xC8);
+    /* framesize is virtually always a plain numeric stack-space
+     * constant, not a symbol's address - but every other word-
+     * immediate site in this file gets the same relocation
+     * classification for consistency/safety, in case it ever isn't. */
+    if (resolve && relocs && framesize->expr) {
+        unsigned char low4; int symidx;
+        if (classify_word_reloc(framesize->expr, st, true, &low4, &symidx))
+            reloclist_add(relocs, (long)out->len, symidx, low4);
+    }
+    codebuf_put16le(out, (unsigned int)(fs & 0xFFFF));
+    codebuf_put(out, (unsigned char)(nl & 0xFF));
+    return true;
+}
+
 /* LEA reg,mem - confirmed real usage: "lea sp,#6(bp)", "lea sp,#-4(bp)". */
 static bool encode_lea(CodeBuf *out, const ParsedOperand *dst, const ParsedOperand *src,
                         long cur_addr, SymTab *st, bool resolve, RelocList *relocs)
@@ -1291,6 +1334,68 @@ static bool encode_group3(CodeBuf *out, int digit, const ParsedOperand *op,
         return true;
     }
     return false;
+}
+
+/* IMUL with immediate (80186) - "imul dst,imm" (2-operand short form:
+ * dst doubles as both the ModRM reg AND r/m fields, e.g. "imul ax,100"
+ * means ax = ax*100) or "imul dst,src,imm" (3-operand form: dst =
+ * src*imm, src a register or memory operand) - opcode 0x69/r iw (word
+ * immediate) or 0x6B/r ib (sign-extended byte immediate). Genuinely
+ * distinct from this codebase's existing single-operand "imul"/
+ * "imulb" (classic 8086 group3 form, F6/F7 /5, handled by
+ * encode_group3 above and completely unaffected by this - the two
+ * families dispatch purely by operand COUNT, so nops==1 always goes
+ * to encode_group3 and can never reach this function).
+ *
+ * Not in Assembler_as.pdf's Anlage A/B/C (K1810WM86-only manual, no
+ * 80186/V30 coverage - per explicit user confirmation) and not
+ * exercised anywhere in the real corpus, INCLUDING v30opt.s: that
+ * file's 18 real "imul" uses are all confirmed single-operand F6/F7
+ * encodings (see encode_group3's doc comment), so this 2/3-operand
+ * syntax is a speculative addition toward the project's stated goal
+ * of broad future 80186/V30 coverage, using the standard, unambiguous
+ * Intel encoding - UNCONFIRMED by any real sample, hand-verify the
+ * raw byte output against the 80186 ISA before trusting it beyond a
+ * smoke test. Immediate width follows this codebase's established
+ * "'*'=byte marker forces the short ib form, anything else (including
+ * unmarked/DIRECT) gets the full iw form" convention - the same rule
+ * PUSH imm already uses (see encode_pushpop). */
+static bool encode_imul_imm(CodeBuf *out, const ParsedOperand *dst, const ParsedOperand *rm,
+                             const ParsedOperand *immop, long cur_addr, SymTab *st,
+                             bool resolve, RelocList *relocs)
+{
+    if (dst->mode != ADDR_REGISTER) return false;
+    int rn = reg_number(&dst->reg);
+    if (rn < 0) return false;
+    if ((immop->mode != ADDR_DIRECT && immop->mode != ADDR_IMMEDIATE) || !immop->expr) return false;
+
+    bool byte_imm = (immop->mode == ADDR_IMMEDIATE && immop->size == SZ_BYTE);
+    codebuf_put(out, byte_imm ? 0x6B : 0x69);
+
+    if (rm->mode == ADDR_REGISTER) {
+        int srn = reg_number(&rm->reg);
+        if (srn < 0) return false;
+        codebuf_put(out, (unsigned char)(0xC0 | (rn << 3) | srn));
+    } else if (rm->mode == ADDR_INDIRECT) {
+        emit_modrm_indirect(out, rn, rm, cur_addr, st, resolve, relocs);
+    } else if (rm->mode == ADDR_DIRECT) {
+        emit_modrm_direct(out, rn, rm, cur_addr, st, resolve, relocs);
+    } else {
+        return false;
+    }
+
+    long imm = resolve_expr(immop->expr, cur_addr, st, resolve);
+    if (byte_imm) {
+        codebuf_put(out, (unsigned char)(imm & 0xFF));
+    } else {
+        if (resolve && relocs && immop->expr) {
+            unsigned char low4; int symidx;
+            if (classify_word_reloc(immop->expr, st, true, &low4, &symidx))
+                reloclist_add(relocs, (long)out->len, symidx, low4);
+        }
+        codebuf_put16le(out, (unsigned int)(imm & 0xFFFF));
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1581,6 +1686,13 @@ static const struct { const char *name; unsigned char op; } NOARG_TABLE[] = {
     {"pusha", 0x60}, {"popa", 0x61}, {"stob", 0xAA},
     {"pushf", 0x9C}, {"popf", 0x9D}, {"stow", 0xAB}, {"lodb", 0xAC}, {"lodw", 0xAD},
     {"wait", 0x9B}, {"iret", 0xCF}, {"reti", 0xCB},
+    /* "leave" (0xC9) - 80186 stack-frame-destroy, single byte, no
+     * operands. Same "not in Anlage A (K1810WM86-only manual), not in
+     * real corpus, speculative 80186/V30 addition" status as BOUND
+     * above and ENTER below - see encode_instruction's "bound"
+     * comment for the shared rationale. Opcode is the standard,
+     * unambiguous Intel encoding. */
+    {"leave", 0xC9},
     /* NOTE: "reti" is NOT an alias of "iret" - real mch.o disassembly
      * confirms "iret" = CF (true IRET, restores flags) while
      * "reti" = CB (RETF, far return only, no flags) - two genuinely
@@ -1621,6 +1733,8 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return encode_pushpop(out, true, &ops[0], cur_addr, st, resolve, relocs);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "pop", 3) == 0 && nops == 1)
         return encode_pushpop(out, false, &ops[0], cur_addr, st, resolve, relocs);
+    if (mnemonic->len == 5 && strncmp(mnemonic->text, "enter", 5) == 0 && nops == 2)
+        return encode_enter(out, &ops[0], &ops[1], cur_addr, st, resolve, relocs);
 
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "jmp", 3) == 0 && nops == 1)
         return encode_jmp(out, &ops[0], cur_addr, st, resolve, relocs);
@@ -1826,6 +1940,24 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return encode_ldx(out, 0xC5, &ops[0], &ops[1], cur_addr, st, resolve, relocs);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "les", 3) == 0 && nops == 2)
         return encode_ldx(out, 0xC4, &ops[0], &ops[1], cur_addr, st, resolve, relocs);
+    /* BOUND (80186) - "bound reg,mem" checks reg against a pair of
+     * signed words (lower/upper bound) stored at mem/mem+2, trapping
+     * INT 5 if out of range. Not in Assembler_as.pdf's Anlage A/B/C
+     * (that manual documents only the K1810WM86, a pure 8086 clone
+     * with no 80186/V30 additions - per explicit user confirmation)
+     * and NOT exercised by any real corpus file (not even the
+     * V30-targeted v30opt.s) - added speculatively toward the
+     * project's stated goal of broad 80186/V30 coverage, using the
+     * standard, unambiguous Intel encoding. Reuses encode_ldx() since
+     * BOUND (0x62 /r) has the EXACT same "reg, INDIRECT-memory-only"
+     * ModRM shape as LDS/LES/LEA in this codebase (dst=REGISTER,
+     * src=ADDR_INDIRECT only, no DIRECT-mode support - matching the
+     * existing, established restriction of that whole instruction
+     * family here, not a new asymmetry). UNCONFIRMED by any real
+     * sample; spot-check the raw byte output against the standard
+     * 8086/80186 ISA before trusting it on anything but a smoke test. */
+    if (mnemonic->len == 5 && strncmp(mnemonic->text, "bound", 5) == 0 && nops == 2)
+        return encode_ldx(out, 0x62, &ops[0], &ops[1], cur_addr, st, resolve, relocs);
 
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "mul", 3) == 0 && nops == 1)
         return encode_group3(out, 4, &ops[0], cur_addr, st, resolve, relocs, false);
@@ -1839,6 +1971,13 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return encode_group3(out, 5, &ops[0], cur_addr, st, resolve, relocs, false);
     if (mnemonic->len == 5 && strncmp(mnemonic->text, "imulb", 5) == 0 && nops == 1)
         return encode_group3(out, 5, &ops[0], cur_addr, st, resolve, relocs, true);
+    /* 80186 IMUL-with-immediate forms - see encode_imul_imm's doc
+     * comment. Dispatches purely by operand count, so the classic
+     * single-operand form just above (nops==1) is never shadowed. */
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 2)
+        return encode_imul_imm(out, &ops[0], &ops[0], &ops[1], cur_addr, st, resolve, relocs);
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 3)
+        return encode_imul_imm(out, &ops[0], &ops[1], &ops[2], cur_addr, st, resolve, relocs);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "div", 3) == 0 && nops == 1)
         return encode_group3(out, 6, &ops[0], cur_addr, st, resolve, relocs, false);
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "divb", 4) == 0 && nops == 1)
@@ -2017,14 +2156,26 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
  * upkeep cost, is intentionally right next to encode_instruction() so
  * it stays visible whenever that function is edited. */
 static const char *const IRREGULAR_MNEMONICS[] = {
-    "j", "push", "pop", "jmp", "br", "call", "calli", "jmpi",
-    "mov", "movb", "lea", "lds", "les",
-    "test", "testb", "inc", "dec", "incb", "decb", "xchg", "xchgb",
-    "movs", "movsb", "movsw",
-    "in", "out", "inb", "outb", "inw", "outw", "insb", "insw", "outsb", "outsw",
-    "int", "seg",
-    "rep", "repe", "repz", "repne", "repnz",
-    "aam", "aad",
+    /* Regenerated programmatically (grep every direct strncmp(mnemonic->
+     * text, "...") check in this file) rather than hand-typed a second
+     * time - a hand-typed copy is exactly how the group3 family
+     * (mul/mulb/div/divb/idiv/idivb/imul/imulb/neg/negb/not/notb) got
+     * silently OMITTED from the first version of this list, reopening
+     * the very bug class this whole function exists to close for any
+     * of those twelve mnemonics used with an unsupported operand
+     * count. Re-run the equivalent grep after adding any new direct
+     * strncmp(mnemonic->text, ...) dispatch to encode_instruction(),
+     * and keep this list in sync. */
+    "aad", "aam", "bound", "br", "call", "calli",
+    "dec", "decb", "div", "divb", "enter", "idiv",
+    "idivb", "imul", "imulb", "in", "inb", "inc",
+    "incb", "insb", "insw", "int", "inw", "j",
+    "jmp", "jmpi", "lds", "lea", "les", "mov",
+    "movb", "movs", "movsb", "movsw", "mul", "mulb",
+    "neg", "negb", "not", "notb", "out", "outb",
+    "outsb", "outsw", "outw", "pop", "push", "rep",
+    "repe", "repne", "repnz", "repz", "seg", "test",
+    "testb", "xchg", "xchgb",
 };
 
 bool encode_is_known_mnemonic(const Token *mnemonic)
