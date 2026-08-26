@@ -1,5 +1,9 @@
 # Project Guide, Architecture Map & Blueprint
 
+**Repository**: `git@github.com:apollo630/mutos1700_c_cross_compiler.git`
+(HTTPS: `https://github.com/apollo630/mutos1700_c_cross_compiler.git` — use this in
+sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo630/mutos1700_c_cross_compiler.git`).
+
 > **For current, verified implementation status** (what's actually built, tested, and
 > byte-confirmed against real hardware right now — including per-opcode coverage for
 > `mutos_as`), see **[`STATUS.md`](./STATUS.md)**. This file (`CLAUDE.md`) describes
