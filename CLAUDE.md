@@ -1,7 +1,11 @@
-# Git repository
-* `git@github.com:apollo630/mutos1700_c_cross_compiler.git`
-
 # Project Guide, Architecture Map & Blueprint
+
+> **For current, verified implementation status** (what's actually built, tested, and
+> byte-confirmed against real hardware right now — including per-opcode coverage for
+> `mutos_as`), see **[`STATUS.md`](./STATUS.md)**. This file (`CLAUDE.md`) describes
+> the stable architecture, rules, and roadmap; `STATUS.md` is the living, session-
+> verified status tracker and takes precedence whenever the two disagree on *current
+> state* (as opposed to *intended design*).
 
 ## 📂 Directory Structure & Context
 
@@ -9,14 +13,18 @@
 * `/src/h/`: Core header files (`.h`). Contains shared definitions and system structures.
 * `/src/mutos_ld/`: Source code for the Mutos Linker.
 * `/src/mutos_as/`: Source code for the Mutos Assembler.
-* `/src/mutos_cc/`: Source code for the Mutos C Compiler frontend/driver.
+* `/src/mutos_cc/`: Source code for the Mutos C Compiler frontend/driver. **Planned only —
+  this directory does not exist yet** (Milestone 3 has not started; see `STATUS.md`).
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all object files and `libc.a.base64.txt`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`.
-* `/tests/mutos_ld/`: Golden Master and integration tests for the linker.
+* `/tests/mutos_ld/`: Golden Master and integration tests for the linker. **Currently missing
+  from this checkout** — the golden reference binaries (`myhello`/`idhello`) this
+  milestone's verification depends on are absent, so Milestone 1 cannot be re-verified
+  until they're restored. See `STATUS.md`'s Open Items.
 
 ### 📜 Legacy & Reference (`/v7` & Documentation)
 * `/v7/cc/`: Reference source code from Research Unix Version 7 C compiler.
@@ -52,9 +60,34 @@ You act as an expert systems programmer, compiler architect, and operating syste
 1. **K&R Compatibility**: The C compiler frontend/backend must be 100% K&R compatible.
 2. **Binary Format**: The object file and executable format must use the original MUTOS 1700 `a.out` layout.
 3. **CLI Interface**: `mutos_cc`, `mutos_as`, and `mutos_ld` must support identical command-line arguments and switches as their Unix V7 counterparts.
+   * **Known, deliberate exception**: `mutos_as` does **not** implement `as.1`'s `-L`
+     switch (control over whether compiler-internal `L`-prefixed labels appear in the
+     written symbol table). Every real hardware-linked golden `.o` this project
+     validates against includes those labels unconditionally, with no flag involved in
+     how they were produced — implementing `-L`'s documented default (excluded) broke
+     byte-for-byte golden parity. Matching the golden files takes priority over literal
+     switch-for-switch parity with `as.1` here; `-o`/`-W` and everything else are
+     unaffected. Do not "fix" this without re-breaking golden parity — see
+     `src/mutos_as/assemble.c`'s `-L` comment and `STATUS.md`.
 4. **Headers & Syscalls**: Provide full support for original MUTOS 1700 header files and system calls (mapping x86 software interrupts/traps instead of PDP-11 traps).
-5. **PDP-11 Middle-Endian**: The 32-bit data type `long` **MUST** follow the PDP-11 Middle-Endian byte order (`1 0 3 2`).
-   * *Example*: Storing `0x0A0B0C0D` on a PDP-11 layout:
+5. **PDP-11 Middle-Endian — scope**: Historic V7/PDP-11 `long` fields use PDP-11
+   Middle-Endian byte order (`1 0 3 2`, i.e. the high-order 16-bit word first, each word
+   itself little-endian). This does **not** apply blanket-wide across the toolchain —
+   confirmed and implemented scope is:
+   * **`ar` archive format** (`atime`/`asize`/`cloc` in `src/h/mutos_aout.h`): carried
+     over unmodified from V7, **DOES** use PDP-11 middle-endian. Implemented in
+     `mutos_get_u32_pdp11()`/`mutos_put_u32_pdp11()`.
+   * **MUTOS `a.out` object/executable header and symbol table**: entirely 16-bit
+     based — there is **no `long` field anywhere in it at all** — so PDP-11
+     middle-endian is simply not applicable there; every multi-byte field is plain
+     little-endian (see `mutos_aout.h`'s own top-of-file comment). Do not apply
+     middle-endian encoding to the `a.out` header — doing so breaks byte-for-byte
+     golden parity.
+   * **`long` variables inside C code compiled by `mutos_cc`**: this is where the rule
+     will actually matter for K&R `long`-arithmetic correctness — **not yet relevant**,
+     since Milestone 3 (`mutos_cc`) has not started (see `STATUS.md`).
+   * *Example (for the `ar`-archive and future-`mutos_cc` cases only)* — storing
+     `0x0A0B0C0D`:
      ```text
      byte offset        8-bit value     16-bit little-endian value
         0               0Bh             0A0Bh
@@ -69,19 +102,43 @@ You act as an expert systems programmer, compiler architect, and operating syste
 3. **Reference Material**: Use the `/v7/` directory strictly as historical reference. Do not mix V7 logic directly into `mutos` unless explicitly migrating or fixing compatibility bugs.
 4. **Header Files**: When changing structs or definitions in `/src/h/`, verify the impacts across `as`, `cc`, and `ld` simultaneously.
 5. **Build Requirement**: Create one top Level Makefile to build all 3 components (`mutos_ld`, `mutos_as`, `mutos_cc`)
+6. **STATUS.md Sync (mandatory)**: `STATUS.md` must be kept in sync with reality at all
+   times — treat it as part of the change, not optional follow-up documentation. This
+   means:
+   * Any change to `mutos_ld` or `mutos_as` (bug fix, new opcode/feature, CLI change,
+     regression discovered, etc.) is only "done" once `STATUS.md` reflects it —
+     including rebuilding and diffing against the real golden files first (per this
+     project's core verification rule) so `STATUS.md` never states an unverified claim
+     as fact.
+   * Every future milestone (`mutos_cc`/`mutos_c0`/`mutos_c1`, `mutos_c2` + `-mv30`)
+     gets its own status section in `STATUS.md` as soon as work on it starts, following
+     the same "verified this session vs. carried from prior records" distinction
+     already used there.
+   * If a session cannot re-verify a previously-documented claim (e.g. missing golden
+     files, as currently the case for `mutos_ld` — see `STATUS.md`), that must be
+     stated explicitly in `STATUS.md` rather than silently repeating the old claim.
+   * This applies regardless of who or what makes the change — human contributor or AI
+     assistant.
 
 ---
 
 ## 🗺️ Strategic Roadmap & Current Focus
-The project follows a strict **Bottom-Up** strategy.
+The project follows a strict **Bottom-Up** strategy. See **[`STATUS.md`](./STATUS.md)**
+for verified current implementation status per milestone — the summaries below describe
+scope and intent, not a snapshot of what's done.
 
 ### Milestone 1: The Cross-Linker (`mutos_ld`)
 * Porting original V7 `ld.c` to modern C.
 * Handling object merging, relocation calculations, and writing the final MUTOS `a.out` header.
 
 ### Milestone 2: The Cross-Assembler (`mutos_as`) [CURRENT FOCUS]
-* Adapting the V7 assembler to parse MUTOS 1700 assembler syntax and emit x86-16 (8086) opcodes into MUTOS-compatible object files (`.o`).
-* *Future expansion*: Extend the syntax to support the NEC V30 (80186 instruction set).
+* Adapting the V7 assembler to parse MUTOS 1700 assembler syntax and emit 8086 opcodes
+  into MUTOS-compatible object files (`.o`).
+* NEC V30/80186 instruction-set support: no longer purely future work — a substantial
+  set of 80186/V30 opcodes (PUSHA/POPA, PUSH imm, INSB/INSW/OUTSB/OUTSW, ENTER/LEAVE/
+  BOUND, IMUL-immediate forms, shift/rotate-with-immediate-count) is implemented; see
+  `STATUS.md` for exactly which are real-hardware-confirmed vs. still unconfirmed, and
+  which 8086/80186 opcodes remain missing.
 
 ### Milestone 3: The C-Compiler (`mutos_cc`, `mutos_c0`, `mutos_c1`)
 * Porting frontends and backends. Modifying code generator (`c1`) to emit x86-16 code in MUTOS assembly syntax and enforce PDP-11 middle-endian format for `long`.
@@ -90,5 +147,7 @@ The project follows a strict **Bottom-Up** strategy.
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.
 
 ### 📌 Active Goal
-* **Current Task**: Bug fixing and error resolution in `mutos_as`.
+* See `STATUS.md` for the current, verified task-level status — it is updated
+  per-change (see Workflow Guideline 6) and is more reliable here than a fixed
+  snapshot would be.
 
