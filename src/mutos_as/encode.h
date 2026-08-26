@@ -88,6 +88,19 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
                          long cur_addr, SymTab *st, bool resolve,
                          RelocList *relocs);
 
+/* Returns true if `mnemonic` names ANY instruction encode_instruction()
+ * recognizes at all, regardless of whether the specific operand count/
+ * shape on a given statement is one it actually accepts. Used by the
+ * assembler driver (assemble.c) to decide whether a bare, zero-operand
+ * statement that encode_instruction() failed to encode is a genuine
+ * unimplemented/misused INSTRUCTION (hard error - see encode_instruction's
+ * own contract above) or a real bare-symbol data value (the confirmed
+ * real "implicit .word <ident>" jump/pointer-table idiom, e.g. tty.s's
+ * bare "_t0"/"L10003" lines) - both look identical (a bare identifier,
+ * no operands) at that point, so this check is what tells them apart.
+ * See encode.c's definition for the concrete bug this closes. */
+bool encode_is_known_mnemonic(const Token *mnemonic);
+
 /* Exposes the internal expression resolver for callers that need to
  * evaluate a plain expression outside of instruction encoding (e.g.
  * the assembler driver's handling of ".=.+4" location-counter

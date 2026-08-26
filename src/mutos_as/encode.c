@@ -1568,6 +1568,46 @@ static bool encode_pseudo_branch(CodeBuf *out, const PseudoBranch *pb, const Par
     return true;
 }
 
+/* Single-byte, no-operand instruction table - see its use-site inside
+ * encode_instruction() below for provenance/corpus-confirmation notes
+ * on individual entries. Kept at FILE SCOPE (rather than local to
+ * encode_instruction(), as it originally was) so encode_is_known_mnemonic()
+ * can walk this exact same array instead of a second, separately
+ * hand-typed copy of the same name list that could silently drift out
+ * of sync with it. */
+static const struct { const char *name; unsigned char op; } NOARG_TABLE[] = {
+    {"cbw", 0x98}, {"cwd", 0x99}, {"ret", 0xC3}, {"nop", 0x90},
+    {"cli", 0xFA}, {"sti", 0xFB}, {"cld", 0xFC}, {"std", 0xFD},
+    {"pusha", 0x60}, {"popa", 0x61}, {"stob", 0xAA},
+    {"pushf", 0x9C}, {"popf", 0x9D}, {"stow", 0xAB}, {"lodb", 0xAC}, {"lodw", 0xAD},
+    {"wait", 0x9B}, {"iret", 0xCF}, {"reti", 0xCB},
+    /* NOTE: "reti" is NOT an alias of "iret" - real mch.o disassembly
+     * confirms "iret" = CF (true IRET, restores flags) while
+     * "reti" = CB (RETF, far return only, no flags) - two genuinely
+     * different mnemonics/opcodes that happen to look similar; do not
+     * conflate them. */
+
+    /* Remaining Assembler_as.pdf Anlage A zero-operand instructions
+     * with no real corpus sample yet, but plain, unambiguous
+     * single-byte 8086 opcodes (no MUTOS-specific encoding quirk
+     * possible - there's no operand to have a quirky marker/
+     * addressing convention on). */
+    {"clc", 0xF8}, {"cmc", 0xF5}, {"stc", 0xF9}, {"hlt", 0xF4},
+    {"lahf", 0x9F}, {"sahf", 0x9E}, {"into", 0xCE}, {"xlat", 0xD7},
+    {"lock", 0xF0}, {"daa", 0x27}, {"das", 0x2F}, {"aaa", 0x37}, {"aas", 0x3F},
+    /* CMPS/SCAS (compare-string/scan-string) - documented plainly as
+     * "cmps"/"cmpsb"/"scas"/"scasb" in Anlage A with no separate
+     * word-vs-implicit-default naming twist (unlike MOVS, which real
+     * code confirms uses these exact bare names too - see
+     * "movs"/"movsb" in encode_instruction) - included here under
+     * their documented names; UNCONFIRMED by any real sample
+     * (STOS/LODS are the only string-op family known to diverge from
+     * Anlage A's naming, into stow/stob/lodw/lodb - see the
+     * STMT_INSTRUCTION dispatch's "in"/"inw" comment for the same
+     * divergence pattern in the I/O family). */
+    {"cmps", 0xA7}, {"cmpsb", 0xA6}, {"scas", 0xAF}, {"scasb", 0xAE},
+};
+
 /* ------------------------------------------------------------------ */
 /* Dispatch                                                              */
 /* ------------------------------------------------------------------ */
@@ -1849,49 +1889,65 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return true;
     }
 
+    /* INSB/INSW/OUTSB/OUTSW - 80186 block-I/O string instructions
+     * (port DX <-> ES:[DI] for INS*, DS:[SI] <-> port DX for OUTS*,
+     * DI/SI auto-advanced per the Direction Flag, combinable with
+     * "rep" exactly like MOVS/STOS/CMPS/SCAS). Unlike the plain IN/
+     * OUT family (where this toolchain's real bare "in"/"out" is byte
+     * and "inw"/"outw" is word - the opposite of Anlage A's literal
+     * wording), these follow the standard, unambiguous Intel B/W
+     * suffix convention with no divergence: mch.s's real hardware
+     * source only ever reaches these opcodes via raw ".byte /6d" /
+     * ".byte /6f" (0x6D/0x6F, i.e. the WORD forms, matching the
+     * preceding "seg es" prefix and surrounding word-sized PIC-mask
+     * idiom) since this dispatch table previously had no mnemonic
+     * entry for them at all - confirmed via kernel_opt/
+     * mch_insw_outsw.s (mch.s with those two ".byte" lines swapped
+     * for plain "insw"/"outsw") failing to reproduce mch.o.golden
+     * byte-for-byte before this fix: with no mnemonic match here,
+     * encode_instruction() returned false, and since the statement
+     * has zero operands, assemble.c's bare-identifier fallback
+     * mis-fired, treating "insw"/"outsw" as if they were pointer-
+     * table entries (an implicit ".word <ident>") - emitting a wrong
+     * 2-byte external-symbol placeholder + a spurious relocation
+     * entry instead of the correct single opcode byte, which also
+     * desynced the location counter for every following instruction.
+     * INSB/OUTSB (0x6C/0x6E) are added alongside for completeness/
+     * symmetry, though only INSW/OUTSW are exercised by the real
+     * corpus so far. */
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "insb", 4) == 0 && nops == 0) {
+        codebuf_put(out, 0x6C);
+        return true;
+    }
+    if (mnemonic->len == 4 && strncmp(mnemonic->text, "insw", 4) == 0 && nops == 0) {
+        codebuf_put(out, 0x6D);
+        return true;
+    }
+    if (mnemonic->len == 5 && strncmp(mnemonic->text, "outsb", 5) == 0 && nops == 0) {
+        codebuf_put(out, 0x6E);
+        return true;
+    }
+    if (mnemonic->len == 5 && strncmp(mnemonic->text, "outsw", 5) == 0 && nops == 0) {
+        codebuf_put(out, 0x6F);
+        return true;
+    }
+
     /* Single-byte, no-operand instructions - just a lookup table.
      * "stob" (confirmed real usage in mch.s, after "rep": stores AL to
      * ES:DI and advances DI - STOSB abbreviated) is included here;
      * its symmetric siblings (stow/lodb/lodw/etc.) are NOT included,
      * since none have been directly observed in the corpus yet - see
-     * the Step 5 memory note. */
+     * the Step 5 memory note.
+     *
+     * NOTE: this table moved to FILE SCOPE (as NOARG_TABLE, just above
+     * encode_instruction) so encode_is_known_mnemonic() below can walk
+     * the exact same array instead of a separately hand-typed name
+     * list that could silently drift out of sync with it. */
     if (nops == 0) {
-        static const struct { const char *name; unsigned char op; } NOARG[] = {
-            {"cbw", 0x98}, {"cwd", 0x99}, {"ret", 0xC3}, {"nop", 0x90},
-            {"cli", 0xFA}, {"sti", 0xFB}, {"cld", 0xFC}, {"std", 0xFD},
-            {"pusha", 0x60}, {"popa", 0x61}, {"stob", 0xAA},
-            {"pushf", 0x9C}, {"popf", 0x9D}, {"stow", 0xAB}, {"lodb", 0xAC}, {"lodw", 0xAD},
-            {"wait", 0x9B}, {"iret", 0xCF}, {"reti", 0xCB},
-            /* NOTE: "reti" is NOT an alias of "iret" - real mch.o
-             * disassembly confirms "iret" = CF (true IRET, restores
-             * flags) while "reti" = CB (RETF, far return only, no
-             * flags) - two genuinely different mnemonics/opcodes that
-             * happen to look similar; do not conflate them. */
-
-            /* Remaining Assembler_as.pdf Anlage A zero-operand
-             * instructions with no real corpus sample yet, but plain,
-             * unambiguous single-byte 8086 opcodes (no MUTOS-specific
-             * encoding quirk possible - there's no operand to have a
-             * quirky marker/addressing convention on). */
-            {"clc", 0xF8}, {"cmc", 0xF5}, {"stc", 0xF9}, {"hlt", 0xF4},
-            {"lahf", 0x9F}, {"sahf", 0x9E}, {"into", 0xCE}, {"xlat", 0xD7},
-            {"lock", 0xF0}, {"daa", 0x27}, {"das", 0x2F}, {"aaa", 0x37}, {"aas", 0x3F},
-            /* CMPS/SCAS (compare-string/scan-string) - documented
-             * plainly as "cmps"/"cmpsb"/"scas"/"scasb" in Anlage A with
-             * no separate word-vs-implicit-default naming twist (unlike
-             * MOVS, which real code confirms uses these exact bare
-             * names too - see "movs"/"movsb" above) - included here
-             * under their documented names; UNCONFIRMED by any real
-             * sample (STOS/LODS are the only string-op family known to
-             * diverge from Anlage A's naming, into stow/stob/lodw/lodb
-             * - see the STMT_INSTRUCTION dispatch's "in"/"inw" comment
-             * for the same divergence pattern in the I/O family). */
-            {"cmps", 0xA7}, {"cmpsb", 0xA6}, {"scas", 0xAF}, {"scasb", 0xAE},
-        };
-        for (size_t i = 0; i < sizeof(NOARG)/sizeof(NOARG[0]); i++)
-            if (strlen(NOARG[i].name) == mnemonic->len &&
-                strncmp(NOARG[i].name, mnemonic->text, mnemonic->len) == 0) {
-                codebuf_put(out, NOARG[i].op);
+        for (size_t i = 0; i < sizeof(NOARG_TABLE)/sizeof(NOARG_TABLE[0]); i++)
+            if (strlen(NOARG_TABLE[i].name) == mnemonic->len &&
+                strncmp(NOARG_TABLE[i].name, mnemonic->text, mnemonic->len) == 0) {
+                codebuf_put(out, NOARG_TABLE[i].op);
                 return true;
             }
 
@@ -1909,4 +1965,99 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
     }
 
     return false; /* mnemonic/operand combination not (yet) supported */
+}
+
+/* ------------------------------------------------------------------ */
+/* Known-mnemonic membership check                                      */
+/* ------------------------------------------------------------------ */
+
+/* Returns true if `mnemonic` names ANY instruction this assembler
+ * recognizes AT ALL, regardless of whether the specific operand count
+ * or addressing-mode shape used on a given statement is one
+ * encode_instruction() actually accepts.
+ *
+ * WHY THIS EXISTS: before this function, assemble.c's STMT_INSTRUCTION
+ * handling treated ANY statement where encode_instruction() failed
+ * AND the statement had zero operands as a bare-symbol data value
+ * (the real, CONFIRMED tty.s idiom for jump/pointer-table entries,
+ * e.g. a lone "_t0" or "L10003" on its own line - see that function's
+ * comment). That fallback cannot tell "a genuine label/symbol name"
+ * apart from "a real mnemonic the user meant to use, but which either
+ * isn't implemented yet or was given an unsupported operand shape" -
+ * both look identical at that point (a bare identifier, no operands).
+ * CONFIRMED REAL BUG this closes: "insw"/"outsw" (see
+ * kernel_opt/mch_insw_outsw.s) previously had NO dispatch entry at
+ * all, so they silently fell into the bare-symbol path and were
+ * mis-assembled as a 2-byte external-symbol placeholder + a spurious
+ * relocation entry instead of the correct 1-byte opcode - wrong
+ * bytes AND a desynced location counter for everything downstream,
+ * with zero diagnostic. Fixed for that specific pair by adding a real
+ * dispatch entry (see above), but the SAME failure mode remains open
+ * for any OTHER mnemonic-shaped token the fallback shouldn't have
+ * claimed - e.g. a real mnemonic used with the wrong number of
+ * operands (a plain typo), or any future gap like the one insw/outsw
+ * just were. assemble.c now calls this function to gate the fallback:
+ * a bare, zero-operand, unencoded statement is only ever treated as
+ * an implicit data value when the leading token does NOT match a
+ * known mnemonic name; otherwise it is a hard assembly error, per
+ * encode_instruction()'s own documented contract in encode.h ("the
+ * caller should treat [false] as a hard error, not silently skip").
+ *
+ * Deliberately built by walking the SAME per-family tables
+ * (GROUP1/GROUP1B/GROUP2/GROUP2B/REAL_JCC/LOOP_OPS/PSEUDO_BRANCHES/
+ * NOARG_TABLE) encode_instruction() itself dispatches through, so a
+ * new entry added to any of those tables is automatically covered
+ * here with no second edit needed. Only the "irregular" mnemonics -
+ * ones encode_instruction() matches via a direct strncmp rather than
+ * a shared table (mov, push, the I/O family, string ops, etc.) - are
+ * listed explicitly in IRREGULAR_MNEMONICS[] below; adding a new
+ * irregular dispatch entry to encode_instruction() must also add its
+ * name there, or it silently re-opens this exact bug for itself. This
+ * whole function, and its one-name-list-per-new-irregular-mnemonic
+ * upkeep cost, is intentionally right next to encode_instruction() so
+ * it stays visible whenever that function is edited. */
+static const char *const IRREGULAR_MNEMONICS[] = {
+    "j", "push", "pop", "jmp", "br", "call", "calli", "jmpi",
+    "mov", "movb", "lea", "lds", "les",
+    "test", "testb", "inc", "dec", "incb", "decb", "xchg", "xchgb",
+    "movs", "movsb", "movsw",
+    "in", "out", "inb", "outb", "inw", "outw", "insb", "insw", "outsb", "outsw",
+    "int", "seg",
+    "rep", "repe", "repz", "repne", "repnz",
+    "aam", "aad",
+};
+
+bool encode_is_known_mnemonic(const Token *mnemonic)
+{
+    for (size_t i = 0; i < sizeof(IRREGULAR_MNEMONICS)/sizeof(IRREGULAR_MNEMONICS[0]); i++)
+        if (strlen(IRREGULAR_MNEMONICS[i]) == mnemonic->len &&
+            strncmp(IRREGULAR_MNEMONICS[i], mnemonic->text, mnemonic->len) == 0)
+            return true;
+
+    for (size_t i = 0; i < sizeof(GROUP1)/sizeof(GROUP1[0]); i++)
+        if (strlen(GROUP1[i].name) == mnemonic->len && strncmp(GROUP1[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(GROUP1B)/sizeof(GROUP1B[0]); i++)
+        if (strlen(GROUP1B[i].name) == mnemonic->len && strncmp(GROUP1B[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(GROUP2)/sizeof(GROUP2[0]); i++)
+        if (strlen(GROUP2[i].name) == mnemonic->len && strncmp(GROUP2[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(GROUP2B)/sizeof(GROUP2B[0]); i++)
+        if (strlen(GROUP2B[i].name) == mnemonic->len && strncmp(GROUP2B[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(REAL_JCC)/sizeof(REAL_JCC[0]); i++)
+        if (strlen(REAL_JCC[i].name) == mnemonic->len && strncmp(REAL_JCC[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(LOOP_OPS)/sizeof(LOOP_OPS[0]); i++)
+        if (strlen(LOOP_OPS[i].name) == mnemonic->len && strncmp(LOOP_OPS[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(PSEUDO_BRANCHES)/sizeof(PSEUDO_BRANCHES[0]); i++)
+        if (strlen(PSEUDO_BRANCHES[i].name) == mnemonic->len && strncmp(PSEUDO_BRANCHES[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+    for (size_t i = 0; i < sizeof(NOARG_TABLE)/sizeof(NOARG_TABLE[0]); i++)
+        if (strlen(NOARG_TABLE[i].name) == mnemonic->len && strncmp(NOARG_TABLE[i].name, mnemonic->text, mnemonic->len) == 0)
+            return true;
+
+    return false;
 }

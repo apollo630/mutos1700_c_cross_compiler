@@ -475,7 +475,7 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                 size_t before = target->len;
                 bool okenc = encode_instruction(target, &s.mnemonic_or_name, ops, s.noperands,
                                                  *lc, &as->st, pass2, rl);
-                if (!okenc && s.noperands == 0) {
+                if (!okenc && s.noperands == 0 && !encode_is_known_mnemonic(&s.mnemonic_or_name)) {
                     /* A BARE IDENTIFIER statement (no label, no colon,
                      * no operands at all) is a genuine syntactic
                      * ambiguity this hand-written parser can't resolve
@@ -491,12 +491,27 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                      * pairs; "L10003".."L10008"/"L255" etc. as bare
                      * jump-table entries. Real mnemonics are tried
                      * FIRST (encode_instruction() above) and always
-                     * win when recognized, so this can never silently
-                     * shadow a genuine implemented zero-operand
-                     * instruction - it only fires for names encode.c's
-                     * dispatch table rejects outright. Reuses the same
-                     * resolve/register/reloc-classify pattern as the
-                     * existing STMT_DATA_VALUE and ".word" handling. */
+                     * win when recognized.
+                     *
+                     * The extra encode_is_known_mnemonic() gate (added
+                     * after a real bug: "insw"/"outsw" had no dispatch
+                     * entry at all and were silently mis-assembled as
+                     * fake external-symbol references instead of
+                     * erroring - see kernel_opt/mch_insw_outsw.s and
+                     * encode_is_known_mnemonic()'s doc comment) makes
+                     * this ONLY fire for identifiers that are not even
+                     * recognizable as an instruction name in the first
+                     * place - i.e. truly a symbol reference. A token
+                     * that IS a known mnemonic name but that
+                     * encode_instruction() rejected (wrong operand
+                     * count, an unsupported operand shape, or a
+                     * genuine future gap of this same kind) now falls
+                     * through to the hard error below instead of ever
+                     * reaching here, matching encode_instruction()'s
+                     * own documented contract in encode.h. Reuses the
+                     * same resolve/register/reloc-classify pattern as
+                     * the existing STMT_DATA_VALUE and ".word"
+                     * handling. */
                     ExprNode sym_expr;
                     memset(&sym_expr, 0, sizeof(sym_expr));
                     sym_expr.op = EX_SYM;
@@ -517,8 +532,23 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                     okenc = true;
                 }
                 if (!okenc) {
-                    fprintf(stderr, "error: unsupported instruction '%.*s' at line %d\n",
-                            (int)s.mnemonic_or_name.len, s.mnemonic_or_name.text, s.line);
+                    /* Hard error for anything encode_instruction() would
+                     * not encode and the bare-identifier fallback above
+                     * did not claim - this now includes a recognized
+                     * mnemonic name used with an operand count/shape
+                     * that isn't supported (previously such statements
+                     * with zero operands were silently swallowed by the
+                     * fallback above instead of reaching this branch -
+                     * see the comment on the gate above). */
+                    if (s.noperands == 0 && encode_is_known_mnemonic(&s.mnemonic_or_name))
+                        fprintf(stderr,
+                                "error: mnemonic '%.*s' is recognized but not supported with 0 operands at line %d\n",
+                                (int)s.mnemonic_or_name.len, s.mnemonic_or_name.text, s.line);
+                    else
+                        fprintf(stderr,
+                                "error: unsupported instruction '%.*s' (%d operand%s) at line %d\n",
+                                (int)s.mnemonic_or_name.len, s.mnemonic_or_name.text,
+                                s.noperands, s.noperands == 1 ? "" : "s", s.line);
                     as->errors++;
                 } else {
                     /* Advance the location counter by however many bytes
