@@ -1,0 +1,1205 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef struct { int r[1]; } *	physadr;
+typedef struct { unsigned short off;
+		 unsigned short seg; }  segadr;
+typedef long		daddr_t;
+typedef char *		caddr_t;
+typedef unsigned short	ino_t;
+typedef long		time_t;
+typedef int		label_t[5];	
+typedef int		dev_t;
+typedef long		off_t;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern	short	mm_pages[];		
+extern	short	mm_size;		
+
+
+
+
+
+
+
+
+
+
+
+
+struct sversion
+{
+	unsigned dl:8,
+		 vl:4,
+		 vh:4;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+char	canonb[256		];	
+struct inode *rootdir;		
+struct proc *runq;		
+struct proc *Hogproc;           
+struct	inode *inode86;		
+unsigned dbreak;			
+unsigned brkseg, brkoff;	
+int     cputype;                
+int     lbolt;                  
+time_t	time;			
+
+
+
+
+
+
+
+
+
+int	nblkdev;
+
+
+
+
+
+int	nchrdev;
+
+int	mpid;			
+char	runin;			
+char	runout;			
+char	runrun;			
+char	runtxt;			
+char	curpri;			
+int	maxmem;			
+physadr	lks;			
+daddr_t	swplo;			
+int	nswap;			
+int	updlock;		
+daddr_t	rablock;		
+extern	char	regloc[];	
+extern  int     reglocc;        
+char	msgbuf[1024		];	
+dev_t	rootdev;		
+dev_t	swapdev;		
+dev_t	pipedev;		
+
+
+struct inode *acctp;
+struct proc *Nproca;    
+int Nproc;              
+
+
+
+int	Timezone;		
+int	Dstflag;		
+
+
+extern	char	icode[];	
+extern	int	szicode;	
+
+dev_t getmdev();
+daddr_t	bmap();
+struct inode *ialloc();
+struct inode *iget();
+struct inode *owner();
+struct inode *maknode();
+struct inode *namei();
+struct buf *alloc();
+struct buf *getblk();
+struct buf *geteblk();
+struct buf *bread();
+struct buf *breada();
+struct filsys *getfs();
+struct file *getf();
+struct file *falloc();
+int	uchar();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+int	dk_busy;
+long	dk_time[32];
+long	dk_numb[3];
+long	dk_wds[3];
+long	tk_nin;
+long	tk_nout;
+
+
+
+
+extern struct sysent {
+	char	sy_narg;		
+	int	(*sy_call)();		
+} sysent[];
+
+unsigned version;
+unsigned systype;
+
+
+struct	direct
+{
+	ino_t	d_ino;
+	char	d_name[14		];
+};
+
+struct var {
+	int v_buf;
+	int v_call;
+	int v_inode;
+	char * ve_inode;
+	int v_file;
+	char * ve_file;
+	int v_mount;
+	char * ve_mount;
+	int v_proc;
+	char * ve_proc;
+	int v_text;
+	char * ve_text;
+	int v_clist;
+	int v_maxup;
+	int v_lock;
+};
+extern struct var v;
+
+
+
+
+struct	filsys {
+	unsigned short s_isize;	
+	daddr_t	s_fsize;   	
+	short  	s_nfree;   	
+	daddr_t	s_free[100		];
+	short  	s_ninode;  	
+	ino_t  	s_inode[100		];
+	char   	s_flock;   	
+	char   	s_ilock;   	
+	char   	s_fmod;    	
+	char   	s_ronly;   	
+	time_t 	s_time;    	
+	daddr_t	s_tfree;   	
+	ino_t  	s_tinode;  	
+	
+	short  	s_m;       	
+	short  	s_n;       	
+	char   	s_fname[6];	
+	char   	s_fpack[6];	
+	
+	char   	s_clean;   	
+};
+
+
+
+
+
+
+
+
+struct  exec {  
+	short           x_magic;        
+	char            x_mach;         
+	char            x_form;         
+	long            x_text;         
+	long            x_data;         
+	long            x_bss;          
+	long            x_syms;         
+	long            x_entry;        
+	long            x_reloc;        
+	long            x_aux;          
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct  oexec {  
+	int             oa_magic;       
+	unsigned        oa_text;        
+	unsigned        oa_data;        
+	unsigned        oa_bss;         
+	unsigned        oa_syms;        
+	unsigned        oa_entry;       
+	unsigned        oa_unused;      
+	unsigned        oa_flag;        
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	nlist {	
+	char    	n_name[8];	
+	int     	n_type;    	
+	unsigned	n_value;	
+};
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	user
+{
+	label_t	u_rsav;			
+	int	u_fper;			
+	int	u_fpsaved;		
+	struct {
+		char    u_fpsav[96];    
+	} u_fps;
+	char    u_segflg;               
+
+
+
+	char    u_error;                
+	short   u_uid;                  
+	short   u_gid;                  
+	short   u_ruid;                 
+	short   u_rgid;                 
+	struct proc *u_procp;           
+
+	int	*u_ap;			
+	union {				
+		struct	{
+			int	r_val1;
+			int	r_val2;
+		} r_val;
+		off_t	r_off;
+		time_t	r_time;
+	} u_r;
+	caddr_t u_base;                 
+	unsigned int u_count;           
+	off_t   u_offset;               
+	struct inode *u_cdir;           
+	struct inode *u_rdir;           
+	char    u_dbuf[14		];         
+	caddr_t u_dirp;                 
+	struct direct u_dent;           
+	struct inode *u_pdir;           
+	struct file *u_ofile[20		];   
+	char    u_pofile[20		];       
+	int     u_arg[5];               
+
+	short   u_tsize;                
+	short   u_dsize;                
+	short   u_ssize;                
+	short   u_usegs[0		];          
+	short   u_cedata;               
+
+	label_t u_qsav;                 
+	label_t u_ssav;                 
+	int     u_signal[17];         
+	time_t  u_utime;                
+	time_t  u_stime;                
+	time_t  u_cutime;               
+	time_t  u_cstime;               
+	int     *u_aAX;                 
+
+	struct {                        
+		short   *pr_base;       
+		unsigned pr_size;       
+		unsigned pr_off;        
+		unsigned pr_scale;      
+	} u_prof;
+	char    u_intflg;               
+	char    u_sep;                  
+	short   u_lxrw;
+	struct tty *u_ttyp;             
+	dev_t   u_ttyd;                 
+	struct exec u_exdata;           
+
+	int	u_hdrsiz;		
+
+	char    u_comm[14		];
+	time_t  u_start;
+	char    u_acflag;
+	short   u_fpflag;               
+	short   u_cmask;                
+	int     u_stack[1];
+	short	u_textlength;
+	int	u_sel;
+	int	u_cn;
+	unsigned u_baseseg;		
+	unsigned u_dirpseg;		
+	char	u_msdos;		
+					
+
+
+
+};
+
+extern struct user u;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	mount
+{
+	dev_t	m_dev;		
+	struct buf *m_bufp;	
+	struct inode *m_inodp;	
+};
+
+extern struct mount mount[];
+
+struct map
+{
+	short	m_size;
+	unsigned short m_addr;
+};
+
+extern struct map swapmap[];    
+extern struct map coremap[];	
+
+
+
+
+
+
+
+
+
+struct	proc {
+	char    p_stat;         
+
+	char    p_flag;         
+	char    p_pri;          
+	char    p_time;         
+	char    p_cpu;          
+	char    p_nice;         
+	short   p_sig;          
+	short   p_uid;          
+	short   p_pgrp;         
+	short   p_pid;          
+	short   p_ppid;         
+	short   p_addr;         
+
+	short   p_size;         
+				
+	char	p_pnum;		
+
+	char	p_cflags;	
+	short	p_dusize;	
+
+
+	caddr_t p_wchan;        
+	struct text *p_textp;   
+
+	struct proc *p_link;    
+	int     p_clktim;       
+				
+};
+
+extern struct proc proc[];	
+extern struct proc *Nproca;     
+extern int Nproc;               
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	xproc {
+	char	xp_stat;
+	char	xp_flag;
+	char	xp_pri;		
+	char	xp_time;	
+	char	xp_cpu;		
+	char	xp_nice;	
+	short	xp_sig;		
+	short	xp_uid;		
+	short	xp_pgrp;	
+	short	xp_pid;		
+	short	xp_ppid;	
+	short	xp_xstat;	
+	time_t	xp_utime;	
+	time_t	xp_stime;	
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct group {
+	short	g_state;
+	char	g_index;
+	char	g_rot;
+	struct	group	*g_group;
+	struct	inode	*g_inode;
+	struct	file	*g_file;
+	short	g_rotmask;
+	short	g_datq;
+	struct	chan *g_chans[15];
+};
+struct	inode
+{
+	char	i_flag;
+	char	i_count;	
+	dev_t	i_dev;		
+	ino_t	i_number;	
+	unsigned short	i_mode;
+	short	i_nlink;	
+	short	i_uid;		
+	short	i_gid;		
+	off_t	i_size;		
+	struct  locklist *i_locklist;           
+	union {
+		struct {
+			daddr_t i_addr[13];	
+			daddr_t	i_lastr;	
+		} i_i;
+		struct	{
+			daddr_t	i_rdev;			
+			struct	group	i_group;	
+		} i_m;
+	} i_un;
+};
+
+extern struct inode inode[];            
+struct inode *mpxip;                    
+
+
+struct  locklist
+{
+					
+	struct  locklist *ll_link;      
+	int     ll_flags;               
+	struct  proc    *ll_proc;       
+	off_t   ll_start;               
+	off_t   ll_end;                 
+};
+
+extern  struct  locklist  locklist[];   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern struct bdevsw
+{
+	int	(*d_open)();
+	int	(*d_close)();
+	int	(*d_strategy)();
+	struct buf *d_tab;
+} bdevsw[];
+
+
+
+
+extern struct cdevsw
+{
+	int	(*d_open)();
+	int	(*d_close)();
+	int	(*d_read)();
+	int	(*d_write)();
+	int	(*d_ioctl)();
+	int	(*d_stop)();
+	struct tty *d_ttys;
+} cdevsw[];
+
+
+
+
+extern struct linesw
+{
+	int	(*l_open)();
+	int	(*l_close)();
+	int	(*l_read)();
+	char	*(*l_write)();
+	int	(*l_ioctl)();
+	int	(*l_rint)();
+	int	(*l_rend)();
+	int	(*l_meta)();
+	int	(*l_start)();
+	int	(*l_modem)();
+} linesw[];
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct buf
+{
+	int	b_flags;		
+	struct	buf *b_forw;		
+	struct	buf *b_back;		
+	struct	buf *av_forw;		
+	struct	buf *av_back;		
+	dev_t	b_dev;			
+	unsigned b_bcount;		
+	union {                 
+	    caddr_t b_addr;             
+	    int *b_words;               
+	    struct filsys *b_filsys;    
+	    struct dinode *b_dino;      
+	    daddr_t *b_daddr;           
+	} b_un;
+	daddr_t	b_blkno;		
+	char	b_xmem;			
+	char	b_error;		
+	unsigned int b_resid;		
+	unsigned int b_cylin;		
+};
+
+extern struct buf buf[];		
+extern struct buf bfreelist;		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct iostat {
+	int	nbuf;
+	long	nread;
+	long	nreada;
+	long	ncache;
+	long	nwrite;
+	long    bufcount[50              ];
+	long    nswapb;
+} io_info;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern int Cmask, Stand, ROroot;
+extern char buffers[][1024		+0		];
+extern char Mmsg[];
+extern daddr_t getlong();
+int fpp = 0;
+
+main(p)
+int p;
+{
+
+	if(Stand == 0)
+		printf("\nDevice initialization:\n\n");
+	if(fpp)
+		printf("NDP      found\n");
+	initpic();
+	startup(p);
+	
+
+
+	generic(p);
+	if(Stand == 0)
+		printf("%s mem = %Dk\n",Mmsg, (((long)maxmem)<<11		)/0x400L);
+	mfree(swapmap, nswap, 1);
+	swplo--;
+
+	proc[0].p_stat = 3		;
+	proc[0].p_flag |= 01		|02		;
+	proc[0].p_nice = 20;
+	proc[0].p_addr = malloc(coremap,1		);
+	proc[0].p_size = 1		;
+	proc[0].p_dusize = 1		;
+	u.u_procp = &proc[0];
+	u.u_cmask = Cmask;
+	Nproca = &proc[Nproc = 2];
+
+	
+
+
+
+
+	cinit();
+	binit();
+	spl7();
+	initpic();
+	clkstar();
+	tasktime(0);
+	iinit();
+	(*bdevsw[	(int)(((unsigned)(swapdev)>>8))].d_open)(swapdev,1);
+	rootdir = iget(rootdev, (ino_t)((ino_t)2)	);
+	rootdir->i_flag &= ~01		;
+	u.u_cdir = iget(rootdev, (ino_t)((ino_t)2)	);
+	u.u_cdir->i_flag &= ~01		;
+	u.u_rdir = 0;
+
+	update();
+
+	
+
+
+
+
+	if(newproc()) {
+		expand((int) (((unsigned)(szicode)+(2048		-1))>>11		) + 1		);
+		u.u_tsize = 0;
+		u.u_dsize =  (((unsigned)(szicode)+(2048		-1))>>11		);
+		u.u_ssize = 1		;
+
+		copyout((caddr_t)icode, (caddr_t)0, szicode << 1);
+		
+
+
+
+		return( (((unsigned)(proc[1].p_addr + 1		))<<7));
+	}
+	sched();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+time_t bootime;
+
+iinit()
+{
+	register struct buf *cp, *bp;
+	register struct filsys *fp;
+
+FLY1:
+	u.u_error = 0;
+	(*bdevsw[	(int)(((unsigned)(rootdev)>>8))].d_open)(rootdev, 1);
+	bp = bread(rootdev, ((daddr_t)1)	);
+	cp = geteblk();
+	if(u.u_error)
+	{
+		if(Stand)
+		{
+			rootdev = pipedev = 	(dev_t)((0)<<8 | (44 + 1));
+			goto FLY1;
+		}
+		else
+			panic("iinit");
+	}
+	bcopy(bp->b_un.b_addr, cp->b_un.b_addr, sizeof(struct filsys));
+	brelse(bp);
+	mount[0].m_bufp = cp;
+	mount[0].m_dev = rootdev;
+	fp = cp->b_un.b_filsys;
+	fp->s_flock = 0;
+	fp->s_ilock = 0;
+	fp->s_ronly = ROroot;
+	if(fp->s_clean != 0106        	) {
+		icodech();
+		fp->s_clean = (~0106        	)	;
+	} else
+		fp->s_clean = 0;
+	fp->s_fmod++;
+	bootime = time = fp->s_time;
+}
+
+
+
+
+
+
+binit()
+{
+	register struct buf *bp;
+	register struct buf *dp;
+	register int i;
+	struct bdevsw *bdp;
+
+	bfreelist.b_forw = bfreelist.b_back =
+	    bfreelist.av_forw = bfreelist.av_back = &bfreelist;
+	for (i=0; i<v.v_buf; i++) {
+		bp = &buf[i];
+		bp->b_dev = (dev_t)(-1);
+		bp->b_un.b_addr = &buffers[i][0		];
+		bp->b_back = &bfreelist;
+		bp->b_forw = bfreelist.b_forw;
+		bfreelist.b_forw->b_back = bp;
+		bfreelist.b_forw = bp;
+		bp->b_flags = 010	;
+		brelse(bp);
+	}
+	for (bdp = bdevsw; bdp < &bdevsw[nblkdev]; bdp++) {
+		dp = bdp->d_tab;
+		if(dp) {
+			dp->b_forw = dp;
+			dp->b_back = dp;
+		}
+	}
+}
+
+copyseg(from, to)
+int from, to;
+{
+	copyblocks( ((from)*(2048		/1024		)),  ((to)*(2048		/1024		)), 2048		/1024		);
+}
+

@@ -1,0 +1,1339 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef struct { int r[1]; } *	physadr;
+typedef struct { unsigned short off;
+		 unsigned short seg; }  segadr;
+typedef long		daddr_t;
+typedef char *		caddr_t;
+typedef unsigned short	ino_t;
+typedef long		time_t;
+typedef int		label_t[5];	
+typedef int		dev_t;
+typedef long		off_t;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern	short	mm_pages[];		
+extern	short	mm_size;		
+
+
+
+
+
+
+
+
+
+
+
+
+struct sversion
+{
+	unsigned dl:8,
+		 vl:4,
+		 vh:4;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+char	canonb[256		];	
+struct inode *rootdir;		
+struct proc *runq;		
+struct proc *Hogproc;           
+struct	inode *inode86;		
+unsigned dbreak;			
+unsigned brkseg, brkoff;	
+int     cputype;                
+int     lbolt;                  
+time_t	time;			
+
+
+
+
+
+
+
+
+
+int	nblkdev;
+
+
+
+
+
+int	nchrdev;
+
+int	mpid;			
+char	runin;			
+char	runout;			
+char	runrun;			
+char	runtxt;			
+char	curpri;			
+int	maxmem;			
+physadr	lks;			
+daddr_t	swplo;			
+int	nswap;			
+int	updlock;		
+daddr_t	rablock;		
+extern	char	regloc[];	
+extern  int     reglocc;        
+char	msgbuf[1024		];	
+dev_t	rootdev;		
+dev_t	swapdev;		
+dev_t	pipedev;		
+
+
+struct inode *acctp;
+struct proc *Nproca;    
+int Nproc;              
+
+
+
+int	Timezone;		
+int	Dstflag;		
+
+
+extern	char	icode[];	
+extern	int	szicode;	
+
+dev_t getmdev();
+daddr_t	bmap();
+struct inode *ialloc();
+struct inode *iget();
+struct inode *owner();
+struct inode *maknode();
+struct inode *namei();
+struct buf *alloc();
+struct buf *getblk();
+struct buf *geteblk();
+struct buf *bread();
+struct buf *breada();
+struct filsys *getfs();
+struct file *getf();
+struct file *falloc();
+int	uchar();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+int	dk_busy;
+long	dk_time[32];
+long	dk_numb[3];
+long	dk_wds[3];
+long	tk_nin;
+long	tk_nout;
+
+
+
+
+extern struct sysent {
+	char	sy_narg;		
+	int	(*sy_call)();		
+} sysent[];
+
+unsigned version;
+unsigned systype;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct buf
+{
+	int	b_flags;		
+	struct	buf *b_forw;		
+	struct	buf *b_back;		
+	struct	buf *av_forw;		
+	struct	buf *av_back;		
+	dev_t	b_dev;			
+	unsigned b_bcount;		
+	union {                 
+	    caddr_t b_addr;             
+	    int *b_words;               
+	    struct filsys *b_filsys;    
+	    struct dinode *b_dino;      
+	    daddr_t *b_daddr;           
+	} b_un;
+	daddr_t	b_blkno;		
+	char	b_xmem;			
+	char	b_error;		
+	unsigned int b_resid;		
+	unsigned int b_cylin;		
+};
+
+extern struct buf buf[];		
+extern struct buf bfreelist;		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct iostat {
+	int	nbuf;
+	long	nread;
+	long	nreada;
+	long	ncache;
+	long	nwrite;
+	long    bufcount[50              ];
+	long    nswapb;
+} io_info;
+
+
+
+
+struct	direct
+{
+	ino_t	d_ino;
+	char	d_name[14		];
+};
+
+
+
+
+
+struct  exec {  
+	short           x_magic;        
+	char            x_mach;         
+	char            x_form;         
+	long            x_text;         
+	long            x_data;         
+	long            x_bss;          
+	long            x_syms;         
+	long            x_entry;        
+	long            x_reloc;        
+	long            x_aux;          
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct  oexec {  
+	int             oa_magic;       
+	unsigned        oa_text;        
+	unsigned        oa_data;        
+	unsigned        oa_bss;         
+	unsigned        oa_syms;        
+	unsigned        oa_entry;       
+	unsigned        oa_unused;      
+	unsigned        oa_flag;        
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	nlist {	
+	char    	n_name[8];	
+	int     	n_type;    	
+	unsigned	n_value;	
+};
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	user
+{
+	label_t	u_rsav;			
+	int	u_fper;			
+	int	u_fpsaved;		
+	struct {
+		char    u_fpsav[96];    
+	} u_fps;
+	char    u_segflg;               
+
+
+
+	char    u_error;                
+	short   u_uid;                  
+	short   u_gid;                  
+	short   u_ruid;                 
+	short   u_rgid;                 
+	struct proc *u_procp;           
+
+	int	*u_ap;			
+	union {				
+		struct	{
+			int	r_val1;
+			int	r_val2;
+		} r_val;
+		off_t	r_off;
+		time_t	r_time;
+	} u_r;
+	caddr_t u_base;                 
+	unsigned int u_count;           
+	off_t   u_offset;               
+	struct inode *u_cdir;           
+	struct inode *u_rdir;           
+	char    u_dbuf[14		];         
+	caddr_t u_dirp;                 
+	struct direct u_dent;           
+	struct inode *u_pdir;           
+	struct file *u_ofile[20		];   
+	char    u_pofile[20		];       
+	int     u_arg[5];               
+
+	short   u_tsize;                
+	short   u_dsize;                
+	short   u_ssize;                
+	short   u_usegs[0		];          
+	short   u_cedata;               
+
+	label_t u_qsav;                 
+	label_t u_ssav;                 
+	int     u_signal[17];         
+	time_t  u_utime;                
+	time_t  u_stime;                
+	time_t  u_cutime;               
+	time_t  u_cstime;               
+	int     *u_aAX;                 
+
+	struct {                        
+		short   *pr_base;       
+		unsigned pr_size;       
+		unsigned pr_off;        
+		unsigned pr_scale;      
+	} u_prof;
+	char    u_intflg;               
+	char    u_sep;                  
+	short   u_lxrw;
+	struct tty *u_ttyp;             
+	dev_t   u_ttyd;                 
+	struct exec u_exdata;           
+
+	int	u_hdrsiz;		
+
+	char    u_comm[14		];
+	time_t  u_start;
+	char    u_acflag;
+	short   u_fpflag;               
+	short   u_cmask;                
+	int     u_stack[1];
+	short	u_textlength;
+	int	u_sel;
+	int	u_cn;
+	unsigned u_baseseg;		
+	unsigned u_dirpseg;		
+	char	u_msdos;		
+					
+
+
+
+};
+
+extern struct user u;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef unsigned short USHORT;
+typedef long ULONG;           
+typedef char UCHAR;           
+
+struct identDev {             
+  USHORT unused1[23];         
+  UCHAR  firmware[8];         
+  UCHAR  model[40];           
+  USHORT unused2[2];          
+  USHORT capab;               
+  USHORT unused3[10];         
+  ULONG  lbasecs;             
+  USHORT unused4[194];        
+};         
+
+struct ptent {                
+  USHORT  unused5[4];         
+  daddr_t bas;                
+  daddr_t siz;                
+};
+
+struct devinfo {              
+  int present;                
+  daddr_t sectors;            
+};
+
+struct hd {                   
+  int unit;                   
+  int scnt;                   
+  int read;                   
+  daddr_t snum;               
+  caddr_t addr;               
+  int segm;                   
+};
+
+struct part {
+  daddr_t base;               
+  daddr_t size;               
+};
+
+static struct identDev identDev;
+static struct devinfo devinfo[2];
+static struct hd hd;
+static struct part part[2][1+   4             ]; 
+struct buf rhdbuf;     				
+struct buf hdtab;							
+
+
+static int currUnit = -1;     
+static int haveV30IDE = 0;     
+
+static int hdrw(), smplCmd(), await();
+static ident(), swtchDev(), delay(), bpEnxio();
+
+
+extern int Stand;
+
+
+extern int inb();
+extern outb();
+extern int hdio();            
+extern int isNEC();           
+
+
+hdinit()
+{
+
+  int valPA;                  
+
+  
+
+
+
+
+  outb(     0xe02c        ,   0x4           );            
+  delay();
+  outb(     0xe02c        ,  0x0           );           
+  delay();  
+
+  
+
+
+
+
+
+ 
+  hd.unit = 0;                
+
+  if (isNEC()) {
+    ident(  0);
+    haveV30IDE = devinfo[hd.unit].present;
+  }
+
+  if (Stand == 0) {
+    printf("V30 IDE  Based %x %s.\n",    0xe000,
+           haveV30IDE ? "found" : "NOT found"); 
+    if (haveV30IDE) {
+      for (hd.unit = 0; hd.unit < 2; hd.unit++) {
+        printf(" %s ", hd.unit ? "Slave: " : "Master:");
+        ident(1);
+      }
+      hd.unit = 0;
+    }
+  }
+
+  
+
+
+
+
+
+
+
+  if (haveV30IDE) {
+    valPA = inb( 0xc8          );      
+    valPA = valPA & 0xef          ;  
+    outb(0xce          , 0x84);      
+    outb( 0xc8          , valPA);      
+    outb(0xce          , 0x94           );   
+  }
+}
+
+
+hdopen(dev)
+dev_t dev;
+{
+  register int unit;
+  struct buf *bp;
+  struct ptent *peptr;        
+  int i;
+
+  if (!haveV30IDE) {
+    u.u_error = 6;
+    return;
+  }
+
+  
+  unit =  ((	(int)((dev)&0377) & 0x08) >> 3);
+  if (unit == 1) {
+    hd.unit = unit;
+		
+
+
+
+
+		currUnit = -1;
+    ident(  0);									
+  }
+
+  
+  if(!devinfo[unit].present) {
+    u.u_error = 6;
+    return;
+  }
+
+  
+  if ((unit == 0) && part[unit][0].size)
+    return;                   
+
+  
+  for (i = 0; i <=    4             ; i++) {
+    part[unit][i].base = 0;
+    part[unit][i].size = 0; 
+  }
+  
+  part[unit][0].size = devinfo[unit].sectors;
+
+  
+  bp = bread((3              << 8) | ( ((	(int)((dev)&0377) & 0x08) >> 3) << 3), (daddr_t)0 );
+  if ( ((bp->b_flags & 04	) == 0) &&
+       (*(unsigned short *)(bp->b_un.b_addr + 510) == 0xaa55        ) ) {
+    peptr = (struct ptent *)(bp->b_un.b_addr +   0x1be         );
+    for (i = 1; i <=    4             ; peptr++, i++) {
+
+      *(USHORT *)&part[unit][i].base = *((USHORT *)&peptr->bas + 1);
+      *((USHORT *)&part[unit][i].base + 1) = *(USHORT *)&peptr->bas;
+      *(USHORT *)&part[unit][i].size = *((USHORT *)&peptr->siz + 1);
+      *((USHORT *)&part[unit][i].size + 1) = *(USHORT *)&peptr->siz;
+
+    }
+  }
+  brelse(bp);                 
+}
+
+
+hdclose(dev, flag)
+dev_t dev;
+int flag;
+{
+  if (( dev == rootdev ) || ( dev == swapdev ))
+    return;
+
+  hd.unit =  ((	(int)((dev)&0377) & 0x08) >> 3);
+  if (smplCmd(0xe7                ))       
+    
+
+    if ( !(inb(  0xe012        ) &    0x04          ) )
+      u.u_error = 5;
+}
+
+
+hdstrategy(bp)
+register struct buf *bp;
+{
+  int unit, partnum;         
+  int bcnt, scnt;							
+  daddr_t snum;								
+  int err;
+  unsigned addr;
+
+  
+  if (bp->b_flags & 020	) {
+    
+
+    if ( (bp->b_blkno % 512) || (bp->b_bcount % 512) ) {
+      bp->b_flags |= 04	;
+      bp->b_error = 22;
+      iodone(bp);
+      return;
+    }
+    
+    snum = bp->b_blkno >> (daddr_t) 9;
+		
+		scnt = bp->b_bcount >> 9;
+  } 
+  
+  else {
+    
+    snum = bp->b_blkno << (daddr_t)  ( (  (1024		/512)     )==16 ? 4 : (  (1024		/512)     )==8 ? 3 : (  (1024		/512)     )==4 ? 2 : (  (1024		/512)     )==2 ? 1 : 0 );
+    
+    bcnt = (bp->b_bcount + 01777		) >> 10		;
+    
+    scnt = bcnt <<  ( (  (1024		/512)     )==16 ? 4 : (  (1024		/512)     )==8 ? 3 : (  (1024		/512)     )==4 ? 2 : (  (1024		/512)     )==2 ? 1 : 0 ); 
+	}
+
+  unit =  ((	(int)((bp->b_dev)&0377) & 0x08) >> 3);
+  partnum =  (	(int)((bp->b_dev)&0377) & 0x07);
+
+  
+
+
+
+
+  if (snum + scnt > part[unit][partnum].size) {
+    bpEnxio(bp);
+    return;
+  }
+
+  if (scnt == 0) {
+    bp->b_resid = 0;
+    iodone(bp);
+    return;
+  }
+
+  hd.unit = unit;
+  hd.scnt = scnt;
+  hd.read = bp->b_flags & 01	;
+  hd.snum = part[unit][partnum].base + snum;
+
+  
+
+
+
+
+
+
+
+
+  
+  
+
+  hd.segm = ((int)bp->b_xmem) << 12;                  
+  addr    = ((unsigned)bp->b_un.b_addr) >> 4;        
+  hd.segm += addr;                                   
+  hd.addr = (caddr_t)(((int)bp->b_un.b_addr) & 0xf); 
+
+  err = hdrw();
+  if (err) {
+    deverror(bp, hd.read ? 0x20           : 0x30          , err);
+    bp->b_flags |= 04	;
+    bp->b_error = 5;
+  }
+  
+  iodone(bp);  
+}
+
+
+
+hdread(dev)
+dev_t dev;
+{
+  physio(hdstrategy, &rhdbuf, dev, 01	);
+}
+
+hdwrite(dev)
+dev_t dev;
+{
+  physio(hdstrategy, &rhdbuf, dev, 0	);
+}
+
+
+
+
+
+
+
+
+
+static ident(verbose)
+int verbose;
+{
+  int i;
+  char model[41];              
+  char firmware[9];           
+  daddr_t sectors;            
+
+  devinfo[hd.unit].present = 0;
+  devinfo[hd.unit].sectors = 0;
+
+  if (!smplCmd(0xec          ) && !hdio(0x0000		, &identDev, 1, 1)) {
+
+    for (i = 0; i < sizeof(identDev.model); i+=2) {
+      model[i] = identDev.model[i+1];
+      model[i+1] = identDev.model[i];
+    }
+    model[40] = '\0';
+    for (i = 0; i < sizeof(identDev.firmware); i+=2) {
+      firmware[i] = identDev.firmware[i+1];
+      firmware[i+1] = identDev.firmware[i];
+    }
+    firmware[8] = '\0';
+
+
+
+
+
+
+
+
+
+
+    *(USHORT *)&sectors = *((USHORT *)&identDev.lbasecs + 1);
+    *((USHORT *)&sectors + 1) = *(USHORT *)&identDev.lbasecs;
+
+
+    if (identDev.capab &  0x200         ) {
+      devinfo[hd.unit].present = 1;
+      devinfo[hd.unit].sectors = sectors;
+    }
+  }
+
+  if (verbose) {
+    if (devinfo[hd.unit].present) {
+      printf("%s FW: %s\n", model, firmware);
+      printf("  %D 512-byte sectors, %D %d-byte blocks (%D MiB)\n", 
+                         sectors, sectors/  (1024		/512)     , 1024		, sectors/2/1024);
+    } else
+      printf("not found\n");
+  }
+}
+
+
+
+
+
+
+
+
+
+
+static int hdrw()
+{
+  register int status;
+
+  if (await(   0xe01e        ,     0x80           |     0x08          )) 
+    return    1             ;
+
+  
+
+  if (currUnit != hd.unit) {
+    swtchDev();
+    if (await(   0xe01e        ,     0x80           |     0x08          ))
+    return    1             ;
+  }
+
+  outb(     0xe02c        ,  0x2           );           
+  outb(     0xe012        , 0);
+  outb(     0xe014        , hd.scnt);
+  outb(     0xe016        , (int)hd.snum);
+  outb(     0xe018        , (int)(hd.snum >> 8));
+  outb(     0xe01a        , (int)(hd.snum >> 16));
+  outb(     0xe01c        ,     0x40           | (hd.unit ?    0xb0           :    0xa0          ) | ( ((int)(hd.snum >> 24)) & 0xf));
+  outb(    0xe01e        , hd.read ? 0x20           : 0x30          );
+  
+  return( hdio(hd.segm, hd.addr, hd.scnt, hd.read) );
+}
+
+
+static int smplCmd(cmd)
+int cmd;
+{
+	register int status;
+
+  if (await(   0xe01e        ,     0x80           |     0x08          ))   
+    return    1             ;              
+
+  if (currUnit != hd.unit) {
+    swtchDev();
+    if (await(   0xe01e        ,     0x80           |     0x08          ))
+      return    1             ;
+  }
+ 
+  outb(    0xe01e        , cmd);
+  if (await(   0xe01e        ,     0x80          ))
+    return    1             ;
+
+	status = inb(   0xe01e        );
+  if (status & (    0x80           |      0x20           |     0x01          ))
+    
+    return((status << 8) |    2             );
+
+  return 0;       
+}
+
+
+static swtchDev()
+{
+  outb(     0xe01c        , hd.unit ?    0xb0           :    0xa0          );
+  currUnit = hd.unit;
+  delay();
+}
+
+
+static delay()
+{
+  inb(   0xe01e        );
+  inb(   0xe01e        );
+  inb(   0xe01e        );
+  inb(   0xe01e        );
+}
+
+
+
+
+
+
+  
+static int await(port, mask)
+int port;
+int mask;
+{
+  unsigned int i;
+  
+  for (i = 0; i < 65535         ; i++)
+    if ((inb(port) & mask) == 0)
+      return 0;
+  return -1;
+}
+
+
+static bpEnxio(bp)
+struct buf *bp;
+{
+  bp->b_flags |= 04	;
+  bp->b_error = 6;
+  iodone(bp);
+}
