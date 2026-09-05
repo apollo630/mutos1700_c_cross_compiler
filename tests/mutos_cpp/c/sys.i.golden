@@ -1,0 +1,883 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef struct { int r[1]; } *	physadr;
+typedef struct { unsigned short off;
+		 unsigned short seg; }  segadr;
+typedef long		daddr_t;
+typedef char *		caddr_t;
+typedef unsigned short	ino_t;
+typedef long		time_t;
+typedef int		label_t[5];	
+typedef int		dev_t;
+typedef long		off_t;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern	short	mm_pages[];		
+extern	short	mm_size;		
+
+
+
+
+
+
+
+
+
+
+
+
+struct sversion
+{
+	unsigned dl:8,
+		 vl:4,
+		 vh:4;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+extern struct bdevsw
+{
+	int	(*d_open)();
+	int	(*d_close)();
+	int	(*d_strategy)();
+	struct buf *d_tab;
+} bdevsw[];
+
+
+
+
+extern struct cdevsw
+{
+	int	(*d_open)();
+	int	(*d_close)();
+	int	(*d_read)();
+	int	(*d_write)();
+	int	(*d_ioctl)();
+	int	(*d_stop)();
+	struct tty *d_ttys;
+} cdevsw[];
+
+
+
+
+extern struct linesw
+{
+	int	(*l_open)();
+	int	(*l_close)();
+	int	(*l_read)();
+	char	*(*l_write)();
+	int	(*l_ioctl)();
+	int	(*l_rint)();
+	int	(*l_rend)();
+	int	(*l_meta)();
+	int	(*l_start)();
+	int	(*l_modem)();
+} linesw[];
+
+
+struct	direct
+{
+	ino_t	d_ino;
+	char	d_name[14		];
+};
+
+
+
+
+
+struct  exec {  
+	short           x_magic;        
+	char            x_mach;         
+	char            x_form;         
+	long            x_text;         
+	long            x_data;         
+	long            x_bss;          
+	long            x_syms;         
+	long            x_entry;        
+	long            x_reloc;        
+	long            x_aux;          
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct  oexec {  
+	int             oa_magic;       
+	unsigned        oa_text;        
+	unsigned        oa_data;        
+	unsigned        oa_bss;         
+	unsigned        oa_syms;        
+	unsigned        oa_entry;       
+	unsigned        oa_unused;      
+	unsigned        oa_flag;        
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	nlist {	
+	char    	n_name[8];	
+	int     	n_type;    	
+	unsigned	n_value;	
+};
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	user
+{
+	label_t	u_rsav;			
+	int	u_fper;			
+	int	u_fpsaved;		
+	struct {
+		char    u_fpsav[96];    
+	} u_fps;
+	char    u_segflg;               
+
+
+
+	char    u_error;                
+	short   u_uid;                  
+	short   u_gid;                  
+	short   u_ruid;                 
+	short   u_rgid;                 
+	struct proc *u_procp;           
+
+	int	*u_ap;			
+	union {				
+		struct	{
+			int	r_val1;
+			int	r_val2;
+		} r_val;
+		off_t	r_off;
+		time_t	r_time;
+	} u_r;
+	caddr_t u_base;                 
+	unsigned int u_count;           
+	off_t   u_offset;               
+	struct inode *u_cdir;           
+	struct inode *u_rdir;           
+	char    u_dbuf[14		];         
+	caddr_t u_dirp;                 
+	struct direct u_dent;           
+	struct inode *u_pdir;           
+	struct file *u_ofile[20		];   
+	char    u_pofile[20		];       
+	int     u_arg[5];               
+
+	short   u_tsize;                
+	short   u_dsize;                
+	short   u_ssize;                
+	short   u_usegs[0		];          
+	short   u_cedata;               
+
+	label_t u_qsav;                 
+	label_t u_ssav;                 
+	int     u_signal[17];         
+	time_t  u_utime;                
+	time_t  u_stime;                
+	time_t  u_cutime;               
+	time_t  u_cstime;               
+	int     *u_aAX;                 
+
+	struct {                        
+		short   *pr_base;       
+		unsigned pr_size;       
+		unsigned pr_off;        
+		unsigned pr_scale;      
+	} u_prof;
+	char    u_intflg;               
+	char    u_sep;                  
+	short   u_lxrw;
+	struct tty *u_ttyp;             
+	dev_t   u_ttyd;                 
+	struct exec u_exdata;           
+
+	int	u_hdrsiz;		
+
+	char    u_comm[14		];
+	time_t  u_start;
+	char    u_acflag;
+	short   u_fpflag;               
+	short   u_cmask;                
+	int     u_stack[1];
+	short	u_textlength;
+	int	u_sel;
+	int	u_cn;
+	unsigned u_baseseg;		
+	unsigned u_dirpseg;		
+	char	u_msdos;		
+					
+
+
+
+};
+
+extern struct user u;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct clist {
+	int	c_cc;		
+	char	*c_cf;		
+	char	*c_cl;		
+};
+
+
+
+
+
+
+struct tc {
+	char	t_intrc;	
+	char	t_quitc;	
+	char	t_startc;	
+	char	t_stopc;	
+	char	t_eofc;		
+	char	t_brkc;		
+};
+
+
+
+
+
+
+
+
+
+
+
+struct tty {
+	struct clist t_rawq;	
+	struct clist t_outq;	
+	int	(* t_oproc)();	
+	int	(* t_iproc)();	
+	short	t_pgrp;		
+	caddr_t	t_addr;		
+	dev_t	t_dev;		
+	char	t_ispeed;	
+	char	t_ospeed;	
+	char	t_erase;	
+	char	t_kill;		
+	short	t_flags;	
+	char	t_nldly;	
+	char	t_crdly;	
+	char	t_htdly;	
+	char	t_vtdly;	
+	char	t_width;	
+	char	t_length;	
+	union {
+		struct tc;
+		struct clist t_ctlq;
+	} t_un;
+	short	t_state;	
+	short	t_xstate;	
+	char	t_lnum;		
+	char	t_col;		
+	char	t_delct;	
+	char	t_char;		
+	struct chan *t_chan;	
+	caddr_t	t_linep;	
+	char	t_line;		
+	struct	esc  *t_nesc;
+	struct	clist  t_escq;
+	struct	clist  t_inpq;
+};
+
+
+
+
+
+
+struct	ttiocb {
+	char	ioc_ispeed;
+	char	ioc_ospeed;
+	char	ioc_erase;
+	char	ioc_kill;
+	short	ioc_flags;
+	char	ioc_nldly;
+	char	ioc_crdly;
+	char	ioc_htdly;
+	char	ioc_vtdly;
+	char	ioc_width;
+	char	ioc_length;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	proc {
+	char    p_stat;         
+
+	char    p_flag;         
+	char    p_pri;          
+	char    p_time;         
+	char    p_cpu;          
+	char    p_nice;         
+	short   p_sig;          
+	short   p_uid;          
+	short   p_pgrp;         
+	short   p_pid;          
+	short   p_ppid;         
+	short   p_addr;         
+
+	short   p_size;         
+				
+	char	p_pnum;		
+
+	char	p_cflags;	
+	short	p_dusize;	
+
+
+	caddr_t p_wchan;        
+	struct text *p_textp;   
+
+	struct proc *p_link;    
+	int     p_clktim;       
+				
+};
+
+extern struct proc proc[];	
+extern struct proc *Nproca;     
+extern int Nproc;               
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct	xproc {
+	char	xp_stat;
+	char	xp_flag;
+	char	xp_pri;		
+	char	xp_time;	
+	char	xp_cpu;		
+	char	xp_nice;	
+	short	xp_sig;		
+	short	xp_uid;		
+	short	xp_pgrp;	
+	short	xp_pid;		
+	short	xp_ppid;	
+	short	xp_xstat;	
+	time_t	xp_utime;	
+	time_t	xp_stime;	
+};
+
+syopen(dev, flag)
+{
+
+	if(u.u_ttyp == 0) {
+		u.u_error = 6;
+		return;
+	}
+	(*cdevsw[	(int)(((unsigned)(u.u_ttyd)>>8))].d_open)(u.u_ttyd, flag);
+}
+
+syread(dev)
+{
+
+	(*cdevsw[	(int)(((unsigned)(u.u_ttyd)>>8))].d_read)(u.u_ttyd);
+}
+
+sywrite(dev)
+{
+
+	(*cdevsw[	(int)(((unsigned)(u.u_ttyd)>>8))].d_write)(u.u_ttyd);
+}
+
+syioctl(dev, cmd, addr, flag)
+caddr_t addr;
+{
+
+	(*cdevsw[	(int)(((unsigned)(u.u_ttyd)>>8))].d_ioctl)(u.u_ttyd, cmd, addr, flag);
+}
