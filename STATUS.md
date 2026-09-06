@@ -210,12 +210,39 @@ the real MUTOS kernel source this project validates against.
 
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
-**Status: NOT STARTED.** `src/mutos_cc/` does not exist yet. This is the next
-milestone after `mutos_cpp`. Scope (from `CLAUDE.md`'s roadmap): port the V7 `cc`
-frontend/`c0`/`c1` pipeline, emit x86-16 code in `mutos_as` syntax, and enforce
-PDP-11 middle-endian encoding for compiled `long` variables (see `CLAUDE.md`'s
-"PDP-11 Middle-Endian" rule, which explicitly calls out that this is where the rule
-will actually start mattering).
+**Status: NOT STARTED — no code yet, but ABI/calling-convention research is done.**
+`src/mutos_cc/` does not exist yet. This is the next milestone after `mutos_cpp`.
+Scope (from `CLAUDE.md`'s roadmap): port the V7 `cc` frontend/`c0`/`c1` pipeline,
+emit x86-16 code in `mutos_as` syntax, and enforce PDP-11 middle-endian encoding for
+compiled `long` variables (see `CLAUDE.md`'s "PDP-11 Middle-Endian" rule, which
+explicitly calls out that this is where the rule will actually start mattering — now
+confirmed true, see below).
+
+### ABI research (verified this session)
+
+Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
+calling convention and C runtime startup/cleanup behavior were reverse-engineered
+byte-for-byte from real hardware-linked objects: `tests/mutos1700_crt0/crt0.o`,
+~15 selected files from `tests/mutos1700_libc/`'s 167 real linked objects, and
+`tests/mutos_as/kernel_opt/mch.s` (which — uniquely — contains literal
+compiler-generated `.s` source, not just disassembly, for the shared function
+epilogue `cret` and two real compiled functions). Full findings, each cited against
+a real disassembled example, are in **[`docs/MUTOS_C_ABI.md`](./docs/MUTOS_C_ABI.md)**;
+condensed summary also in `docs/DEVLOG.md`'s Milestone 4 section. Headline points:
+pure stack-based argument passing (right-to-left push, caller cleanup); a completely
+fixed, unconditional `push bp/mov bp,sp/push di/push si ... jmp cret` prologue/
+epilogue used by every compiled function regardless of actual register/local usage;
+fixed parameter (`bp+4,+6,...`) and local (`bp-6,-8,...`) frame offsets; `AX`/`DX:AX`
+return convention; `long` values confirmed to use PDP-11 middle-endian word order
+(high word at the lower address) everywhere — locals, by-reference operands, and
+by-value parameters alike; a separate, internal-only extended-prologue ABI used
+solely by the compiler's own `almul`/`aldiv`/`alrem` long-arithmetic runtime helpers;
+a `chkstk` stack-overflow guard for large local frames (threshold empirically
+bounded to `(76, 256]` bytes, not pinned down further); and the real `crt0` →
+`_main` → `exit()` → `_cleanup()` cleanup chain (crt0 calls `exit()`, which flushes
+stdio via a `_cleanup()` hook, before the raw `_exit()` syscall — confirmed via both
+halves' disassembly). This is prep/documentation only — no `mutos_c1` code exists
+yet to validate against these findings.
 
 ---
 

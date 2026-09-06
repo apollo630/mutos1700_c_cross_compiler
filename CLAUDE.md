@@ -58,6 +58,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     (project-scoped, sync-delayed, capped at 30 entries). `STATUS.md` remains the
     authoritative *current-state* tracker; `DEVLOG.md` is the *why/how-we-found-out*
     behind it and is not re-verified every session the way `STATUS.md` is.
+  * **`docs/MUTOS_C_ABI.md`**: The real MUTOS 1700 C function calling convention and
+    C-runtime startup/cleanup behavior (stack frame layout, register save rules,
+    `long`-splitting, `crt0`/`exit()` sequence), reverse-engineered byte-for-byte from
+    real hardware-linked `crt0.o`/`libc.a`/kernel `.s` objects ahead of Milestone 4.
+    Read this before writing any `mutos_c1` code-generation logic.
 * `/man/`: Manual pages for the Linux Cross-Compiler toolchain components.
 
 ---
