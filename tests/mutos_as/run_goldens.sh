@@ -64,17 +64,17 @@ for src in *.s; do
 done
 
 echo "=============================================="
-printf '1. Fehlerfreie Assemblierungen (%d)\n' "${#ok[@]}"
+printf '1. Error free assembler runs (%d)\n' "${#ok[@]}"
 if [ "${#ok[@]}" -eq 0 ]; then
-    printf '  (keine)\n'
+    printf '  (none)\n'
 else
     for f in "${ok[@]}"; do printf '  %s\n' "$f"; done
 fi
 
 echo ""
-printf '2. Assemblierungen mit Fehler beim diff (%d)\n' "${#diff_fail[@]}"
+printf '2. Assembler runs with errors running diff (%d)\n' "${#diff_fail[@]}"
 if [ "${#diff_fail[@]}" -eq 0 ]; then
-    printf '  (keine)\n'
+    printf '  (none)\n'
 else
     for f in "${diff_fail[@]}"; do
         printf '  %s\n      -> %s\n' "$f" "${diff_fail_msg[$f]}"
@@ -82,9 +82,9 @@ else
 fi
 
 echo ""
-printf '3. Assemblierungen mit Fehlern beim Aufruf von %s (%d)\n' "$MUTOS_AS" "${#asm_fail[@]}"
+printf '3. Assembler runs with errors calling %s (%d)\n' "$MUTOS_AS" "${#asm_fail[@]}"
 if [ "${#asm_fail[@]}" -eq 0 ]; then
-    printf '  (keine)\n'
+    printf '  (none)\n'
 else
     for f in "${asm_fail[@]}"; do
         printf '  %s\n      -> %s\n' "$f" "${asm_fail_msg[$f]}"
@@ -93,7 +93,7 @@ fi
 
 if [ "${#no_golden[@]}" -gt 0 ]; then
     echo ""
-    printf 'Hinweis: keine *.o.golden-Datei gefunden, nicht verglichen (%d)\n' "${#no_golden[@]}"
+    printf 'Note: No *.o.golden file found, so not compared (%d)\n' "${#no_golden[@]}"
     for f in "${no_golden[@]}"; do printf '  %s\n' "$f"; done
 fi
 echo "=============================================="
