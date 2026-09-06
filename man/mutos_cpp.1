@@ -1,0 +1,159 @@
+.\" mutos_cpp.1 - manual page for the MUTOS 1700 cross C preprocessor
+.\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
+.\" View with: man ./mutos_cpp.1   or   groff -man -Tascii mutos_cpp.1 | less
+.TH MUTOS_CPP 1 "September 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.SH NAME
+mutos_cpp \- MUTOS 1700 cross C preprocessor
+.SH SYNOPSIS
+.B mutos_cpp
+.RI [ \-D name [= value ]]\ ...
+.RI [ \-U name ]\ ...
+.RI [ \-I dir ]\ ...
+.RB [ \-P ]
+.RB [ \-C ]
+.RB [ \-R ]
+.RB [ \-o
+.IR outfile ]
+.RI [ infile
+.RI [ outfile ]]
+.SH DESCRIPTION
+.B mutos_cpp
+performs macro expansion, file inclusion, and conditional compilation
+on C (and MUTOS assembler) source, exactly as the C compiler's first
+pass does on the original MUTOS 1700 hardware toolchain. It
+re-implements the observable behavior of that toolchain's own
+preprocessor \(en itself a fast rewrite by John F. Reiser of the
+original Version 7 Unix
+.BR cpp (1)
+\(en from scratch in modern C, validated byte-for-byte against real
+reference output; see
+.I src/mutos_cpp/README.md
+in the toolchain source tree for the full reverse-engineered
+behavioral specification this implementation follows, including its
+deliberate K&R-era departures from ANSI/ISO
+.BR cpp (1)
+behavior.
+.PP
+Source is read from
+.IR infile ,
+or from the standard input if
+.I infile
+is omitted. Output is written to
+.IR outfile ,
+or to the file given with
+.BR \-o ,
+or to the standard output if neither is given.
+.SH OPTIONS
+.TP
+.BI \-D name
+Define
+.I name
+as if by
+.RI "\(dq#define\ " name "\ 1\(dq" .
+.TP
+.BI \-D name = value
+Define
+.I name
+as if by
+.RI "\(dq#define\ " name "\ " value \(dq.
+.TP
+.BI \-U name
+Remove any built-in or previously
+.B \-D ' d
+definition of
+.IR name .
+.TP
+.BI \-I dir
+Add
+.I dir
+to the list of directories searched for
+.RI \(dq< name >\(dq-style
+.B #include
+files, and for
+.RI \(dq\(dq name \(dq\(dq-style
+includes not found relative to the including file's own directory.
+Directories are searched in the order given.
+.TP
+.B \-P
+Accepted for command-line compatibility with the reference
+.BR cpp (1).
+.B mutos_cpp
+never emits
+.RI \(dq# " N " \(dq file \(dq\(dq
+line-marker output regardless of this flag \(en every real MUTOS 1700
+golden reference this tool is validated against was itself generated
+with
+.B \-P
+and contains no such markers, so this is simply this tool's only
+supported mode.
+.TP
+.B \-C
+Keep comments in macro-expanded output instead of deleting them.
+Accepted for compatibility; the real MUTOS 1700 kernel source this
+toolchain targets does not rely on this flag.
+.TP
+.B \-R
+Accepted for compatibility with the reference
+.BR cpp (1) 's
+recursive-macro-expansion flag. Self-referential macros are always
+protected against infinite recursion regardless of this flag (see
+.B DIAGNOSTICS ),
+so it has no additional effect here.
+.TP
+.BI \-o " outfile"
+Write output to
+.I outfile
+instead of standard output.
+.SH "PREPROCESSING LANGUAGE NOTES"
+.B mutos_cpp
+implements the K&R-era preprocessing language of the original MUTOS
+1700 toolchain, not the later ANSI/ISO C preprocessor. In particular:
+.IP \(bu 2
+There is no
+.B #elif
+\(en only
+.BR #if / #ifdef / #ifndef ,
+a single optional
+.BR #else ,
+and
+.BR #endif .
+.IP \(bu 2
+There are no
+.B #
+(stringize) or
+.B ##
+(token-paste) operators.
+.IP \(bu 2
+A bare identifier inside a
+.B #if
+expression tests whether it is currently
+.BR #define d
+(evaluating to 1 or 0 accordingly) rather than being replaced by its
+macro value first;
+.RI \(dq defined( name )\(dq
+and
+.RI \(dq defined\ name \(dq
+evaluate to that identical 0/1 result.
+.IP \(bu 2
+.B #
+is only recognized as introducing a directive when it is the very
+first character of a physical line; a
+.B #
+preceded by any whitespace is treated as ordinary text.
+.SH DIAGNOSTICS
+Errors and warnings are printed to standard error as
+.RI \(dq file : line : message \(dq.
+Warnings (for example, a macro redefinition, or an actual/formal
+parameter-count mismatch in a macro call) are non-fatal.  Errors
+(for example, an unterminated
+.BR #if / #ifdef / #ifndef ,
+an unterminated comment or string/character literal, or a missing
+.BR #include
+file) cause
+.B mutos_cpp
+to exit with a non-zero status, though processing continues to the
+end of input so that further problems in the same source can be
+reported in one pass.
+.SH "SEE ALSO"
+.BR mutos_as (1),
+.BR mutos_ld (1)
