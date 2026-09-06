@@ -41,6 +41,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   that `mutos_cpp` re-implements the observable behavior of.
 * `/v7/ld/`: Reference source code from Research Unix Version 7 Linker, but in part with MUTOS 1700 headers.
 * `/docs/`: Architecture notes, specifications, and design documents.
+  * **`docs/DEVLOG.md`**: The detailed technical reference and debugging-history log
+    (CPU/encoding facts, bug-fix history, debugging methodology, recurring process
+    lessons) for every milestone — the durable, version-controlled home for this kind
+    of dense detail, since it doesn't fit well in Claude's conversation-memory system
+    (project-scoped, sync-delayed, capped at 30 entries). `STATUS.md` remains the
+    authoritative *current-state* tracker; `DEVLOG.md` is the *why/how-we-found-out*
+    behind it and is not re-verified every session the way `STATUS.md` is.
 * `/man/`: Manual pages for the Linux Cross-Compiler toolchain components.
 
 ---
@@ -116,6 +123,7 @@ You act as an expert systems programmer, compiler architect, and operating syste
 ### 📋 Workflow Guidelines
 1. **Context Alignment**: Before modifying code in `/src/mutos_<tool>/`, always check the corresponding test suite in `/tests/mutos_<tool>/` to understand the expected behavior and existing edge cases.
 2. **Golden Master Integrity**: Do not alter files in `/tests/.../kernel_opt/` or `kernel_nonopt/` unless explicitly instructed. These serve as our regression baseline.
+   * **Caution — `.o` is ambiguous in this repo**: `tests/mutos1700_libc/*.o`, `tests/mutos1700_crt0/*.o`, and every `*.o.golden` under `tests/mutos_as/` are precious real hardware-linked **reference data**, not regenerable build byproducts, even though they share the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy them. Always scope any such cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
 3. **Reference Material**: Use the `/v7/` directory strictly as historical reference. Do not mix V7 logic directly into `mutos` unless explicitly migrating or fixing compatibility bugs.
 4. **Header Files**: When changing structs or definitions in `/src/h/`, verify the impacts across `as`, `cc`, and `ld` simultaneously.
 5. **Build Requirement**: Create one top Level Makefile to build all 4 components (`mutos_ld`, `mutos_as`, `mutos_cpp`, `mutos_cc`)
@@ -136,6 +144,19 @@ You act as an expert systems programmer, compiler architect, and operating syste
      stated explicitly in `STATUS.md` rather than silently repeating the old claim.
    * This applies regardless of who or what makes the change — human contributor or AI
      assistant.
+   * **`DEVLOG.md` companion**: dense technical detail that doesn't belong in
+     `STATUS.md`'s current-state summary (CPU/encoding facts, full bug narratives,
+     debugging methodology) belongs in `docs/DEVLOG.md` instead — added there as it's
+     discovered, not just held in conversation memory (see Guideline 7 below for why).
+7. **Download Delivery Format (mandatory)**: When providing repository files as a
+   downloadable archive, package **only files that are new or modified relative to
+   the person's last-synced state** (i.e. an incremental diff, not a full repository
+   dump) into a single zip. Determine the change set via `git status`/`git diff
+   --name-only` against the current branch before packaging, and exclude build
+   artifacts (compiled `.o`/binaries — see Guideline 2's caution on `.o` ambiguity;
+   regenerate via `make`, don't ship them) and `.git/` itself. State explicitly in
+   the response which files are included and why (new vs. modified). This replaces
+   the earlier default of zipping the entire working tree.
 
 ---
 
