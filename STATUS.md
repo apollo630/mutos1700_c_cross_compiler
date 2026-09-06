@@ -252,6 +252,24 @@ yet to validate against these findings.
 
 ---
 
+## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
+
+**Status: NOT STARTED — no `c2` work, but one design question is resolved.**
+Confirmed constraint: `-mv30`-compiled code must stay link-compatible with the real,
+unmodified `libc.a`/`crt0.o` — no separate `-mv30`-only runtime is planned, so the
+ABI-visible frame layout from Milestone 4's ABI research can never change based on
+`-mv30`, regardless of any performance case. Under that constraint, real NEC
+µPD70116(V30) timing data (from the newly added
+`docs/V20_V30_Users_Manual_Oct86.pdf` — note: NEC calls `ENTER`/`LEAVE` `PREPARE`/
+`DISPOSE`) shows the only layout-compatible use of `PREPARE`/`DISPOSE` is an exact
+cycle-for-cycle tie against the current discrete-instruction prologue/epilogue, with
+a small code-size regression — so `mutos_c1` should **not** use `PREPARE`/`DISPOSE`
+for `-mv30`. `PUSHA`/`POPA` and multi-bit shift-by-immediate remain confirmed,
+ABI-safe wins for later `-mv30` work. Full numbers and derivation in
+`docs/DEVLOG.md`'s Milestone 5 section.
+
+---
+
 ## `mutos_as` opcode coverage
 
 This is the detailed breakdown requested for this document. "Confirmed real" means

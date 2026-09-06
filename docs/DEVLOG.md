@@ -27,7 +27,8 @@ expected to be re-verified every session the way `STATUS.md` is.
    - [Debugging methodology (reusable)](#debugging-methodology-reusable)
 3. [Milestone 3 — `mutos_cpp` (C preprocessor)](#milestone-3--mutos_cpp-c-preprocessor)
 4. [Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)](#milestone-4--mutos_ccmutos_c0mutos_c1-c-compiler)
-5. [Recurring process lessons](#recurring-process-lessons)
+5. [Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)](#milestone-5--optimizer-c2--nec-v30--mv30)
+6. [Recurring process lessons](#recurring-process-lessons)
 
 ---
 
@@ -643,6 +644,134 @@ down further by the current corpus; if a real object file with a local frame in 
 range surfaces later (e.g. from generating more goldens off the kernel source tree
 per Milestone 2's `conf/Makefile` mechanism, or from a userland `.c` file not yet in
 this checkout), re-check it against this bracket.
+
+---
+
+## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
+
+**Status:** not started (no `c2` work has begun). This section currently covers a
+single, resolved design question, worked out ahead of any implementation because it
+touches the calling convention `mutos_c1` must already target correctly from
+Milestone 4: **should `-mv30`-compiled code use the 80186/V30 `ENTER`/`LEAVE`
+instructions for function prologue/epilogue?**
+
+### Hard constraint (settled)
+
+`-mv30`-compiled object code **must remain link-compatible with the real, unmodified
+`libc.a`/`crt0.o`** — this project does not maintain (and Milestone 5 does not plan
+to introduce) a separate, parallel `-mv30`-only runtime. This rules out *any* change
+to the ABI-visible frame layout established in `docs/MUTOS_C_ABI.md` §1.2–1.4,
+regardless of what performance case could otherwise be made — `-mv30` may only change
+*instruction selection inside* a function body, never the calling-convention contract
+itself. This immediately disqualifies the naive form of `ENTER` (see below), and
+means any `LEAVE`-based reimplementation of `cret` must be proven behaviorally
+identical (same precondition, same postcondition) before it's even a candidate.
+
+### Evidence: `docs/V20_V30_Users_Manual_Oct86.pdf`
+
+NEC's own µPD70108(V20)/µPD70116(V30) User's Manual (Oct 1986), added to the project
+this session specifically to answer this question with real per-chip timing data
+(the existing `docs/210973-001_AP-186..._Mar83.pdf` — Intel's 80186 application
+note — documents `ENTER`/`LEAVE`'s *algorithm* in Appendix H but contains **no**
+timing/clock-count table at all; it's an architecture guide, not a datasheet).
+
+**Navigational gotcha worth recording**: this manual does **not** use Intel's
+mnemonics. `ENTER` is called **`PREPARE`** and `LEAVE` is called **`DISPOSE`**
+throughout — searching the OCR'd text for "ENTER"/"LEAVE" finds nothing relevant
+(matches on unrelated prose like "entering standby mode"). Search for `PREPARE`/
+`DISPOSE` instead. Encodings are confirmed identical to Intel's (`PREPARE
+imm16,imm8` = `C8 iw ib`, 4 bytes; `DISPOSE` = `C9`, 1 byte) — this is an
+object-code-compatible superset, just independently documented and renamed by NEC.
+The manual is a genuine text-layer PDF (Adobe "Paper Capture" OCR over a scan, not
+the ZIP-of-JPEGs format the 80186 AP-186 doc uses) — `pdftotext -layout` works
+directly, no rasterization needed.
+
+Per this manual, MUTOS 1700 (Robotron A7100/A7150) targeting `-mv30` means the
+**µPD70116 (V30)** specifically — the 16-bit, 8086-pin-compatible part (as opposed to
+the µPD70108/V20, the 8/16-bit 8088-pin-compatible part). All timings below are
+quoted for `pPD70116` (OCR misread of "µPD70116") in both its **odd-address** and
+**even-address** variants (V-series timings depend on whether the effective operand
+address is even or odd — the even case, cheaper, applies whenever code/data happens
+to land on a word boundary), alongside the V20 figure for completeness.
+
+### `PREPARE`/`DISPOSE` vs. the discrete instruction sequence — real numbers
+
+The **only** layout-compatible use of `PREPARE`/`DISPOSE` (see "Hard constraint"
+above) is: `PREPARE framesize+4,0` + `mov [bp-2],di` + `mov [bp-4],si` in place of
+the prologue, and `mov si,[bp-4]` + `mov di,[bp-2]` + `DISPOSE` + `ret` in place of
+`cret`. (Naive `PREPARE framesize,0` immediately followed by ordinary `push di`/
+`push si` reserves the locals *before* saving `di`/`si`, landing them **below** the
+locals instead of above — the inverse of the fixed `bp-2`/`bp-4`-reserved-for-di/si
+layout every real compiled function and `cret` depend on. Off the table per the hard
+constraint regardless of speed.)
+
+Real per-instruction clocks from the manual (V20 / V30-odd / V30-even), each cited
+against its own instruction-summary entry:
+
+| Instruction | V20 | V30 odd | V30 even |
+|---|---|---|---|
+| `PUSH reg16` | 12 | 12 | 8 |
+| `POP reg16` | 12 | 12 | 8 |
+| `MOV reg,reg` (e.g. `MOV BP,SP`) | 2 | 2 | 2 |
+| `SUB reg,imm` | 4 | 4 | 4 |
+| `LEA reg,mem` (`LDEA` in NEC's notation) | 4 | 4 | 4 |
+| `MOV mem,reg` (word store) | 13 | 13 | 9 |
+| `MOV reg,mem` (word load) | 15 | 15 | 11 |
+| `RET` (near, no operand) | 19 | 19 | 15 |
+| `PREPARE imm16,0` | 16 | 16 | 12 |
+| `DISPOSE` | 10 | 10 | 6 |
+| `PUSHR` (=`PUSHA`, all 8 regs) | 67 | 67 | 35 |
+| `POPR` (=`POPA`, all 8 regs) | 75 | 75 | 43 |
+| `SHL reg,imm8` (multi-bit shift, any count) | 7+n | 7+n | 7+n |
+
+**Prologue**, `push bp/mov bp,sp/push di/push si/sub sp,N` vs. the compatible
+`PREPARE`-based replacement:
+
+```
+current:   12 + 2 + 12 + 12 + 4  = 42  (V20 / V30-odd)     8 + 2 + 8 + 8 + 4  = 30  (V30-even)
+PREPARE:   16 + 13 + 13          = 42  (V20 / V30-odd)    12 + 9 + 9         = 30  (V30-even)
+```
+
+**Epilogue**, `cret` (`lea sp,[bp-4]/pop si/pop di/pop bp/ret`) vs. the compatible
+`DISPOSE`-based replacement:
+
+```
+current:    4 + 12 + 12 + 12 + 19 = 59  (V20 / V30-odd)    4 + 8 + 8 + 8 + 15  = 43  (V30-even)
+DISPOSE:   15 + 15 + 10 + 19       = 59  (V20 / V30-odd)   11 + 11 + 6 + 15    = 43  (V30-even)
+```
+
+**Result: an exact tie, cycle-for-cycle, on real V20/V30 hardware, in both cases and
+at every address alignment.** This is a **materially different conclusion** than the
+ad-hoc, appropriately-caveated-at-the-time estimate from earlier the same session,
+which used 80286 timing data as a proxy (no 80186/V30-specific timing table was
+available yet) and suggested a clear loss for `ENTER` specifically — real 80286
+`ENTER 0,0` genuinely is slower than its component instructions (well documented
+Intel-silicon history), but NEC's V-series implementation of the equivalent
+`PREPARE`/`DISPOSE` is evidently better-optimized and lands at parity instead.
+**This correction is recorded here explicitly so a future session trusts this
+primary-sourced table over the earlier proxy estimate.**
+
+Code size is a small, real regression either way: `PREPARE`-variant prologue is 10
+bytes vs. 8 for the current small-frame case (`PREPARE` has no imm8 short form,
+unlike `sub sp,imm8`); `DISPOSE`-based epilogue is 8 bytes vs. 7 — the latter is
+irrelevant in aggregate since `cret` is a single shared routine, but the former
+applies per function.
+
+### Recommendation
+
+**Do not use `PREPARE`/`DISPOSE` (`ENTER`/`LEAVE`) for `-mv30`'s prologue/epilogue.**
+The only layout-compatible use is cycle-neutral at best and slightly larger in code
+size, for a real increase in code-generator complexity (a second, `-mv30`-specific
+frame-setup path) and testing surface, with the hard constraint above meaning it can
+never be simplified into the *faster*, layout-incompatible naive form either. Of all
+the 80186/V30 additions, `PREPARE`/`DISPOSE` are also the only ones that touch the
+ABI-visible frame contract at all — everything else in the new-instruction set is
+pure instruction-selection inside a function body and carries no such risk. `PUSHR`/
+`POPR` (confirmed real wins: 67/75 cycles for 8 registers vs. 8×12=96 discrete
+pushes/pops, ~30%/22% faster) and multi-bit `SHL`/shift-by-immediate (confirmed:
+`7+n` flat, vs. the `mov cl,n`-then-shift-by-`cl` sequence it replaces) are the kind
+of genuinely risk-free `-mv30` wins worth pursuing when Milestone 5 actually starts —
+not `PREPARE`/`DISPOSE`.
 
 ---
 
