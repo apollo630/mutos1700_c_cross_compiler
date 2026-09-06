@@ -26,7 +26,8 @@ expected to be re-verified every session the way `STATUS.md` is.
    - [Auxiliary deliverables](#auxiliary-deliverables)
    - [Debugging methodology (reusable)](#debugging-methodology-reusable)
 3. [Milestone 3 — `mutos_cpp` (C preprocessor)](#milestone-3--mutos_cpp-c-preprocessor)
-4. [Recurring process lessons](#recurring-process-lessons)
+4. [Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)](#milestone-4--mutos_ccmutos_c0mutos_c1-c-compiler)
+5. [Recurring process lessons](#recurring-process-lessons)
 
 ---
 
@@ -511,6 +512,108 @@ is applied** (its "pre-state") — this single rule correctly collapses a false
 `#ifdef ... #endif` block of *any* body size to exactly one blank output line, and
 correctly handles `#else` transitions in both directions. See
 `src/mutos_cpp/directive.c`'s file header comment for the full derivation.
+
+---
+
+## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
+
+**Status:** not started (`src/mutos_cc/` doesn't exist yet — see `STATUS.md`). This
+section covers **ABI/calling-convention research only**, done ahead of any code so
+`mutos_c1`'s code generator has a byte-level-accurate target from day one instead of
+guessing generic 8086-C-compiler conventions. Full detail, with every rule cited
+against a real disassembled `.o`, lives in **`docs/MUTOS_C_ABI.md`** (not duplicated
+here in full — this section is the condensed "why/how we found out" pointer into it,
+matching this file's usual role).
+
+### Method
+
+Real hardware-linked evidence only, three sources: `tests/mutos1700_crt0/crt0.o`
+(the real startup object), ~15 hand-picked files out of `tests/mutos1700_libc/`'s 167
+real linked objects (chosen to cover: a trivial 1-arg function, 2-arg functions,
+`long`-returning/`long`-parameter functions, the compiler's own long-arithmetic
+runtime helpers, a large-local-frame function, and the `exit`/cleanup chain), and
+`tests/mutos_as/kernel_opt/mch.s` — which, uniquely, contains the **literal
+compiler-generated source text** (not just disassembly) for `cret` and two real
+compiled functions (`_co`, `_ci`), since it's real `c2`-optimized kernel `.s` output
+retained via the modified `conf/Makefile`'s `-S` flag. Text segments were extracted
+from each `.o`'s already-understood `mutos_aout.h` header layout and disassembled
+with `objdump -D -b binary -m i386 -M intel,i8086`; relocation entries were decoded
+with the project's already-established rules (shift-flag/symidx/type bits) to
+identify call targets by name.
+
+### Headline findings (see `docs/MUTOS_C_ABI.md` for full derivation and citations)
+
+1. **Pure stack ABI, no register arguments.** Right-to-left push order, caller
+   cleans up (`add sp,N`) after every call — confirmed at every single call site
+   examined, no exceptions.
+2. **Fixed, unconditional prologue/epilogue** for every compiler-generated function,
+   regardless of actual register/local usage: `push bp / mov bp,sp / push di /
+   push si` … `jmp cret`. `cret` itself — quoted verbatim from `mch.s` — is
+   `lea sp,#-4(bp) / pop si / pop di / pop bp / ret`; the `lea`-relative-to-`bp` trick
+   is why one shared routine can serve every function regardless of local-frame size.
+   Confirmed unconditional via `_ci` (`mch.s`, zero params, doesn't use `di`/`si`
+   internally, still saves both) and `_abs` (same pattern in `libc.a`).
+3. **Frame layout is fixed too**: parameters at `bp+4, bp+6, ...`; locals always
+   start at `bp-6` (the `bp-2`/`bp-4` slots are permanently reserved for saved
+   `di`/`si`, whether or not a given function has any real locals there). Confirmed
+   via 2-word (`atol.o`) and 4-word (`sprintf.o`) local-block examples.
+4. **`long` = 2 words, high word at the lower address, everywhere** — locals,
+   register-pair returns, by-reference operands, and by-value parameters alike.
+   This is the exact same PDP-11 "middle-endian" word order already established for
+   `ar` archive `long` fields (see Milestone 1's entry), now directly confirmed to
+   also govern compiled C `long` values — resolving `CLAUDE.md`'s note that this
+   "hasn't been relevant yet." Confirmed three independent ways (a `long` local in
+   `atol.o`, a by-reference `long` in `almul.o`/`aldiv.o`, and the by-value `long`
+   parameter of `_lseek`'s `offset`).
+5. **Return values**: `AX` for 16-bit scalars, `DX:AX` (`DX`=high) for `long` —
+   confirmed via `_atol`'s and `aldiv`/`ldiv`'s final `mov ax,.. / mov dx,..` before
+   their epilogues.
+6. **A second, *different* internal-only ABI** for the compiler's own
+   `long`-arithmetic runtime helpers (`almul`/`aldiv`/`alrem`, `lmul`/`ldiv`/`lrem` —
+   note: no leading `_`, i.e. not user-callable C symbols). These use an *extended*
+   prologue (`push bp / push bx / mov bp,sp / push di / push si`, shifting params to
+   start at `bp+6`) and a matching custom epilogue (not `jmp cret`, since `cret`
+   doesn't know about the extra saved `bx`). First parameter is a pointer to a `long`
+   that's both an input operand and the in-place result destination; this is a
+   private contract between `mutos_c1`'s own codegen and its own runtime support
+   library, **not** part of the general C function ABI.
+7. **Large stack frames get a guard**: above some threshold, `sub sp,N` is replaced
+   by `mov ax,N / call chkstk`, which checks the new `sp` against a stack-bottom
+   limit, attempts to grow the stack via a far call through a runtime-initialized
+   trampoline pointer on failure, and ultimately does `_kill(_getpid(), SIGSEG)` +
+   `__exit` if growth genuinely fails — a real stack overflow terminates with
+   `SIGSEGV`-equivalent behavior. Empirically bounded via corpus scan: largest plain
+   `sub sp,N` seen is `N=76`; smallest `call chkstk` seen is `N=256` — exact real
+   cutoff not pinned down further by this corpus.
+8. **`crt0` startup**, fully annotated in `docs/MUTOS_C_ABI.md`: reads `argc`/`argv`
+   off the kernel-provided initial `sp`, scans for the `argv[]` NULL terminator
+   (**correction worth flagging**: the scan uses `test WORD PTR [bx],0xffff` /
+   `jne`, which is an AND-with-all-ones zero-test, i.e. an ordinary NULL check — an
+   initial fast read of the raw bytes mis-suggested a `0xFFFF` sentinel value; always
+   trace the actual flag semantics, not just the literal immediate, when reading
+   `TEST`), sets the global `_environ`, calls `_main(argc, argv, envp)` per the
+   standard ABI (§1 above), and — critically — calls **`exit()`** (asm symbol
+   `_exit`, defined in `cuexit.o`) after `main` returns, **not** the raw
+   `_exit()`/`__exit` syscall wrapper (`exit.o`). `exit()` calls a `_cleanup()` hook
+   (asm symbol `__cleanu` — `_cleanup` mangled + K&R-8-char-truncated) before the raw
+   syscall; a classic two-object linker trick (`fakcu.o`'s no-op stub vs. the real
+   flush routine bundled inside `flsbuf.o`) means a program only pays for stdio
+   flush-on-exit if it actually uses stdio.
+9. **Not every `.o` shaped like a function is compiler output** — a chunk of
+   `libc.a`'s direct 1:1 syscall wrappers (`access.o`, `_lseek`, …) are hand-written
+   assembly and don't follow (or don't fully follow) the conventions above; one,
+   `_lseek`, even pushes `si`/`di` in the *opposite* order from the compiler
+   convention and correctly uses its own matching inline epilogue instead of `cret`.
+   Documented explicitly in `docs/MUTOS_C_ABI.md` §1.10 so a future session doesn't
+   mistake a hand-tuned stub for a second valid compiler convention.
+
+### Open item
+
+The exact `chkstk` size threshold (bounded to `(76, 256]` bytes above) is not pinned
+down further by the current corpus; if a real object file with a local frame in that
+range surfaces later (e.g. from generating more goldens off the kernel source tree
+per Milestone 2's `conf/Makefile` mechanism, or from a userland `.c` file not yet in
+this checkout), re-check it against this bracket.
 
 ---
 
