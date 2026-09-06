@@ -16,12 +16,32 @@ C-compiler folklore — every rule has a cited example.
   **compiler-generated** functions (the vast majority — anything with a leading `_`
   and a `push bp / mov bp,sp / push di / push si` opening) and a smaller set of
   **hand-written assembly** leaf/syscall stubs (see "What is *not* part of this
-  convention" below) — the two are easy to tell apart and must not be confused.
-- `tests/mutos_as/kernel_opt/mch.s` — real, `c2`-optimized kernel `.s` source
-  (retained via the modified `conf/Makefile`'s `-S` flag), which — uniquely among the
-  evidence used here — contains the **literal compiler-generated source text**, not
-  just its disassembly. This is where `cret`'s own definition, and two real
-  C-function prologues (`_co`, `_ci`), come from directly.
+  convention" below) — the two are easy to tell apart and must not be confused. This
+  is the **primary, load-bearing evidence** for the calling convention documented
+  below; it does not depend on any claim about `mch.s`'s origin (next bullet).
+- `tests/mutos_as/kernel_opt/mch.s` — ***correction, found via review*** ***— this
+  is *not* compiler output.*** `mch.c` (`tests/mutos_cpp/c/mch.c`), the source this
+  `.s` is generated from, opens with the comment `mch.c -- Assemblerteil MUTOS
+  1700/1834` ("Assemblerteil" = German for "the assembly portion") and is, from its
+  very first line (`.globl _u`, `_u=OFFUSRPG`, `.text`, `strt: jmp start`, …), 100%
+  hand-written MUTOS-assembler source using a `.c` filename purely so it flows
+  through the same `cpp` build step as the kernel's genuine C files (for
+  `#include`/`#ifdef`) — it is **never** passed through `c0`/`c1`/`c2` at all, only
+  `cpp` then `as`. (By contrast, the kernel's other four `mutos_cpp` corpus files —
+  `main.c`, `sys.c`, `tty.c`, `v30ide.c` — are genuine, ordinary C source.) This
+  file is still useful evidence, but for a different reason than originally stated
+  here: it's the one place the shared epilogue routine `cret` is available as
+  *literal source* rather than only disassembly, and it contains a handful of
+  hand-written helper functions (`_co`, `_ci`) explicitly commented
+  `C-Callable interfaces` — i.e. a human deliberately wrote them to conform to the
+  real compiler ABI so genuinely-compiled C code could call them and so they could
+  return via the same shared `cret` compiled code uses. They corroborate that this
+  is *the* real, load-bearing convention (hand-written code needing interop matches
+  it deliberately) but are not independent "the compiler also does this" evidence
+  the way the `libc.a` disassembly is. The **majority** of `mch.s`'s own routines
+  (25 of ~31 function-shaped entry points, vs. 6 using the full `push bp` C-ABI
+  convention) instead use a **different, deliberately lighter-weight hand-written
+  idiom** — see §1.10.
 
 Disassembly in this document was produced with
 `objdump -D -b binary -m i386 -M intel,i8086` against the raw `text` segment
@@ -69,8 +89,8 @@ register to work with it) — that is never visible to the caller.
 
 ### 1.2 Standard function prologue/epilogue (confirmed, unconditional, fixed)
 
-Every real compiler-generated C function examined — from the tiniest one-liner
-(`_abs`, `_ci`) to the largest (`execvp.o`'s 646-byte-frame function) — opens with
+Every real compiler-generated C function examined in `libc.a` — from the tiniest
+one-liner (`_abs`) to the largest (`execvp.o`'s 646-byte-frame function) — opens with
 the **exact same four instructions**, in this exact order, and closes with a tail
 jump into one shared epilogue routine:
 
@@ -83,8 +103,9 @@ push  si
     jmp   cret        ; epilogue (tail jump, NOT call+ret)
 ```
 
-`cret` itself (quoted verbatim from `tests/mutos_as/kernel_opt/mch.s`, and confirmed
-byte-identical in every `cret.o`/inline disassembly checked):
+`cret` itself — quoted verbatim from `tests/mutos_as/kernel_opt/mch.s`'s hand-written
+source (see "Evidence sources" above re: `mch.s`'s actual, non-compiled origin), and
+confirmed byte-identical in every `cret.o`/inline disassembly checked from `libc.a`:
 
 ```
 |***
@@ -108,16 +129,19 @@ how many locals it declared.
 
 **This prologue/epilogue is emitted completely unconditionally — regardless of
 whether the function actually uses `di`/`si`, has any locals, or has any
-parameters.** Confirmed directly: `_ci` (`mch.s`, zero parameters, uses neither `di`
-nor `si` internally) still opens with `push bp / mov bp,sp / push di / push si` and
-closes with `jmp cret`; `_abs`, `_strlen` likewise. **`mutos_c1`'s non-optimizing
-code generator should replicate this unconditionally, with no
-leaf-function/register-usage-based elision** — there is no evidence anywhere in the
-corpus (including in `kernel_opt`, i.e. `c2`-optimized kernel code) that the
-optimizer ever removes an unused saved register from this fixed frame. That kind of
-elision, if wanted at all, is out of scope for Milestone 4 and would belong to
-Milestone 5's `c2` work — and even there, no real corpus evidence currently supports
-it being a real `c2` behavior.
+parameters.** Confirmed directly via genuine compiler output in `libc.a`: `_abs`
+(single parameter, uses `di` but never touches `si`) and `_strlen` (uses both)
+**still** save/restore both registers unconditionally. `mch.s`'s hand-written `_ci`
+(`mch.s`, zero parameters, uses neither `di` nor `si` internally, but is explicitly
+commented `C-Callable` — see "Evidence sources") independently corroborates the same
+shape, though as a deliberately-conformant hand-written example rather than a second
+compiler sample. **`mutos_c1`'s non-optimizing code generator should replicate this
+unconditionally, with no leaf-function/register-usage-based elision** — there is no
+evidence anywhere in the `libc.a` corpus examined that a register is ever elided from
+this fixed frame. (Whether `mutos_c1`'s planned optimizer — Milestone 5's `c2` — ever
+should elide unused saves is a separate, open design question; no evidence either way
+was found here, since `mch.s`, the only kernel `.s` source available for direct
+inspection, turned out not to be `c2` output at all — see "Evidence sources".)
 
 ### 1.3 Parameter stack offsets
 
@@ -320,13 +344,13 @@ easy-to-justify choice for `mutos_c1` would be a round threshold inside that gap
 
 ### 1.10 What is *not* part of this convention
 
-Not every function-shaped `.o` in `libc.a` was produced by the compiler. A
-substantial minority — mostly direct 1:1 syscall wrappers (`access.o`, `alarm.o`,
-`chdir.o`, `chmod.o`, …) — are hand-written assembly, easily recognized because they
-do **not** use the `push bp/mov bp,sp/push di/push si …/jmp cret` shape at all.
-Two patterns seen:
+Not every function-shaped `.o`/routine encountered is compiler output. A
+substantial amount of hand-written assembly exists alongside the real compiler
+convention from §1.1–1.9, in both `libc.a` and (predominantly — see below) `mch.s`.
+Easily recognized because none of it uses the `push bp/mov bp,sp/push di/push si
+…/jmp cret` shape. Three distinct hand-written patterns were found:
 
-- **Trivial syscall stubs**, e.g. `access.o` in full:
+- **Trivial syscall stubs** (`libc.a`), e.g. `access.o` in full:
   ```
   mov  ax,0x21      ; syscall number (from a local ABS constant, ".access = 33")
   jmp  sys2a         ; shared N-argument syscall trap dispatcher
@@ -336,19 +360,70 @@ Two patterns seen:
   (confirmed, used by `_access`) were both directly observed; the naming pattern
   suggests further members (`sys0a`, `sys3a`, …) but none beyond these two were
   directly confirmed in the corpus examined.
-- **Flat-frame stubs that skip `bp` entirely**, e.g. `_lseek` (`lseek.o`): opens with
-  `push bp / mov bp,sp / push si / push di` (note: **`si` before `di`** — the
-  opposite order from §1.2!) and closes with its own inline `pop di / pop si / pop bp`
-  — internally self-consistent, but deliberately *not* calling the shared `cret`
-  (which would corrupt the stack if the push order didn't match `cret`'s fixed pop
-  order). This is further confirmation that `cret`'s pop order permanently fixes the
-  compiler's push order for any code that *does* use `cret` — hand-written code that
-  doesn't call `cret` is free to differ, and evidently sometimes does.
 
-None of this affects what `mutos_c1`'s code generator itself needs to emit — it only
-matters when validating full `libc.a`-linked golden binaries, so that a hand-written
-stub's differing internal register-save order isn't mistaken for a second valid
-compiler convention.
+- **Flat "`bx` is the frame pointer" leaf routines — no `bp` frame at all.**
+  ***This is the pattern a reviewer flagged after the first version of this
+  document, and it deserves its own clearly-labeled category*** (a first version of
+  this document buried it as an unlabeled inference from `libc.a` disassembly alone
+  and didn't call it out explicitly — worth stating plainly here so it isn't
+  mistaken for a second, competing compiled-code convention). The idiom: `mov
+  bx,sp` directly (no `push bp`), then address arguments as `[bx+2]`, `[bx+4]`, …
+  — i.e. exactly the standard parameter layout *minus* the `bp+4`-offset shift a
+  `push bp` would introduce, since there's no saved-`bp` word to skip over; only the
+  2-byte near return address sits below the first argument. No `push di`/`push si`
+  (nothing needs preserving), and no `jmp cret` (nothing to tear down beyond a plain
+  `ret`).
+
+  **This is in fact the *prevailing* style in `mch.s` itself** — a corpus scan of
+  `tests/mutos_as/kernel_opt/mch.s` finds **25 occurrences** of `mov bx,sp` used this
+  way (several with an explicit human comment: `| bx is frame pointer`,
+  `| (bx) is our 'frame pointer'`, `| bx is stack marker`) against only **6**
+  occurrences of the full `push bp` C-ABI prologue from §1.2. Directly confirmed,
+  real, `.globl`'d, `_`-prefixed (i.e. genuinely C-callable/C-linkage) examples from
+  `mch.s`:
+  ```
+  _outb:
+      mov   bx, sp              | bx is frame pointer
+      mov   dx, #2(bx)          | dx = port
+      mov   ax, #4(bx)          | ax = byte to output
+      out
+      ret
+  ```
+  (identically for `_in`, `_inb`, `_out`; `_hdio` uses the same opening `mov bx,sp`
+  but additionally `push`es `si`/`di`/`es` afterward, since it does have callee work
+  to preserve — still no `bp`, still no `cret`, with its own matching inline
+  `pop es / pop di / pop si / ret` at its end instead). The **same** idiom — inferred
+  from disassembly alone, without a source-level comment to confirm intent, until
+  the `mch.s` examples above confirmed the pattern and its stated purpose — is also
+  what a small group of `libc.a` syscall-wrapper objects use, e.g. `dup.o`/`execv.o`/
+  `shutdn.o`/`signal.o`, all opening with `mov bx,sp / mov cx,[bx+0x4] / mov
+  bx,[bx+0x2]`.
+
+  This is a deliberate, sensible choice for tiny leaf routines with no locals and no
+  registers to preserve: it avoids the (small but nonzero) overhead of establishing
+  and tearing down a full `bp` frame for a 2–3 instruction function. It is
+  **not** a second, competing *compiled-code* convention — see "Evidence sources" at
+  the top of this document for why `mch.s` in particular is not compiled output at
+  all — but it **is** a real, common, and important pattern to recognize when reading
+  hand-written kernel/library assembly in this codebase, so it isn't mistaken for
+  either a `mutos_cc` codegen target or a corruption/bug.
+
+- **`bp`-based, but reordered and *not* using `cret`** (`libc.a`), e.g. `_lseek`
+  (`lseek.o`): opens with `push bp / mov bp,sp / push si / push di` (note:
+  **`si` before `di`** — the opposite order from §1.2!) and closes with its own
+  inline `pop di / pop si / pop bp` — internally self-consistent, but deliberately
+  *not* calling the shared `cret` (which would corrupt the stack if the push order
+  didn't match `cret`'s fixed pop order). This is further confirmation that `cret`'s
+  pop order permanently fixes the compiler's push order for any code that *does* use
+  `cret` — hand-written code that doesn't call `cret` is free to differ, and
+  evidently sometimes does.
+
+None of this affects what `mutos_c1`'s code generator itself needs to emit — the
+compiler should unconditionally target §1.1–1.9's convention (grounded in real
+compiler-generated `libc.a` output). The patterns above only matter when reading or
+validating against hand-written kernel (`mch.s`) or library (`libc.a` syscall-stub)
+assembly, so that a hand-tuned leaf routine's leaner frame isn't mistaken for a
+second valid compiler convention, a bug, or a contradiction.
 
 ---
 

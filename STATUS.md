@@ -222,12 +222,18 @@ confirmed true, see below).
 
 Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
 calling convention and C runtime startup/cleanup behavior were reverse-engineered
-byte-for-byte from real hardware-linked objects: `tests/mutos1700_crt0/crt0.o`,
-~15 selected files from `tests/mutos1700_libc/`'s 167 real linked objects, and
-`tests/mutos_as/kernel_opt/mch.s` (which — uniquely — contains literal
-compiler-generated `.s` source, not just disassembly, for the shared function
-epilogue `cret` and two real compiled functions). Full findings, each cited against
-a real disassembled example, are in **[`docs/MUTOS_C_ABI.md`](./docs/MUTOS_C_ABI.md)**;
+byte-for-byte from real hardware-linked objects: `tests/mutos1700_crt0/crt0.o` and
+~15 selected files from `tests/mutos1700_libc/`'s 167 real linked objects (the
+load-bearing evidence), plus `tests/mutos_as/kernel_opt/mch.s`'s hand-written source
+as supplementary/corroborating evidence — **not**, as an earlier version of this
+note incorrectly stated, compiler output: `mch.c` is explicitly marked
+`Assemblerteil` ("the assembly portion") in its own header comment and is never
+passed through `c0`/`c1`/`c2`, only `cpp`+`as` (correction found via review; see
+`docs/DEVLOG.md`'s Milestone 4 section and `docs/MUTOS_C_ABI.md` §1.10 for the full
+story, prompted by `mch.s`'s own `_outb`/`_out`/`_in`/`_inb`/`_hdio` using `bx`, not
+`bp`, as a lighter-weight hand-written frame convention). Full findings, each cited
+against a real disassembled example, are in
+**[`docs/MUTOS_C_ABI.md`](./docs/MUTOS_C_ABI.md)**;
 condensed summary also in `docs/DEVLOG.md`'s Milestone 4 section. Headline points:
 pure stack-based argument passing (right-to-left push, caller cleanup); a completely
 fixed, unconditional `push bp/mov bp,sp/push di/push si ... jmp cret` prologue/
