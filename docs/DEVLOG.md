@@ -527,19 +527,30 @@ matching this file's usual role).
 
 ### Method
 
-Real hardware-linked evidence only, three sources: `tests/mutos1700_crt0/crt0.o`
-(the real startup object), ~15 hand-picked files out of `tests/mutos1700_libc/`'s 167
-real linked objects (chosen to cover: a trivial 1-arg function, 2-arg functions,
+Real hardware-linked evidence, primarily two sources: `tests/mutos1700_crt0/crt0.o`
+(the real startup object) and ~15 hand-picked files out of `tests/mutos1700_libc/`'s
+167 real linked objects (chosen to cover: a trivial 1-arg function, 2-arg functions,
 `long`-returning/`long`-parameter functions, the compiler's own long-arithmetic
-runtime helpers, a large-local-frame function, and the `exit`/cleanup chain), and
-`tests/mutos_as/kernel_opt/mch.s` — which, uniquely, contains the **literal
-compiler-generated source text** (not just disassembly) for `cret` and two real
-compiled functions (`_co`, `_ci`), since it's real `c2`-optimized kernel `.s` output
-retained via the modified `conf/Makefile`'s `-S` flag. Text segments were extracted
-from each `.o`'s already-understood `mutos_aout.h` header layout and disassembled
-with `objdump -D -b binary -m i386 -M intel,i8086`; relocation entries were decoded
-with the project's already-established rules (shift-flag/symidx/type bits) to
-identify call targets by name.
+runtime helpers, a large-local-frame function, and the `exit`/cleanup chain) — this
+is the **load-bearing** evidence for the calling convention itself.
+`tests/mutos_as/kernel_opt/mch.s` was used as a **third, supplementary** source, but
+**not** as compiler output: a mid-session correction (prompted by a reviewer noticing
+`mch.s`'s own `_outb`/`_out`/`_in`/`_inb`/`_hdio` use `bx`, not `bp`, as their frame
+pointer — see item 9 below) established that `mch.c`
+(`tests/mutos_cpp/c/mch.c`), unlike the kernel's other four `mutos_cpp` corpus C
+files, opens with the comment `Assemblerteil MUTOS 1700/1834` ("the assembly
+portion") and is 100% hand-written MUTOS-assembler source from its first line, using
+a `.c` filename only so it flows through the same `cpp` build step (`#include`/
+`#ifdef`) as genuine C files — it is **never** passed through `c0`/`c1`/`c2`. It
+remains useful because it's the one place `cret`'s exact implementation is available
+as literal source, and it contains two hand-written-but-explicitly-`C-Callable`
+helper functions (`_co`, `_ci`) that a human deliberately conformed to the real
+compiler ABI for interop — corroborating, not independently proving, the same
+convention `libc.a`'s genuine compiler output establishes. Text segments were
+extracted from each `.o`'s already-understood `mutos_aout.h` header layout and
+disassembled with `objdump -D -b binary -m i386 -M intel,i8086`; relocation entries
+were decoded with the project's already-established rules (shift-flag/symidx/type
+bits) to identify call targets by name.
 
 ### Headline findings (see `docs/MUTOS_C_ABI.md` for full derivation and citations)
 
@@ -548,11 +559,15 @@ identify call targets by name.
    examined, no exceptions.
 2. **Fixed, unconditional prologue/epilogue** for every compiler-generated function,
    regardless of actual register/local usage: `push bp / mov bp,sp / push di /
-   push si` … `jmp cret`. `cret` itself — quoted verbatim from `mch.s` — is
-   `lea sp,#-4(bp) / pop si / pop di / pop bp / ret`; the `lea`-relative-to-`bp` trick
-   is why one shared routine can serve every function regardless of local-frame size.
-   Confirmed unconditional via `_ci` (`mch.s`, zero params, doesn't use `di`/`si`
-   internally, still saves both) and `_abs` (same pattern in `libc.a`).
+   push si` … `jmp cret`. `cret` itself — quoted verbatim from `mch.s`'s
+   hand-written source (see "Method" above) — is `lea sp,#-4(bp) / pop si / pop di /
+   pop bp / ret`; the `lea`-relative-to-`bp` trick is why one shared routine can
+   serve every function regardless of local-frame size. Confirmed unconditional via
+   genuine compiler output in `libc.a`: `_abs` (uses `di` but not `si`) and
+   `_strlen` (uses both) still save/restore both registers unconditionally.
+   `mch.s`'s hand-written-but-`C-Callable` `_ci` (zero params, uses neither `di` nor
+   `si` internally) independently shows the same shape, as corroborating rather than
+   primary evidence (see "Method").
 3. **Frame layout is fixed too**: parameters at `bp+4, bp+6, ...`; locals always
    start at `bp-6` (the `bp-2`/`bp-4` slots are permanently reserved for saved
    `di`/`si`, whether or not a given function has any real locals there). Confirmed
@@ -599,13 +614,27 @@ identify call targets by name.
    syscall; a classic two-object linker trick (`fakcu.o`'s no-op stub vs. the real
    flush routine bundled inside `flsbuf.o`) means a program only pays for stdio
    flush-on-exit if it actually uses stdio.
-9. **Not every `.o` shaped like a function is compiler output** — a chunk of
-   `libc.a`'s direct 1:1 syscall wrappers (`access.o`, `_lseek`, …) are hand-written
-   assembly and don't follow (or don't fully follow) the conventions above; one,
-   `_lseek`, even pushes `si`/`di` in the *opposite* order from the compiler
-   convention and correctly uses its own matching inline epilogue instead of `cret`.
-   Documented explicitly in `docs/MUTOS_C_ABI.md` §1.10 so a future session doesn't
-   mistake a hand-tuned stub for a second valid compiler convention.
+9. **Not every function-shaped routine is compiler output**, and hand-written
+   assembly uses more than one internal style — documented explicitly in
+   `docs/MUTOS_C_ABI.md` §1.10 (expanded this session) so a future session doesn't
+   mistake any of these for a second valid *compiler* convention:
+   - Trivial 1:1 syscall stubs (`libc.a`: `access.o`, …) — `mov ax,N / jmp sysNa`.
+   - **`bx`-as-frame-pointer leaf routines, no `bp` at all** — `mov bx,sp` directly,
+     params at `[bx+2]`, `[bx+4]`, … This is in fact the **prevailing** style in
+     `mch.s` itself (25 occurrences, several with an explicit human comment like
+     `| bx is frame pointer`, vs. only 6 using the full `push bp` C-ABI prologue) —
+     confirmed via real, `.globl`'d, C-linkage examples `_in`/`_inb`/`_out`/`_outb`/
+     `_hdio`. The same idiom, inferred from disassembly alone before these `mch.s`
+     examples confirmed the pattern's intent, is also used by a handful of `libc.a`
+     syscall wrappers (`dup.o`/`execv.o`/`shutdn.o`/`signal.o`). **This is the
+     pattern a reviewer flagged** (correctly) as looking like a contradiction to
+     item 2's `bp`-based convention — it isn't a contradiction, but it did expose
+     that this document's first version mischaracterized `mch.s` as compiler output
+     (see "Method" above); the underlying `bp`-frame facts in items 1–8 were
+     unaffected, only the `mch.s` attribution needed correcting.
+   - `bp`-based but reordered and not using `cret` (`libc.a`'s `_lseek`): pushes
+     `si` before `di` (opposite of item 2) with its own matching inline epilogue —
+     internally consistent, just independent of the shared `cret` routine.
 
 ### Open item
 
