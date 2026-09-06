@@ -27,6 +27,16 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all object files and `libc.a.base64.txt`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`.
+* `/tests/mutos_as/v30_speculative/`: Speculative 80186/V30 opcode test cases (PUSHA/POPA,
+  PUSH imm, INSB/OUTSB, ENTER/LEAVE, BOUND, IMUL-immediate, shift/rotate-with-immediate-
+  count) covering every opcode `STATUS.md` lists as "implemented, no real corpus sample".
+  **NOT Golden Master data** — no real MUTOS 1700 toolchain exists that supports these
+  opcodes to link against, so these are cross-checked against an independent assembler
+  (NASM) and disassembler (objdump) only, never against real hardware output. Do **not**
+  name any file in here `*.o.golden` — that suffix is reserved project-wide for real
+  hardware-linked references (see Workflow Guideline 2's `.o`-ambiguity caution below);
+  use `*.o.crosschecked` instead if/when reference bytes are added. See this directory's
+  own `README.md` for full methodology, results, and open caveats.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -124,6 +134,11 @@ You act as an expert systems programmer, compiler architect, and operating syste
 1. **Context Alignment**: Before modifying code in `/src/mutos_<tool>/`, always check the corresponding test suite in `/tests/mutos_<tool>/` to understand the expected behavior and existing edge cases.
 2. **Golden Master Integrity**: Do not alter files in `/tests/.../kernel_opt/` or `kernel_nonopt/` unless explicitly instructed. These serve as our regression baseline.
    * **Caution — `.o` is ambiguous in this repo**: `tests/mutos1700_libc/*.o`, `tests/mutos1700_crt0/*.o`, and every `*.o.golden` under `tests/mutos_as/` are precious real hardware-linked **reference data**, not regenerable build byproducts, even though they share the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy them. Always scope any such cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
+     Extend the same care to `tests/mutos_as/v30_speculative/`'s `*.o.crosschecked` files
+     (if/when present) — do not delete them in a cleanup sweep either, but also never
+     treat them as equivalent to a real `*.o.golden`: they are cross-checked against
+     third-party tooling only, not hardware-confirmed (see that directory's own
+     `README.md`).
 3. **Reference Material**: Use the `/v7/` directory strictly as historical reference. Do not mix V7 logic directly into `mutos` unless explicitly migrating or fixing compatibility bugs.
 4. **Header Files**: When changing structs or definitions in `/src/h/`, verify the impacts across `as`, `cc`, and `ld` simultaneously.
 5. **Build Requirement**: Create one top Level Makefile to build all 4 components (`mutos_ld`, `mutos_as`, `mutos_cpp`, `mutos_cc`)

@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-05.
+Last updated: 2026-09-06.
 
 ---
 
@@ -236,27 +236,72 @@ manual/corpus material to check it against.
 
 | Mnemonic | Opcode | Status |
 |---|---|---|
-| `pusha` | `0x60` | implemented — **no real corpus sample anywhere in the repo** |
-| `popa` | `0x61` | implemented — no real corpus sample |
-| `push #imm16` | `0x68 iw` | implemented — no real corpus sample |
-| `push *imm8` | `0x6A ib` | implemented — no real corpus sample |
-| `insb` | `0x6C` | implemented — no real corpus sample |
+| `pusha` | `0x60` | implemented — no real corpus sample; cross-checked¹ |
+| `popa` | `0x61` | implemented — no real corpus sample; cross-checked¹ |
+| `push #imm16` | `0x68 iw` | implemented — no real corpus sample; cross-checked¹ |
+| `push *imm8` | `0x6A ib` | implemented — no real corpus sample; cross-checked¹ |
+| `insb` | `0x6C` | implemented — no real corpus sample; cross-checked¹ |
 | `insw` | `0x6D` | implemented — **confirmed real** (`mch_insw_outsw.s`) |
-| `outsb` | `0x6E` | implemented — no real corpus sample |
+| `outsb` | `0x6E` | implemented — no real corpus sample; cross-checked¹ |
 | `outsw` | `0x6F` | implemented — **confirmed real** (`mch_insw_outsw.s`) |
-| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL) |
-| `leave` | `0xC9` | implemented — no real corpus sample |
-| `enter framesize,nestlevel` | `0xC8 iw ib` | implemented — no real corpus sample |
-| `bound reg,mem` | `0x62 /r` | implemented (indirect-memory operand only, matching this codebase's LDS/LES/LEA convention) — no real corpus sample |
-| `imul dst,imm` (2-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample |
-| `imul dst,src,imm` (3-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample |
+| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹ |
+| `leave` | `0xC9` | implemented — no real corpus sample; cross-checked¹ |
+| `enter framesize,nestlevel` | `0xC8 iw ib` | implemented — no real corpus sample; cross-checked¹ |
+| `bound reg,mem` | `0x62 /r` | implemented (indirect-memory operand only, matching this codebase's LDS/LES/LEA convention) — no real corpus sample; cross-checked¹ |
+| `imul dst,imm` (2-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ² |
+| `imul dst,src,imm` (3-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ² |
+
+¹ "Cross-checked" = independently re-encoded with NASM (`CPU 186`, `BITS 16`, `-O0`)
+and/or independently re-decoded with `objdump -D -b binary -m i8086`; see
+`tests/mutos_as/v30_speculative/README.md`. This is a **strictly weaker** confidence
+tier than "confirmed real" and does **not** change any row's fundamental status below —
+no real MUTOS 1700 toolchain exists that supports these opcodes to produce genuine
+hardware-linked golden output against. Do not read "cross-checked" as "verified"
+anywhere else in this document's terminology.
+
+² See that same README for a specific, deliberately-surfaced open question on this
+row: `encode_imul_imm()`'s marker-forces-form behavior (`imul cx,ax,*200.` truncates
+200 to `0xC8` rather than promoting to the word form) is something NASM's own encoder
+refuses to do even with its optimizer fully disabled — a genuine, unresolved design
+divergence between this codebase's established convention and a mainstream
+independent assembler's default behavior, not a bug that cross-checking fixed.
 
 Every 80186 addition covered in this project's working spec (register/flag behavior
 aside, which is a CPU runtime distinction, not an assembler-encoding one) is now
 implemented in at least best-effort form. **Only INSW/OUTSW carry real hardware
 confirmation** — the other twelve entries are unconfirmed and should be the first
 candidates for verification if real V30-targeted source/object pairs ever become
-available.
+available; they now additionally carry independent-tooling cross-checks (see above),
+which is the best available substitute in the absence of a real MUTOS 1700 toolchain
+that supports them, but is explicitly NOT a replacement for that real evidence.
+
+### 80186/V30 speculative-opcode test files (this session)
+
+Added `tests/mutos_as/v30_speculative/` — seven hand-written test files (one per
+natural instruction family, same pairing convention as `mch_insw_outsw.s`) covering
+all twelve "no real corpus sample" rows in the table above, plus `nasm_crosscheck.asm`
+and a `README.md` documenting the full methodology, exact commands, and results.
+
+Verified this session:
+- All seven files assemble cleanly with the current `mutos_as` (zero errors) and
+  remain clean under `-fsanitize=address,undefined -O0 -g`.
+- The pre-existing 67/67 golden regression is unaffected (new files only, no `src/`
+  changes).
+- Every instruction in every file was independently decoded with `objdump -D -b
+  binary -m i8086` and manually checked against the intended mnemonic/operand/
+  addressing-mode; a representative subset covering all seven families was
+  independently re-encoded with NASM and matched byte-for-byte wherever the encoding
+  is unambiguous (see footnote ¹ above for the one case where it is not).
+- The real kernel corpus (`kernel_opt`+`kernel_nonopt`) was re-searched for any
+  further hand-encoded `.byte` opcode workarounds of the kind that made INSW/OUTSW
+  "confirmed real" (see Milestone 2's "Recent fixes" above) — **none found** for any
+  of the other twelve opcodes; INSW/OUTSW remain the only such case in the corpus.
+- `x86dis` (`libdisasm` 0.23, no real code change since Dec 2013) was evaluated as an
+  alternative to `objdump` and rejected for this purpose: its `-e <offset>`
+  (forward-trace) mode silently stops decoding at the first `ret` byte with no error
+  or warning (reproduced directly: it decoded only 5 of 48 real text bytes from
+  `pusha_popa_test.o`), and its 16-bit (`-L`) mode prints 32-bit register names for
+  `rep movs`. `objdump` showed neither issue. Full detail in the README above.
 
 ### Untested / unconfirmed opcodes (implemented, no real sample)
 
@@ -329,7 +374,13 @@ far.
 2. If real V30-targeted MUTOS source ever surfaces, prioritize re-checking INSB/OUTSB,
    PUSHA/POPA, PUSH imm, ENTER/LEAVE/BOUND, the IMUL immediate forms, and the
    count≠1/CL shift/rotate form — currently the only unconfirmed-by-corpus opcodes in
-   active use by this project's stated final-version goal.
+   active use by this project's stated final-version goal. Test files and an
+   independent-tooling cross-check for all twelve now exist in
+   `tests/mutos_as/v30_speculative/` (see above) — this makes verification against a
+   real sample, if one ever surfaces, a drop-in comparison rather than starting from
+   nothing, but does **not** reduce the priority of finding that real sample. In
+   particular, resolve the open `imul`-immediate marker-truncation question (see the
+   opcode-coverage table's footnote ²) one way or the other once real evidence exists.
 3. `esc`/`escb`, `ret`/`reti` with an immediate, and the dedicated `int 3` encoding
    are the three remaining 8086-level gaps with enough information in
    `Assembler_as.pdf` alone to implement without further real-hardware evidence.
