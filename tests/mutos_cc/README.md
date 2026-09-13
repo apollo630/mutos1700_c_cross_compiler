@@ -224,3 +224,12 @@ alone be verified well before `mutos_c1` is ready.
   hung" — check that `<name>.1`/`<name>.2` actually exist and look
   non-empty before trusting them, especially for anything that fails
   silently under `make`'s default error handling.
+- **`cc`'s `-P` and `-S` cannot be combined** — found on real hardware,
+  where an earlier version of this corpus's tooling produced every
+  `.i`/`.1`/`.2` correctly but no `.s` at all. `v7/cc/cc.c`'s own control
+  flow (not just its flag-parsing) makes `-P` stop cc dead right after
+  `cpp`, before `-S`'s effect is ever reached, for every file, no matter
+  what else is on the command line. The `.s`-producing recipes now use
+  plain `cc -S`, no `-P`; see the top-level `Makefile`'s header for the
+  full explanation of why this doesn't affect byte-parity with the rest
+  of the golden set.

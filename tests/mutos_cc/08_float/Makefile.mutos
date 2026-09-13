@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,13 +34,13 @@ C0  = /lib/c0
 all: 01_floatbas.s 01_floatbas.1 02_dblconv.s 02_dblconv.1
 
 01_floatbas.s: 01_floatbas.c
-	$(CC) -P -S 01_floatbas.c
+	$(CC) -S 01_floatbas.c
 
 01_floatbas.1: 01_floatbas.c
 	$(CPP) -P 01_floatbas.c > 01_floatbas.i; $(C0) 01_floatbas.i 01_floatbas.1 01_floatbas.2
 
 02_dblconv.s: 02_dblconv.c
-	$(CC) -P -S 02_dblconv.c
+	$(CC) -S 02_dblconv.c
 
 02_dblconv.1: 02_dblconv.c
 	$(CPP) -P 02_dblconv.c > 02_dblconv.i; $(C0) 02_dblconv.i 02_dblconv.1 02_dblconv.2

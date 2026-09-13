@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,31 +34,31 @@ C0  = /lib/c0
 all: 01_wordcount.s 01_wordcount.1 02_bubsort.s 02_bubsort.1 03_linklist.s 03_linklist.1 04_strrev.s 04_strrev.1 05_matmul.s 05_matmul.1
 
 01_wordcount.s: 01_wordcount.c
-	$(CC) -P -S 01_wordcount.c
+	$(CC) -S 01_wordcount.c
 
 01_wordcount.1: 01_wordcount.c
 	$(CPP) -P 01_wordcount.c > 01_wordcount.i; $(C0) 01_wordcount.i 01_wordcount.1 01_wordcount.2
 
 02_bubsort.s: 02_bubsort.c
-	$(CC) -P -S 02_bubsort.c
+	$(CC) -S 02_bubsort.c
 
 02_bubsort.1: 02_bubsort.c
 	$(CPP) -P 02_bubsort.c > 02_bubsort.i; $(C0) 02_bubsort.i 02_bubsort.1 02_bubsort.2
 
 03_linklist.s: 03_linklist.c
-	$(CC) -P -S 03_linklist.c
+	$(CC) -S 03_linklist.c
 
 03_linklist.1: 03_linklist.c
 	$(CPP) -P 03_linklist.c > 03_linklist.i; $(C0) 03_linklist.i 03_linklist.1 03_linklist.2
 
 04_strrev.s: 04_strrev.c
-	$(CC) -P -S 04_strrev.c
+	$(CC) -S 04_strrev.c
 
 04_strrev.1: 04_strrev.c
 	$(CPP) -P 04_strrev.c > 04_strrev.i; $(C0) 04_strrev.i 04_strrev.1 04_strrev.2
 
 05_matmul.s: 05_matmul.c
-	$(CC) -P -S 05_matmul.c
+	$(CC) -S 05_matmul.c
 
 05_matmul.1: 05_matmul.c
 	$(CPP) -P 05_matmul.c > 05_matmul.i; $(C0) 05_matmul.i 05_matmul.1 05_matmul.2

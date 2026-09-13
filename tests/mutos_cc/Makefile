@@ -46,14 +46,23 @@
 # (cc.c's own hardcoded paths: /lib/cpp, /lib/c0). Override if needed,
 # e.g.: make CC=/usr/bin/cc
 #
-# -P matches the flag the mutos_cpp golden corpus was generated with:
-# CLAUDE.md notes that mutos_cpp never emits '# N "file"' line-marker
-# output regardless of -P, because every real golden reference it is
-# checked against was itself produced with cc's -P (which cc forwards
-# verbatim to cpp). Using -P consistently here -- for the "make all" .s
-# output AND the standalone cpp step in "make intermediates" -- keeps
-# every artifact for a given test case (.i/.1/.2/.s) traceable to exactly
-# the same underlying compilation.
+# BUG FIX (found on real hardware: "make all" produced no ".s" files at
+# all): cc's -P and -S cannot be combined. Reading cc.c's actual control
+# flow (not just its flag-parsing switch) shows -P makes cc stop dead
+# right after cpp -- "if (pflag) { cflag++; continue; }" runs BEFORE the
+# code that checks sflag (from -S) ever executes, for every source file,
+# unconditionally. So "cc -P -S foo.c" never reaches c0, c1, or the
+# ".s"-naming logic at all; it only ever produces a "foo.i". This
+# contradicts what an earlier version of this comment claimed (that -P
+# and -S combine safely) -- that was wrong. CFLAGS is now just "-S", no
+# -P. This does NOT affect byte-parity with the mutos_cpp golden corpus:
+# c0's own intermediate-code opcodes (v7/cc/c0.h) have nothing for
+# source line/file tracking, so whether cpp inserted '# N "file"' line
+# markers or not (the actual difference -P makes to cpp itself) has no
+# way to show up in the resulting ".s" text. -P stays correct and
+# necessary for the plain "%.i: %.c" rule below, which calls cpp
+# directly (not through the cc driver), so none of this -P/-S
+# interaction applies there.
 #
 # IMPORTANT: c0 must receive cpp's OUTPUT, never the raw .c file. Real
 # cc.c never invokes c0 on the source file directly -- c0's "source" argv
@@ -77,7 +86,7 @@
 # "CLI Interface" requirement.)
 
 CC       = cc
-CFLAGS   = -P -S
+CFLAGS   = -S
 CPP      = /lib/cpp
 CPPFLAGS = -P
 C0       = /lib/c0

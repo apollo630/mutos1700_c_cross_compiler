@@ -34,8 +34,19 @@
 #
 # c0 is fed cpp's OUTPUT (name.i), never the raw name.c -- see the
 # Makefile's comment block for why that matters for byte-identical
-# temp1/temp2. -P matches the flag every other golden in this project
-# was generated with.
+# temp1/temp2. -P on the cpp line matches the flag every other golden
+# in this project was generated with.
+#
+# BUG FIX: the final "cc -P -S" produced no ".s" at all on real
+# hardware. cc.c's -P makes cc stop dead right after cpp
+# ("if (pflag) { cflag++; continue; }" runs before -S's effect is ever
+# reached), unconditionally, for every file -- so -P and -S can't be
+# combined on this cc. Now just "cc -S" (no -P) on that line; doesn't
+# affect byte-parity, since c0's own intermediate-code opcodes have
+# nothing for source line/file tracking, so whichever way cpp handles
+# line markers can't show up in the ".s" text. The separate "cpp -P"
+# line above is a direct cpp invocation, not through the cc driver, so
+# none of this applies to it.
 
 for f in `find . -name '*.c' -print`
 do
@@ -46,6 +57,6 @@ do
 		cd "$dir" || exit 1
 		cpp -P "$base.c" > "$base.i" &&
 		/lib/c0 "$base.i" "$base.1" "$base.2" &&
-		cc -P -S "$base.c"
+		cc -S "$base.c"
 	) || echo "  FAILED: $dir/$base"
 done

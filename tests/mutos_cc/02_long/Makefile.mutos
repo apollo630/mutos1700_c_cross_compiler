@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,25 +34,25 @@ C0  = /lib/c0
 all: 01_addsub.s 01_addsub.1 02_muldiv.s 02_muldiv.1 03_retval.s 03_retval.1 04_params.s 04_params.1
 
 01_addsub.s: 01_addsub.c
-	$(CC) -P -S 01_addsub.c
+	$(CC) -S 01_addsub.c
 
 01_addsub.1: 01_addsub.c
 	$(CPP) -P 01_addsub.c > 01_addsub.i; $(C0) 01_addsub.i 01_addsub.1 01_addsub.2
 
 02_muldiv.s: 02_muldiv.c
-	$(CC) -P -S 02_muldiv.c
+	$(CC) -S 02_muldiv.c
 
 02_muldiv.1: 02_muldiv.c
 	$(CPP) -P 02_muldiv.c > 02_muldiv.i; $(C0) 02_muldiv.i 02_muldiv.1 02_muldiv.2
 
 03_retval.s: 03_retval.c
-	$(CC) -P -S 03_retval.c
+	$(CC) -S 03_retval.c
 
 03_retval.1: 03_retval.c
 	$(CPP) -P 03_retval.c > 03_retval.i; $(C0) 03_retval.i 03_retval.1 03_retval.2
 
 04_params.s: 04_params.c
-	$(CC) -P -S 04_params.c
+	$(CC) -S 04_params.c
 
 04_params.1: 04_params.c
 	$(CPP) -P 04_params.c > 04_params.i; $(C0) 04_params.i 04_params.1 04_params.2
