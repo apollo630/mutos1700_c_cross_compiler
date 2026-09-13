@@ -115,16 +115,27 @@ all: $(ASMS)
 
 intermediates: $(T1S)
 
-# Run only on the modern host, after copying *.s/*.i/*.1/*.2 back --
-# see README.md's DIRSIZ=14 note for why the longer suffixes below are
-# deliberately never created on the real MUTOS filesystem.
-goldens: all intermediates
+# goldens is intentionally prerequisite-free (NOT "goldens: all
+# intermediates" -- an earlier version had that, and it broke on real
+# use): those prerequisites make Make check .s/.1 freshness against
+# .c/.i by MTIME, and after a fresh "git checkout" or a file transfer
+# from MUTOS, timestamps routinely don't land in the "right" order --
+# so Make decides an already-generated .s/.1 is "stale" and tries to
+# rebuild it using $(CC)/$(CPP)/$(C0), which don't exist on this
+# (Linux) host at all ("/lib/c0: not found"). goldens' only job is to
+# package whatever .s/.i/.1/.2 already exist on disk; it must never
+# try to (re)create them itself. Run "make all intermediates" on MUTOS
+# first if they don't exist yet -- see the numbered steps above.
+goldens:
 	@for f in $(ASMS) $(CPPOUTS); do \
-		cp -v "$$f" "$$f.golden"; \
+		if [ -f "$$f" ]; then cp -v "$$f" "$$f.golden"; \
+		else echo "skipping $$f (not found -- generate it on MUTOS first)"; fi; \
 	done
 	@for f in $(T1S) $(T2S); do \
-		cp -v "$$f" "$$f.golden"; \
-		base64 "$$f" > "$$f.golden.base64.txt"; \
+		if [ -f "$$f" ]; then \
+			cp -v "$$f" "$$f.golden"; \
+			base64 "$$f" > "$$f.golden.base64.txt"; \
+		else echo "skipping $$f (not found -- generate it on MUTOS first)"; fi; \
 	done
 
 clean:

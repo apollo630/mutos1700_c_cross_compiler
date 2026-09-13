@@ -1,0 +1,52 @@
+.globl	_main
+.text
+.even
+_main:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG 3
+jmp	L1
+L2:| _a=-14.
+| _i=-16.
+| _sum=-18.
+mov	*-16.(bp),*0.
+L4:cmp	*-16.(bp),*5.
+bge	L5
+lea	di,*-14.(bp)
+mov	si,*-16.(bp)
+sal	si,*1
+add	di,si
+push	di
+mov	ax,*-16.(bp)
+imul	*-16.(bp)
+pop	bx
+mov	(bx),ax
+L6:mov	di,*-16.(bp)
+inc	di
+mov	*-16.(bp),di
+jmp	L4
+L5:mov	*-18.(bp),*0.
+mov	*-16.(bp),*0.
+L7:cmp	*-16.(bp),*5.
+bge	L8
+lea	di,*-14.(bp)
+mov	si,*-16.(bp)
+sal	si,*1
+add	di,si
+mov	di,(di)
+add	di,*-18.(bp)
+mov	*-18.(bp),di
+L9:mov	di,*-16.(bp)
+inc	di
+mov	*-16.(bp),di
+jmp	L7
+L8:mov	di,*-18.(bp)
+mov	ax,di
+jmp	L3
+L3:|RTYP 0
+jmp	cret
+L1:sub	sp,*14.
+jmp	L2
+.data
