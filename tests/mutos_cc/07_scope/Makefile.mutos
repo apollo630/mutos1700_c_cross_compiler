@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,19 +34,19 @@ C0  = /lib/c0
 all: 01_globstat.s 01_globstat.1 02_shadow.s 02_shadow.1 03_externdef.s 03_externdef.1
 
 01_globstat.s: 01_globstat.c
-	$(CC) -P -S 01_globstat.c
+	$(CC) -S 01_globstat.c
 
 01_globstat.1: 01_globstat.c
 	$(CPP) -P 01_globstat.c > 01_globstat.i; $(C0) 01_globstat.i 01_globstat.1 01_globstat.2
 
 02_shadow.s: 02_shadow.c
-	$(CC) -P -S 02_shadow.c
+	$(CC) -S 02_shadow.c
 
 02_shadow.1: 02_shadow.c
 	$(CPP) -P 02_shadow.c > 02_shadow.i; $(C0) 02_shadow.i 02_shadow.1 02_shadow.2
 
 03_externdef.s: 03_externdef.c
-	$(CC) -P -S 03_externdef.c
+	$(CC) -S 03_externdef.c
 
 03_externdef.1: 03_externdef.c
 	$(CPP) -P 03_externdef.c > 03_externdef.i; $(C0) 03_externdef.i 03_externdef.1 03_externdef.2

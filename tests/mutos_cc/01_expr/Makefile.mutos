@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,49 +34,49 @@ C0  = /lib/c0
 all: 01_intarith.s 01_intarith.1 02_bitwise.s 02_bitwise.1 03_rellogic.s 03_rellogic.1 04_shift.s 04_shift.1 05_incdec.s 05_incdec.1 06_compasgn.s 06_compasgn.1 07_ternary.s 07_ternary.1 08_castsize.s 08_castsize.1
 
 01_intarith.s: 01_intarith.c
-	$(CC) -P -S 01_intarith.c
+	$(CC) -S 01_intarith.c
 
 01_intarith.1: 01_intarith.c
 	$(CPP) -P 01_intarith.c > 01_intarith.i; $(C0) 01_intarith.i 01_intarith.1 01_intarith.2
 
 02_bitwise.s: 02_bitwise.c
-	$(CC) -P -S 02_bitwise.c
+	$(CC) -S 02_bitwise.c
 
 02_bitwise.1: 02_bitwise.c
 	$(CPP) -P 02_bitwise.c > 02_bitwise.i; $(C0) 02_bitwise.i 02_bitwise.1 02_bitwise.2
 
 03_rellogic.s: 03_rellogic.c
-	$(CC) -P -S 03_rellogic.c
+	$(CC) -S 03_rellogic.c
 
 03_rellogic.1: 03_rellogic.c
 	$(CPP) -P 03_rellogic.c > 03_rellogic.i; $(C0) 03_rellogic.i 03_rellogic.1 03_rellogic.2
 
 04_shift.s: 04_shift.c
-	$(CC) -P -S 04_shift.c
+	$(CC) -S 04_shift.c
 
 04_shift.1: 04_shift.c
 	$(CPP) -P 04_shift.c > 04_shift.i; $(C0) 04_shift.i 04_shift.1 04_shift.2
 
 05_incdec.s: 05_incdec.c
-	$(CC) -P -S 05_incdec.c
+	$(CC) -S 05_incdec.c
 
 05_incdec.1: 05_incdec.c
 	$(CPP) -P 05_incdec.c > 05_incdec.i; $(C0) 05_incdec.i 05_incdec.1 05_incdec.2
 
 06_compasgn.s: 06_compasgn.c
-	$(CC) -P -S 06_compasgn.c
+	$(CC) -S 06_compasgn.c
 
 06_compasgn.1: 06_compasgn.c
 	$(CPP) -P 06_compasgn.c > 06_compasgn.i; $(C0) 06_compasgn.i 06_compasgn.1 06_compasgn.2
 
 07_ternary.s: 07_ternary.c
-	$(CC) -P -S 07_ternary.c
+	$(CC) -S 07_ternary.c
 
 07_ternary.1: 07_ternary.c
 	$(CPP) -P 07_ternary.c > 07_ternary.i; $(C0) 07_ternary.i 07_ternary.1 07_ternary.2
 
 08_castsize.s: 08_castsize.c
-	$(CC) -P -S 08_castsize.c
+	$(CC) -S 08_castsize.c
 
 08_castsize.1: 08_castsize.c
 	$(CPP) -P 08_castsize.c > 08_castsize.i; $(C0) 08_castsize.i 08_castsize.1 08_castsize.2

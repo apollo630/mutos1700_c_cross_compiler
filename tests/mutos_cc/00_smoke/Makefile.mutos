@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,19 +34,19 @@ C0  = /lib/c0
 all: 01_emptymain.s 01_emptymain.1 02_retconst.s 02_retconst.1 03_retexpr.s 03_retexpr.1
 
 01_emptymain.s: 01_emptymain.c
-	$(CC) -P -S 01_emptymain.c
+	$(CC) -S 01_emptymain.c
 
 01_emptymain.1: 01_emptymain.c
 	$(CPP) -P 01_emptymain.c > 01_emptymain.i; $(C0) 01_emptymain.i 01_emptymain.1 01_emptymain.2
 
 02_retconst.s: 02_retconst.c
-	$(CC) -P -S 02_retconst.c
+	$(CC) -S 02_retconst.c
 
 02_retconst.1: 02_retconst.c
 	$(CPP) -P 02_retconst.c > 02_retconst.i; $(C0) 02_retconst.i 02_retconst.1 02_retconst.2
 
 03_retexpr.s: 03_retexpr.c
-	$(CC) -P -S 03_retexpr.c
+	$(CC) -S 03_retexpr.c
 
 03_retexpr.1: 03_retexpr.c
 	$(CPP) -P 03_retexpr.c > 03_retexpr.i; $(C0) 03_retexpr.i 03_retexpr.1 03_retexpr.2

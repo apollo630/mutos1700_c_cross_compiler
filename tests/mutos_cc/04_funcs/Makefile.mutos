@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,43 +34,43 @@ C0  = /lib/c0
 all: 01_call.s 01_call.1 02_manyargs.s 02_manyargs.1 03_recfact.s 03_recfact.1 04_mutrec.s 04_mutrec.1 05_staticvar.s 05_staticvar.1 06_regclass.s 06_regclass.1 07_funcptr.s 07_funcptr.1
 
 01_call.s: 01_call.c
-	$(CC) -P -S 01_call.c
+	$(CC) -S 01_call.c
 
 01_call.1: 01_call.c
 	$(CPP) -P 01_call.c > 01_call.i; $(C0) 01_call.i 01_call.1 01_call.2
 
 02_manyargs.s: 02_manyargs.c
-	$(CC) -P -S 02_manyargs.c
+	$(CC) -S 02_manyargs.c
 
 02_manyargs.1: 02_manyargs.c
 	$(CPP) -P 02_manyargs.c > 02_manyargs.i; $(C0) 02_manyargs.i 02_manyargs.1 02_manyargs.2
 
 03_recfact.s: 03_recfact.c
-	$(CC) -P -S 03_recfact.c
+	$(CC) -S 03_recfact.c
 
 03_recfact.1: 03_recfact.c
 	$(CPP) -P 03_recfact.c > 03_recfact.i; $(C0) 03_recfact.i 03_recfact.1 03_recfact.2
 
 04_mutrec.s: 04_mutrec.c
-	$(CC) -P -S 04_mutrec.c
+	$(CC) -S 04_mutrec.c
 
 04_mutrec.1: 04_mutrec.c
 	$(CPP) -P 04_mutrec.c > 04_mutrec.i; $(C0) 04_mutrec.i 04_mutrec.1 04_mutrec.2
 
 05_staticvar.s: 05_staticvar.c
-	$(CC) -P -S 05_staticvar.c
+	$(CC) -S 05_staticvar.c
 
 05_staticvar.1: 05_staticvar.c
 	$(CPP) -P 05_staticvar.c > 05_staticvar.i; $(C0) 05_staticvar.i 05_staticvar.1 05_staticvar.2
 
 06_regclass.s: 06_regclass.c
-	$(CC) -P -S 06_regclass.c
+	$(CC) -S 06_regclass.c
 
 06_regclass.1: 06_regclass.c
 	$(CPP) -P 06_regclass.c > 06_regclass.i; $(C0) 06_regclass.i 06_regclass.1 06_regclass.2
 
 07_funcptr.s: 07_funcptr.c
-	$(CC) -P -S 07_funcptr.c
+	$(CC) -S 07_funcptr.c
 
 07_funcptr.1: 07_funcptr.c
 	$(CPP) -P 07_funcptr.c > 07_funcptr.i; $(C0) 07_funcptr.i 07_funcptr.1 07_funcptr.2

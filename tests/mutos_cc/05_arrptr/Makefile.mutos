@@ -20,6 +20,13 @@
 # FEHLERQUELLEN note that shell state doesn't carry across separate
 # recipe lines.
 
+# BUG FIX: "cc -P -S" produced no ".s" at all on real hardware -- cc.c's
+# -P makes cc stop dead right after cpp ("if (pflag) { cflag++; continue; }"
+# runs before -S's effect is ever reached), unconditionally, for every file.
+# Now just "cc -S" (no -P); doesn't affect byte-parity, since c0's own
+# intermediate-code opcodes have nothing for source line/file tracking, so
+# whichever way cpp handles line markers can't show up in the ".s" text.
+#
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
@@ -27,43 +34,43 @@ C0  = /lib/c0
 all: 01_arrbasic.s 01_arrbasic.1 02_array2d.s 02_array2d.1 03_ptrbasic.s 03_ptrbasic.1 04_ptrarreq.s 04_ptrarreq.1 05_arrofptr.s 05_arrofptr.1 06_ptrptr.s 06_ptrptr.1 07_strlibc.s 07_strlibc.1
 
 01_arrbasic.s: 01_arrbasic.c
-	$(CC) -P -S 01_arrbasic.c
+	$(CC) -S 01_arrbasic.c
 
 01_arrbasic.1: 01_arrbasic.c
 	$(CPP) -P 01_arrbasic.c > 01_arrbasic.i; $(C0) 01_arrbasic.i 01_arrbasic.1 01_arrbasic.2
 
 02_array2d.s: 02_array2d.c
-	$(CC) -P -S 02_array2d.c
+	$(CC) -S 02_array2d.c
 
 02_array2d.1: 02_array2d.c
 	$(CPP) -P 02_array2d.c > 02_array2d.i; $(C0) 02_array2d.i 02_array2d.1 02_array2d.2
 
 03_ptrbasic.s: 03_ptrbasic.c
-	$(CC) -P -S 03_ptrbasic.c
+	$(CC) -S 03_ptrbasic.c
 
 03_ptrbasic.1: 03_ptrbasic.c
 	$(CPP) -P 03_ptrbasic.c > 03_ptrbasic.i; $(C0) 03_ptrbasic.i 03_ptrbasic.1 03_ptrbasic.2
 
 04_ptrarreq.s: 04_ptrarreq.c
-	$(CC) -P -S 04_ptrarreq.c
+	$(CC) -S 04_ptrarreq.c
 
 04_ptrarreq.1: 04_ptrarreq.c
 	$(CPP) -P 04_ptrarreq.c > 04_ptrarreq.i; $(C0) 04_ptrarreq.i 04_ptrarreq.1 04_ptrarreq.2
 
 05_arrofptr.s: 05_arrofptr.c
-	$(CC) -P -S 05_arrofptr.c
+	$(CC) -S 05_arrofptr.c
 
 05_arrofptr.1: 05_arrofptr.c
 	$(CPP) -P 05_arrofptr.c > 05_arrofptr.i; $(C0) 05_arrofptr.i 05_arrofptr.1 05_arrofptr.2
 
 06_ptrptr.s: 06_ptrptr.c
-	$(CC) -P -S 06_ptrptr.c
+	$(CC) -S 06_ptrptr.c
 
 06_ptrptr.1: 06_ptrptr.c
 	$(CPP) -P 06_ptrptr.c > 06_ptrptr.i; $(C0) 06_ptrptr.i 06_ptrptr.1 06_ptrptr.2
 
 07_strlibc.s: 07_strlibc.c
-	$(CC) -P -S 07_strlibc.c
+	$(CC) -S 07_strlibc.c
 
 07_strlibc.1: 07_strlibc.c
 	$(CPP) -P 07_strlibc.c > 07_strlibc.i; $(C0) 07_strlibc.i 07_strlibc.1 07_strlibc.2
