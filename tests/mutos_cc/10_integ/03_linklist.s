@@ -1,0 +1,57 @@
+.globl	_main
+.text
+.even
+_main:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG 3
+jmp	L1
+L2:| _head=-6.
+| _cur=-8.
+| _i=-10.
+| _sum=-12.
+mov	*-6.(bp),*0.
+mov	*-10.(bp),*1.
+L4:cmp	*-10.(bp),*5.
+bgt	L5
+mov	di,*4.
+push	di
+call	_malloc
+add	sp,*2.
+mov	*-8.(bp),ax
+push	*-8.(bp)
+mov	di,*-10.(bp)
+pop	bx
+mov	(bx),di
+mov	di,*-6.(bp)
+mov	si,*-8.(bp)
+mov	*2.(si),di
+mov	di,*-8.(bp)
+mov	*-6.(bp),di
+L6:mov	di,*-10.(bp)
+inc	di
+mov	*-10.(bp),di
+jmp	L4
+L5:mov	*-12.(bp),*0.
+mov	di,*-6.(bp)
+mov	*-8.(bp),di
+L7:cmp	*-8.(bp),*0
+beq	L8
+mov	di,*-8.(bp)
+mov	di,(di)
+add	di,*-12.(bp)
+mov	*-12.(bp),di
+mov	di,*-8.(bp)
+mov	di,*2.(di)
+mov	*-8.(bp),di
+jmp	L7
+L8:mov	di,*-12.(bp)
+mov	ax,di
+jmp	L3
+L3:|RTYP 0
+jmp	cret
+L1:sub	sp,*8.
+jmp	L2
+.data

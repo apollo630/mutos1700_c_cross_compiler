@@ -1,0 +1,49 @@
+.globl	_main
+.text
+.even
+_main:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG 3
+jmp	L1
+L2:| _src=-24.
+| _dst=-44.
+| _len=-46.
+| _cmp=-48.
+mov	di,#L4
+push	di
+lea	di,*-24.(bp)
+push	di
+call	_strcpy
+add	sp,*4.
+lea	di,*-24.(bp)
+push	di
+lea	di,*-44.(bp)
+push	di
+call	_strcpy
+add	sp,*4.
+lea	di,*-44.(bp)
+push	di
+call	_strlen
+add	sp,*2.
+mov	*-46.(bp),ax
+lea	di,*-44.(bp)
+push	di
+lea	di,*-24.(bp)
+push	di
+call	_strcmp
+add	sp,*4.
+mov	*-48.(bp),ax
+mov	di,*-46.(bp)
+add	di,*-48.(bp)
+mov	ax,di
+jmp	L3
+L3:|RTYP 0
+jmp	cret
+L1:sub	sp,*44.
+jmp	L2
+.data
+L4:.byte	/68,/65,/6c,/6c,/6f,/2c,/20,/6d,/75
+.byte	/74,/6f,/73,/0

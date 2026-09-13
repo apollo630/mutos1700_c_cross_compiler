@@ -1,0 +1,74 @@
+.globl	_text
+.data
+_text:.byte	/74,/68,/65,/20,/71,/75,/69,/63,/6b
+.byte	/20,/62,/72,/6f,/77
+.byte	/6e,/20,/66,/6f,/78,/a,/6a,/75,/6d
+.byte	/70,/73,/20,/6f,/76,/65
+.byte	/72,/20,/74,/68,/65,/20,/6c,/61,/7a
+.byte	/79,/20,/64,/6f,/67,/a,/0
+.even
+.globl	_main
+.text
+.even
+_main:
+push	bp
+mov	bp,sp
+push	di
+push	si
+|NREG 3
+jmp	L2
+L3:| _i=-6.
+| _nchar=-8.
+| _nword=-10.
+| _nline=-12.
+| _inword=-14.
+mov	*-8.(bp),*0.
+mov	*-10.(bp),*0.
+mov	*-12.(bp),*0.
+mov	*-14.(bp),*0.
+mov	*-6.(bp),*0.
+L5:mov	dx,*-6.(bp)
+mov	bx,dx
+movb	dx,#_text(bx)
+orb	dx,dx
+beq	L6
+mov	di,*-8.(bp)
+inc	di
+mov	*-8.(bp),di
+mov	dx,*-6.(bp)
+mov	bx,dx
+cmpb	_text(bx),*10.
+bne	L8
+mov	di,*-12.(bp)
+inc	di
+mov	*-12.(bp),di
+L8:mov	dx,*-6.(bp)
+mov	bx,dx
+cmpb	_text(bx),*32.
+beq	L10000
+mov	dx,*-6.(bp)
+mov	bx,dx
+cmpb	_text(bx),*10.
+bne	L9
+L10000:mov	*-14.(bp),*0.
+jmp	L10
+L9:cmp	*-14.(bp),*0
+bne	L11
+mov	*-14.(bp),*1.
+mov	di,*-10.(bp)
+inc	di
+mov	*-10.(bp),di
+L11:L10:L7:mov	di,*-6.(bp)
+inc	di
+mov	*-6.(bp),di
+jmp	L5
+L6:mov	di,*-8.(bp)
+add	di,*-10.(bp)
+add	di,*-12.(bp)
+mov	ax,di
+jmp	L4
+L4:|RTYP 0
+jmp	cret
+L2:sub	sp,*10.
+jmp	L3
+.data
