@@ -122,9 +122,21 @@ make all intermediates
 #    header for what that means in practice):
 make -f Makefile.mutos
 
-# C) no make at all, just a shell loop:
-./gen_mutos.sh
+# C) no make at all -- a plain shell script, run it DIRECTLY, never
+#    with "make -f" (it is not a makefile and make cannot parse it):
+sh gen_mutos.sh
 ```
+
+**`gen_mutos.sh` is a shell script, not a makefile — run it with `sh` (or
+`./gen_mutos.sh` if its execute bit survived the transfer to MUTOS), never
+as `make -f gen_mutos.sh`.** Feeding it to `make -f` makes `make` try to
+parse shell syntax as makefile rules, which fails as soon as it hits
+something that isn't a comment, a macro definition, or a `target:`/tab
+-recipe line — e.g. `Make: Must be a separator on rules line 35. Stop.`
+is `make` choking on that line's bare `do` (the `for` loop's `do`,
+sitting on its own line with no `:` and no leading tab, so `make`
+expected a rule separator and didn't find one). `sh gen_mutos.sh` sidesteps
+any execute-bit question entirely and is the safest way to run it.
 
 **(A) needs GNU Make specifically.** The real MUTOS 1700 `make(1)` has no
 `%.o: %.c` pattern rules, no `$(wildcard)`/`$(dir)`/`$(notdir)` functions,
