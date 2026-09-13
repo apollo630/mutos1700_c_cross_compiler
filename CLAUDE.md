@@ -39,14 +39,49 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   own `README.md` for full methodology, results, and open caveats.
 * `/tests/mutos_cc/`: K&R C construct-coverage corpus for the future `mutos_cc`/
   `mutos_c0`/`mutos_c1` (62 small `.c` files across 11 numbered categories,
-  `00_smoke/` … `10_integ/`, plus a `Makefile`/`README.md`). Source-only for now —
-  `*.s.golden` references are added per-category as they're generated on real
-  MUTOS 1700 hardware (same golden methodology as `/tests/mutos_cpp/`; see
-  `docs/DEVLOG.md`'s Milestone 4 section for the corpus's design rationale,
-  including the deliberately targeted `09_abiprobe/frame*` cases). Every
-  identifier and file/directory name in this corpus was checked against this
-  toolchain's real significant-character limits (see "Identifier length limits"
-  below) and MUTOS 1700's real `DIRSIZ`=14 filename limit.
+  `00_smoke/` … `10_integ/`). Source-only for now — golden references
+  (`*.s.golden` for the final assembly, **and** `*.i.golden`/`*.1.golden`/
+  `*.2.golden` for `cpp`'s output and `c0`'s raw `temp1`/`temp2`
+  intermediate-code streams, captured directly via `/lib/cpp`+`/lib/c0`,
+  not just derived from the final `.s`) are added per-category as they're
+  generated on real MUTOS 1700 hardware (same golden methodology as
+  `/tests/mutos_cpp/`; see `docs/DEVLOG.md`'s Milestone 4 section for the
+  corpus's design rationale, including the deliberately targeted
+  `09_abiprobe/frame*` cases and the confirmed `c0`/`c1` process-split
+  decision this dual capture operationalizes). Capturing `c0`'s own output
+  separately from `c1`'s is what makes that split pay off in practice:
+  `mutos_c0` can be verified against the `.1`/`.2` goldens on its own,
+  before `mutos_c1` even needs to exist.
+  Three interchangeable, real-hardware-verified ways to generate the
+  above on real MUTOS 1700 / an accurate emulator (see `README.md` for
+  the full writeup):
+  * `Makefile` (top level): GNU-Make-only (`all`, `intermediates`,
+    `goldens`, `clean`, `distclean`) — needs a GNU-make-capable machine;
+    the real MUTOS 1700 `make(1)` cannot run it (no `%.o: %.c`, no
+    `$(wildcard)`/`$(dir)`/`$(notdir)`, no `:=` — confirmed against its
+    own manpage). `goldens` (base64-encoding the binary `.1`/`.2` files,
+    matching the `tests/mutos1700_libc/*.o` convention) is meant to run
+    on the modern host regardless of how the `.s`/`.i`/`.1`/`.2` files
+    upstream of it were produced.
+  * `<category>/Makefile.mutos` (one per category directory, e.g.
+    `00_smoke/Makefile.mutos`): real V7/MUTOS `make(1)`-compatible, run
+    from inside that directory (`cd 00_smoke && make -f Makefile.mutos`).
+    Deliberately one small makefile per category rather than one
+    covering all 62 files — a single one that size hit
+    `Make: out of memory. Stop.` on real hardware.
+  * `gen_mutos.sh`: a plain `/bin/sh` loop needing no `make` at all: run
+    with `sh gen_mutos.sh`, **never** `make -f gen_mutos.sh` (it is a
+    shell script, not a makefile, and real `make` cannot parse it — it
+    will fail with `Must be a separator on rules line N. Stop.`).
+    Verified line by line against the real MUTOS 1700
+    `basename(1)`/`expr(1)`/`find(1)` manpages, which caught one real
+    bug: this `find`'s predicates (`-name` included) have no implicit
+    default action, so a bare `find . -name '*.c'` silently prints
+    nothing — an explicit `-print` is required.
+  Every identifier and file/directory name in this corpus (including the
+  scripts/makefiles above) was checked against this toolchain's real
+  significant-character limits (see "Identifier length limits" below)
+  and MUTOS 1700's real `DIRSIZ`=14 filename limit.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -251,8 +286,13 @@ scope and intent, not a snapshot of what's done.
   against hand-written expected IR before any x86 code generator exists. Full
   rationale in `docs/DEVLOG.md`'s Milestone 4 section.
 * K&R construct-coverage test corpus in place at `tests/mutos_cc/` (source-only,
-  62 files across 11 categories) — next step is generating `*.s.golden`
-  references for it on real MUTOS 1700 hardware, category by category.
+  62 files across 11 categories, each with its own real-`make`-compatible
+  `Makefile.mutos` plus a shell fallback `gen_mutos.sh` — both verified
+  against the real MUTOS 1700 `make(1)`/`basename(1)`/`expr(1)`/`find(1)`
+  manpages) — golden generation on real MUTOS 1700 hardware is in
+  progress, category by category, covering `*.s.golden` (final assembly)
+  and `*.i.golden`/`*.1.golden`/`*.2.golden` (`cpp` output and `c0`'s raw
+  `temp1`/`temp2`) alike.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.
