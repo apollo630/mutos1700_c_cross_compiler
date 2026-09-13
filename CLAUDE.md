@@ -153,6 +153,16 @@ You act as an expert systems programmer, compiler architect, and operating syste
      forwards verbatim to `cpp` — see `v7/cc/cc.c`), so this is simply `mutos_cpp`'s
      only supported mode; `-P` is accepted on the command line purely for
      compatibility. See `src/mutos_cpp/README.md`.
+   * **Open question for future `mutos_cc`, not yet decided**: real `cc.c`'s `-P` and
+     `-S` are not just independent flags — `-P` makes `cc` exit right after `cpp` runs
+     (`if (pflag) { cflag++; continue; }`), unconditionally, before the code that
+     checks `-S`'s `sflag` is ever reached. So real `cc -P -S foo.c` silently produces
+     only `foo.i`, never `foo.s` — confirmed the hard way generating
+     `tests/mutos_cc/`'s golden corpus (see `docs/DEVLOG.md`'s Milestone 4 host-tooling
+     findings). Byte-for-byte CLI fidelity would mean `mutos_cc` reproducing this exact
+     short-circuit; whether that's worth doing on purpose versus just documenting it as
+     a real-`cc` footgun users should avoid is undecided — revisit once `mutos_cc`'s
+     driver is actually being written.
 4. **Headers & Syscalls**: Provide full support for original MUTOS 1700 header files and system calls (mapping x86 software interrupts/traps instead of PDP-11 traps).
 5. **PDP-11 Middle-Endian — scope**: Historic V7/PDP-11 `long` fields use PDP-11
    Middle-Endian byte order (`1 0 3 2`, i.e. the high-order 16-bit word first, each word
@@ -298,10 +308,18 @@ scope and intent, not a snapshot of what's done.
   62 files across 11 categories, each with its own real-`make`-compatible
   `Makefile.mutos` plus a shell fallback `gen_mutos.sh` — both verified
   against the real MUTOS 1700 `make(1)`/`basename(1)`/`expr(1)`/`find(1)`
-  manpages) — golden generation on real MUTOS 1700 hardware is in
-  progress, category by category, covering `*.s.golden` (final assembly)
-  and `*.i.golden`/`*.1.golden`/`*.2.golden` (`cpp` output and `c0`'s raw
-  `temp1`/`temp2`) alike.
+  manpages) — its golden-generation pipeline (`.s`/`.i`/`.1`/`.2` on real
+  MUTOS 1700 hardware, packaged into `*.golden`/base64 form on the modern
+  host) is now **confirmed working end-to-end**, not just designed: getting
+  there surfaced and fixed several real bugs in this project's own tooling
+  (real `make(1)`'s capacity limits, real `cc`'s `-P`/`-S` interaction, a
+  golden-packaging step that tried to rebuild files using MUTOS-only tools
+  on the modern host) — full writeups in `docs/DEVLOG.md`'s Milestone 4
+  "MUTOS 1700 host-tooling findings" section. Full-corpus golden generation
+  across all 11 categories is presumably in progress.
+* **Next up**: analyze the real-hardware-generated `.s`/`.i`/`.1`/`.2` files
+  as they come in, then begin actually implementing `mutos_c0`/`mutos_c1`
+  against them.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

@@ -732,6 +732,135 @@ in `outcode()`) and were renamed (`fact`, `swapch`); every file/directory name
 in the corpus was also checked against MUTOS 1700's real `DIRSIZ`=14 filename
 limit (`tests/mutos_cpp/h/dir.h`, `h/param.h`) and shortened where needed.
 
+### MUTOS 1700 host-tooling findings
+
+Getting the corpus's golden-generation pipeline actually running on real
+hardware (rather than just designed against manpages and `v7/cc` source
+reading) surfaced several real bugs in this project's own scripts and
+Makefiles — none of them about `mutos_cc` design, all of them about the real
+V7-heritage tools those scripts have to run correctly under. Recorded here in
+the order they were found, since each fix only surfaced the next problem.
+
+**1. `make -f Makefile.mutos`: `Must be a separator on rules line 35. Stop.`**
+Turned out to be user error, not a tooling bug — `gen_mutos.sh` (a shell
+script) had been passed to `make -f` by mistake, which tried to parse shell
+syntax as makefile rules and choked on the `for` loop's bare `do` (no `:`, no
+leading tab, so `make` expected a rule separator and found none). Fixed by
+making the distinction impossible to miss: a loud warning at the very top of
+`gen_mutos.sh` itself, and the two invocations visually separated in
+`tests/mutos_cc/README.md`'s workflow section. Real `make(1)`'s own manpage
+was checked at this point (person-supplied `basename_1.d`/`expr_1.d`/
+`find_1.d`/`make_1.d` troff source) and confirmed: no `%.o: %.c` pattern
+rules, no `$(wildcard)`/`$(dir)`/`$(notdir)` functions, no `:=` — only plain
+`=` macros and two-suffix rules like `.c.o:`. Also confirmed from the
+manpage's own *Fehlerquellen* section: shell state (notably `cd`) does not
+carry across separate recipe lines, since each line runs in its own
+subshell — every recipe in this project's `Makefile.mutos` files is
+deliberately written as one `;`-joined shell line because of this.
+
+**2. `make -f ./Makefile.mutos`: `Make: line too long. Stop.`** The
+single top-level `Makefile.mutos` (covering all 62 test files) built its
+`all:` target from one backslash-continued dependency line listing all 124
+`.s`/`.1` outputs — joined, ~2946 characters across 63 physical lines. The
+longest individual recipe line in the same file was only 110 characters, so
+this pinned the fault precisely on that one aggregate line, not on any
+per-file command. Fixed by replacing the flat list with a chain of small
+targets (`chk01: file1.s file1.1`, `chk02: chk01 file2.s file2.1`, …,
+`all: chk62`), so no logical line ever exceeds ~110 characters regardless of
+how many files the corpus grows to.
+
+**3. Same file, next run: three `Warning: CC/CPP/C0 changed after being
+used` warnings, then `Make: out of memory. Stop.`**, partway through the
+very *first* category (`00_smoke`, 3 files) despite the chain fix above.
+This ruled out per-line length as the remaining cause (already fixed) and
+pointed instead at total makefile size: ~490 lines, 62 chain links plus 124
+real per-file targets, apparently exceeding some fixed-size internal
+table/arena this `make(1)` allocates once for the whole run — a genuinely
+different failure mode from #2, not the same bug resurfacing. The warnings
+are presumed to be a symptom of the same resource exhaustion (this `make`'s
+built-in default macros for `CC` etc. getting corrupted/reused once table
+space ran low), not a separate, independent bug. Fixed structurally: one
+small `Makefile.mutos` per category directory (2–9 files, 42–84 lines each)
+instead of one covering all 62, run from inside each directory (`cd
+00_smoke && make -f Makefile.mutos`) so no single invocation's makefile gets
+anywhere near whatever the real limit is. `tests/mutos_cc/README.md`'s
+workflow section and `CLAUDE.md`'s `/tests/mutos_cc/` bullet were updated to
+match; the top-level `tests/mutos_cc/Makefile.mutos` was deleted outright
+(no longer represents anything real).
+
+**4. `make -f Makefile.mutos` (per-category, this time): ran clean, but
+produced no `.s` files at all** — `.i`/`.1`/`.2` present and correct, `.s`
+silently missing for every file. Root cause: `cc`'s `-P` and `-S` cannot be
+combined on this compiler. `v7/cc/cc.c`'s own control flow — not just its
+flag-parsing `switch`, which just sets `pflag`/`sflag` independently and
+gives no hint of an interaction — makes this explicit:
+
+```c
+av[1] = tmp4;
+tsp = savetsp;
+av[0]= "c0";
+if (pflag) {
+	cflag++;
+	continue;          /* <-- for every source file, unconditionally */
+}
+...
+if (sflag)
+	assource = tmp3 = setsuf(clist[i], 's');
+```
+
+`-P` (`pflag`) makes `cc` `continue` to the next source file immediately
+after `cpp` runs, before c0, c1, or the `sflag`-driven `.s`-naming logic a
+few lines further down is ever reached. So `cc -P -S foo.c` only ever
+produces `foo.i` (cpp's output, since `pflag` also redirects `tmp4` to
+`setsuf(clist[i], 'i')` a few lines earlier) — `-S` never gets a chance to
+matter. This directly explains why Milestone 3's own established convention
+(`cc -P -DM7100 ... file.c`, no `-S`, used to generate the `.i.golden`
+corpus) was always correct: for a preprocess-only run, `-P` alone is exactly
+the right, and only meaningfully possible, flag. The mistake was assuming
+`-P` plus `-S` would compose (both effects together) when designing this
+corpus's own `.s`-generating recipes — they don't compose, `-P` simply wins
+by exiting first. Fixed by dropping `-P` from every `cc -S` invocation
+across `tests/mutos_cc/Makefile`, all 11 `Makefile.mutos` files, and
+`gen_mutos.sh`'s final `cc` call; the separate direct `cpp -P` calls used
+to produce `.i`/`.1`/`.2` are unaffected, since they don't go through
+`cc`'s driver logic and so never hit this interaction at all. Confirmed
+this doesn't threaten byte-parity with the rest of the golden set: `c0`'s
+own intermediate-code opcode set (`v7/cc/c0.h`) has no line/file-tracking
+opcode at all, so whether `cpp` inserted `# N "file"` line markers (the
+actual, sole difference `-P` makes to `cpp` itself) has no path into the
+resulting `.s` text.
+
+**5. `make goldens` on the modern host (Linux), after transferring the
+now-correct `.s`/`.i`/`.1`/`.2` back: `/bin/sh: 1: /lib/c0: not found`,
+`make: *** [Makefile:114: 00_smoke/01_emptymain.1] Error 127`.** The
+top-level `Makefile`'s `goldens` target depended on `all intermediates`,
+which made Make re-check `.s`/`.1` freshness against `.c`/`.i` by mtime
+before packaging anything — standard Make behavior, but wrong for this
+specific workflow, where the actual generation happens on a *different*
+machine (MUTOS) than the packaging step (Linux). A fresh `git checkout`, or
+just the mechanics of transferring files off MUTOS, routinely doesn't
+preserve the "each stage newer than its input" timestamp ordering Make
+assumes; when it doesn't, Make decides an already-correct `.s`/`.1` is stale
+and tries to rebuild it via `$(CC)`/`$(CPP)`/`$(C0)` — paths to binaries
+that exist only on real MUTOS hardware, not on the packaging host. Fixed by
+making `goldens` prerequisite-free: it now only packages whatever
+`.s`/`.i`/`.1`/`.2` files already exist on disk (skipping, not failing on,
+any that are missing), and never attempts to (re)create anything itself.
+Verified against the exact failure scenario (a `.c` file's mtime forced
+newer than already-generated `.s`/`.1` siblings, replicating what a fresh
+`git checkout` does): `make -n goldens` now shows only `cp`/`base64`
+commands, never `cc`/`cpp`/`/lib/c0`.
+
+**End state, confirmed working:** with fixes #1–5 applied, `make -f
+Makefile.mutos` inside a category directory on real MUTOS 1700 hardware
+correctly produces `.s`/`.i`/`.1`/`.2` for every file in that category
+(confirmed for `00_smoke`), and `make goldens` on the modern host, after
+transferring those files back, correctly packages them into
+`*.s.golden`/`*.i.golden`/`*.1.golden`/`*.2.golden` (+ base64 companions)
+without attempting to invoke any MUTOS-only tool. The golden-generation
+pipeline designed in the previous subsection is now empirically validated,
+not just designed.
+
 ---
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)

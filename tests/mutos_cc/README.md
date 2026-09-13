@@ -233,3 +233,19 @@ alone be verified well before `mutos_c1` is ready.
   plain `cc -S`, no `-P`; see the top-level `Makefile`'s header for the
   full explanation of why this doesn't affect byte-parity with the rest
   of the golden set.
+- **`make goldens` must be run with no expectation that it (re)builds
+  anything** — an earlier version depended on `all`/`intermediates`, which
+  made a plain `make goldens` on the modern host re-check `.s`/`.1`
+  freshness against `.c`/`.i` by timestamp. After a fresh `git checkout` or
+  a file transfer from MUTOS, those timestamps routinely don't land in the
+  order Make expects, so it decided already-correct files were stale and
+  tried to rebuild them with tools (`cc`/`cpp`/`/lib/c0`) that don't exist
+  on the modern host. `goldens` is now prerequisite-free: it only packages
+  whatever `.s`/`.i`/`.1`/`.2` already exist on disk, skipping (not
+  failing on) anything missing. If you see `/lib/c0: not found` or similar
+  from a `make goldens` run, you're on an older copy of this Makefile.
+
+**All of the above are confirmed fixed, not just diagnosed**: the full
+`.c` → `.s`/`.i`/`.1`/`.2` → `*.golden` pipeline has been run end-to-end on
+real MUTOS 1700 hardware plus a modern Linux host (verified for the
+`00_smoke` category) with no remaining tooling errors.
