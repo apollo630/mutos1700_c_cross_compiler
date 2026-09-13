@@ -16,10 +16,20 @@
 # cd(1) -- does not carry across separate recipe lines, since each line
 # is handed to its own subshell.
 #
+# The "all" target is built as a chain (chk01 -> chk02 -> ... -> chk62),
+# each link naming only the ONE new file's two outputs, rather than one
+# flat list of all 124 outputs on a single (backslash-continued) logical
+# line. The flat-list version is what broke on real hardware with
+# "Make: line too long. Stop." -- that line, joined across its
+# continuations, was ~2950 characters; the longest single line in this
+# file is now under 120. Every individual file's own target (e.g.
+# "00_smoke/01_emptymain.s") is unaffected and still directly
+# requestable on its own, exactly as before.
+#
 # Does the same two things as ./gen_mutos.sh (which stays as the
 # simpler, make-independent alternative -- use whichever's more
 # convenient):
-#   - "<name>.s"                       via cc -P -S
+#   - "<name>.s"                         via cc -P -S
 #   - "<name>.i" + "<name>.1"/"<name>.2" via cpp then /lib/c0, fed cpp's
 #     OUTPUT, never the raw .c -- matching what the real cc driver does
 #     internally (see the other Makefile's comment block for why).
@@ -29,76 +39,78 @@
 # ask for its ".1" target instead.
 #
 # No GNU-only .PHONY here (this make(1) doesn't have it); "all" and
-# "clean" are safe as long as no real file named "all" or "clean" exists
-# in this directory, which is true today.
+# "clean" and the internal "chkNN" chain links are safe as long as no
+# real files with those names exist in this directory, which is true
+# today.
 
 CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
 
-all: \
-	00_smoke/01_emptymain.s 00_smoke/01_emptymain.1 \
-	00_smoke/02_retconst.s 00_smoke/02_retconst.1 \
-	00_smoke/03_retexpr.s 00_smoke/03_retexpr.1 \
-	01_expr/01_intarith.s 01_expr/01_intarith.1 \
-	01_expr/02_bitwise.s 01_expr/02_bitwise.1 \
-	01_expr/03_rellogic.s 01_expr/03_rellogic.1 \
-	01_expr/04_shift.s 01_expr/04_shift.1 \
-	01_expr/05_incdec.s 01_expr/05_incdec.1 \
-	01_expr/06_compasgn.s 01_expr/06_compasgn.1 \
-	01_expr/07_ternary.s 01_expr/07_ternary.1 \
-	01_expr/08_castsize.s 01_expr/08_castsize.1 \
-	02_long/01_addsub.s 02_long/01_addsub.1 \
-	02_long/02_muldiv.s 02_long/02_muldiv.1 \
-	02_long/03_retval.s 02_long/03_retval.1 \
-	02_long/04_params.s 02_long/04_params.1 \
-	03_ctrlflow/01_ifelse.s 03_ctrlflow/01_ifelse.1 \
-	03_ctrlflow/02_while.s 03_ctrlflow/02_while.1 \
-	03_ctrlflow/03_dowhile.s 03_ctrlflow/03_dowhile.1 \
-	03_ctrlflow/04_for.s 03_ctrlflow/04_for.1 \
-	03_ctrlflow/05_breakcont.s 03_ctrlflow/05_breakcont.1 \
-	03_ctrlflow/06_switch.s 03_ctrlflow/06_switch.1 \
-	03_ctrlflow/07_goto.s 03_ctrlflow/07_goto.1 \
-	04_funcs/01_call.s 04_funcs/01_call.1 \
-	04_funcs/02_manyargs.s 04_funcs/02_manyargs.1 \
-	04_funcs/03_recfact.s 04_funcs/03_recfact.1 \
-	04_funcs/04_mutrec.s 04_funcs/04_mutrec.1 \
-	04_funcs/05_staticvar.s 04_funcs/05_staticvar.1 \
-	04_funcs/06_regclass.s 04_funcs/06_regclass.1 \
-	04_funcs/07_funcptr.s 04_funcs/07_funcptr.1 \
-	05_arrptr/01_arrbasic.s 05_arrptr/01_arrbasic.1 \
-	05_arrptr/02_array2d.s 05_arrptr/02_array2d.1 \
-	05_arrptr/03_ptrbasic.s 05_arrptr/03_ptrbasic.1 \
-	05_arrptr/04_ptrarreq.s 05_arrptr/04_ptrarreq.1 \
-	05_arrptr/05_arrofptr.s 05_arrptr/05_arrofptr.1 \
-	05_arrptr/06_ptrptr.s 05_arrptr/06_ptrptr.1 \
-	05_arrptr/07_strlibc.s 05_arrptr/07_strlibc.1 \
-	06_struct/01_stbasic.s 06_struct/01_stbasic.1 \
-	06_struct/02_stptr.s 06_struct/02_stptr.1 \
-	06_struct/03_starray.s 06_struct/03_starray.1 \
-	06_struct/04_stassign.s 06_struct/04_stassign.1 \
-	06_struct/05_nestst.s 06_struct/05_nestst.1 \
-	06_struct/06_union.s 06_struct/06_union.1 \
-	06_struct/07_bitfield.s 06_struct/07_bitfield.1 \
-	06_struct/08_enum.s 06_struct/08_enum.1 \
-	06_struct/09_typedef.s 06_struct/09_typedef.1 \
-	07_scope/01_globstat.s 07_scope/01_globstat.1 \
-	07_scope/02_shadow.s 07_scope/02_shadow.1 \
-	07_scope/03_externdef.s 07_scope/03_externdef.1 \
-	08_float/01_floatbas.s 08_float/01_floatbas.1 \
-	08_float/02_dblconv.s 08_float/02_dblconv.1 \
-	09_abiprobe/01_argvmain.s 09_abiprobe/01_argvmain.1 \
-	09_abiprobe/02_frame080.s 09_abiprobe/02_frame080.1 \
-	09_abiprobe/03_frame128.s 09_abiprobe/03_frame128.1 \
-	09_abiprobe/04_frame176.s 09_abiprobe/04_frame176.1 \
-	09_abiprobe/05_frame224.s 09_abiprobe/05_frame224.1 \
-	09_abiprobe/06_frame256.s 09_abiprobe/06_frame256.1 \
-	09_abiprobe/07_frame300.s 09_abiprobe/07_frame300.1 \
-	10_integ/01_wordcount.s 10_integ/01_wordcount.1 \
-	10_integ/02_bubsort.s 10_integ/02_bubsort.1 \
-	10_integ/03_linklist.s 10_integ/03_linklist.1 \
-	10_integ/04_strrev.s 10_integ/04_strrev.1 \
-	10_integ/05_matmul.s 10_integ/05_matmul.1
+all: chk62
+
+chk01: 00_smoke/01_emptymain.s 00_smoke/01_emptymain.1
+chk02: chk01 00_smoke/02_retconst.s 00_smoke/02_retconst.1
+chk03: chk02 00_smoke/03_retexpr.s 00_smoke/03_retexpr.1
+chk04: chk03 01_expr/01_intarith.s 01_expr/01_intarith.1
+chk05: chk04 01_expr/02_bitwise.s 01_expr/02_bitwise.1
+chk06: chk05 01_expr/03_rellogic.s 01_expr/03_rellogic.1
+chk07: chk06 01_expr/04_shift.s 01_expr/04_shift.1
+chk08: chk07 01_expr/05_incdec.s 01_expr/05_incdec.1
+chk09: chk08 01_expr/06_compasgn.s 01_expr/06_compasgn.1
+chk10: chk09 01_expr/07_ternary.s 01_expr/07_ternary.1
+chk11: chk10 01_expr/08_castsize.s 01_expr/08_castsize.1
+chk12: chk11 02_long/01_addsub.s 02_long/01_addsub.1
+chk13: chk12 02_long/02_muldiv.s 02_long/02_muldiv.1
+chk14: chk13 02_long/03_retval.s 02_long/03_retval.1
+chk15: chk14 02_long/04_params.s 02_long/04_params.1
+chk16: chk15 03_ctrlflow/01_ifelse.s 03_ctrlflow/01_ifelse.1
+chk17: chk16 03_ctrlflow/02_while.s 03_ctrlflow/02_while.1
+chk18: chk17 03_ctrlflow/03_dowhile.s 03_ctrlflow/03_dowhile.1
+chk19: chk18 03_ctrlflow/04_for.s 03_ctrlflow/04_for.1
+chk20: chk19 03_ctrlflow/05_breakcont.s 03_ctrlflow/05_breakcont.1
+chk21: chk20 03_ctrlflow/06_switch.s 03_ctrlflow/06_switch.1
+chk22: chk21 03_ctrlflow/07_goto.s 03_ctrlflow/07_goto.1
+chk23: chk22 04_funcs/01_call.s 04_funcs/01_call.1
+chk24: chk23 04_funcs/02_manyargs.s 04_funcs/02_manyargs.1
+chk25: chk24 04_funcs/03_recfact.s 04_funcs/03_recfact.1
+chk26: chk25 04_funcs/04_mutrec.s 04_funcs/04_mutrec.1
+chk27: chk26 04_funcs/05_staticvar.s 04_funcs/05_staticvar.1
+chk28: chk27 04_funcs/06_regclass.s 04_funcs/06_regclass.1
+chk29: chk28 04_funcs/07_funcptr.s 04_funcs/07_funcptr.1
+chk30: chk29 05_arrptr/01_arrbasic.s 05_arrptr/01_arrbasic.1
+chk31: chk30 05_arrptr/02_array2d.s 05_arrptr/02_array2d.1
+chk32: chk31 05_arrptr/03_ptrbasic.s 05_arrptr/03_ptrbasic.1
+chk33: chk32 05_arrptr/04_ptrarreq.s 05_arrptr/04_ptrarreq.1
+chk34: chk33 05_arrptr/05_arrofptr.s 05_arrptr/05_arrofptr.1
+chk35: chk34 05_arrptr/06_ptrptr.s 05_arrptr/06_ptrptr.1
+chk36: chk35 05_arrptr/07_strlibc.s 05_arrptr/07_strlibc.1
+chk37: chk36 06_struct/01_stbasic.s 06_struct/01_stbasic.1
+chk38: chk37 06_struct/02_stptr.s 06_struct/02_stptr.1
+chk39: chk38 06_struct/03_starray.s 06_struct/03_starray.1
+chk40: chk39 06_struct/04_stassign.s 06_struct/04_stassign.1
+chk41: chk40 06_struct/05_nestst.s 06_struct/05_nestst.1
+chk42: chk41 06_struct/06_union.s 06_struct/06_union.1
+chk43: chk42 06_struct/07_bitfield.s 06_struct/07_bitfield.1
+chk44: chk43 06_struct/08_enum.s 06_struct/08_enum.1
+chk45: chk44 06_struct/09_typedef.s 06_struct/09_typedef.1
+chk46: chk45 07_scope/01_globstat.s 07_scope/01_globstat.1
+chk47: chk46 07_scope/02_shadow.s 07_scope/02_shadow.1
+chk48: chk47 07_scope/03_externdef.s 07_scope/03_externdef.1
+chk49: chk48 08_float/01_floatbas.s 08_float/01_floatbas.1
+chk50: chk49 08_float/02_dblconv.s 08_float/02_dblconv.1
+chk51: chk50 09_abiprobe/01_argvmain.s 09_abiprobe/01_argvmain.1
+chk52: chk51 09_abiprobe/02_frame080.s 09_abiprobe/02_frame080.1
+chk53: chk52 09_abiprobe/03_frame128.s 09_abiprobe/03_frame128.1
+chk54: chk53 09_abiprobe/04_frame176.s 09_abiprobe/04_frame176.1
+chk55: chk54 09_abiprobe/05_frame224.s 09_abiprobe/05_frame224.1
+chk56: chk55 09_abiprobe/06_frame256.s 09_abiprobe/06_frame256.1
+chk57: chk56 09_abiprobe/07_frame300.s 09_abiprobe/07_frame300.1
+chk58: chk57 10_integ/01_wordcount.s 10_integ/01_wordcount.1
+chk59: chk58 10_integ/02_bubsort.s 10_integ/02_bubsort.1
+chk60: chk59 10_integ/03_linklist.s 10_integ/03_linklist.1
+chk61: chk60 10_integ/04_strrev.s 10_integ/04_strrev.1
+chk62: chk61 10_integ/05_matmul.s 10_integ/05_matmul.1
 
 
 00_smoke/01_emptymain.s: 00_smoke/01_emptymain.c
