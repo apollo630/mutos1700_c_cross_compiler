@@ -210,9 +210,12 @@ the real MUTOS kernel source this project validates against.
 
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
-**Status: NOT STARTED — no code yet, but ABI/calling-convention research is done,
-the `c0`/`c1` process split is confirmed as a deliberate design decision, and a
-source-only K&R test corpus is in place awaiting real-hardware goldens.**
+**Status: NOT STARTED — no `mutos_c0`/`mutos_c1` code yet, but ABI/calling-
+convention research is done, the `c0`/`c1` process split is confirmed as a
+deliberate design decision, the K&R test corpus exists, and its real-hardware
+golden-generation pipeline is now confirmed working end-to-end (at least for
+the `00_smoke` category — full-corpus generation across all 11 categories is
+presumably in progress).**
 `src/mutos_cc/` does not exist yet. This is the next milestone after `mutos_cpp`.
 Scope (from `CLAUDE.md`'s roadmap): port the V7 `cc` frontend/`c0`/`c1` pipeline,
 emit x86-16 code in `mutos_as` syntax, and enforce PDP-11 middle-endian encoding for
@@ -284,12 +287,75 @@ code:
   several others sit exactly at 14). A `09_abiprobe/frame080.c` …
   `frame300.c` sub-series specifically targets this document's own open
   `chkstk` threshold question below.
-- **Next step (in progress)**: `*.s.golden` files for this corpus are being
-  generated on real MUTOS 1700 hardware, category by category, starting with
-  `00_smoke`/`01_expr`. Not yet present in this checkout — nothing here has
-  been diffed against real compiler output yet, only checked for K&R syntax
-  validity with a modern host compiler (see `tests/mutos_cc/README.md`'s
-  caveats).
+- **Golden generation: confirmed working end-to-end this session.** Real
+  hardware produces `.s`/`.i`/`.1`/`.2` for the corpus correctly (verified for
+  `00_smoke`); those get turned into `*.s.golden`/`*.i.golden`/`*.1.golden`/
+  `*.2.golden` (+ base64 companions for the binary `.1`/`.2`) on the modern
+  host via `tests/mutos_cc/Makefile`'s `goldens` target. Getting there
+  required finding and fixing several real bugs in this project's own
+  tooling — see the next subsection. Not yet present in this checkout as of
+  this writing (goldens are generated and committed by the person running
+  the real hardware, not by this session directly).
+
+### MUTOS 1700 host-tooling findings (verified this session)
+
+Building and running the corpus on real MUTOS 1700 hardware surfaced several
+concrete, previously-undocumented facts about the toolchain itself — not
+about `mutos_cc` design, but about the real V7-heritage tools this project's
+own scripts and Makefiles have to work within. Full narratives, each with the
+exact error text and root cause, are in `docs/DEVLOG.md`'s Milestone 4
+section; headline findings:
+
+- **MUTOS 1700 `make(1)` is not GNU Make and has real capacity limits**,
+  confirmed against its own manpage: no `%.o: %.c` pattern rules, no
+  `$(wildcard)`/`$(dir)`/`$(notdir)` functions, no `:=` — only plain `=`
+  macros and two-suffix rules (`.c.o:`). Beyond syntax, it also has a fixed
+  internal capacity: a single makefile covering all 62 test files (124
+  targets, ~490 lines) failed twice in different ways — first
+  `Make: line too long. Stop.` (one ~2950-character backslash-continued
+  dependency line), then, even after that was fixed, `Make: out of memory.
+  Stop.` partway through the very first category. The working fix was
+  structural, not cosmetic: one small `Makefile.mutos` per category
+  directory (2–9 files each) instead of one covering all 62.
+  `tests/mutos_cc/`'s top-level `Makefile` (GNU-only) stays for the modern
+  host; each category directory has its own real-`make`-compatible
+  `Makefile.mutos`; `gen_mutos.sh` is a `make`-independent `/bin/sh`
+  fallback covering the same ground.
+- **Real `cc`'s `-P` and `-S` cannot be combined.** `v7/cc/cc.c`'s own
+  control flow — not just its flag-parsing switch — makes `-P` stop `cc`
+  dead right after `cpp` (`if (pflag) { cflag++; continue; }`), for every
+  source file, before the code checking `-S`'s `sflag` is ever reached. An
+  early version of this corpus's `.s`-generating recipes used `cc -P -S`
+  and silently produced `.i` files but never `.s` — found only once real
+  `.s`/`.i`/`.1`/`.2` output was inspected on real hardware. Fixed to plain
+  `cc -S` (no `-P`) everywhere `.s` is generated; the separate direct
+  `cpp -P` calls used for `.i`/`.1`/`.2` are unaffected (not routed through
+  the `cc` driver, so this control-flow interaction doesn't apply to them).
+- **`goldens` must never depend on `all`/`intermediates`.** An earlier
+  version of the top-level `Makefile` had `goldens: all intermediates`,
+  which made a plain `make goldens` on the modern host re-check `.s`/`.1`
+  freshness against `.c`/`.i` by mtime — and after a fresh `git checkout` or
+  a file transfer from MUTOS, those timestamps routinely don't land in the
+  order Make expects, so it decided already-generated files were stale and
+  tried to rebuild them with `$(CC)`/`$(CPP)`/`$(C0)`, none of which exist
+  on the modern host (`/lib/c0: not found`). `goldens` now has no
+  prerequisites at all — it only packages whatever `.s`/`.i`/`.1`/`.2`
+  already exist on disk, skipping (not failing on) anything missing.
+- **`find(1)`/`expr(1)`/`basename(1)`**, verified against their real
+  manpages for `gen_mutos.sh`: this `find`'s predicates (`-name` included)
+  are pure tests with no implicit default action, so a bare
+  `find . -name '*.c'` silently produces zero output — an explicit
+  `-print` is required (GNU `find` defaults to it; this one doesn't).
+  `expr`/`basename` usage was already correct, confirmed against the
+  manpages' own example usages.
+
+### Next up
+
+Analyze the real-hardware-generated `.s`/`.i`/`.1`/`.2` files for the
+corpus, then begin implementing `mutos_c0`/`mutos_c1` against them — the
+first actual code for this milestone, on top of the ABI research, the
+confirmed process-split design, and the now-working golden-generation
+pipeline above.
 
 ---
 
