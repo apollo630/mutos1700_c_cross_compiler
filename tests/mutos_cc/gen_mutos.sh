@@ -2,6 +2,12 @@
 #
 # gen_mutos.sh
 #
+# THIS IS A SHELL SCRIPT, NOT A MAKEFILE. Run it with "sh gen_mutos.sh"
+# (or "./gen_mutos.sh" once executable) -- never "make -f gen_mutos.sh".
+# make will try to parse it as makefile rules and fail with something
+# like "Must be a separator on rules line N. Stop." Use Makefile.mutos
+# instead if you want the make-based version of this same workflow.
+#
 # Plain /bin/sh fallback for generating <name>.s / <name>.i / <name>.1 /
 # <name>.2 next to every test case's <name>.c, for machines whose `make`
 # can't run this directory's Makefile (real V7 `make` has no %,
