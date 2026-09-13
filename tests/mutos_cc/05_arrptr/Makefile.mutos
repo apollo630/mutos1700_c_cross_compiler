@@ -1,0 +1,72 @@
+# Makefile.mutos -- per-category (this directory's 7 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_arrbasic.s 01_arrbasic.1 02_array2d.s 02_array2d.1 03_ptrbasic.s 03_ptrbasic.1 04_ptrarreq.s 04_ptrarreq.1 05_arrofptr.s 05_arrofptr.1 06_ptrptr.s 06_ptrptr.1 07_strlibc.s 07_strlibc.1
+
+01_arrbasic.s: 01_arrbasic.c
+	$(CC) -P -S 01_arrbasic.c
+
+01_arrbasic.1: 01_arrbasic.c
+	$(CPP) -P 01_arrbasic.c > 01_arrbasic.i; $(C0) 01_arrbasic.i 01_arrbasic.1 01_arrbasic.2
+
+02_array2d.s: 02_array2d.c
+	$(CC) -P -S 02_array2d.c
+
+02_array2d.1: 02_array2d.c
+	$(CPP) -P 02_array2d.c > 02_array2d.i; $(C0) 02_array2d.i 02_array2d.1 02_array2d.2
+
+03_ptrbasic.s: 03_ptrbasic.c
+	$(CC) -P -S 03_ptrbasic.c
+
+03_ptrbasic.1: 03_ptrbasic.c
+	$(CPP) -P 03_ptrbasic.c > 03_ptrbasic.i; $(C0) 03_ptrbasic.i 03_ptrbasic.1 03_ptrbasic.2
+
+04_ptrarreq.s: 04_ptrarreq.c
+	$(CC) -P -S 04_ptrarreq.c
+
+04_ptrarreq.1: 04_ptrarreq.c
+	$(CPP) -P 04_ptrarreq.c > 04_ptrarreq.i; $(C0) 04_ptrarreq.i 04_ptrarreq.1 04_ptrarreq.2
+
+05_arrofptr.s: 05_arrofptr.c
+	$(CC) -P -S 05_arrofptr.c
+
+05_arrofptr.1: 05_arrofptr.c
+	$(CPP) -P 05_arrofptr.c > 05_arrofptr.i; $(C0) 05_arrofptr.i 05_arrofptr.1 05_arrofptr.2
+
+06_ptrptr.s: 06_ptrptr.c
+	$(CC) -P -S 06_ptrptr.c
+
+06_ptrptr.1: 06_ptrptr.c
+	$(CPP) -P 06_ptrptr.c > 06_ptrptr.i; $(C0) 06_ptrptr.i 06_ptrptr.1 06_ptrptr.2
+
+07_strlibc.s: 07_strlibc.c
+	$(CC) -P -S 07_strlibc.c
+
+07_strlibc.1: 07_strlibc.c
+	$(CPP) -P 07_strlibc.c > 07_strlibc.i; $(C0) 07_strlibc.i 07_strlibc.1 07_strlibc.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

@@ -1,0 +1,42 @@
+# Makefile.mutos -- per-category (this directory's 2 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_floatbas.s 01_floatbas.1 02_dblconv.s 02_dblconv.1
+
+01_floatbas.s: 01_floatbas.c
+	$(CC) -P -S 01_floatbas.c
+
+01_floatbas.1: 01_floatbas.c
+	$(CPP) -P 01_floatbas.c > 01_floatbas.i; $(C0) 01_floatbas.i 01_floatbas.1 01_floatbas.2
+
+02_dblconv.s: 02_dblconv.c
+	$(CC) -P -S 02_dblconv.c
+
+02_dblconv.1: 02_dblconv.c
+	$(CPP) -P 02_dblconv.c > 02_dblconv.i; $(C0) 02_dblconv.i 02_dblconv.1 02_dblconv.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

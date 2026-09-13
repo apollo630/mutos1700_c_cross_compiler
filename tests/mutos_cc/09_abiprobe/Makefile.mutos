@@ -1,0 +1,72 @@
+# Makefile.mutos -- per-category (this directory's 7 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_argvmain.s 01_argvmain.1 02_frame080.s 02_frame080.1 03_frame128.s 03_frame128.1 04_frame176.s 04_frame176.1 05_frame224.s 05_frame224.1 06_frame256.s 06_frame256.1 07_frame300.s 07_frame300.1
+
+01_argvmain.s: 01_argvmain.c
+	$(CC) -P -S 01_argvmain.c
+
+01_argvmain.1: 01_argvmain.c
+	$(CPP) -P 01_argvmain.c > 01_argvmain.i; $(C0) 01_argvmain.i 01_argvmain.1 01_argvmain.2
+
+02_frame080.s: 02_frame080.c
+	$(CC) -P -S 02_frame080.c
+
+02_frame080.1: 02_frame080.c
+	$(CPP) -P 02_frame080.c > 02_frame080.i; $(C0) 02_frame080.i 02_frame080.1 02_frame080.2
+
+03_frame128.s: 03_frame128.c
+	$(CC) -P -S 03_frame128.c
+
+03_frame128.1: 03_frame128.c
+	$(CPP) -P 03_frame128.c > 03_frame128.i; $(C0) 03_frame128.i 03_frame128.1 03_frame128.2
+
+04_frame176.s: 04_frame176.c
+	$(CC) -P -S 04_frame176.c
+
+04_frame176.1: 04_frame176.c
+	$(CPP) -P 04_frame176.c > 04_frame176.i; $(C0) 04_frame176.i 04_frame176.1 04_frame176.2
+
+05_frame224.s: 05_frame224.c
+	$(CC) -P -S 05_frame224.c
+
+05_frame224.1: 05_frame224.c
+	$(CPP) -P 05_frame224.c > 05_frame224.i; $(C0) 05_frame224.i 05_frame224.1 05_frame224.2
+
+06_frame256.s: 06_frame256.c
+	$(CC) -P -S 06_frame256.c
+
+06_frame256.1: 06_frame256.c
+	$(CPP) -P 06_frame256.c > 06_frame256.i; $(C0) 06_frame256.i 06_frame256.1 06_frame256.2
+
+07_frame300.s: 07_frame300.c
+	$(CC) -P -S 07_frame300.c
+
+07_frame300.1: 07_frame300.c
+	$(CPP) -P 07_frame300.c > 07_frame300.i; $(C0) 07_frame300.i 07_frame300.1 07_frame300.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

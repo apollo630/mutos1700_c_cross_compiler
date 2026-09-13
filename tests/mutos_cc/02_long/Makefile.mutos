@@ -1,0 +1,54 @@
+# Makefile.mutos -- per-category (this directory's 4 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_addsub.s 01_addsub.1 02_muldiv.s 02_muldiv.1 03_retval.s 03_retval.1 04_params.s 04_params.1
+
+01_addsub.s: 01_addsub.c
+	$(CC) -P -S 01_addsub.c
+
+01_addsub.1: 01_addsub.c
+	$(CPP) -P 01_addsub.c > 01_addsub.i; $(C0) 01_addsub.i 01_addsub.1 01_addsub.2
+
+02_muldiv.s: 02_muldiv.c
+	$(CC) -P -S 02_muldiv.c
+
+02_muldiv.1: 02_muldiv.c
+	$(CPP) -P 02_muldiv.c > 02_muldiv.i; $(C0) 02_muldiv.i 02_muldiv.1 02_muldiv.2
+
+03_retval.s: 03_retval.c
+	$(CC) -P -S 03_retval.c
+
+03_retval.1: 03_retval.c
+	$(CPP) -P 03_retval.c > 03_retval.i; $(C0) 03_retval.i 03_retval.1 03_retval.2
+
+04_params.s: 04_params.c
+	$(CC) -P -S 04_params.c
+
+04_params.1: 04_params.c
+	$(CPP) -P 04_params.c > 04_params.i; $(C0) 04_params.i 04_params.1 04_params.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

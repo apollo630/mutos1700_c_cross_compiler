@@ -1,0 +1,72 @@
+# Makefile.mutos -- per-category (this directory's 7 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_call.s 01_call.1 02_manyargs.s 02_manyargs.1 03_recfact.s 03_recfact.1 04_mutrec.s 04_mutrec.1 05_staticvar.s 05_staticvar.1 06_regclass.s 06_regclass.1 07_funcptr.s 07_funcptr.1
+
+01_call.s: 01_call.c
+	$(CC) -P -S 01_call.c
+
+01_call.1: 01_call.c
+	$(CPP) -P 01_call.c > 01_call.i; $(C0) 01_call.i 01_call.1 01_call.2
+
+02_manyargs.s: 02_manyargs.c
+	$(CC) -P -S 02_manyargs.c
+
+02_manyargs.1: 02_manyargs.c
+	$(CPP) -P 02_manyargs.c > 02_manyargs.i; $(C0) 02_manyargs.i 02_manyargs.1 02_manyargs.2
+
+03_recfact.s: 03_recfact.c
+	$(CC) -P -S 03_recfact.c
+
+03_recfact.1: 03_recfact.c
+	$(CPP) -P 03_recfact.c > 03_recfact.i; $(C0) 03_recfact.i 03_recfact.1 03_recfact.2
+
+04_mutrec.s: 04_mutrec.c
+	$(CC) -P -S 04_mutrec.c
+
+04_mutrec.1: 04_mutrec.c
+	$(CPP) -P 04_mutrec.c > 04_mutrec.i; $(C0) 04_mutrec.i 04_mutrec.1 04_mutrec.2
+
+05_staticvar.s: 05_staticvar.c
+	$(CC) -P -S 05_staticvar.c
+
+05_staticvar.1: 05_staticvar.c
+	$(CPP) -P 05_staticvar.c > 05_staticvar.i; $(C0) 05_staticvar.i 05_staticvar.1 05_staticvar.2
+
+06_regclass.s: 06_regclass.c
+	$(CC) -P -S 06_regclass.c
+
+06_regclass.1: 06_regclass.c
+	$(CPP) -P 06_regclass.c > 06_regclass.i; $(C0) 06_regclass.i 06_regclass.1 06_regclass.2
+
+07_funcptr.s: 07_funcptr.c
+	$(CC) -P -S 07_funcptr.c
+
+07_funcptr.1: 07_funcptr.c
+	$(CPP) -P 07_funcptr.c > 07_funcptr.i; $(C0) 07_funcptr.i 07_funcptr.1 07_funcptr.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

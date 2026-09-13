@@ -1,0 +1,72 @@
+# Makefile.mutos -- per-category (this directory's 7 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_ifelse.s 01_ifelse.1 02_while.s 02_while.1 03_dowhile.s 03_dowhile.1 04_for.s 04_for.1 05_breakcont.s 05_breakcont.1 06_switch.s 06_switch.1 07_goto.s 07_goto.1
+
+01_ifelse.s: 01_ifelse.c
+	$(CC) -P -S 01_ifelse.c
+
+01_ifelse.1: 01_ifelse.c
+	$(CPP) -P 01_ifelse.c > 01_ifelse.i; $(C0) 01_ifelse.i 01_ifelse.1 01_ifelse.2
+
+02_while.s: 02_while.c
+	$(CC) -P -S 02_while.c
+
+02_while.1: 02_while.c
+	$(CPP) -P 02_while.c > 02_while.i; $(C0) 02_while.i 02_while.1 02_while.2
+
+03_dowhile.s: 03_dowhile.c
+	$(CC) -P -S 03_dowhile.c
+
+03_dowhile.1: 03_dowhile.c
+	$(CPP) -P 03_dowhile.c > 03_dowhile.i; $(C0) 03_dowhile.i 03_dowhile.1 03_dowhile.2
+
+04_for.s: 04_for.c
+	$(CC) -P -S 04_for.c
+
+04_for.1: 04_for.c
+	$(CPP) -P 04_for.c > 04_for.i; $(C0) 04_for.i 04_for.1 04_for.2
+
+05_breakcont.s: 05_breakcont.c
+	$(CC) -P -S 05_breakcont.c
+
+05_breakcont.1: 05_breakcont.c
+	$(CPP) -P 05_breakcont.c > 05_breakcont.i; $(C0) 05_breakcont.i 05_breakcont.1 05_breakcont.2
+
+06_switch.s: 06_switch.c
+	$(CC) -P -S 06_switch.c
+
+06_switch.1: 06_switch.c
+	$(CPP) -P 06_switch.c > 06_switch.i; $(C0) 06_switch.i 06_switch.1 06_switch.2
+
+07_goto.s: 07_goto.c
+	$(CC) -P -S 07_goto.c
+
+07_goto.1: 07_goto.c
+	$(CPP) -P 07_goto.c > 07_goto.i; $(C0) 07_goto.i 07_goto.1 07_goto.2
+
+clean:
+	rm -f *.s *.i *.1 *.2
