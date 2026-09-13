@@ -37,6 +37,16 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   hardware-linked references (see Workflow Guideline 2's `.o`-ambiguity caution below);
   use `*.o.crosschecked` instead if/when reference bytes are added. See this directory's
   own `README.md` for full methodology, results, and open caveats.
+* `/tests/mutos_cc/`: K&R C construct-coverage corpus for the future `mutos_cc`/
+  `mutos_c0`/`mutos_c1` (62 small `.c` files across 11 numbered categories,
+  `00_smoke/` … `10_integ/`, plus a `Makefile`/`README.md`). Source-only for now —
+  `*.s.golden` references are added per-category as they're generated on real
+  MUTOS 1700 hardware (same golden methodology as `/tests/mutos_cpp/`; see
+  `docs/DEVLOG.md`'s Milestone 4 section for the corpus's design rationale,
+  including the deliberately targeted `09_abiprobe/frame*` cases). Every
+  identifier and file/directory name in this corpus was checked against this
+  toolchain's real significant-character limits (see "Identifier length limits"
+  below) and MUTOS 1700's real `DIRSIZ`=14 filename limit.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -134,6 +144,25 @@ You act as an expert systems programmer, compiler architect, and operating syste
         2               0Dh             0C0Dh
         3               0Ch
      ```
+6. **Identifier length limits**: this toolchain's real significant-character limits
+   are **8 for internal identifiers, 7 for external (global-linkage) identifiers** —
+   confirmed from two independent sources and load-bearing for `mutos_c0`/`mutos_c1`,
+   not just a test-corpus style rule:
+   * **Internal = 8**: `v7/cc/c0.h`/`c1.h` define `NCPS 8` — the compiler's own
+     front-end symbol table (`struct hshtab`) has an 8-byte name field. Applies to
+     anything that never leaves the compiler's own symbol table: locals, parameters,
+     struct/union members, `typedef` names, `enum` constants, labels. Two internal
+     names agreeing on their first 8 characters are the same symbol to `c0`/`c1`.
+   * **External = 7**: `man/mutos_aout.h.5`'s `mutos_sym_t.name[8]` shows the
+     **object-file** symbol table entry is also 8 bytes — but `v7/cc/c04.c`'s
+     `outcode()` (confirmed in `c02.c`'s `EXTERN`/`STATIC`/`CSPACE` handling too)
+     unconditionally prepends a leading `_` to any name written there, consuming one
+     of those 8 bytes. Applies to any function name and any file-scope variable,
+     `static` or not. `mutos_c1` must reproduce this truncation-after-underscore
+     behavior exactly (not just avoid overlong names in its own test data) to stay
+     byte-for-byte compatible with real MUTOS 1700 object output.
+   * See `tests/mutos_cc/README.md` for the derivation in full and two identifiers
+     the test corpus itself had to be renamed for after violating the 7-char limit.
 
 ### 📋 Workflow Guidelines
 1. **Context Alignment**: Before modifying code in `/src/mutos_<tool>/`, always check the corresponding test suite in `/tests/mutos_<tool>/` to understand the expected behavior and existing edge cases.
@@ -199,7 +228,7 @@ scope and intent, not a snapshot of what's done.
   which 8086/80186 opcodes remain missing.
 * **Status: provisionally complete** — see `STATUS.md`.
 
-### Milestone 3: The C Preprocessor (`mutos_cpp`) [CURRENT FOCUS]
+### Milestone 3: The C Preprocessor (`mutos_cpp`)
 * Re-implementing the observable behavior of the real MUTOS 1700 / V7 "fast cpp"
   (John F. Reiser, 1978): macro expansion (object- and function-like), `#include`
   file resolution, conditional compilation (`#ifdef`/`#ifndef`/`#if`/`#else`/`#endif`
@@ -209,8 +238,21 @@ scope and intent, not a snapshot of what's done.
   — see `STATUS.md` and `src/mutos_cpp/README.md` for the full behavioral
   specification and known, documented simplifications.
 
-### Milestone 4: The C-Compiler (`mutos_cc`, `mutos_c0`, `mutos_c1`)
+### Milestone 4: The C-Compiler (`mutos_cc`, `mutos_c0`, `mutos_c1`) [CURRENT FOCUS]
 * Porting frontends and backends. Modifying code generator (`c1`) to emit x86-16 code in MUTOS assembly syntax and enforce PDP-11 middle-endian format for `long`.
+* **`c0`/`c1` process split: confirmed, not just inherited.** Deliberately kept as
+  two separate executables (matching the "Target Executables" list above) after
+  reading `v7/cc`'s actual `temp1`/`temp2` format: it is not a raw memory/pointer
+  dump but a small, fully-specified tagged byte stream (`outcode()`/`getree()` in
+  `v7/cc/c04.c`/`c11.c`), which makes the split's testability benefit real and
+  cheap rather than an artifact of the PDP-11's 64K limit. `mutos_c0` should keep
+  that stream format close to the original and add an optional human-readable
+  dump mode, so its front-end output (parsing, typing, tree shape) can be verified
+  against hand-written expected IR before any x86 code generator exists. Full
+  rationale in `docs/DEVLOG.md`'s Milestone 4 section.
+* K&R construct-coverage test corpus in place at `tests/mutos_cc/` (source-only,
+  62 files across 11 categories) — next step is generating `*.s.golden`
+  references for it on real MUTOS 1700 hardware, category by category.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

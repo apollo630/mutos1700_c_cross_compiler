@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-06.
+Last updated: 2026-09-13.
 
 ---
 
@@ -208,9 +208,11 @@ the real MUTOS kernel source this project validates against.
 
 ---
 
-## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
+## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
-**Status: NOT STARTED — no code yet, but ABI/calling-convention research is done.**
+**Status: NOT STARTED — no code yet, but ABI/calling-convention research is done,
+the `c0`/`c1` process split is confirmed as a deliberate design decision, and a
+source-only K&R test corpus is in place awaiting real-hardware goldens.**
 `src/mutos_cc/` does not exist yet. This is the next milestone after `mutos_cpp`.
 Scope (from `CLAUDE.md`'s roadmap): port the V7 `cc` frontend/`c0`/`c1` pipeline,
 emit x86-16 code in `mutos_as` syntax, and enforce PDP-11 middle-endian encoding for
@@ -218,7 +220,7 @@ compiled `long` variables (see `CLAUDE.md`'s "PDP-11 Middle-Endian" rule, which
 explicitly calls out that this is where the rule will actually start mattering — now
 confirmed true, see below).
 
-### ABI research (verified this session)
+### ABI research (carried from prior session records — 2026-09-06)
 
 Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
 calling convention and C runtime startup/cleanup behavior were reverse-engineered
@@ -249,6 +251,45 @@ bounded to `(76, 256]` bytes, not pinned down further); and the real `crt0` →
 stdio via a `_cleanup()` hook, before the raw `_exit()` syscall — confirmed via both
 halves' disassembly). This is prep/documentation only — no `mutos_c1` code exists
 yet to validate against these findings.
+
+### `c0`/`c1` process split and K&R test corpus (verified this session)
+
+Two design questions were resolved ahead of writing any `mutos_c0`/`mutos_c1`
+code:
+
+- **`c0`/`c1` split: keep it, as two separate executables**, matching
+  `CLAUDE.md`'s already-documented "Target Executables" list. Reading the real
+  `v7/cc` source (`c04.c`'s `outcode()` / `c11.c`'s `getree()`) showed the
+  `temp1`/`temp2` intermediate format described in `v7/cc/cc.c`'s own usage
+  comment (`c0 source temp1 temp2`) is not a raw memory/pointer dump but a
+  small, fully-specified tagged byte stream — which makes the split's
+  testability upside (an inspectable IR boundary, verifiable before any x86
+  code generator exists) real rather than a leftover of the PDP-11's 64K
+  address-space limit. Decision, rationale, and the table-driven-matcher
+  (`table.s`/`cctab`/`efftab`/`regtab`/`sptab`) analysis that grounds it are in
+  `docs/DEVLOG.md`'s Milestone 4 section. This does **not** reduce the actual
+  engineering cost of Milestone 4 — porting the PDP-11-specific register/
+  addressing-mode assumptions throughout `c10`–`c12` to the 8086's much more
+  irregular register model is identical work whether `c0`/`c1` are one process
+  or two — it only buys an earlier, cheaper diagnostic checkpoint.
+- **Test corpus**: `tests/mutos_cc/` now holds 62 small K&R C files across 11
+  numbered categories (`00_smoke` … `10_integ`), plus a `Makefile` and
+  `README.md` — source-only, no `*.s.golden` references yet. Every identifier
+  was checked against this toolchain's real significant-character limits (8
+  internal / 7 external, see `CLAUDE.md`'s "Identifier length limits" rule);
+  two were found over the 7-character external limit and renamed (`factorial`
+  → `fact`, `swapchar` → `swapch`). Every file/directory name was checked
+  against MUTOS 1700's real `DIRSIZ`=14 filename limit (`tests/mutos_cpp/h/
+  dir.h`, `h/param.h`) and shortened accordingly (e.g. `01_wordcount.c`,
+  several others sit exactly at 14). A `09_abiprobe/frame080.c` …
+  `frame300.c` sub-series specifically targets this document's own open
+  `chkstk` threshold question below.
+- **Next step (in progress)**: `*.s.golden` files for this corpus are being
+  generated on real MUTOS 1700 hardware, category by category, starting with
+  `00_smoke`/`01_expr`. Not yet present in this checkout — nothing here has
+  been diffed against real compiler output yet, only checked for K&R syntax
+  validity with a modern host compiler (see `tests/mutos_cc/README.md`'s
+  caveats).
 
 ---
 
