@@ -232,15 +232,24 @@ You act as an expert systems programmer, compiler architect, and operating syste
      `STATUS.md`'s current-state summary (CPU/encoding facts, full bug narratives,
      debugging methodology) belongs in `docs/DEVLOG.md` instead — added there as it's
      discovered, not just held in conversation memory (see Guideline 7 below for why).
-7. **Download Delivery Format (mandatory)**: When providing repository files as a
-   downloadable archive, package **only files that are new or modified relative to
-   the person's last-synced state** (i.e. an incremental diff, not a full repository
-   dump) into a single zip. Determine the change set via `git status`/`git diff
-   --name-only` against the current branch before packaging, and exclude build
-   artifacts (compiled `.o`/binaries — see Guideline 2's caution on `.o` ambiguity;
-   regenerate via `make`, don't ship them) and `.git/` itself. State explicitly in
-   the response which files are included and why (new vs. modified). This replaces
-   the earlier default of zipping the entire working tree.
+7. **Download Delivery Format (mandatory)**: When providing repository file updates,
+   default to a **git patch** (a plain `git diff`-format file, applied with `git apply
+   patch.file` or `patch -p1 < patch.file` from the repo root), not a zip. Generate it
+   from a local clone synced to the person's actual current `HEAD` (fetch/merge
+   first — don't assume the sandbox's clone is still current) and verify with
+   `git apply --check` (ideally against a fresh clone) before handing it over, so it's
+   known to apply cleanly rather than just plausible-looking. State explicitly which
+   files the patch touches and why (new vs. modified). This replaced an earlier
+   zip-of-changed-files default after a real failure mode: with a zip, new (untracked)
+   files are easy for the person to miss when copying by hand — that's exactly how
+   `tests/mutos_cc/`'s 11 per-category `Makefile.mutos` files went missing from a
+   commit even though everything else in that same delivery was copied correctly. A
+   patch applies (or cleanly fails) as one atomic unit, so partial-copy mistakes like
+   that can't happen silently. Fall back to a zip only when a patch genuinely isn't
+   the right tool — e.g. the person explicitly asks for a zip, or the delivery is
+   brand-new binary content that isn't already routed through this project's
+   base64-text convention (see the `.o`/`.a` golden files above) and so has nothing
+   meaningful to diff.
 
 ---
 
