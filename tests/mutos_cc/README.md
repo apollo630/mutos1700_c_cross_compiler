@@ -7,11 +7,21 @@ exactly the same methodology that already got Milestone 3 (`mutos_cpp`) to
 `tests/mutos_cpp/run_goldens.sh` in the main repo:
 
 1. This corpus is compiled with the **real, unmodified `cc`** on real MUTOS
-   1700 hardware (or an accurate emulator).
-2. Every resulting `.s` file is saved as a golden reference (`*.s.golden`,
-   parallel to Milestone 3's `*.i.golden` naming).
-3. Once `mutos_c1` exists, its output is diffed byte-for-byte against these
-   golden files, exactly like `mutos_as`/`mutos_cpp` are diffed today.
+   1700 hardware (or an accurate emulator) — and, separately, run through
+   `cpp` and `/lib/c0` directly, to also capture `c0`'s raw `temp1`/`temp2`
+   intermediate-code output for each test case, not just the final `.s`.
+2. Every resulting `.s`/`.i`/`.1`/`.2` file is saved as a golden reference
+   (`*.s.golden`/`*.i.golden`, parallel to Milestone 3's `*.i.golden`
+   naming; `*.1.golden`/`*.2.golden` plus base64 companions for the binary
+   `temp1`/`temp2` streams).
+3. Once `mutos_c1` exists, its output is diffed byte-for-byte against the
+   `.s` goldens, exactly like `mutos_as`/`mutos_cpp` are diffed today —
+   and, separately, once `mutos_c0` exists, *its* output can be diffed
+   against the `.1`/`.2` goldens on its own, before `mutos_c1` even needs
+   to be ready. That's the whole point of capturing this boundary
+   directly instead of only the final assembly: see `docs/DEVLOG.md`'s
+   Milestone 4 "c0/c1 process split" section for why an inspectable IR
+   boundary was worth keeping in the first place.
 
 Nothing here is meant to *run* or be linked (though most of it could be);
 the deliverable is the generated **assembly text**, not an executable.
@@ -28,7 +38,11 @@ characters collide would clobber each other on the real hardware without
 any error. Every `.c`/`.s` pair below stays within that limit (several are
 exactly at 14, e.g. `01_wordcount.c`, `05_breakcont.c`); see the Makefile
 comment for why the longer `*.s.golden` suffix is deliberately applied only
-on the modern host, never on MUTOS itself.
+on the modern host, never on MUTOS itself. The `.i`/`.1`/`.2` extensions
+used for `cpp`'s output and `c0`'s `temp1`/`temp2` streams (see Workflow
+below) are the same 2-character width as `.c`/`.s`, so every base name that
+already fits `.c`/`.s` automatically fits those too — no separate audit
+needed for them.
 
 **Every identifier respects this toolchain's real significant-character
 limits: 8 for internal names, 7 for external (global-linkage) names.**
@@ -96,16 +110,65 @@ the first time.
 
 ## Workflow
 
+On the real MUTOS 1700 hardware / an accurate emulator, three
+interchangeable ways to produce `.s`/`.i`/`.1`/`.2` for every test case —
+pick whichever fits your setup, they produce the same files:
+
 ```sh
-# on real MUTOS 1700 hardware / an accurate emulator, cc already installed:
-make
-# transfer the resulting */*.s files back to the modern host, THEN:
+# A) if you have GNU Make available there:
+make all intermediates
+
+# B) the real MUTOS 1700 `make` itself (NOT GNU Make — see Makefile's
+#    header for what that means in practice):
+make -f Makefile.mutos
+
+# C) no make at all, just a shell loop:
+./gen_mutos.sh
+```
+
+**(A) needs GNU Make specifically.** The real MUTOS 1700 `make(1)` has no
+`%.o: %.c` pattern rules, no `$(wildcard)`/`$(dir)`/`$(notdir)` functions,
+and no `:=` — confirmed directly from its own manpage. `Makefile.mutos`
+(option B) is a from-scratch rewrite using only what that manpage actually
+documents (plain `=` macros, two-suffix rules like `.c.s:`, and every
+recipe kept to a single shell line, since the manpage's own
+*Fehlerquellen* section warns that `cd` and other shell state don't carry
+across separate recipe lines — each line gets its own subshell).
+`gen_mutos.sh` (option C) was checked the same way against the real
+`basename(1)`/`expr(1)`/`find(1)` manpages, which caught one real bug:
+V7 `find`'s predicates (`-name` included) are pure tests with no implicit
+default action, so `find . -name '*.c'` without a trailing `-print`
+produces **zero output**, silently — unlike GNU `find`, which defaults to
+printing. Fixed to `find . -name '*.c' -print`. `expr "$f" : '\(.*\)/'`
+for splitting off the directory part turned out to mirror this system's
+*own* documented idiom for the inverse (extracting a basename via `expr`
+is shown directly in `expr(1)`'s examples), and `basename "$f" .c` matches
+`basename(1)`'s documented form exactly — both were already correct.
+
+Then, after transferring every resulting `*/*.{s,i,1,2}` file back to the
+modern host:
+
+```sh
 make goldens
 ```
 
-Ship the resulting `*.s.golden` tree back; it drops straight in as a
-sibling to `tests/mutos_cpp/`'s `*.i.golden` corpus once `mutos_c0`/
-`mutos_c1` exist to diff against.
+This runs `cpp -P <name>.c > <name>.i` followed by
+`/lib/c0 <name>.i <name>.1 <name>.2` for every test case — feeding `c0`
+`cpp`'s *output*, never the raw `.c`, exactly like the real `cc` driver
+does internally (see the Makefile comment for why that distinction
+matters for getting byte-identical `temp1`/`temp2`). `temp1`/`temp2` are
+raw binary tagged byte streams (`v7/cc/c04.c`'s `outcode()`), not text, so
+`make goldens` gives them the same binary+base64 treatment already used
+elsewhere in this project for `tests/mutos1700_libc/*.o` and `libc.a`:
+`<name>.1.golden`/`<name>.2.golden` (raw bytes) plus
+`<name>.1.golden.base64.txt`/`<name>.2.golden.base64.txt` (base64 text, so
+the content stays inspectable without a binary-capable viewer).
+
+Ship the resulting `*.s.golden`/`*.i.golden`/`*.1.golden`/`*.2.golden`
+tree back; the `.s.golden` part drops straight in as a sibling to
+`tests/mutos_cpp/`'s `*.i.golden` corpus once `mutos_c0`/`mutos_c1` exist
+to diff against — and the `.1.golden`/`.2.golden` part lets `mutos_c0`
+alone be verified well before `mutos_c1` is ready.
 
 ## Caveats
 
@@ -125,3 +188,11 @@ sibling to `tests/mutos_cpp/`'s `*.i.golden` corpus once `mutos_c0`/
   golden corpus (`tests/mutos_cpp/c/`) — those are board-configuration
   `#ifdef`s for kernel code, not general C-language constructs, so plain
   userland compiles here don't need them.
+- `/lib/cpp` and `/lib/c0` are the paths `v7/cc/cc.c` itself hardcodes;
+  override the Makefile's/`Makefile.mutos`'s `CPP`/`C0` macros (or edit
+  `gen_mutos.sh` directly) if your installation keeps them elsewhere.
+- None of the three approaches (Makefile's `%.1` rule, `Makefile.mutos`,
+  `gen_mutos.sh`) distinguish "c0 rejected this file" from "c0 crashed/
+  hung" — check that `<name>.1`/`<name>.2` actually exist and look
+  non-empty before trusting them, especially for anything that fails
+  silently under `make`'s default error handling.
