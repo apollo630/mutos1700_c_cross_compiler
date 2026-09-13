@@ -519,12 +519,14 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** not started (`src/mutos_cc/` doesn't exist yet — see `STATUS.md`). This
-section covers **ABI/calling-convention research only**, done ahead of any code so
-`mutos_c1`'s code generator has a byte-level-accurate target from day one instead of
-guessing generic 8086-C-compiler conventions. Full detail, with every rule cited
-against a real disassembled `.o`, lives in **`docs/MUTOS_C_ABI.md`** (not duplicated
-here in full — this section is the condensed "why/how we found out" pointer into it,
-matching this file's usual role).
+section covers the groundwork done ahead of any code: ABI/calling-convention
+research, the `c0`/`c1` process-split decision, and the K&R test corpus — so
+`mutos_c1`'s code generator has a byte-level-accurate target from day one instead
+of guessing generic 8086-C-compiler conventions, and so there's a verification
+path lined up before it exists. Full ABI detail, with every rule cited against a
+real disassembled `.o`, lives in **`docs/MUTOS_C_ABI.md`** (not duplicated here in
+full — the ABI subsection below is the condensed "why/how we found out" pointer
+into it, matching this file's usual role).
 
 ### Method
 
@@ -643,7 +645,92 @@ The exact `chkstk` size threshold (bounded to `(76, 256]` bytes above) is not pi
 down further by the current corpus; if a real object file with a local frame in that
 range surfaces later (e.g. from generating more goldens off the kernel source tree
 per Milestone 2's `conf/Makefile` mechanism, or from a userland `.c` file not yet in
-this checkout), re-check it against this bracket.
+this checkout), re-check it against this bracket. **Update:** `tests/mutos_cc/
+09_abiprobe/frame080.c` … `frame300.c` now exists specifically to resolve this —
+six otherwise-identical files with local buffers of 80/128/176/224/256/300 bytes,
+bisecting the gap. Once compiled on real hardware, whichever ones emit `call
+chkstk` vs. a plain `sub sp,N` pin the real cutoff down for the first time; update
+this entry once those goldens come back.
+
+### `c0`/`c1` process split: decision and rationale
+
+**Decision: keep `c0` and `c1` as two separate executables**, communicating
+through a `temp1`/`temp2` file pair exactly as V7's own `cc` driver does (see
+`v7/cc/cc.c`'s pipeline comment: `c0 source temp1 temp2` / `c1 temp1 temp2
+assembly.s`). This also matches `CLAUDE.md`'s "Target Executables" list, which
+already named `mutos_c0`/`mutos_c1` as separate deliverables before this
+question was raised — the analysis below is the reasoning behind confirming
+that choice deliberately rather than by default.
+
+**The question.** The historic split exists because V7's `cc` ran on a PDP-11
+with a 64K address space per process: parsing/semantic-analysis (`c0`) and code
+generation (`c1`) each needed the full 64K to themselves, so they had to be
+separate processes. That constraint doesn't exist on a modern 64-bit host, which
+raises the obvious question: keep the two-phase split, or merge `c0`+`c1` into a
+single `mutos_cc` binary? The concern driving the question was testability of
+the final generated assembly, not implementation convenience.
+
+**What reading the real `v7/cc` source settled it.** The `temp1`/`temp2`
+intermediate format is not a raw memory/pointer dump (which would make the split
+purely an artifact of the 64K limit, with no inherent value once that limit is
+gone) — it is a small, fully-specified, tagged byte stream:
+
+- `outcode()` in `c04.c` (~70 lines) is the *only* place `c0` writes to `temp1`/
+  `temp2`. Format characters: `'B'` (opcode) writes `(opcode_low_byte, 0376)` —
+  the fixed sentinel byte `0376` marks "this is an opcode", letting the reader
+  distinguish an opcode from an ordinary data word (a legitimate 16-bit number
+  never has high byte `0376`); `'N'` is a little-endian 16-bit word; `'S'`/`'F'`
+  are a nul-terminated symbol name / float ASCII string; `'1'`/`'0'` are
+  shorthands for the constants 1 and 0.
+- `getree()` in `c11.c` (~270 lines) is the exact inverse: reads that stream,
+  rebuilds an expression tree (`struct tnode`) for `EXPR`/`CBRANCH`/`C3BRANCH`
+  nodes, and emits PDP-11 text directly for the many administrative pseudo-ops
+  (`PROG`/`DATA`/`BSS`/`.globl`/`SETSTK`/`SNAME`/`ANAME`/`RNAME`/…).
+
+**Why this changes the calculus.** Because the format is this well-defined and
+small, preserving it (nearly as-is) buys real, cheap benefits independent of
+whether `c0`/`c1` are one process or two:
+
+1. An inspectable IR boundary that can be unit-tested on its own — `mutos_c0`'s
+   front end (parsing, type promotion, tree shape, scope/storage-class handling)
+   can be fully verified against hand-written expected IR *before* a single line
+   of x86 code generator exists, by adding an optional human-readable dump mode
+   to `mutos_c0` (not present in the original V7 `cc`, but cheap to add on top of
+   the same encoding).
+2. A clean separation between front-end and back-end bugs during the hardest
+   part of this milestone: the code generator itself. `v7/cc`'s back end
+   (`c10`–`c13` + `table.s`) is a tree-pattern matcher (`match()`/`cexpr()`/
+   `reorder()` in `c10.c`) driven by PDP-11 instruction-template tables
+   (`cctab`/`efftab`/`regtab`/`sptab`, defined in `table.s` as literal PDP-11
+   assembly-template strings like `%a,n`). This is fundamentally tied to the
+   PDP-11's register model (6 orthogonal general registers R0–R5, symmetric
+   `mov`-style two-operand instructions, hardware autoincrement/autodecrement
+   mapped 1:1 onto C's `++`/`--`). The 8086 has none of that regularity (`AX`
+   required for `MUL`/`DIV`, `CX` required for shift counts, only `BX`/`BP`+
+   `SI`/`DI` usable for addressing) — porting this is a genuine redesign, not a
+   table refresh, **and it costs exactly the same whether `c0`/`c1` are merged
+   or split**. The split doesn't shrink that work; it only lets bugs in it be
+   isolated from front-end bugs without waiting for a complete `.s` file every
+   time.
+
+**What does *not* change.** Final verification of generated assembly is
+identical either way: byte-diffing `mutos_c1`'s `.s` output against real
+hardware-linked goldens, exactly the methodology already validated for
+Milestone 3 (`mutos_cpp`) and now being extended to Milestone 4 via
+`tests/mutos_cc/`. The split is a development-time diagnostic aid, not a
+verification mechanism in itself — the golden-diffing process would be
+identical if `c0`+`c1` were merged into one binary.
+
+**Concrete follow-on**: `tests/mutos_cc/` (62 K&R C files across 11 categories,
+`Makefile`, `README.md`) now exists to seed that golden-diffing process once
+`mutos_c1` exists; `*.s.golden` references are being generated on real MUTOS
+1700 hardware next, category by category. Two identifiers in the corpus
+(`factorial`, `swapchar`) turned out to exceed this toolchain's real 7-character
+external-identifier limit (see `CLAUDE.md`'s new "Identifier length limits"
+rule, derived from `v7/cc/c0.h`'s `NCPS 8` plus the mandatory leading `_` seen
+in `outcode()`) and were renamed (`fact`, `swapch`); every file/directory name
+in the corpus was also checked against MUTOS 1700's real `DIRSIZ`=14 filename
+limit (`tests/mutos_cpp/h/dir.h`, `h/param.h`) and shortened where needed.
 
 ---
 
