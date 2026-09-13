@@ -1,0 +1,477 @@
+# Makefile.mutos
+#
+# Genuine V7/MUTOS make(1)-compatible makefile -- verified against the
+# real MUTOS 1700 make(1) manpage, and deliberately NOT the same as the
+# other 'Makefile' in this directory, which uses GNU-only syntax
+# ($(wildcard), $(dir)/$(notdir), "%.o: %.c" pattern rules, ":=") that
+# this make(1) does not have at all. Run this one directly on the real
+# MUTOS 1700 hardware / emulator with its own make:
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# Every recipe below is written as ONE shell line (commands joined with
+# ";", never split across separate tab-indented lines) on purpose:
+# make(1)'s own FEHLERQUELLEN section warns that shell state -- notably
+# cd(1) -- does not carry across separate recipe lines, since each line
+# is handed to its own subshell.
+#
+# Does the same two things as ./gen_mutos.sh (which stays as the
+# simpler, make-independent alternative -- use whichever's more
+# convenient):
+#   - "<name>.s"                       via cc -P -S
+#   - "<name>.i" + "<name>.1"/"<name>.2" via cpp then /lib/c0, fed cpp's
+#     OUTPUT, never the raw .c -- matching what the real cc driver does
+#     internally (see the other Makefile's comment block for why).
+#
+# "<name>.2" is a side effect of the "<name>.1" recipe, not declared as
+# its own target below -- if you need just one file's temp2 rebuilt,
+# ask for its ".1" target instead.
+#
+# No GNU-only .PHONY here (this make(1) doesn't have it); "all" and
+# "clean" are safe as long as no real file named "all" or "clean" exists
+# in this directory, which is true today.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: \
+	00_smoke/01_emptymain.s 00_smoke/01_emptymain.1 \
+	00_smoke/02_retconst.s 00_smoke/02_retconst.1 \
+	00_smoke/03_retexpr.s 00_smoke/03_retexpr.1 \
+	01_expr/01_intarith.s 01_expr/01_intarith.1 \
+	01_expr/02_bitwise.s 01_expr/02_bitwise.1 \
+	01_expr/03_rellogic.s 01_expr/03_rellogic.1 \
+	01_expr/04_shift.s 01_expr/04_shift.1 \
+	01_expr/05_incdec.s 01_expr/05_incdec.1 \
+	01_expr/06_compasgn.s 01_expr/06_compasgn.1 \
+	01_expr/07_ternary.s 01_expr/07_ternary.1 \
+	01_expr/08_castsize.s 01_expr/08_castsize.1 \
+	02_long/01_addsub.s 02_long/01_addsub.1 \
+	02_long/02_muldiv.s 02_long/02_muldiv.1 \
+	02_long/03_retval.s 02_long/03_retval.1 \
+	02_long/04_params.s 02_long/04_params.1 \
+	03_ctrlflow/01_ifelse.s 03_ctrlflow/01_ifelse.1 \
+	03_ctrlflow/02_while.s 03_ctrlflow/02_while.1 \
+	03_ctrlflow/03_dowhile.s 03_ctrlflow/03_dowhile.1 \
+	03_ctrlflow/04_for.s 03_ctrlflow/04_for.1 \
+	03_ctrlflow/05_breakcont.s 03_ctrlflow/05_breakcont.1 \
+	03_ctrlflow/06_switch.s 03_ctrlflow/06_switch.1 \
+	03_ctrlflow/07_goto.s 03_ctrlflow/07_goto.1 \
+	04_funcs/01_call.s 04_funcs/01_call.1 \
+	04_funcs/02_manyargs.s 04_funcs/02_manyargs.1 \
+	04_funcs/03_recfact.s 04_funcs/03_recfact.1 \
+	04_funcs/04_mutrec.s 04_funcs/04_mutrec.1 \
+	04_funcs/05_staticvar.s 04_funcs/05_staticvar.1 \
+	04_funcs/06_regclass.s 04_funcs/06_regclass.1 \
+	04_funcs/07_funcptr.s 04_funcs/07_funcptr.1 \
+	05_arrptr/01_arrbasic.s 05_arrptr/01_arrbasic.1 \
+	05_arrptr/02_array2d.s 05_arrptr/02_array2d.1 \
+	05_arrptr/03_ptrbasic.s 05_arrptr/03_ptrbasic.1 \
+	05_arrptr/04_ptrarreq.s 05_arrptr/04_ptrarreq.1 \
+	05_arrptr/05_arrofptr.s 05_arrptr/05_arrofptr.1 \
+	05_arrptr/06_ptrptr.s 05_arrptr/06_ptrptr.1 \
+	05_arrptr/07_strlibc.s 05_arrptr/07_strlibc.1 \
+	06_struct/01_stbasic.s 06_struct/01_stbasic.1 \
+	06_struct/02_stptr.s 06_struct/02_stptr.1 \
+	06_struct/03_starray.s 06_struct/03_starray.1 \
+	06_struct/04_stassign.s 06_struct/04_stassign.1 \
+	06_struct/05_nestst.s 06_struct/05_nestst.1 \
+	06_struct/06_union.s 06_struct/06_union.1 \
+	06_struct/07_bitfield.s 06_struct/07_bitfield.1 \
+	06_struct/08_enum.s 06_struct/08_enum.1 \
+	06_struct/09_typedef.s 06_struct/09_typedef.1 \
+	07_scope/01_globstat.s 07_scope/01_globstat.1 \
+	07_scope/02_shadow.s 07_scope/02_shadow.1 \
+	07_scope/03_externdef.s 07_scope/03_externdef.1 \
+	08_float/01_floatbas.s 08_float/01_floatbas.1 \
+	08_float/02_dblconv.s 08_float/02_dblconv.1 \
+	09_abiprobe/01_argvmain.s 09_abiprobe/01_argvmain.1 \
+	09_abiprobe/02_frame080.s 09_abiprobe/02_frame080.1 \
+	09_abiprobe/03_frame128.s 09_abiprobe/03_frame128.1 \
+	09_abiprobe/04_frame176.s 09_abiprobe/04_frame176.1 \
+	09_abiprobe/05_frame224.s 09_abiprobe/05_frame224.1 \
+	09_abiprobe/06_frame256.s 09_abiprobe/06_frame256.1 \
+	09_abiprobe/07_frame300.s 09_abiprobe/07_frame300.1 \
+	10_integ/01_wordcount.s 10_integ/01_wordcount.1 \
+	10_integ/02_bubsort.s 10_integ/02_bubsort.1 \
+	10_integ/03_linklist.s 10_integ/03_linklist.1 \
+	10_integ/04_strrev.s 10_integ/04_strrev.1 \
+	10_integ/05_matmul.s 10_integ/05_matmul.1
+
+
+00_smoke/01_emptymain.s: 00_smoke/01_emptymain.c
+	cd 00_smoke; $(CC) -P -S 01_emptymain.c
+
+00_smoke/01_emptymain.1: 00_smoke/01_emptymain.c
+	cd 00_smoke; $(CPP) -P 01_emptymain.c > 01_emptymain.i; $(C0) 01_emptymain.i 01_emptymain.1 01_emptymain.2
+
+00_smoke/02_retconst.s: 00_smoke/02_retconst.c
+	cd 00_smoke; $(CC) -P -S 02_retconst.c
+
+00_smoke/02_retconst.1: 00_smoke/02_retconst.c
+	cd 00_smoke; $(CPP) -P 02_retconst.c > 02_retconst.i; $(C0) 02_retconst.i 02_retconst.1 02_retconst.2
+
+00_smoke/03_retexpr.s: 00_smoke/03_retexpr.c
+	cd 00_smoke; $(CC) -P -S 03_retexpr.c
+
+00_smoke/03_retexpr.1: 00_smoke/03_retexpr.c
+	cd 00_smoke; $(CPP) -P 03_retexpr.c > 03_retexpr.i; $(C0) 03_retexpr.i 03_retexpr.1 03_retexpr.2
+
+01_expr/01_intarith.s: 01_expr/01_intarith.c
+	cd 01_expr; $(CC) -P -S 01_intarith.c
+
+01_expr/01_intarith.1: 01_expr/01_intarith.c
+	cd 01_expr; $(CPP) -P 01_intarith.c > 01_intarith.i; $(C0) 01_intarith.i 01_intarith.1 01_intarith.2
+
+01_expr/02_bitwise.s: 01_expr/02_bitwise.c
+	cd 01_expr; $(CC) -P -S 02_bitwise.c
+
+01_expr/02_bitwise.1: 01_expr/02_bitwise.c
+	cd 01_expr; $(CPP) -P 02_bitwise.c > 02_bitwise.i; $(C0) 02_bitwise.i 02_bitwise.1 02_bitwise.2
+
+01_expr/03_rellogic.s: 01_expr/03_rellogic.c
+	cd 01_expr; $(CC) -P -S 03_rellogic.c
+
+01_expr/03_rellogic.1: 01_expr/03_rellogic.c
+	cd 01_expr; $(CPP) -P 03_rellogic.c > 03_rellogic.i; $(C0) 03_rellogic.i 03_rellogic.1 03_rellogic.2
+
+01_expr/04_shift.s: 01_expr/04_shift.c
+	cd 01_expr; $(CC) -P -S 04_shift.c
+
+01_expr/04_shift.1: 01_expr/04_shift.c
+	cd 01_expr; $(CPP) -P 04_shift.c > 04_shift.i; $(C0) 04_shift.i 04_shift.1 04_shift.2
+
+01_expr/05_incdec.s: 01_expr/05_incdec.c
+	cd 01_expr; $(CC) -P -S 05_incdec.c
+
+01_expr/05_incdec.1: 01_expr/05_incdec.c
+	cd 01_expr; $(CPP) -P 05_incdec.c > 05_incdec.i; $(C0) 05_incdec.i 05_incdec.1 05_incdec.2
+
+01_expr/06_compasgn.s: 01_expr/06_compasgn.c
+	cd 01_expr; $(CC) -P -S 06_compasgn.c
+
+01_expr/06_compasgn.1: 01_expr/06_compasgn.c
+	cd 01_expr; $(CPP) -P 06_compasgn.c > 06_compasgn.i; $(C0) 06_compasgn.i 06_compasgn.1 06_compasgn.2
+
+01_expr/07_ternary.s: 01_expr/07_ternary.c
+	cd 01_expr; $(CC) -P -S 07_ternary.c
+
+01_expr/07_ternary.1: 01_expr/07_ternary.c
+	cd 01_expr; $(CPP) -P 07_ternary.c > 07_ternary.i; $(C0) 07_ternary.i 07_ternary.1 07_ternary.2
+
+01_expr/08_castsize.s: 01_expr/08_castsize.c
+	cd 01_expr; $(CC) -P -S 08_castsize.c
+
+01_expr/08_castsize.1: 01_expr/08_castsize.c
+	cd 01_expr; $(CPP) -P 08_castsize.c > 08_castsize.i; $(C0) 08_castsize.i 08_castsize.1 08_castsize.2
+
+02_long/01_addsub.s: 02_long/01_addsub.c
+	cd 02_long; $(CC) -P -S 01_addsub.c
+
+02_long/01_addsub.1: 02_long/01_addsub.c
+	cd 02_long; $(CPP) -P 01_addsub.c > 01_addsub.i; $(C0) 01_addsub.i 01_addsub.1 01_addsub.2
+
+02_long/02_muldiv.s: 02_long/02_muldiv.c
+	cd 02_long; $(CC) -P -S 02_muldiv.c
+
+02_long/02_muldiv.1: 02_long/02_muldiv.c
+	cd 02_long; $(CPP) -P 02_muldiv.c > 02_muldiv.i; $(C0) 02_muldiv.i 02_muldiv.1 02_muldiv.2
+
+02_long/03_retval.s: 02_long/03_retval.c
+	cd 02_long; $(CC) -P -S 03_retval.c
+
+02_long/03_retval.1: 02_long/03_retval.c
+	cd 02_long; $(CPP) -P 03_retval.c > 03_retval.i; $(C0) 03_retval.i 03_retval.1 03_retval.2
+
+02_long/04_params.s: 02_long/04_params.c
+	cd 02_long; $(CC) -P -S 04_params.c
+
+02_long/04_params.1: 02_long/04_params.c
+	cd 02_long; $(CPP) -P 04_params.c > 04_params.i; $(C0) 04_params.i 04_params.1 04_params.2
+
+03_ctrlflow/01_ifelse.s: 03_ctrlflow/01_ifelse.c
+	cd 03_ctrlflow; $(CC) -P -S 01_ifelse.c
+
+03_ctrlflow/01_ifelse.1: 03_ctrlflow/01_ifelse.c
+	cd 03_ctrlflow; $(CPP) -P 01_ifelse.c > 01_ifelse.i; $(C0) 01_ifelse.i 01_ifelse.1 01_ifelse.2
+
+03_ctrlflow/02_while.s: 03_ctrlflow/02_while.c
+	cd 03_ctrlflow; $(CC) -P -S 02_while.c
+
+03_ctrlflow/02_while.1: 03_ctrlflow/02_while.c
+	cd 03_ctrlflow; $(CPP) -P 02_while.c > 02_while.i; $(C0) 02_while.i 02_while.1 02_while.2
+
+03_ctrlflow/03_dowhile.s: 03_ctrlflow/03_dowhile.c
+	cd 03_ctrlflow; $(CC) -P -S 03_dowhile.c
+
+03_ctrlflow/03_dowhile.1: 03_ctrlflow/03_dowhile.c
+	cd 03_ctrlflow; $(CPP) -P 03_dowhile.c > 03_dowhile.i; $(C0) 03_dowhile.i 03_dowhile.1 03_dowhile.2
+
+03_ctrlflow/04_for.s: 03_ctrlflow/04_for.c
+	cd 03_ctrlflow; $(CC) -P -S 04_for.c
+
+03_ctrlflow/04_for.1: 03_ctrlflow/04_for.c
+	cd 03_ctrlflow; $(CPP) -P 04_for.c > 04_for.i; $(C0) 04_for.i 04_for.1 04_for.2
+
+03_ctrlflow/05_breakcont.s: 03_ctrlflow/05_breakcont.c
+	cd 03_ctrlflow; $(CC) -P -S 05_breakcont.c
+
+03_ctrlflow/05_breakcont.1: 03_ctrlflow/05_breakcont.c
+	cd 03_ctrlflow; $(CPP) -P 05_breakcont.c > 05_breakcont.i; $(C0) 05_breakcont.i 05_breakcont.1 05_breakcont.2
+
+03_ctrlflow/06_switch.s: 03_ctrlflow/06_switch.c
+	cd 03_ctrlflow; $(CC) -P -S 06_switch.c
+
+03_ctrlflow/06_switch.1: 03_ctrlflow/06_switch.c
+	cd 03_ctrlflow; $(CPP) -P 06_switch.c > 06_switch.i; $(C0) 06_switch.i 06_switch.1 06_switch.2
+
+03_ctrlflow/07_goto.s: 03_ctrlflow/07_goto.c
+	cd 03_ctrlflow; $(CC) -P -S 07_goto.c
+
+03_ctrlflow/07_goto.1: 03_ctrlflow/07_goto.c
+	cd 03_ctrlflow; $(CPP) -P 07_goto.c > 07_goto.i; $(C0) 07_goto.i 07_goto.1 07_goto.2
+
+04_funcs/01_call.s: 04_funcs/01_call.c
+	cd 04_funcs; $(CC) -P -S 01_call.c
+
+04_funcs/01_call.1: 04_funcs/01_call.c
+	cd 04_funcs; $(CPP) -P 01_call.c > 01_call.i; $(C0) 01_call.i 01_call.1 01_call.2
+
+04_funcs/02_manyargs.s: 04_funcs/02_manyargs.c
+	cd 04_funcs; $(CC) -P -S 02_manyargs.c
+
+04_funcs/02_manyargs.1: 04_funcs/02_manyargs.c
+	cd 04_funcs; $(CPP) -P 02_manyargs.c > 02_manyargs.i; $(C0) 02_manyargs.i 02_manyargs.1 02_manyargs.2
+
+04_funcs/03_recfact.s: 04_funcs/03_recfact.c
+	cd 04_funcs; $(CC) -P -S 03_recfact.c
+
+04_funcs/03_recfact.1: 04_funcs/03_recfact.c
+	cd 04_funcs; $(CPP) -P 03_recfact.c > 03_recfact.i; $(C0) 03_recfact.i 03_recfact.1 03_recfact.2
+
+04_funcs/04_mutrec.s: 04_funcs/04_mutrec.c
+	cd 04_funcs; $(CC) -P -S 04_mutrec.c
+
+04_funcs/04_mutrec.1: 04_funcs/04_mutrec.c
+	cd 04_funcs; $(CPP) -P 04_mutrec.c > 04_mutrec.i; $(C0) 04_mutrec.i 04_mutrec.1 04_mutrec.2
+
+04_funcs/05_staticvar.s: 04_funcs/05_staticvar.c
+	cd 04_funcs; $(CC) -P -S 05_staticvar.c
+
+04_funcs/05_staticvar.1: 04_funcs/05_staticvar.c
+	cd 04_funcs; $(CPP) -P 05_staticvar.c > 05_staticvar.i; $(C0) 05_staticvar.i 05_staticvar.1 05_staticvar.2
+
+04_funcs/06_regclass.s: 04_funcs/06_regclass.c
+	cd 04_funcs; $(CC) -P -S 06_regclass.c
+
+04_funcs/06_regclass.1: 04_funcs/06_regclass.c
+	cd 04_funcs; $(CPP) -P 06_regclass.c > 06_regclass.i; $(C0) 06_regclass.i 06_regclass.1 06_regclass.2
+
+04_funcs/07_funcptr.s: 04_funcs/07_funcptr.c
+	cd 04_funcs; $(CC) -P -S 07_funcptr.c
+
+04_funcs/07_funcptr.1: 04_funcs/07_funcptr.c
+	cd 04_funcs; $(CPP) -P 07_funcptr.c > 07_funcptr.i; $(C0) 07_funcptr.i 07_funcptr.1 07_funcptr.2
+
+05_arrptr/01_arrbasic.s: 05_arrptr/01_arrbasic.c
+	cd 05_arrptr; $(CC) -P -S 01_arrbasic.c
+
+05_arrptr/01_arrbasic.1: 05_arrptr/01_arrbasic.c
+	cd 05_arrptr; $(CPP) -P 01_arrbasic.c > 01_arrbasic.i; $(C0) 01_arrbasic.i 01_arrbasic.1 01_arrbasic.2
+
+05_arrptr/02_array2d.s: 05_arrptr/02_array2d.c
+	cd 05_arrptr; $(CC) -P -S 02_array2d.c
+
+05_arrptr/02_array2d.1: 05_arrptr/02_array2d.c
+	cd 05_arrptr; $(CPP) -P 02_array2d.c > 02_array2d.i; $(C0) 02_array2d.i 02_array2d.1 02_array2d.2
+
+05_arrptr/03_ptrbasic.s: 05_arrptr/03_ptrbasic.c
+	cd 05_arrptr; $(CC) -P -S 03_ptrbasic.c
+
+05_arrptr/03_ptrbasic.1: 05_arrptr/03_ptrbasic.c
+	cd 05_arrptr; $(CPP) -P 03_ptrbasic.c > 03_ptrbasic.i; $(C0) 03_ptrbasic.i 03_ptrbasic.1 03_ptrbasic.2
+
+05_arrptr/04_ptrarreq.s: 05_arrptr/04_ptrarreq.c
+	cd 05_arrptr; $(CC) -P -S 04_ptrarreq.c
+
+05_arrptr/04_ptrarreq.1: 05_arrptr/04_ptrarreq.c
+	cd 05_arrptr; $(CPP) -P 04_ptrarreq.c > 04_ptrarreq.i; $(C0) 04_ptrarreq.i 04_ptrarreq.1 04_ptrarreq.2
+
+05_arrptr/05_arrofptr.s: 05_arrptr/05_arrofptr.c
+	cd 05_arrptr; $(CC) -P -S 05_arrofptr.c
+
+05_arrptr/05_arrofptr.1: 05_arrptr/05_arrofptr.c
+	cd 05_arrptr; $(CPP) -P 05_arrofptr.c > 05_arrofptr.i; $(C0) 05_arrofptr.i 05_arrofptr.1 05_arrofptr.2
+
+05_arrptr/06_ptrptr.s: 05_arrptr/06_ptrptr.c
+	cd 05_arrptr; $(CC) -P -S 06_ptrptr.c
+
+05_arrptr/06_ptrptr.1: 05_arrptr/06_ptrptr.c
+	cd 05_arrptr; $(CPP) -P 06_ptrptr.c > 06_ptrptr.i; $(C0) 06_ptrptr.i 06_ptrptr.1 06_ptrptr.2
+
+05_arrptr/07_strlibc.s: 05_arrptr/07_strlibc.c
+	cd 05_arrptr; $(CC) -P -S 07_strlibc.c
+
+05_arrptr/07_strlibc.1: 05_arrptr/07_strlibc.c
+	cd 05_arrptr; $(CPP) -P 07_strlibc.c > 07_strlibc.i; $(C0) 07_strlibc.i 07_strlibc.1 07_strlibc.2
+
+06_struct/01_stbasic.s: 06_struct/01_stbasic.c
+	cd 06_struct; $(CC) -P -S 01_stbasic.c
+
+06_struct/01_stbasic.1: 06_struct/01_stbasic.c
+	cd 06_struct; $(CPP) -P 01_stbasic.c > 01_stbasic.i; $(C0) 01_stbasic.i 01_stbasic.1 01_stbasic.2
+
+06_struct/02_stptr.s: 06_struct/02_stptr.c
+	cd 06_struct; $(CC) -P -S 02_stptr.c
+
+06_struct/02_stptr.1: 06_struct/02_stptr.c
+	cd 06_struct; $(CPP) -P 02_stptr.c > 02_stptr.i; $(C0) 02_stptr.i 02_stptr.1 02_stptr.2
+
+06_struct/03_starray.s: 06_struct/03_starray.c
+	cd 06_struct; $(CC) -P -S 03_starray.c
+
+06_struct/03_starray.1: 06_struct/03_starray.c
+	cd 06_struct; $(CPP) -P 03_starray.c > 03_starray.i; $(C0) 03_starray.i 03_starray.1 03_starray.2
+
+06_struct/04_stassign.s: 06_struct/04_stassign.c
+	cd 06_struct; $(CC) -P -S 04_stassign.c
+
+06_struct/04_stassign.1: 06_struct/04_stassign.c
+	cd 06_struct; $(CPP) -P 04_stassign.c > 04_stassign.i; $(C0) 04_stassign.i 04_stassign.1 04_stassign.2
+
+06_struct/05_nestst.s: 06_struct/05_nestst.c
+	cd 06_struct; $(CC) -P -S 05_nestst.c
+
+06_struct/05_nestst.1: 06_struct/05_nestst.c
+	cd 06_struct; $(CPP) -P 05_nestst.c > 05_nestst.i; $(C0) 05_nestst.i 05_nestst.1 05_nestst.2
+
+06_struct/06_union.s: 06_struct/06_union.c
+	cd 06_struct; $(CC) -P -S 06_union.c
+
+06_struct/06_union.1: 06_struct/06_union.c
+	cd 06_struct; $(CPP) -P 06_union.c > 06_union.i; $(C0) 06_union.i 06_union.1 06_union.2
+
+06_struct/07_bitfield.s: 06_struct/07_bitfield.c
+	cd 06_struct; $(CC) -P -S 07_bitfield.c
+
+06_struct/07_bitfield.1: 06_struct/07_bitfield.c
+	cd 06_struct; $(CPP) -P 07_bitfield.c > 07_bitfield.i; $(C0) 07_bitfield.i 07_bitfield.1 07_bitfield.2
+
+06_struct/08_enum.s: 06_struct/08_enum.c
+	cd 06_struct; $(CC) -P -S 08_enum.c
+
+06_struct/08_enum.1: 06_struct/08_enum.c
+	cd 06_struct; $(CPP) -P 08_enum.c > 08_enum.i; $(C0) 08_enum.i 08_enum.1 08_enum.2
+
+06_struct/09_typedef.s: 06_struct/09_typedef.c
+	cd 06_struct; $(CC) -P -S 09_typedef.c
+
+06_struct/09_typedef.1: 06_struct/09_typedef.c
+	cd 06_struct; $(CPP) -P 09_typedef.c > 09_typedef.i; $(C0) 09_typedef.i 09_typedef.1 09_typedef.2
+
+07_scope/01_globstat.s: 07_scope/01_globstat.c
+	cd 07_scope; $(CC) -P -S 01_globstat.c
+
+07_scope/01_globstat.1: 07_scope/01_globstat.c
+	cd 07_scope; $(CPP) -P 01_globstat.c > 01_globstat.i; $(C0) 01_globstat.i 01_globstat.1 01_globstat.2
+
+07_scope/02_shadow.s: 07_scope/02_shadow.c
+	cd 07_scope; $(CC) -P -S 02_shadow.c
+
+07_scope/02_shadow.1: 07_scope/02_shadow.c
+	cd 07_scope; $(CPP) -P 02_shadow.c > 02_shadow.i; $(C0) 02_shadow.i 02_shadow.1 02_shadow.2
+
+07_scope/03_externdef.s: 07_scope/03_externdef.c
+	cd 07_scope; $(CC) -P -S 03_externdef.c
+
+07_scope/03_externdef.1: 07_scope/03_externdef.c
+	cd 07_scope; $(CPP) -P 03_externdef.c > 03_externdef.i; $(C0) 03_externdef.i 03_externdef.1 03_externdef.2
+
+08_float/01_floatbas.s: 08_float/01_floatbas.c
+	cd 08_float; $(CC) -P -S 01_floatbas.c
+
+08_float/01_floatbas.1: 08_float/01_floatbas.c
+	cd 08_float; $(CPP) -P 01_floatbas.c > 01_floatbas.i; $(C0) 01_floatbas.i 01_floatbas.1 01_floatbas.2
+
+08_float/02_dblconv.s: 08_float/02_dblconv.c
+	cd 08_float; $(CC) -P -S 02_dblconv.c
+
+08_float/02_dblconv.1: 08_float/02_dblconv.c
+	cd 08_float; $(CPP) -P 02_dblconv.c > 02_dblconv.i; $(C0) 02_dblconv.i 02_dblconv.1 02_dblconv.2
+
+09_abiprobe/01_argvmain.s: 09_abiprobe/01_argvmain.c
+	cd 09_abiprobe; $(CC) -P -S 01_argvmain.c
+
+09_abiprobe/01_argvmain.1: 09_abiprobe/01_argvmain.c
+	cd 09_abiprobe; $(CPP) -P 01_argvmain.c > 01_argvmain.i; $(C0) 01_argvmain.i 01_argvmain.1 01_argvmain.2
+
+09_abiprobe/02_frame080.s: 09_abiprobe/02_frame080.c
+	cd 09_abiprobe; $(CC) -P -S 02_frame080.c
+
+09_abiprobe/02_frame080.1: 09_abiprobe/02_frame080.c
+	cd 09_abiprobe; $(CPP) -P 02_frame080.c > 02_frame080.i; $(C0) 02_frame080.i 02_frame080.1 02_frame080.2
+
+09_abiprobe/03_frame128.s: 09_abiprobe/03_frame128.c
+	cd 09_abiprobe; $(CC) -P -S 03_frame128.c
+
+09_abiprobe/03_frame128.1: 09_abiprobe/03_frame128.c
+	cd 09_abiprobe; $(CPP) -P 03_frame128.c > 03_frame128.i; $(C0) 03_frame128.i 03_frame128.1 03_frame128.2
+
+09_abiprobe/04_frame176.s: 09_abiprobe/04_frame176.c
+	cd 09_abiprobe; $(CC) -P -S 04_frame176.c
+
+09_abiprobe/04_frame176.1: 09_abiprobe/04_frame176.c
+	cd 09_abiprobe; $(CPP) -P 04_frame176.c > 04_frame176.i; $(C0) 04_frame176.i 04_frame176.1 04_frame176.2
+
+09_abiprobe/05_frame224.s: 09_abiprobe/05_frame224.c
+	cd 09_abiprobe; $(CC) -P -S 05_frame224.c
+
+09_abiprobe/05_frame224.1: 09_abiprobe/05_frame224.c
+	cd 09_abiprobe; $(CPP) -P 05_frame224.c > 05_frame224.i; $(C0) 05_frame224.i 05_frame224.1 05_frame224.2
+
+09_abiprobe/06_frame256.s: 09_abiprobe/06_frame256.c
+	cd 09_abiprobe; $(CC) -P -S 06_frame256.c
+
+09_abiprobe/06_frame256.1: 09_abiprobe/06_frame256.c
+	cd 09_abiprobe; $(CPP) -P 06_frame256.c > 06_frame256.i; $(C0) 06_frame256.i 06_frame256.1 06_frame256.2
+
+09_abiprobe/07_frame300.s: 09_abiprobe/07_frame300.c
+	cd 09_abiprobe; $(CC) -P -S 07_frame300.c
+
+09_abiprobe/07_frame300.1: 09_abiprobe/07_frame300.c
+	cd 09_abiprobe; $(CPP) -P 07_frame300.c > 07_frame300.i; $(C0) 07_frame300.i 07_frame300.1 07_frame300.2
+
+10_integ/01_wordcount.s: 10_integ/01_wordcount.c
+	cd 10_integ; $(CC) -P -S 01_wordcount.c
+
+10_integ/01_wordcount.1: 10_integ/01_wordcount.c
+	cd 10_integ; $(CPP) -P 01_wordcount.c > 01_wordcount.i; $(C0) 01_wordcount.i 01_wordcount.1 01_wordcount.2
+
+10_integ/02_bubsort.s: 10_integ/02_bubsort.c
+	cd 10_integ; $(CC) -P -S 02_bubsort.c
+
+10_integ/02_bubsort.1: 10_integ/02_bubsort.c
+	cd 10_integ; $(CPP) -P 02_bubsort.c > 02_bubsort.i; $(C0) 02_bubsort.i 02_bubsort.1 02_bubsort.2
+
+10_integ/03_linklist.s: 10_integ/03_linklist.c
+	cd 10_integ; $(CC) -P -S 03_linklist.c
+
+10_integ/03_linklist.1: 10_integ/03_linklist.c
+	cd 10_integ; $(CPP) -P 03_linklist.c > 03_linklist.i; $(C0) 03_linklist.i 03_linklist.1 03_linklist.2
+
+10_integ/04_strrev.s: 10_integ/04_strrev.c
+	cd 10_integ; $(CC) -P -S 04_strrev.c
+
+10_integ/04_strrev.1: 10_integ/04_strrev.c
+	cd 10_integ; $(CPP) -P 04_strrev.c > 04_strrev.i; $(C0) 04_strrev.i 04_strrev.1 04_strrev.2
+
+10_integ/05_matmul.s: 10_integ/05_matmul.c
+	cd 10_integ; $(CC) -P -S 05_matmul.c
+
+10_integ/05_matmul.1: 10_integ/05_matmul.c
+	cd 10_integ; $(CPP) -P 05_matmul.c > 05_matmul.i; $(C0) 05_matmul.i 05_matmul.1 05_matmul.2
+
+clean:
+	rm -f */*.s */*.i */*.1 */*.2
