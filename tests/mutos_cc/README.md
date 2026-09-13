@@ -119,13 +119,27 @@ pick whichever fits your setup, they produce the same files:
 make all intermediates
 
 # B) the real MUTOS 1700 `make` itself (NOT GNU Make — see Makefile's
-#    header for what that means in practice):
-make -f Makefile.mutos
+#    header for what that means in practice) — one category at a time:
+cd 00_smoke && make -f Makefile.mutos && cd ..
+cd 01_expr  && make -f Makefile.mutos && cd ..
+# ...and so on for each of the 11 category directories.
 
 # C) no make at all -- a plain shell script, run it DIRECTLY, never
 #    with "make -f" (it is not a makefile and make cannot parse it):
 sh gen_mutos.sh
 ```
+
+**(B) is one small `Makefile.mutos` per category directory, not a single
+one at the top of `tests/mutos_cc/`.** A single top-level one covering all
+62 files (124 targets) hit `Make: out of memory. Stop.` on real MUTOS 1700
+hardware, partway through even the very first, smallest category — this
+`make(1)` has some fixed-size internal table for macros/targets that a
+250-line-plus makefile exceeds, regardless of any one line's length (a
+previous fix already ruled out per-line length as the cause — the longest
+line anywhere here is under 230 characters). Splitting into one makefile
+per category keeps every single `make` invocation small enough to stay
+under that ceiling, and happens to match the corpus's own intended
+"tackle one category at a time" order anyway.
 
 **`gen_mutos.sh` is a shell script, not a makefile — run it with `sh` (or
 `./gen_mutos.sh` if its execute bit survived the transfer to MUTOS), never
@@ -140,12 +154,14 @@ any execute-bit question entirely and is the safest way to run it.
 
 **(A) needs GNU Make specifically.** The real MUTOS 1700 `make(1)` has no
 `%.o: %.c` pattern rules, no `$(wildcard)`/`$(dir)`/`$(notdir)` functions,
-and no `:=` — confirmed directly from its own manpage. `Makefile.mutos`
-(option B) is a from-scratch rewrite using only what that manpage actually
-documents (plain `=` macros, two-suffix rules like `.c.s:`, and every
-recipe kept to a single shell line, since the manpage's own
-*Fehlerquellen* section warns that `cd` and other shell state don't carry
-across separate recipe lines — each line gets its own subshell).
+and no `:=` — confirmed directly from its own manpage. Every
+`<category>/Makefile.mutos` (option B) is a from-scratch rewrite using
+only what that manpage actually documents (plain `=` macros, per-file
+targets, and every recipe kept to a single shell line, since the
+manpage's own *Fehlerquellen* section warns that `cd` and other shell
+state don't carry across separate recipe lines — each line gets its own
+subshell; not that it matters here, since each per-category makefile runs
+from inside its own directory and never needs `cd` at all).
 `gen_mutos.sh` (option C) was checked the same way against the real
 `basename(1)`/`expr(1)`/`find(1)` manpages, which caught one real bug:
 V7 `find`'s predicates (`-name` included) are pure tests with no implicit
