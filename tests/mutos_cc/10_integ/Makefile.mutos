@@ -1,0 +1,60 @@
+# Makefile.mutos -- per-category (this directory's 5 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_wordcount.s 01_wordcount.1 02_bubsort.s 02_bubsort.1 03_linklist.s 03_linklist.1 04_strrev.s 04_strrev.1 05_matmul.s 05_matmul.1
+
+01_wordcount.s: 01_wordcount.c
+	$(CC) -P -S 01_wordcount.c
+
+01_wordcount.1: 01_wordcount.c
+	$(CPP) -P 01_wordcount.c > 01_wordcount.i; $(C0) 01_wordcount.i 01_wordcount.1 01_wordcount.2
+
+02_bubsort.s: 02_bubsort.c
+	$(CC) -P -S 02_bubsort.c
+
+02_bubsort.1: 02_bubsort.c
+	$(CPP) -P 02_bubsort.c > 02_bubsort.i; $(C0) 02_bubsort.i 02_bubsort.1 02_bubsort.2
+
+03_linklist.s: 03_linklist.c
+	$(CC) -P -S 03_linklist.c
+
+03_linklist.1: 03_linklist.c
+	$(CPP) -P 03_linklist.c > 03_linklist.i; $(C0) 03_linklist.i 03_linklist.1 03_linklist.2
+
+04_strrev.s: 04_strrev.c
+	$(CC) -P -S 04_strrev.c
+
+04_strrev.1: 04_strrev.c
+	$(CPP) -P 04_strrev.c > 04_strrev.i; $(C0) 04_strrev.i 04_strrev.1 04_strrev.2
+
+05_matmul.s: 05_matmul.c
+	$(CC) -P -S 05_matmul.c
+
+05_matmul.1: 05_matmul.c
+	$(CPP) -P 05_matmul.c > 05_matmul.i; $(C0) 05_matmul.i 05_matmul.1 05_matmul.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

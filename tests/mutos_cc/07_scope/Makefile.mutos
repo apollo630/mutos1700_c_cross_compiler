@@ -1,0 +1,48 @@
+# Makefile.mutos -- per-category (this directory's 3 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_globstat.s 01_globstat.1 02_shadow.s 02_shadow.1 03_externdef.s 03_externdef.1
+
+01_globstat.s: 01_globstat.c
+	$(CC) -P -S 01_globstat.c
+
+01_globstat.1: 01_globstat.c
+	$(CPP) -P 01_globstat.c > 01_globstat.i; $(C0) 01_globstat.i 01_globstat.1 01_globstat.2
+
+02_shadow.s: 02_shadow.c
+	$(CC) -P -S 02_shadow.c
+
+02_shadow.1: 02_shadow.c
+	$(CPP) -P 02_shadow.c > 02_shadow.i; $(C0) 02_shadow.i 02_shadow.1 02_shadow.2
+
+03_externdef.s: 03_externdef.c
+	$(CC) -P -S 03_externdef.c
+
+03_externdef.1: 03_externdef.c
+	$(CPP) -P 03_externdef.c > 03_externdef.i; $(C0) 03_externdef.i 03_externdef.1 03_externdef.2
+
+clean:
+	rm -f *.s *.i *.1 *.2

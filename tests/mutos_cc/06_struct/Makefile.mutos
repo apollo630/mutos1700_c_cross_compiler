@@ -1,0 +1,84 @@
+# Makefile.mutos -- per-category (this directory's 9 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# This replaces a single tests/mutos_cc/Makefile.mutos that tried to
+# cover all 62 test files (124 targets) in one file -- that one hit
+# "Make: out of memory. Stop." on real MUTOS 1700 hardware partway
+# through the very first (smallest) category. One small makefile per
+# category, run one category at a time, stays well within whatever
+# fixed-size internal table that make(1) ran out of. This also matches
+# the corpus's own intended "tackle one category at a time" order (see
+# ../README.md).
+#
+# Every recipe is one shell line (";"-joined), per make(1)'s own
+# FEHLERQUELLEN note that shell state doesn't carry across separate
+# recipe lines.
+
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_stbasic.s 01_stbasic.1 02_stptr.s 02_stptr.1 03_starray.s 03_starray.1 04_stassign.s 04_stassign.1 05_nestst.s 05_nestst.1 06_union.s 06_union.1 07_bitfield.s 07_bitfield.1 08_enum.s 08_enum.1 09_typedef.s 09_typedef.1
+
+01_stbasic.s: 01_stbasic.c
+	$(CC) -P -S 01_stbasic.c
+
+01_stbasic.1: 01_stbasic.c
+	$(CPP) -P 01_stbasic.c > 01_stbasic.i; $(C0) 01_stbasic.i 01_stbasic.1 01_stbasic.2
+
+02_stptr.s: 02_stptr.c
+	$(CC) -P -S 02_stptr.c
+
+02_stptr.1: 02_stptr.c
+	$(CPP) -P 02_stptr.c > 02_stptr.i; $(C0) 02_stptr.i 02_stptr.1 02_stptr.2
+
+03_starray.s: 03_starray.c
+	$(CC) -P -S 03_starray.c
+
+03_starray.1: 03_starray.c
+	$(CPP) -P 03_starray.c > 03_starray.i; $(C0) 03_starray.i 03_starray.1 03_starray.2
+
+04_stassign.s: 04_stassign.c
+	$(CC) -P -S 04_stassign.c
+
+04_stassign.1: 04_stassign.c
+	$(CPP) -P 04_stassign.c > 04_stassign.i; $(C0) 04_stassign.i 04_stassign.1 04_stassign.2
+
+05_nestst.s: 05_nestst.c
+	$(CC) -P -S 05_nestst.c
+
+05_nestst.1: 05_nestst.c
+	$(CPP) -P 05_nestst.c > 05_nestst.i; $(C0) 05_nestst.i 05_nestst.1 05_nestst.2
+
+06_union.s: 06_union.c
+	$(CC) -P -S 06_union.c
+
+06_union.1: 06_union.c
+	$(CPP) -P 06_union.c > 06_union.i; $(C0) 06_union.i 06_union.1 06_union.2
+
+07_bitfield.s: 07_bitfield.c
+	$(CC) -P -S 07_bitfield.c
+
+07_bitfield.1: 07_bitfield.c
+	$(CPP) -P 07_bitfield.c > 07_bitfield.i; $(C0) 07_bitfield.i 07_bitfield.1 07_bitfield.2
+
+08_enum.s: 08_enum.c
+	$(CC) -P -S 08_enum.c
+
+08_enum.1: 08_enum.c
+	$(CPP) -P 08_enum.c > 08_enum.i; $(C0) 08_enum.i 08_enum.1 08_enum.2
+
+09_typedef.s: 09_typedef.c
+	$(CC) -P -S 09_typedef.c
+
+09_typedef.1: 09_typedef.c
+	$(CPP) -P 09_typedef.c > 09_typedef.i; $(C0) 09_typedef.i 09_typedef.1 09_typedef.2
+
+clean:
+	rm -f *.s *.i *.1 *.2
