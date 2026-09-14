@@ -12,6 +12,21 @@ Last updated: 2026-09-13.
 
 ---
 
+## Top-level build (verified this session)
+
+A repo-root `Makefile` now exists, fulfilling `CLAUDE.md`'s standing Build
+Requirement ("one top level Makefile to build all 4 components") — an open
+item since Milestone 1, not specific to any single milestone. `make`/`make
+all` builds `mutos_ld` (compiled directly; it has no sub-Makefile of its
+own yet), and delegates to each of `mutos_as`/`mutos_cpp`/`mutos_cc`'s own
+`src/mutos_<tool>/Makefile`. `make test` runs every component's own
+golden-diff suite from one place (`mutos_as`'s `kernel_nonopt`/`kernel_opt`,
+`mutos_cpp`'s, and `mutos_cc`'s — see each milestone's section below for
+current results). Verified this session via a full `make clean && make all
+&& make test` from a clean checkout.
+
+---
+
 ## Milestone 1 — `mutos_ld` (linker)
 
 **Status: COMPLETE** *(carried from prior session records — see caveat below)*
@@ -210,13 +225,104 @@ the real MUTOS kernel source this project validates against.
 
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
-**Status: NOT STARTED — no `mutos_c0`/`mutos_c1` code yet, but ABI/calling-
-convention research is done, the `c0`/`c1` process split is confirmed as a
-deliberate design decision, the K&R test corpus exists, and its real-hardware
-golden-generation pipeline is now confirmed working end-to-end (at least for
-the `00_smoke` category — full-corpus generation across all 11 categories is
-presumably in progress).**
-`src/mutos_cc/` does not exist yet. This is the next milestone after `mutos_cpp`.
+**Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
+byte-exact, end-to-end, for 5/62 of the full corpus: `tests/mutos_cc/
+00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c` and
+`02_bitwise.c`. ABI/
+calling-convention research is done, the `c0`/`c1` process split is
+confirmed as a deliberate design decision, the K&R test corpus now
+has full-corpus goldens (all 62 files across all 11 categories) present in
+this checkout, and its real-hardware golden-generation pipeline is confirmed
+working end-to-end.**
+`src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise`)
+
+Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
+symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
+a code generator with an operand-kind-aware value stack) in `src/mutos_cc/`
+— a from-scratch, modern-C11 reimplementation per this project's
+established approach (`/v7/cc/` used as an algorithmic reference only, per
+CLAUDE.md Workflow Guideline 3, not copied wholesale).
+
+**Verification: the real, unmodified pipeline — `<n>.c` → real
+`mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
+`tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c` and
+`02_bitwise.c`, and every intermediate artifact (`.i`, `.1`, `.2`, `.s`)
+matches its real-hardware golden byte-for-byte.** Re-run via
+`tests/mutos_cc/run_goldens.sh` (also wired into the top-level `Makefile`'s
+`test` target), which covers the full 62-file corpus and reports every file
+outside current grammar/opcode coverage as an explicit, expected "not yet
+supported" diagnostic (nonzero exit, clear message) — distinct from a
+genuine byte mismatch, so the script's pass count is an honest,
+non-inflated measure of verified coverage. Current full-corpus result: 5
+byte-exact end-to-end, 57 "not yet supported" (expected), **0 genuine
+mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
+
+Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
+`od`/hexdump, against the `00_smoke`, `01_intarith`, and `02_bitwise`
+goldens) surfaced **four confirmed MUTOS-1700-specific deltas from vanilla
+V7 `cc`** (found against `00_smoke`), the full local-variable wire format
+(found against `01_intarith`), and the bitwise-operator/immediate-marker
+findings below (found against `02_bitwise`), each cited against exact byte
+offsets in `docs/DEVLOG.md`'s Milestone 4 section:
+
+1. `STAUTO = -4`, not V7 PDP-11's `-6` (MUTOS's prologue saves 2 registers,
+   not 3 — see `docs/MUTOS_C_ABI.md` sect. 1.2/1.4).
+2. `cfunc()`'s header sequence emits an extra `EVEN` between `PROG` and
+   `RLABEL` (8086 entry-point alignment, presumably).
+3. `RETRN` carries an extra numeric argument (return type), rendered by
+   `c1` as a `|RTYP n` comment.
+4. The initial `SETREG` register-variable budget is `4`, not V7's `5`.
+5. `ANAME` (`outcode("BSN", ANAME, name, offset)`) declares each `AUTO`
+   local right after the function's body-entry label, rendered by `c1` as a
+   `"| name=offset."` comment; `NAME` (`outcode("BNNN", NAME, hclass, type,
+   hoffset)`) references one. Offset assignment matches `v7/cc/c03.c`'s
+   declarator loop exactly, using MUTOS's own `STAUTO=-4` as the starting
+   subtrahend (delta #1) — confirmed via `a`/`b`/`c` landing at `-6`/`-8`/
+   `-10`.
+6. The `SETSTK`-vs-`.s` local-frame threshold is now implemented for real
+   (not just bounded): `extra <= 76` bytes emits a plain `"sub sp,*N."`
+   (confirmed via `01_intarith`'s `extra=6` case), `extra > 256` emits
+   `"mov ax,*N. / call chkstk"` (per `docs/MUTOS_C_ABI.md` sect. 1.9, not
+   yet confirmed against its own golden), and the unconfirmed `(76,256]`
+   gap remains an explicit "not yet supported" rather than a guess.
+7. `mutos_as`'s `*`/`#` immediate-operand size markers (byte- vs.
+   word-sized) are a real, confirmed source-text convention: `*value.`
+   when the value fits a signed byte (`-128..127`), `#value.` otherwise —
+   confirmed both via `man/mutos_as.1`'s documented semantics and by
+   actually assembling+disassembling both forms with the real `mutos_as`
+   (identical machine code either way for plain `MOV`, since 8086's `MOV`
+   has no byte-immediate form — the marker choice is purely a source-text
+   convention here, not something affecting `02_bitwise`'s generated
+   bytes). `AND`/`OR`/`EXOR`/unary `COMPL` (`~` on a non-constant operand
+   — the first confirmed non-constant *unary* operator) follow the same
+   `DI`-working-register shape as `+`/`-`.
+
+**Current grammar/opcode scope (deliberately narrow, by design — see
+`src/mutos_cc/README.md`):** function definitions with no parameters; a
+body of `int`-only local declarations (no initializers) followed by
+`name = expr;` assignment and/or `return` statements; expressions over
+`+ - * / % & | ^ ~` (unary/binary as applicable), parens, integer
+constants, and variable references, constant-folded at parse time exactly
+like real K&R `cc`'s own per-operation `build()`-time folding, with a real
+`NAME`/operator tree emitted the moment a variable is involved. Everything
+else (relational/logical/shift/compound-assignment operators, non-`int`
+types, function parameters, control flow, memory-to-memory assignment, an
+immediate `IMUL`/`IDIV` operand) is an explicit "not yet supported" error,
+not silently-wrong output — confirmed via a direct test against
+`01_expr/03_rellogic.c` (correctly rejected with a clear message, not a
+crash or bad `.s`).
+
+Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root
+(see "Top-level build" above); clean build, zero warnings under `-Wall
+-Wextra -Wpedantic`. `mutos_cc` (the driver chaining `cpp|c0|c1|
+as|ld`) is not yet written — see `src/mutos_cc/README.md`'s "Next steps"
+for the full, dependency-ordered expansion plan (the rest of `01_expr`,
+`long`/arrays/pointers/structs, control flow, function calls, the
+`chkstk` threshold, then the driver).
+
+This is the next milestone after `mutos_cpp`.
 Scope (from `CLAUDE.md`'s roadmap): port the V7 `cc` frontend/`c0`/`c1` pipeline,
 emit x86-16 code in `mutos_as` syntax, and enforce PDP-11 middle-endian encoding for
 compiled `long` variables (see `CLAUDE.md`'s "PDP-11 Middle-Endian" rule, which
@@ -351,11 +457,14 @@ section; headline findings:
 
 ### Next up
 
-Analyze the real-hardware-generated `.s`/`.i`/`.1`/`.2` files for the
-corpus, then begin implementing `mutos_c0`/`mutos_c1` against them — the
-first actual code for this milestone, on top of the ABI research, the
-confirmed process-split design, and the now-working golden-generation
-pipeline above.
+Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `03_rellogic`
+next (relational/logical operators, the first construct needing real
+conditional branching — no `setcc` before the 386, so a 0/1 boolean result
+means `cmp` + a conditional jump). See `src/mutos_cc/README.md`'s "Next
+steps" for the full, dependency-ordered plan through `long`/arrays/
+pointers/structs, `03_ctrlflow`, function calls, the `09_abiprobe`
+`chkstk`-threshold goldens, and the `mutos_cc` driver itself.
 
 ---
 

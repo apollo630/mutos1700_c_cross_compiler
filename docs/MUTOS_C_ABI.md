@@ -1,7 +1,11 @@
 # MUTOS 1700 C Calling Convention & Program Startup/Cleanup
 
 **Status:** Research reference for Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`).
-Not yet implemented anywhere — this document records what the *real* MUTOS 1700
+Several of the rules below are now implemented and byte-for-byte verified in
+`mutos_c1` (see the "Summary checklist" at the end of this document for
+exactly which, and `src/mutos_cc/README.md`/`STATUS.md` for the current
+overall grammar/opcode scope) — this document itself remains the
+research/reference record of what the *real* MUTOS 1700
 toolchain's compiled code and C runtime actually do, reverse-engineered from real
 hardware-linked object files, so `mutos_c1`'s code generator can reproduce it
 byte-compatibly. Everything below is either **directly confirmed** by disassembling
@@ -571,24 +575,52 @@ Unix `exit()`.
 
 ## 3. Summary checklist for `mutos_c1` code generation
 
-- [ ] Every function: `push bp / mov bp,sp / push di / push si` prologue,
-      unconditionally (§1.2).
-- [ ] Parameters at `bp+4, bp+6, bp+8, ...`; locals at `bp-6, bp-8, bp-10, ...`
-      (§1.3–1.4).
+Checkbox state reflects what's actually implemented **and** byte-for-byte
+golden-verified in `mutos_c1` as of this writing (see `STATUS.md`'s
+Milestone 4 section for the exact corpus coverage) — not just "code exists
+that attempts this." An unchecked item may still have partial code behind
+it; the note says so where that's the case.
+
+- [x] Every function: `push bp / mov bp,sp / push di / push si` prologue,
+      unconditionally (§1.2). Implemented and verified in every passing
+      golden so far (`c1_gen.c`'s `SAVE` handler).
+- [ ] Parameters at `bp+4, bp+6, bp+8, ...` (§1.3) — **not yet
+      implemented**: `mutos_c0`'s current grammar accepts no function
+      parameters at all.
+- [x] Locals at `bp-6, bp-8, bp-10, ...` (§1.4). Implemented and verified
+      (`c0_sym.c`'s offset assignment, confirmed via `01_intarith`/
+      `02_bitwise`'s `a`/`b`/`c` landing at exactly `-6`/`-8`/`-10`).
 - [ ] Arguments pushed right-to-left; caller cleans up with `add sp,N` after every
-      call (§1.1).
-- [ ] Return: `AX` for scalars, `DX:AX` (`DX`=high) for `long` (§1.5).
+      call (§1.1) — **not yet implemented**: no function calls are
+      supported yet.
+- [x] Return: `AX` for (`int`) scalars (§1.5). Implemented and verified
+      (`c1_gen.c`'s `RFORCE` handler). `char`/pointer scalars aren't
+      distinguished yet, since `mutos_c0`'s type system is currently
+      `int`-only.
+- [ ] Return: `DX:AX` (`DX`=high) for `long` (§1.5) — **not yet
+      implemented**: no `long` support yet.
 - [ ] `long` = 2 words, high word at the lower address/offset, everywhere (locals,
-      by-reference, by-value parameters) (§1.6).
-- [ ] Epilogue: `jmp cret` (shared routine: `lea sp,[bp-4] / pop si / pop di /
-      pop bp / ret`) (§1.2).
-- [ ] Large frames: `mov ax,framesize / call chkstk` instead of inline `sub sp,N`
+      by-reference, by-value parameters) (§1.6) — **not yet implemented**.
+- [x] Epilogue: `jmp cret` (shared routine: `lea sp,[bp-4] / pop si / pop di /
+      pop bp / ret`) (§1.2). Implemented and verified (`c1_gen.c`'s
+      `RETRN` handler).
+- [~] Large frames: `mov ax,framesize / call chkstk` instead of inline `sub sp,N`
       above some threshold in `(76, 256]` bytes, exact cutoff not yet pinned down
-      (§1.9).
+      (§1.9) — **partially implemented**: the `<=76`-bytes plain
+      `sub sp,N` case is implemented and verified (`01_intarith`'s
+      `extra=6`); the `>256`-bytes `call chkstk` case is implemented from
+      this document but not yet confirmed against a golden of its own; the
+      unconfirmed `(76,256]` gap is an explicit "not yet supported" rather
+      than a guess (`tests/mutos_cc/09_abiprobe/frame080.c` … `frame300.c`
+      exist to pin it down once analyzed).
 - [ ] Long multiply/divide/modulo: emit calls to `almul`/`aldiv`/`alrem` using their
       *own* extended, pointer-first calling convention (§1.8) — not the general ABI.
+      **Not yet implemented**: no `long` support yet.
 - [ ] `crt0` (own object, real or reimplemented) must: read `argc`/`argv` off the
       initial `sp`, scan for the NULL `argv` terminator, set `_environ`, call `_main`
       with `(argc, argv, envp)` per the standard ABI, then call `exit()` (not raw
       `_exit()`) with `main`'s return value, with an infinite-loop safety net after
-      the call (§2.2, §2.4).
+      the call (§2.2, §2.4). **Not yet implemented** — out of `mutos_c1`'s own
+      scope; either a hand-written `mutos_cc` crt0 object or linking against
+      the real `crt0.o` will need to satisfy this once programs are actually
+      linked and run, not just compiled to `.s`.

@@ -19,8 +19,14 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/src/mutos_as/`: Source code for the Mutos Assembler.
 * `/src/mutos_cpp/`: Source code for the Mutos C Preprocessor. See `src/mutos_cpp/README.md`
   for its full behavioral specification.
-* `/src/mutos_cc/`: Source code for the Mutos C Compiler frontend/driver. **Planned only —
-  this directory does not exist yet** (Milestone 4 has not started; see `STATUS.md`).
+* `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
+  and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
+  5/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`
+  and `02_bitwise`) — see
+  `src/mutos_cc/README.md` for the confirmed
+  `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
+  `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
+  `STATUS.md`.
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
@@ -178,8 +184,10 @@ You act as an expert systems programmer, compiler architect, and operating syste
      middle-endian encoding to the `a.out` header — doing so breaks byte-for-byte
      golden parity.
    * **`long` variables inside C code compiled by `mutos_cc`**: this is where the rule
-     will actually matter for K&R `long`-arithmetic correctness — **not yet relevant**,
-     since Milestone 4 (`mutos_cc`) has not started (see `STATUS.md`).
+     will actually matter for K&R `long`-arithmetic correctness — confirmed (not just
+     theorized) via real hardware-linked `.o` disassembly, see `docs/MUTOS_C_ABI.md`
+     sect. 1.6 — but **not yet implemented**: `mutos_c0`/`mutos_c1`'s current grammar
+     coverage has no `long` support yet (see `src/mutos_cc/README.md`'s "Next steps").
    * *Example (for the `ar`-archive and future-`mutos_cc` cases only)* — storing
      `0x0A0B0C0D`:
      ```text
@@ -220,7 +228,7 @@ You act as an expert systems programmer, compiler architect, and operating syste
      `README.md`).
 3. **Reference Material**: Use the `/v7/` directory strictly as historical reference. Do not mix V7 logic directly into `mutos` unless explicitly migrating or fixing compatibility bugs.
 4. **Header Files**: When changing structs or definitions in `/src/h/`, verify the impacts across `as`, `cc`, and `ld` simultaneously.
-5. **Build Requirement**: Create one top Level Makefile to build all 4 components (`mutos_ld`, `mutos_as`, `mutos_cpp`, `mutos_cc`)
+5. **Build Requirement**: Create one top Level Makefile to build all 4 components (`mutos_ld`, `mutos_as`, `mutos_cpp`, `mutos_cc`). **Done** — see the repo-root `Makefile` (`make`/`make test` — see `STATUS.md`'s "Top-level build").
 6. **STATUS.md Sync (mandatory)**: `STATUS.md` must be kept in sync with reality at all
    times — treat it as part of the change, not optional follow-up documentation. This
    means:
@@ -315,11 +323,30 @@ scope and intent, not a snapshot of what's done.
   (real `make(1)`'s capacity limits, real `cc`'s `-P`/`-S` interaction, a
   golden-packaging step that tried to rebuild files using MUTOS-only tools
   on the modern host) — full writeups in `docs/DEVLOG.md`'s Milestone 4
-  "MUTOS 1700 host-tooling findings" section. Full-corpus golden generation
-  across all 11 categories is presumably in progress.
-* **Next up**: analyze the real-hardware-generated `.s`/`.i`/`.1`/`.2` files
-  as they come in, then begin actually implementing `mutos_c0`/`mutos_c1`
-  against them.
+  "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
+  files across all 11 categories) are now present in this checkout.
+* **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
+  for 5/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  `01_expr/01_intarith.c` and `02_bitwise.c` — the first constructs needing
+  a real symbol table and non-folded expression codegen, not just
+  constant folding).
+  Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
+  covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
+  into the top-level `Makefile`'s `test` target). Several MUTOS-specific
+  deltas from vanilla V7 `cc`'s `temp1`/`temp2` format, and a real
+  `mutos_as`-syntax convention (`*`/`#` immediate size markers), were
+  discovered and confirmed byte-for-byte in the process — see
+  `src/mutos_cc/README.md` and `docs/DEVLOG.md`'s Milestone 4 section for the
+  full derivation.
+  Grammar/opcode coverage beyond that is explicit, clearly-diagnosed "not
+  yet supported" — never silent wrong output — by design (see
+  `src/mutos_cc/README.md`'s "Current scope").
+* **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
+  category by category (`03_rellogic` next: relational/logical operators,
+  the first construct needing real conditional branching) — see
+  `src/mutos_cc/README.md`'s "Next steps" for the concrete
+  dependency-ordered list (`long`/arrays/pointers/structs, control flow,
+  function calls, the `chkstk` threshold, then the `mutos_cc` driver itself).
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.
