@@ -861,7 +861,296 @@ without attempting to invoke any MUTOS-only tool. The golden-generation
 pipeline designed in the previous subsection is now empirically validated,
 not just designed.
 
----
+### `temp1`/`temp2` wire format: byte-level derivation (`mutos_c0`/`mutos_c1` built and verified this session)
+
+With full-corpus goldens now present in this checkout, `mutos_c0` (front
+end) and `mutos_c1` (back end) were built in `src/mutos_cc/` and verified
+byte-exact, end-to-end, against `tests/mutos_cc/00_smoke`'s 3 files — see
+`STATUS.md` for the verification summary and `src/mutos_cc/README.md` for
+architecture/scope. This subsection is the full byte-level derivation
+behind that work: exactly how `v7/cc/c04.c`'s `outcode()` format and
+`v7/cc/c02.c`'s `cfunc()`/`funchead()` algorithm shape were confirmed (and,
+in four places, found to diverge) against the real MUTOS 1700
+`00_smoke/*.1.golden`/`*.s.golden` bytes.
+
+**Method.** `od -A d -t x1z` on each `00_smoke/*.1.golden` gave the raw
+byte stream; each byte pair was matched against `v7/cc/c0.h`'s manifest
+"operator" constants (e.g. `SYMDEF`=207=`0xCF`, `PROG`=202=`0xCA`) per
+`outcode()`'s documented format (`'B'`: `(value, 0xFE)`; `'N'`:
+little-endian word; `'S'`: `'_'` + up to `NCPS`(8) chars + `NUL`), then
+cross-checked against which `v7/cc/c0*.c` function call site could have
+produced that exact byte sequence, and finally against the matching
+`*.s.golden` text to confirm the *meaning* of each opcode via `mutos_c1`'s
+(not-yet-written, at the time) rendering of it.
+
+**Worked example — `01_emptymain.1.golden` (`main(){}`), full 56 bytes:**
+
+```
+cf fe 5f 6d 61 69 6e 00   SYMDEF + "_main\0"        (extdef(): outcode("BS", SYMDEF, name))
+ca fe                     PROG                       (cfunc(), MUTOS variant - see delta #2 below)
+d2 fe                     EVEN                       (cfunc(), MUTOS variant - see delta #2 below)
+72 fe 5f 6d 61 69 6e 00   RLABEL + "_main\0"          (cfunc(): outcode("B..S", PROG, EVEN, RLABEL, name))
+d0 fe                     SAVE                        (cfunc(): outcode("B", SAVE))
+69 fe 04 00               SETREG 4                     (funchead(): outcode("BN", SETREG, regvar) - MUTOS variant, delta #4)
+6f fe 01 00               BRANCH 1                      (cfunc(): branch(sloc), sloc=1)
+70 fe 02 00               LABEL 2                        (cfunc(): label(sloc+1))
+70 fe 03 00               LABEL 3                         (cfunc(): outcode("BNBN", LABEL, retlab, ...), retlab=3 - empty body, no code between L2/L3)
+d1 fe 00 00               RETRN 0                          (... RETRN, TY_INT) - MUTOS variant, delta #3
+70 fe 01 00               LABEL 1                           (cfunc(): label(sloc))
+db fe 04 00               SETSTK 4                          (cfunc(): outcode("BN", SETSTK, -maxauto) - MUTOS variant, delta #1
+6f fe 02 00               BRANCH 2                           (cfunc(): branch(sloc+1))
+00 fe                     EOFC                                (c00.c main(): outcode("B", EOFC))
+```
+
+`02_retconst.1.golden`/`03_retexpr.1.golden` (`return 42;`/`return 6*7;`)
+insert exactly this extra sequence between `LABEL 2` and `LABEL 3` (in
+place of the "no code between L2/L3" case above):
+
+```
+15 fe 00 00 2a 00   CON, type=TY_INT(0), value=42        (treeout(): outcode("BNN", CON, type, value))
+6e fe 00 00           RFORCE, type=TY_INT(0)                (doret(): build(RFORCE); treeout() emits the wrapper)
+d6 fe NN 00             EXPR, line=NN                         (rcexpr(): outcode("BN", EXPR, line))
+6f fe 03 00               BRANCH 3                              (doret(): branch(retlab))
+```
+
+`line` is `09 00` (9) for `02_retconst.c` (`return 42;` is on line 9 of
+that file) and `0a 00` (10) for `03_retexpr.c` (`return 6 * 7;` is on line
+10) — confirmed against each file's actual physical line count, including
+`mutos_cpp`'s comment-to-blank-line preservation (see Milestone 3), which
+keeps `.i`'s line numbers identical to the original `.c`'s. `03_retexpr`'s
+`CON` value is `42` (`0x2a`), not two separate `CON(6)`/`CON(7)` leaves
+with a `TIMES` opcode between them — direct confirmation that real K&R
+`cc`'s constant folding happens in the front end (`c0`, at `build()` time),
+not deferred to the code generator.
+
+**The four confirmed MUTOS-1700-specific deltas from vanilla `v7/cc`**
+(each is a deliberate divergence in the *real* compiler that generated
+these goldens, not a bug in this project's understanding of `v7/cc` —
+`/v7/cc/` is used here strictly as v7/cc/c0.h's numeric constants plus an
+algorithmic reference per CLAUDE.md Workflow Guideline 3, not assumed to be
+byte-identical in every call sequence):
+
+1. **`STAUTO = -4`, not V7 PDP-11's `-6`.** `cfunc()` sets
+   `maxauto = STAUTO` and, for a function with zero real locals (every
+   `00_smoke` case), never changes it, so `SETSTK`'s emitted argument
+   (`-maxauto`) directly reveals `STAUTO`. Observed `SETSTK 4` (not 6) in
+   all three `00_smoke` goldens. This tracks directly with
+   `docs/MUTOS_C_ABI.md` sect. 1.2/1.4: MUTOS's fixed prologue only
+   callee-saves 2 registers (`di`, `si`), vs V7 PDP-11's 3 — one fewer
+   saved word than V7 reserves. This does **not** move the first local
+   slot's own address: `STAUTO` is the *starting subtrahend*
+   (`c03.c`: `autolen =- rlength(dsym)`), not the first-local offset
+   directly, so a 2-byte first local at `STAUTO(-4) - 2` still lands at
+   `-6`, matching the ABI doc's confirmed `bp-6` exactly — only the
+   *gap* between the last saved register (`si` at `bp-4`) and the first
+   local (`bp-6`) changes versus V7's tighter packing. (For a function with real
+   locals, `c1`'s `SETSTK` handler currently treats any `extra > 0`
+   beyond this fixed 4-byte reservation as "not yet supported" rather
+   than guessing — see `src/mutos_cc/README.md`.)
+2. **`cfunc()`'s header sequence is `PROG, EVEN, RLABEL, name`, not V7's
+   `PROG, RLABEL, name`.** The extra `EVEN` (`0xD2`) tag sits, byte-exact,
+   between `PROG`'s (`0xCA`) and `RLABEL`'s (`0x72`) in all three
+   `00_smoke` goldens — confirmed not to originate from any *other*
+   `outcode(..., EVEN, ...)` call site in `v7/cc/c02.c`/`c03.c` (those are
+   all struct-initializer/local-`static`-declaration paths, unreachable
+   for any of these three trivial functions). Most likely explanation:
+   an 8086-specific addition ensuring a function's entry point is
+   word-aligned, which PDP-11 didn't need the same way.
+3. **`RETRN` carries one extra numeric argument (the function's return
+   type)**, rendered by `c1` as a `|RTYP n` comment immediately before the
+   `jmp cret` epilogue tail-jump — confirmed via the `00 00` word
+   following `RETRN`'s tag byte in every `00_smoke` golden, with no
+   further opcode tag (`0xFE`-terminated pair) immediately after it, i.e.
+   it reads as a plain data word belonging to `RETRN`, not a new opcode.
+   V7's own `outcode("BNB", LABEL, retlab, RETRN)` has no such trailing
+   argument.
+4. **The initial `regvar` (`SETREG`'s first emitted value, from
+   `funchead()`) is `4`, not V7's `5`.** Confirmed directly: `SETREG 4`
+   in every `00_smoke` golden, for functions with zero register-class
+   parameters (which would otherwise have decremented it further). Likely
+   reflects the 8086 having fewer freely-allocatable "register variable"
+   candidates than the PDP-11's `r5`-downward scheme assumed.
+
+**`mutos_c1`'s text-rendering rules** (the inverse direction: opcode →
+`.s` text) were derived the same way, via `od -c` on the matching
+`*.s.golden` files rather than reading `v7/cc/c11.c`/`c12.c` line-by-line
+(not necessary once the target text was byte-exactly known) — see
+`src/mutos_cc/c1_gen.c`'s file header comment for the resulting rules
+(notably: `LABEL` emits `"Ln:"` with **no** trailing newline, so two
+adjacent labels with no code between them — e.g. an empty function body's
+`"L2:L3:"` — concatenate correctly onto one physical line, while `RLABEL`
+always emits `"name:\n"` **with** one, since a global entry symbol always
+starts a fresh line; and the `"jmp L1" ... "L1: <maybe more code> jmp L2"`
+shape is a deferred-prologue-completion trick: `SETSTK`'s value — and thus
+whether any `sub sp,N` is needed — is only known *after* the whole
+function body has already been walked, since `cfunc()` emits it last).
+
+### Local variables: byte-level derivation (`01_expr/01_intarith` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+With `mutos_c0`/`mutos_c1` verified against `00_smoke`'s constant-only
+programs, the natural next step (per `tests/mutos_cc/`'s own
+increasing-difficulty ordering) is `01_expr/01_intarith.c`: `int a, b, c;`
+plus `a = 17; b = 5; c = a + b; c = a - b; c = a * b; c = a / b; c = a % b;
+return c;`. This is the first construct needing a symbol table and real
+(non-folded) expression codegen — see `src/mutos_cc/c0_sym.c` (the symbol
+table) and the `ExprVal` fold-or-emit representation in `c0_parser.c`'s
+file header comment. Same method as before: `od -A d -t x1z` on
+`01_intarith.1.golden`, matched byte-by-byte against `v7/cc/c0.h`'s
+constants and cross-checked against `01_intarith.s.golden`'s text.
+
+**`ANAME`** (`outcode("BSN", ANAME, name, offset)` — `#define ANAME 217` =
+`0xD9`) is emitted once per declared local, immediately after the `L2`
+body-entry label and before any statement code:
+
+```
+d9 fe 5f 61 00 fa ff   ANAME "_a" offset=-6    (declares `a`)
+d9 fe 5f 62 00 f8 ff   ANAME "_b" offset=-8    (declares `b`)
+d9 fe 5f 63 00 f6 ff   ANAME "_c" offset=-10   (declares `c`)
+```
+
+`mutos_c1` renders each as a `"| name=offset."` comment — confirmed
+byte-for-byte against `01_intarith.s.golden`'s `"L2:| _a=-6.\n| _b=-8.\n|
+_c=-10."` (three comments back-to-back, since `LABEL`'s no-trailing-
+newline rule from the `00_smoke` derivation above still applies — `L2:`
+just runs straight into the first comment).
+
+**`NAME`** (`outcode("BNNN", NAME, hclass, type, hoffset)` for a non-
+`EXTERN` name — `#define NAME 20` = `0x14`) is emitted for every variable
+*reference*. Worked example, `"c = a + b;"` (bytes decoded from
+`01_intarith.1.golden`, offsets 99–134):
+
+```
+14 fe 0b 00 00 00 f6 ff   NAME hclass=AUTO(11) type=INT(0) offset=-10  (c, the assignment's lvalue)
+14 fe 0b 00 00 00 fa ff   NAME hclass=AUTO(11) type=INT(0) offset=-6   (a)
+14 fe 0b 00 00 00 f8 ff   NAME hclass=AUTO(11) type=INT(0) offset=-8   (b)
+28 fe 00 00               PLUS type=INT(0)                             (#define PLUS 40 = 0x28)
+50 fe 00 00               ASSIGN type=INT(0)                           (#define ASSIGN 80 = 0x50)
+d6 fe 0c 00                EXPR line=12                                 (statement wrapper)
+```
+
+i.e. `treeout()`'s generic postorder walk applied to `ASSIGN(NAME(c),
+PLUS(NAME(a), NAME(b)))`: the lvalue first, then the right-hand subtree
+(itself postorder: `a`, `b`, then `PLUS`), then `ASSIGN` itself, then the
+statement-level `EXPR` wrapper — exactly matching a real assignment
+expression's `tr1`/`tr2` shape from `treeout()`'s `default:` case (`c04.c`).
+Offset assignment matches `v7/cc/c03.c`'s declarator loop exactly, using
+`STAUTO=-4` (the MUTOS-specific delta above) as the *starting subtrahend*,
+not a first-local offset directly: `autolen -= size; hoffset = autolen`,
+so `a` (first, 2 bytes) lands at `-4-2=-6`, `b` at `-6-2=-8`, `c` at
+`-8-2=-10` — confirmed exactly.
+
+`"c = a * b;"`/`"c = a / b;"`/`"c = a % b;"` follow the identical NAME/
+NAME/NAME/`op`/`ASSIGN`/`EXPR` shape with `TIMES`(`0x2a`)/`DIVIDE`(`0x2b`)/
+`MOD`(`0x2c`) in place of `PLUS` — confirmed for all five operators (`+ -
+* / %`) across the file's five statements.
+
+**Per-operator `.s` instruction shapes** (`od -c` on `01_intarith.s.golden`,
+matched against each opcode's position in the decoded stream above):
+
+```
+c = a + b;   mov di,*-6.(bp)  / add  di,*-8.(bp)  / mov *-10.(bp),di
+c = a - b;   mov di,*-6.(bp)  / sub  di,*-8.(bp)  / mov *-10.(bp),di
+c = a * b;   mov ax,*-6.(bp)  / imul *-8.(bp)     / mov *-10.(bp),ax
+c = a / b;   mov ax,*-6.(bp)  / cwd  / idiv *-8.(bp) / mov *-10.(bp),ax
+c = a % b;   mov ax,*-6.(bp)  / cwd  / idiv *-8.(bp) / mov *-10.(bp),dx
+return c;    mov di,*-10.(bp) / mov ax,di
+```
+
+Notable findings, all implemented in `c1_gen.c`'s `Val`/value-stack
+handlers: `DI` is `+`/`-`'s working register (matching `00_smoke`'s
+`RFORCE` handler, which already used `DI` as the generic "materialize a
+return value" register — the same register, not a coincidence); `*`/`/`/
+`%` instead use `AX` (required by the 8086's single-operand `IMUL`/`IDIV`
+encoding, which always operates on `AX`/`DX:AX`); `/` and `%` compile to
+the *literal same* `mov ax,.. / cwd / idiv ..` sequence, differing only in
+which register the following `ASSIGN` takes its value from afterward (`ax`
+= quotient, `dx` = remainder) — and the golden genuinely repeats this
+whole sequence for both statements rather than sharing it, confirming
+`mutos_c1` is deliberately unoptimized (peephole sharing is `c2`'s job,
+Milestone 5).
+
+**`SETSTK`'s local-frame-size handling is now confirmed with a real
+nonzero case**, not just the `extra==0` case from `00_smoke`:
+`01_intarith` has three 2-byte locals reserved via three `ANAME`s, giving
+`SETSTK 10` (tag `db fe` = `0xDB` = `SETSTK` = 219, value `0a 00` = 10) →
+`extra = 10 - 4 = 6` bytes beyond the fixed register-save area, rendered
+as `"L1:sub\tsp,*6.\njmp\tL2"` — confirmed byte-for-byte, and `extra=6`
+sits comfortably under `docs/MUTOS_C_ABI.md` sect. 1.9's confirmed
+real-hardware bound (largest plain `sub sp,N` seen in `libc.a`: `N=76`),
+so no ambiguity with the unconfirmed `(76,256]` `chkstk` gap applies here.
+
+### Bitwise operators and the `*`/`#` immediate marker: byte-level derivation (`01_expr/02_bitwise` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in `tests/mutos_cc/`'s difficulty ordering: `02_bitwise.c` (`a & b`,
+`a | b`, `a ^ b`, `~a`). Same method as before, `od -A d -t x1z` on
+`02_bitwise.1.golden`.
+
+**`AND`(`#define AND 47` = `0x2F`)/`OR`(`48` = `0x30`)/`EXOR`(`49` =
+`0x31`)** follow the identical `NAME`/`NAME`/`op`/`ASSIGN`/`EXPR` shape
+already confirmed for `+ - * / %` — e.g. `"c = a & b;"` decodes to `NAME(c)
+NAME(a) NAME(b) AND(type) ASSIGN(type) EXPR(line)`, byte-for-byte parallel
+to `01_intarith`'s `"c = a + b;"` with `PLUS` swapped for `AND`.
+
+**`COMPL`(`38` = `0x26`) is the first confirmed *unary* operator on a
+non-constant operand.** `"c = ~a;"` decodes to `NAME(c) NAME(a) COMPL(type)
+ASSIGN(type) EXPR(line)` — only one operand between the lvalue's `NAME`
+and the operator tag, confirming `treeout()`'s single-child walk for a
+non-`BINARY`-flagged op (no second `treeout()` call, unlike `AND`/`OR`/
+`EXOR`/`PLUS`/etc., which each have a `NAME`/`CON` pair before their own
+tag).
+
+**`.s` instruction shapes** (`od -c` on `02_bitwise.s.golden`): `AND`/`OR`/
+`EXOR` each load the left operand into `DI` then `and`/`or`/`xor` the
+right operand in place — literally the same shape as `+`/`-`, just a
+different mnemonic. `COMPL` loads its one operand into `DI` then `not\tdi`
+in place (no second operand, matching a true unary instruction). All four
+use `DI` as their working register, extending (not contradicting) the
+pattern already established: `DI` appears to be `mutos_c1`'s single
+generic two-or-one-operand working register for this whole class of
+integer operators, at least at the single-operand-per-operand-slot
+complexity this grammar scope currently reaches.
+
+**A genuinely new finding: `mutos_as`'s `*`/`#` immediate-operand size
+markers are a real, meaningful distinction, not interchangeable
+punctuation.** `"a = 0xF0;"` (240) renders as `"mov\t*-6.(bp),#240."`
+while `"b = 0x0F;"` (15) renders as `"mov\t*-8.(bp),*15."` — confirmed via
+`od -c` down to the exact byte (`#`=`0x23` vs. `*`=`0x2A` immediately
+before the digits). Two independent checks pinned down the rule:
+
+1. `man/mutos_as.1`'s "Operand size markers" section (read directly,
+   since `mutos_as` is a complete, independently-verified Milestone 2
+   component whose own documentation is authoritative for its own input
+   syntax) states plainly: `*` marks an operand byte-sized, `#` marks it
+   word-sized, and "for an immediate operand the marker is honored
+   literally, regardless of the value's actual magnitude" — i.e. this is
+   the code generator's *choice*, not the assembler inferring anything.
+2. Actually assembling both lines with the real, already-built `mutos_as`
+   (`./mutos_as -o /tmp/bw.o 02_bitwise.s.golden` — exit 0, no errors) and
+   disassembling the result (`objdump -D -b binary -m i386 -M intel,
+   i8086` against the extracted text segment, same method
+   `docs/MUTOS_C_ABI.md` uses) shows **both lines assemble to the
+   identical 5-byte `C7 /0 iw` encoding** (`c7 46 fa f0 00` and `c7 46 f8
+   0f 00` respectively) — plain 8086 `MOV r/m16,imm` has no byte-immediate
+   form at all, so the `*`/`#` choice cannot be encoding-driven for `MOV`
+   specifically.
+
+Putting the two together: the real compiler's code generator picks `*`
+when a value fits a **signed byte** (`-128..127` — 15 does, 240 does not:
+sign-extending `0xF0` from a byte would corrupt it to `-16`) and `#`
+otherwise, applying that choice **uniformly** to every immediate it emits
+regardless of which instruction it ends up in — for `MOV` the choice is
+cosmetic (both encode identically), but the same generator presumably
+also feeds instructions that *do* have a real 3-byte `imm8`-sign-extended
+encoding (`ADD`/`SUB`/`AND`/`OR`/`XOR`/`CMP r/m16,imm8`, opcode `83`),
+where the choice would matter for real. `c1_gen.c`'s `render_operand()`
+now implements this for every immediate; the `127` upper bound is directly
+confirmed, while the symmetric `-128` lower bound is the natural
+completion of "fits in a sign-extended byte" but not yet independently
+confirmed by a golden with a large-magnitude negative constant. Memory-
+operand displacements are unaffected either way (confirmed via the same
+man page: "for a displacement... the marker has no effect") and keep
+using `*` unconditionally, matching every golden's uniform
+`*offset.(bp)` regardless of the offset's own magnitude.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

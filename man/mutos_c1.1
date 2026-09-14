@@ -1,0 +1,152 @@
+.\" mutos_c1.1 - manual page for the MUTOS 1700 cross C compiler back end
+.\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
+.\" View with: man ./mutos_c1.1   or   groff -man -Tascii mutos_c1.1 | less
+.TH MUTOS_C1 1 "September 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.SH NAME
+mutos_c1 \- MUTOS 1700 cross C compiler, second pass (code generator)
+.SH SYNOPSIS
+.B mutos_c1
+.I temp1
+.I temp2
+.I assembly.s
+.SH DESCRIPTION
+.B mutos_c1
+is the second of the two passes that make up the MUTOS 1700 cross C
+compiler (the first is
+.BR mutos_c0 (1)).
+It reads the tagged intermediate-code stream written to
+.I temp1
+/
+.I temp2
+by
+.BR mutos_c0 (1)
+and writes
+.BR mutos_as (1)-syntax
+assembly text to
+.IR assembly.s .
+.PP
+This is a from-scratch, modern-C11 reimplementation, byte-for-byte
+verified against real MUTOS 1700 hardware output, not a literal port
+of the original Version 7 Unix
+.BR cc (1) 's
+second pass; see
+.I src/mutos_cc/README.md
+in the toolchain source tree for the confirmed
+.IR temp1 / temp2
+wire format and the exact opcode coverage this pass currently
+implements.
+.SH "CURRENT SCOPE"
+.B mutos_c1
+implements exactly the opcodes
+.BR mutos_c0 (1) 's
+current grammar scope can produce:
+.BR SYMDEF ,
+.BR PROG ,
+.BR EVEN ,
+.BR RLABEL ,
+.BR SAVE ,
+.BR SETREG ,
+.BR BRANCH ,
+.BR LABEL ,
+.BR ANAME ,
+.BR NAME ,
+.BR CON ,
+.BR PLUS ,
+.BR MINUS ,
+.BR TIMES ,
+.BR DIVIDE ,
+.BR MOD ,
+.BR ASSIGN ,
+.BR RFORCE ,
+.BR EXPR ,
+.BR RETRN ,
+.BR SETSTK ,
+and
+.BR EOFC .
+Every compiled function gets the fixed, unconditional MUTOS 1700 C
+calling-convention prologue/epilogue (see
+.I docs/MUTOS_C_ABI.md
+in the toolchain source tree): \c
+.BR "push\ bp" ,
+.BR "mov\ bp,sp" ,
+.BR "push\ di" ,
+.BR "push\ si" ,
+a body, and a tail jump to the shared
+.B cret
+epilogue routine. A local-variable frame
+.RI ( SETSTK
+value beyond the fixed 4-byte register-save area) of up to 76 bytes
+emits a plain
+.BR "sub sp,N" ;
+above 256 bytes it emits
+.BR "mov ax,N / call chkstk" ;
+the gap in between is left as an explicit "not yet supported"
+diagnostic rather than a guess, since the real compiler's exact
+.B "sub sp,N"
+-versus-
+.B "call chkstk"
+threshold is only bounded, not pinned down exactly, by the evidence
+gathered so far (see
+.I docs/MUTOS_C_ABI.md
+sect. 1.9). Binary-operator code generation (\c
+.BR PLUS ", " MINUS ", " TIMES ", " DIVIDE ", " MOD )
+currently only covers a single level of constant/variable operands
+each (matching exactly what
+.BR mutos_c0 (1) 's
+grammar can produce); an immediate right-hand operand to
+.BR TIMES / DIVIDE / MOD
+(the 8086's single-operand
+.BR IMUL / IDIV
+takes a register or memory operand, never an immediate directly) and
+direct memory-to-memory
+.B ASSIGN
+are likewise explicit "not yet supported" cases.
+Any
+.I temp1
+opcode outside the list above is reported, never silently
+misassembled.
+.SH OPTIONS
+.TP
+.I temp1
+Input path for the primary intermediate-code stream, as written by
+.BR mutos_c0 (1).
+.TP
+.I temp2
+Input path for the string-literal side stream (read for command-line
+compatibility; not yet consumed by any opcode this pass implements).
+.TP
+.I assembly.s
+Output path for the generated
+.BR mutos_as (1)-syntax
+assembly text.
+.SH DIAGNOSTICS
+A malformed or unsupported
+.I temp1
+/
+.I temp2
+stream (an unrecognized opcode, a missing tag-byte marker, a
+truncated stream, or an opcode this pass does not yet implement) is
+reported to standard error and causes a non-zero exit status
+immediately \(en
+.B mutos_c1
+does not attempt to produce partial or best-effort assembly output
+for input it cannot fully handle.
+.SH BUGS
+.B mutos_cc,
+the driver that would normally chain
+.BR mutos_cpp (1),
+.BR mutos_c0 (1),
+.BR mutos_c1 (1),
+.BR mutos_as (1),
+and
+.BR mutos_ld (1)
+together into a single pipeline, does not exist yet; invoke this pass
+directly (see
+.BR SYNOPSIS ),
+or see
+.I tests/mutos_cc/run_goldens.sh
+for a scripted example.
+.SH "SEE ALSO"
+.BR mutos_c0 (1),
+.BR mutos_as (1),
+.BR mutos_ld (1)

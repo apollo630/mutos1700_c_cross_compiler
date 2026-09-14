@@ -1,0 +1,151 @@
+.\" mutos_c0.1 - manual page for the MUTOS 1700 cross C compiler front end
+.\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
+.\" View with: man ./mutos_c0.1   or   groff -man -Tascii mutos_c0.1 | less
+.TH MUTOS_C0 1 "September 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.SH NAME
+mutos_c0 \- MUTOS 1700 cross C compiler, first pass (front end)
+.SH SYNOPSIS
+.B mutos_c0
+.I source
+.I temp1
+.I temp2
+.RB [ \-P ]
+.SH DESCRIPTION
+.B mutos_c0
+is the first of the two passes that make up the MUTOS 1700 cross C
+compiler (the second is
+.BR mutos_c1 (1)).
+It lexes and parses
+.IR source ,
+which is normally the already macro-expanded output of
+.BR mutos_cpp (1)
+rather than raw C source, and writes a tagged intermediate-code
+byte stream to
+.I temp1
+(with any string-literal text routed through
+.I temp2
+instead \(en see
+.BR OUTPUT ).
+.PP
+This is a from-scratch, modern-C11 reimplementation of the observable
+behavior of the original MUTOS 1700 / Version 7 Unix
+.BR cc (1)
+compiler's first pass, not a literal port of that pointer-arithmetic
+K&R source; see
+.I src/mutos_cc/README.md
+in the toolchain source tree for the confirmed
+.IR temp1 / temp2
+wire format (reverse-engineered byte-for-byte from real MUTOS 1700
+hardware output) and the exact grammar this pass currently accepts.
+.SH "CURRENT SCOPE"
+.B mutos_c0
+does not yet implement the full K&R C grammar. As of this writing it
+accepts only:
+.PP
+.RS
+.nf
+translation-unit  := extdef*
+extdef            := IDENT '(' ')' compound-stmt
+compound-stmt     := '{' decl* stmt* '}'
+decl              := 'int' IDENT (',' IDENT)* ';'
+stmt              := assign-stmt | return-stmt
+assign-stmt       := IDENT '=' expr ';'
+return-stmt       := 'return' expr? ';'
+expr              := integer arithmetic ('+ \- * / % ~', unary \-/+,
+                      parens, variable references)
+.fi
+.RE
+.PP
+i.e. a function definition takes no parameters. Its body may declare
+any number of plain
+.B int
+locals (no initializers) before its statements, matching K&R's
+declarations-before-statements block structure; each statement is
+either a single-variable assignment or a
+.BR return .
+An expression stays an unmaterialized compile-time constant for as
+long as every operand feeding it is also constant \(en matching the
+real compiler's own per-operation front-end constant folding \(en and
+is emitted as a real variable-reference/operator tree the moment a
+variable is involved. Every function is
+implicitly
+.BR int -returning,
+matching K&R default-int semantics.
+.PP
+Anything outside this scope (a second kind of statement, a
+non-.BR int
+declaration, a compound/relational/logical/shift/assignment operator,
+a
+non-constant expression, function parameters, control flow, and so
+on) is rejected with a clear diagnostic and a non-zero exit status,
+never silently miscompiled. See
+.I src/mutos_cc/README.md
+for the current expansion plan.
+.SH OUTPUT
+.I temp1
+receives the bulk of the intermediate code: a sequence of tagged
+items, each either a single-byte operator code (immediately followed
+by the fixed sentinel byte 0xFE), a little-endian 16-bit data word, or
+a NUL-terminated symbol name.
+.I temp2
+receives only string-literal text (not used by any construct in the
+current grammar scope, so it is presently always empty apart from its
+own terminating marker). This exactly mirrors the real MUTOS 1700
+compiler's own
+.IR /lib/c0 ,
+which
+.BR mutos_cc (1)
+(once written \(en see
+.BR BUGS )
+will invoke in the same way.
+.SH OPTIONS
+.TP
+.I source
+Path to the input file (normally
+.BR mutos_cpp (1) 's
+output). Read directly if given a raw
+.B .c
+file instead \(en the lexer tolerates comments and whitespace itself
+\(en which is convenient for manual testing but not how the real
+pipeline invokes this pass.
+.TP
+.I temp1
+Output path for the primary intermediate-code stream.
+.TP
+.I temp2
+Output path for the string-literal side stream.
+.TP
+.B \-P
+Accepted for command-line compatibility with the real MUTOS 1700
+.IR /lib/c0 's
+profiling-flag position (see
+.IR v7/cc/cc.c ).
+Not yet acted upon: the current grammar scope has no function bodies
+where profiling instrumentation would matter.
+.SH DIAGNOSTICS
+Errors are printed to standard error as
+.RI \(dq file : line ": error: " message \(dq
+and cause a non-zero exit status; processing continues to the end of
+input so that further problems in the same source can be reported in
+one pass, matching
+.BR mutos_cpp (1) 's
+diagnostic convention.
+.SH BUGS
+.B mutos_cc,
+the driver that would normally chain
+.BR mutos_cpp (1),
+.BR mutos_c0 (1),
+.BR mutos_c1 (1),
+.BR mutos_as (1),
+and
+.BR mutos_ld (1)
+together into a single pipeline, does not exist yet; invoke this pass
+directly (see
+.BR SYNOPSIS ),
+or see
+.I tests/mutos_cc/run_goldens.sh
+for a scripted example.
+.SH "SEE ALSO"
+.BR mutos_c1 (1),
+.BR mutos_cpp (1),
+.BR mutos_as (1)
