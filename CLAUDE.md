@@ -21,8 +21,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  5/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`
-  and `02_bitwise`) — see
+  7/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`,
+  `02_bitwise`, `03_rellogic` and `04_shift`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
@@ -326,9 +326,15 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 5/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
-  `01_expr/01_intarith.c` and `02_bitwise.c` — the first constructs needing
-  a real symbol table and non-folded expression codegen, not just
+  for 7/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  `01_expr/01_intarith.c`, `02_bitwise.c`, `03_rellogic.c` and
+  `04_shift.c` — the first
+  constructs needing a real symbol table, non-folded expression codegen,
+  (for `03_rellogic`) deferred/fused comparison codegen for
+  relational, equality and short-circuit logical operators, and (for
+  `04_shift`) a second working register (`CX`, for a variable shift
+  count) and the "repeat a single-bit shift N times" plain-8086
+  constant-shift idiom, not just
   constant folding).
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
@@ -342,8 +348,7 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category (`03_rellogic` next: relational/logical operators,
-  the first construct needing real conditional branching) — see
+  category by category (`05_incdec` next: `++`/`--`) — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
   dependency-ordered list (`long`/arrays/pointers/structs, control flow,
   function calls, the `chkstk` threshold, then the `mutos_cc` driver itself).

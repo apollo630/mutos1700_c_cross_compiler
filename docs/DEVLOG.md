@@ -105,6 +105,15 @@ consistent with `docs/210973-001_AP-186_Introduction_to_the_80186_Microprocessor
   reverse, skipping the `SP` slot.
 - Shift/rotate immediate count is masked mod 32 (`AND 1Fh`) on the 80186, unmasked
   on the 8086 — usable as a runtime 8086-vs-80186 detection trick.
+- **`PUSHF` does NOT distinguish the 8086 from the 80186** — a claim worth stating
+  explicitly because it keeps resurfacing (most recently a September 2026
+  user-supplied "reference spec" asserting the 80186 pushes flag bits 12-15 as `0`
+  in real mode vs. the 8086's `1`). Checked directly against the AP-186 app note:
+  both chips push bits 12-15 as `1` in real mode — there is no encoding or runtime
+  difference here at all. The shift-count-masking trick immediately above is the
+  genuine, confirmed 8086-vs-80186 runtime detection method; `PUSHF` is not a
+  substitute for it and any future spec/prompt claiming otherwise should be treated
+  as wrong on this point regardless of how confidently or precisely it's phrased.
 - 80186-vs-8086 execution differences relevant to future `mutos_cc` codegen and libc
   (not assembler-encoding differences — pure CPU runtime behavior):
   - IDIV quotient range extended by 1 on the 80186 to include `8000h`/`80h` (the most
@@ -1151,6 +1160,205 @@ operand displacements are unaffected either way (confirmed via the same
 man page: "for a displacement... the marker has no effect") and keep
 using `*` unconditionally, matching every golden's uniform
 `*offset.(bp)` regardless of the offset's own magnitude.
+
+### Relational/equality/logical operators and short-circuit codegen: byte-level derivation (`01_expr/03_rellogic` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in difficulty order: `03_rellogic.c` (`< <= > >= == != && || !`).
+Same method, `od -c`/`od -t x1z` on `03_rellogic.1.golden` and
+`.s.golden`.
+
+**`c0`'s tree emission is completely uniform across this whole
+operator class.** `LESS`(`63`=`0x3F`)/`LESSEQ`(`62`)/`GREAT`(`65`)/
+`GREATEQ`(`64`)/`EQUAL`(`60`)/`NEQUAL`(`61`)/`LOGAND`(`53`)/`LOGOR`
+(`54`)/`EXCLA`(`34`) all decode as the identical `NAME`/`NAME`/`op`
+"BN" (tag + type) shape already confirmed for `+ - * / % & | ^ ~` —
+e.g. `"r = a < b;"` decodes to `NAME(r) NAME(a) NAME(b) LESS(type)
+ASSIGN(type) EXPR(line)`, byte-for-byte parallel to `01_intarith`'s
+`"c = a + b;"`. This was the single most load-bearing finding of this
+session: it means `CBRANCH` (`103`=`0x67`, confirmed present in `v7/
+cc/c04.c`'s `doif()` — `outcode("BNNN", CBRANCH, lbl, cond, line)`)
+is **not** used at all by any code this grammar scope currently
+produces. `CBRANCH` bakes a condition directly into an `if`-statement
+branch; nothing here is an `if`, so `c0` never emits it, and a
+comparison used as a plain *value* (`r = a < b;`) is just another
+operator-tree leaf, identical in shape to `PLUS`/`AND`/etc. Turning
+that tree into 0/1 or into a branch is entirely `c1`'s problem — not
+something `c0`'s wire format needs to distinguish.
+
+**`c1`'s codegen for a standalone comparison** (`.s.golden`'s first
+six blocks, one per operator on `"r = a OP b;"`):
+```
+mov   di,*-8.(bp)   | load right operand (b) into DI - only when
+                    | it's itself memory; an immediate right operand
+                    | (see LOGAND/LOGOR below) needs no load at all,
+                    | since 8086 CMP allows one memory + one
+                    | immediate/register operand but not two memory
+cmp   *-6.(bp),di   | left operand (a) stays a direct memory operand
+b<cc> L<true>       | direct condition: blt/ble/bgt/bge/beq/bne
+mov   di,*0.
+jmp   L<end>
+L<true>:mov di,*1.
+L<end>:             | (no trailing newline - glues to the next
+                    | instruction on the same source line, same
+                    | style already established for LABEL)
+```
+Each of the six standalone comparisons in the golden consumes exactly
+2 of `c1`'s own internal labels (confirmed starting value `L10000`,
+strictly separate from `temp1`'s own label numbers which start at 1
+per-function) — `LESS`→`L10000`/`L10001`, `LESSEQ`→`L10002`/`L10003`,
+… `NEQUAL`→`L10010`/`L10011`.
+
+**`LOGAND`/`LOGOR` never materialize their two comparison operands
+separately — they fuse them into one short-circuit branch sequence**,
+confirmed against `"r = (a < b) && (b > 0);"`:
+```
+mov   di,*-8.(bp)
+cmp   *-6.(bp),di
+bge   L10013        | INVERTED first condition (blt -> bge) jumps
+                    | straight to the FALSE label, skipping the
+                    | second comparison entirely when short-circuited
+cmp   *-8.(bp),*0
+bgt   L10012        | DIRECT second condition jumps to the TRUE label
+L10013:mov di,*0.   | false label doubles as the fallthrough target
+jmp   L10014
+L10012:mov di,*1.
+L10014:
+```
+and `"r = (a < 0) || (b > 0);"`:
+```
+cmp   *-6.(bp),*0
+blt   L10015         | DIRECT condition, both operands -> same TRUE label
+cmp   *-8.(bp),*0
+bgt   L10015
+mov   di,*0.         | pure fallthrough - no separate false label needed,
+jmp   L10016         | since nothing ever jumps here
+L10015:mov di,*1.
+L10016:
+```
+i.e. exactly the classic "jumping code" technique: an `&&` chain's
+non-final operands branch on their *inverted* condition to a shared
+false label (falling through on success), its final operand branches
+direct to the true label; an `||` chain's operands all branch direct
+to a shared true label, falling through together to the false case.
+Label allocation order is `true, false, end` for `LOGAND` (`L10012`,
+`L10013`, `L10014`) and `true, end` for `LOGOR` (`L10015`, `L10016`,
+no false label at all) — deduced from which label number each branch
+target names, not from the labels' left-to-right textual position in
+`.s` (the false-branch target is printed before its own definition,
+an ordinary forward reference).
+
+**`EXCLA` (`!`) defers exactly like a comparison — it emits *no* code
+of its own**, confirmed via `"r = !r;"`'s golden: nothing appears
+between the second `NAME(r)` and a single `cmp *-10.(bp),*0 / beq
+L10017 / ...` block (labels `L10017`/`L10018`) — the *negation* of
+`NEQUAL 0` (i.e. `EQUAL 0`), not a separate `not`/`xor` instruction.
+This confirms `!x` is implemented as "take x's condition (synthesizing
+an implicit `x != 0` truth test if x isn't already a comparison),
+invert its branch sense, and defer" — materialization happens later,
+at the same `ASSIGN` that would have materialized a bare comparison.
+
+**One byte-exact rendering quirk, otherwise easy to miss**: `CMP`'s
+immediate right-hand operand drops the trailing `.` decimal-terminator
+used everywhere else (`"cmp\t*-6.(bp),*0"`, never `"...,*0."`), while
+every `MOV` immediate in the same file still carries it
+(`"mov\tdi,*0."`). Confirmed via `od -c` — no trailing `2e` (`.`) byte
+after the `0` in any `cmp` line, present after every `mov` line's `0`
+or `1`. Per `man/mutos_as.1`, the trailing period is "a stylistic
+decimal terminator" with "no effect on the value", so this is a
+source-text quirk specific to the real compiler's `CMP`-immediate
+rendering path (a different internal format string than the one used
+for `MOV`), not a semantic difference `mutos_as` itself cares about.
+Only the value `0` is golden-confirmed; the `*N`/`#N` byte-vs-word
+marker threshold for other magnitudes in this position is extrapolated
+from the already-confirmed `MOV` threshold (delta #7 above), not
+independently confirmed here.
+
+`c1_gen.c` implements all of the above via a new `VK_COND` value-stack
+kind: `LESS`/`LESSEQ`/`GREAT`/`GREATEQ`/`EQUAL`/`NEQUAL` push a
+deferred "left `<op>` right" descriptor instead of emitting anything;
+`LOGAND`/`LOGOR` pop two such descriptors (synthesizing an implicit
+`!= 0` one via `as_cond()` for any operand that isn't already a
+comparison — not exercised by any golden yet, since both of
+`03_rellogic`'s `&&`/`||` operands are always direct comparisons, but
+the natural zero-risk generalization) and fuse them per the branch
+patterns above; `EXCLA` inverts and re-defers; every other operator
+(`ASSIGN`, `RFORCE`, and defensively `PLUS`/`MINUS`/`TIMES`/`DIVIDE`/
+`MOD`/`AND`/`OR`/`EXOR`/`COMPL`) materializes any `VK_COND` it pops
+before using it, via the single standalone-comparison code path above.
+
+### Shift operators: byte-level derivation (`01_expr/04_shift` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in difficulty order: `04_shift.c` (`a << n` with a variable count,
+`r >> 2` and `a << 1` with constant counts). Same method, `od -c`/`od -t
+x1z` on `04_shift.1.golden` and `.s.golden`.
+
+**`c0`'s tree emission is, once again, completely uniform.**
+`LSHIFT`(`46`=`0x2E`)/`RSHIFT`(`45`=`0x2D`) both decode as the identical
+`NAME`/`NAME`/`op` "BN" (tag + type) shape as every other binary op
+confirmed so far — `"r = a << n;"` decodes to `NAME(r) NAME(a) NAME(n)
+LSHIFT(type) ASSIGN(type) EXPR(line)`. `c0` does not care whether the
+right operand is a variable or a constant; that distinction is entirely
+`c1`'s problem.
+
+**`c1`'s codegen splits hard on whether the shift count is a compile-time
+constant**, confirmed against all three shift expressions in
+`04_shift.s.golden`:
+
+Variable count (`"r = a << n;"`):
+```
+mov  di,*-6.(bp)   | value being shifted -> DI, as usual
+mov  cx,*-8.(bp)   | shift COUNT -> CX specifically - the first construct
+                   | in this grammar scope needing any working register
+                   | other than DI/AX/DX
+sal  di,cl         | 8086's "shift by CL" opcode shape only accepts CL
+mov  *-10.(bp),di
+```
+
+Constant count (`"r = r >> 2;"` and `"r = a << 1;"`):
+```
+mov  di,*-10.(bp)
+sar  di,*1         | repeated N times - see below
+sar  di,*1
+mov  *-10.(bp),di
+```
+```
+mov  di,*-6.(bp)
+sal  di,*1         | N=1, so exactly one repetition
+mov  *-10.(bp),di
+```
+**No shift-by-immediate-count opcode is used at all for the constant
+case** — plain 8086 doesn't have one (`C0`/`C1 /digit ib`, documented in
+this session's earlier 80186/80188-spec exchange, is an 80186-only
+extension; `04_shift.c`'s own header comment states explicitly that this
+compiler targets plain 8086 only). Instead the real compiler repeats the
+one-bit-shift form (`D1 /4` for `SAL`, `D1 /7` for `SAR` — count
+implicitly 1, no count operand encoded at all) exactly N times. This is
+the historically correct K&R/pre-80186-era C compiler technique for a
+constant shift count, not a "naive" or suboptimal choice on this
+project's part — it's what the real hardware golden actually does, so
+it's what `mutos_c1` reproduces.
+
+**Mnemonic choice**: `SAL` for `<<`, `SAR` for `>>` — not `SHL`. `SAL`
+and `SHL` are the identical opcode (arithmetic and logical left shift are
+the same operation; the 8086 only distinguishes them by mnemonic
+convention), so this is a pure source-text choice by the real compiler,
+confirmed directly from the golden rather than assumed.
+
+**The `CMP`-immediate no-trailing-period rendering quirk (previous
+session, `03_rellogic`) is confirmed NOT `CMP`-specific**: the repeated
+`"sar\tdi,*1"`/`"sal\tdi,*1"` lines use the same bare `*1` (no trailing
+`.`) as `CMP`'s immediate operand, never `*1.` the way every `MOV`
+immediate in this same file renders (e.g. `"mov\t*-6.(bp),*1."` for the
+`a = 1;` initialization at the top of the function). `c1_gen.c`'s
+`render_cmp_imm()` was renamed to `render_bare_imm()` to reflect this
+broader confirmed scope — it's the generic "immediate operand of
+anything other than `MOV`" renderer, not a `CMP`-only one.
+
+`c1_gen.c` implements the variable-count path via a new `load_into_cx()`
+helper (mirroring the existing `load_into_di()`: loads a value into `CX`,
+skipping the no-op `"mov cx,cx"` case exactly like `load_into_di()` does
+for `DI`) and the constant-count path via a simple counted loop emitting
+`render_bare_imm()`'s rendering of the literal `1`, `r.imm` times.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

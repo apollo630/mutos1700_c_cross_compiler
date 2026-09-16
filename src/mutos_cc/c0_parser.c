@@ -11,17 +11,27 @@
  *   stmt              := assign-stmt | return-stmt
  *   assign-stmt       := IDENT '=' expr ';'
  *   return-stmt       := 'return' expr? ';'
- *   expr              := ADD
+ *   expr              := LOGOR
+ *   LOGOR             := LOGAND ('||' LOGAND)*
+ *   LOGAND            := BITOR ('&&' BITOR)*
+ *   BITOR             := BITXOR ('|' BITXOR)*
+ *   BITXOR            := BITAND ('^' BITAND)*
+ *   BITAND            := EQUALITY ('&' EQUALITY)*
+ *   EQUALITY          := RELATIONAL (('=='|'!=') RELATIONAL)*
+ *   RELATIONAL        := SHIFT (('<'|'<='|'>'|'>=') SHIFT)*
+ *   SHIFT             := ADD (('<<'|'>>') ADD)*
  *   ADD               := MUL (('+'|'-') MUL)*
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
- *   UNARY             := ('-'|'+'|'~') UNARY | PRIMARY
+ *   UNARY             := ('-'|'+'|'~'|'!') UNARY | PRIMARY
  *   PRIMARY           := ICON | IDENT | '(' expr ')'
  *
  * i.e. every declared local is a plain 'int' with no initializer;
  * every statement is either a single-variable assignment or a
  * 'return'; every function still takes no parameters. This is
  * exactly tests/mutos_cc/00_smoke's three programs plus
- * tests/mutos_cc/01_expr/01_intarith.c.
+ * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c
+ * and 04_shift.c. Assignment-expression forms are not yet part of
+ * this chain - see src/mutos_cc/README.md.
  *
  * Expression handling is still "emit as you parse" (no explicit
  * struct tnode tree - see the note in the previous revision of this
@@ -192,6 +202,17 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         outcode(t1, "BN", OP_COMPL, TY_INT);
         return ev_dynamic();
     }
+    if (p->cur.kind == T_BANG) {
+        int line = p->cur.line;
+        advance(p);
+        ExprVal v = parse_unary(p, t1);
+        if (v.is_const)
+            return ev_const(v.value == 0 ? 1 : 0);
+        (void)line;
+        emit_materialize(t1, v); /* no-op, same as COMPL above */
+        outcode(t1, "BN", OP_EXCLA, TY_INT);
+        return ev_dynamic();
+    }
     return parse_primary(p, t1);
 }
 
@@ -284,12 +305,105 @@ static ExprVal parse_add(Parser *p, FILE *t1)
     return v;
 }
 
-static ExprVal parse_bitand(Parser *p, FILE *t1)
+/* SHIFT := ADD (('<<'|'>>') ADD)* - '<<' emits OP_LSHIFT, '>>' emits
+ * OP_RSHIFT, same "BN" (tag + type) shape as every other binary op -
+ * c1 (not c0) decides between the constant-count "repeat a single-bit
+ * shift N times" and variable-count "load the count into CL" codegen
+ * shapes; c0's job is only to emit the tree. Confirmed byte-for-byte
+ * against 04_shift's ".1.golden". */
+static ExprVal parse_shift(Parser *p, FILE *t1)
 {
     ExprVal v = parse_add(p, t1);
-    while (p->cur.kind == T_AMP) {
+    for (;;) {
+        int op;
+        if (p->cur.kind == T_SHL)      op = OP_LSHIFT;
+        else if (p->cur.kind == T_SHR) op = OP_RSHIFT;
+        else break;
         advance(p);
         ExprVal r = parse_add(p, t1);
+        if (v.is_const && r.is_const) {
+            long res = (op == OP_LSHIFT) ? (v.value << r.value)
+                                          : (v.value >> r.value);
+            v = ev_const(trunc16(res));
+            continue;
+        }
+        emit_materialize(t1, v);
+        emit_materialize(t1, r);
+        outcode(t1, "BN", op, TY_INT);
+        v = ev_dynamic();
+    }
+    return v;
+}
+
+/* RELATIONAL := SHIFT (('<'|'<='|'>'|'>=') SHIFT)* - a non-constant
+ * comparison emits its operator node exactly like any other binary
+ * op (OP_LESS/OP_LESSEQ/OP_GREAT/OP_GREATEQ, "BN" shape) - c1 (not
+ * c0) is what turns a comparison into a materialized 0/1 value or
+ * fuses it into a short-circuit branch; c0's job is only to emit the
+ * tree. Confirmed byte-for-byte against 03_rellogic's ".1.golden". */
+static ExprVal parse_relational(Parser *p, FILE *t1)
+{
+    ExprVal v = parse_shift(p, t1);
+    for (;;) {
+        int op;
+        if (p->cur.kind == T_LT)      op = OP_LESS;
+        else if (p->cur.kind == T_LE) op = OP_LESSEQ;
+        else if (p->cur.kind == T_GT) op = OP_GREAT;
+        else if (p->cur.kind == T_GE) op = OP_GREATEQ;
+        else break;
+        advance(p);
+        ExprVal r = parse_shift(p, t1);
+        if (v.is_const && r.is_const) {
+            long res;
+            switch (op) {
+            case OP_LESS:    res = v.value <  r.value; break;
+            case OP_LESSEQ:  res = v.value <= r.value; break;
+            case OP_GREAT:   res = v.value >  r.value; break;
+            default /* GE */: res = v.value >= r.value; break;
+            }
+            v = ev_const(res);
+            continue;
+        }
+        emit_materialize(t1, v);
+        emit_materialize(t1, r);
+        outcode(t1, "BN", op, TY_INT);
+        v = ev_dynamic();
+    }
+    return v;
+}
+
+/* EQUALITY := RELATIONAL (('=='|'!=') RELATIONAL)* - same shape as
+ * RELATIONAL above (OP_EQUAL/OP_NEQUAL, "BN"). */
+static ExprVal parse_equality(Parser *p, FILE *t1)
+{
+    ExprVal v = parse_relational(p, t1);
+    for (;;) {
+        int op;
+        if (p->cur.kind == T_EQ)      op = OP_EQUAL;
+        else if (p->cur.kind == T_NE) op = OP_NEQUAL;
+        else break;
+        advance(p);
+        ExprVal r = parse_relational(p, t1);
+        if (v.is_const && r.is_const) {
+            long res = (op == OP_EQUAL) ? (v.value == r.value)
+                                         : (v.value != r.value);
+            v = ev_const(res);
+            continue;
+        }
+        emit_materialize(t1, v);
+        emit_materialize(t1, r);
+        outcode(t1, "BN", op, TY_INT);
+        v = ev_dynamic();
+    }
+    return v;
+}
+
+static ExprVal parse_bitand(Parser *p, FILE *t1)
+{
+    ExprVal v = parse_equality(p, t1);
+    while (p->cur.kind == T_AMP) {
+        advance(p);
+        ExprVal r = parse_equality(p, t1);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value & r.value));
             continue;
@@ -338,14 +452,58 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
     return v;
 }
 
-/* expr := bitor-expr - standard C precedence, restricted to the
- * levels this grammar scope currently supports: '|' (loosest) >
- * '^' > '&' > '+'/'-' > '*'/'/'/'%' > unary > primary. Relational/
- * logical/shift/assignment operators are not yet part of this chain
- * - see src/mutos_cc/README.md. */
+/* LOGAND := BITOR ('&&' BITOR)* ; LOGOR := LOGAND ('||' LOGAND)* -
+ * standard C precedence puts these two above (looser than) every
+ * bitwise operator. Like the relational/equality ops above, a
+ * non-constant '&&'/'||' just emits its OP_LOGAND/OP_LOGOR node
+ * ("BN" shape) over its two already-emitted operands - c1 owns the
+ * short-circuit branch fusion. Confirmed against 03_rellogic's
+ * ".1.golden". */
+static ExprVal parse_logand(Parser *p, FILE *t1)
+{
+    ExprVal v = parse_bitor(p, t1);
+    while (p->cur.kind == T_ANDAND) {
+        advance(p);
+        ExprVal r = parse_bitor(p, t1);
+        if (v.is_const && r.is_const) {
+            v = ev_const((v.value != 0) && (r.value != 0));
+            continue;
+        }
+        emit_materialize(t1, v);
+        emit_materialize(t1, r);
+        outcode(t1, "BN", OP_LOGAND, TY_INT);
+        v = ev_dynamic();
+    }
+    return v;
+}
+
+static ExprVal parse_logor(Parser *p, FILE *t1)
+{
+    ExprVal v = parse_logand(p, t1);
+    while (p->cur.kind == T_OROR) {
+        advance(p);
+        ExprVal r = parse_logand(p, t1);
+        if (v.is_const && r.is_const) {
+            v = ev_const((v.value != 0) || (r.value != 0));
+            continue;
+        }
+        emit_materialize(t1, v);
+        emit_materialize(t1, r);
+        outcode(t1, "BN", OP_LOGOR, TY_INT);
+        v = ev_dynamic();
+    }
+    return v;
+}
+
+/* expr := LOGOR - standard C precedence, restricted to the levels
+ * this grammar scope currently supports: '||' (loosest) > '&&' >
+ * '|' > '^' > '&' > '=='/'!=' > '<'/'<='/'>'/'>=' > '<<'/'>>' >
+ * '+'/'-' > '*'/'/'/'%' > unary > primary. Assignment-expression
+ * operators are not yet part of this chain - see
+ * src/mutos_cc/README.md. */
 static ExprVal parse_expr(Parser *p, FILE *t1)
 {
-    return parse_bitor(p, t1);
+    return parse_logor(p, t1);
 }
 
 /* ------------------------------------------------------------------ */

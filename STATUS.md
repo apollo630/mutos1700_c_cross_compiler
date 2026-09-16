@@ -226,9 +226,9 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 5/62 of the full corpus: `tests/mutos_cc/
-00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c` and
-`02_bitwise.c`. ABI/
+byte-exact, end-to-end, for 7/62 of the full corpus: `tests/mutos_cc/
+00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c`,
+`02_bitwise.c`, `03_rellogic.c` and `04_shift.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -236,7 +236,7 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
-### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise`)
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift`)
 
 Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
 symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
@@ -247,24 +247,30 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 
 **Verification: the real, unmodified pipeline — `<n>.c` → real
 `mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
-`tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c` and
-`02_bitwise.c`, and every intermediate artifact (`.i`, `.1`, `.2`, `.s`)
+`tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c`,
+`02_bitwise.c`, `03_rellogic.c` and `04_shift.c`, and every intermediate
+artifact (`.i`,
+`.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
 `tests/mutos_cc/run_goldens.sh` (also wired into the top-level `Makefile`'s
 `test` target), which covers the full 62-file corpus and reports every file
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 5
-byte-exact end-to-end, 57 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 7
+byte-exact end-to-end, 55 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
-`od`/hexdump, against the `00_smoke`, `01_intarith`, and `02_bitwise`
+`od`/hexdump, against the `00_smoke`, `01_intarith`, `02_bitwise`,
+`03_rellogic` and `04_shift`
 goldens) surfaced **four confirmed MUTOS-1700-specific deltas from vanilla
 V7 `cc`** (found against `00_smoke`), the full local-variable wire format
-(found against `01_intarith`), and the bitwise-operator/immediate-marker
-findings below (found against `02_bitwise`), each cited against exact byte
+(found against `01_intarith`), the bitwise-operator/immediate-marker
+findings below (found against `02_bitwise`), the deferred-comparison/
+short-circuit codegen findings below (found against `03_rellogic`), and
+the shift-codegen findings below (found against `04_shift`), each
+cited against exact byte
 offsets in `docs/DEVLOG.md`'s Milestone 4 section:
 
 1. `STAUTO = -4`, not V7 PDP-11's `-6` (MUTOS's prologue saves 2 registers,
@@ -298,20 +304,75 @@ offsets in `docs/DEVLOG.md`'s Milestone 4 section:
    bytes). `AND`/`OR`/`EXOR`/unary `COMPL` (`~` on a non-constant operand
    — the first confirmed non-constant *unary* operator) follow the same
    `DI`-working-register shape as `+`/`-`.
+8. Relational (`< <= > >=`), equality (`== !=`), logical (`&& ||`) and
+   unary `!` all confirmed against `03_rellogic`. `c0`'s tree emission is
+   uniform — every one of these is a plain "BN" (tag + type) node, exactly
+   like `+`/`&`/etc.; there is **no `CBRANCH` involved** even though V7's
+   `c04.c` reference shows `CBRANCH` used elsewhere (`if`-statement
+   condition compilation, not yet implemented) — materializing a
+   comparison's 0/1 value or fusing `&&`/`||` into a branch is entirely
+   `c1`'s job. `c1`'s codegen (byte-level derivation in `docs/DEVLOG.md`):
+   a standalone comparison compiles to `cmp` (right operand loaded into
+   `di` first if it's memory, since 8086 `CMP` can't take two memory
+   operands; used directly if it's an immediate) + a direct conditional
+   branch (`blt`/`ble`/`bgt`/`bge`/`beq`/`bne`) to a fresh label, then
+   `mov di,*0./jmp/Ltrue:mov di,*1./Lend:`. `&&`/`||` never materialize
+   their operands separately — they fuse two comparisons into classic
+   short-circuit "jumping code": `&&`'s first operand branches on its
+   **inverted** condition straight to a false label (skipping the second
+   operand entirely when short-circuiting), its second branches on its
+   direct condition to the true label, and the false-label code is the
+   fallthrough; `||` mirrors this with both operands branching direct to
+   a shared true label and the false case as a pure fallthrough (no
+   separate false label needed). Unary `!x` reuses this via a "negate the
+   condition, defer materialization" step — no code is emitted at `!`
+   itself, confirmed by `r = !r;`'s golden compiling to a single
+   `cmp r,*0 / beq ...` (the negation of `NEQUAL`), never a separate
+   negation instruction. `c1`'s own internal label counter (distinct from
+   `temp1`'s own label numbers, which start at 1) starts at a confirmed
+   `10000`. One byte-exact rendering quirk: `CMP`'s immediate right-hand
+   operand omits the trailing `.` decimal-terminator that every other
+   immediate rendering uses (`cmp *-6.(bp),*0`, not `*0.`) — per
+   `man/mutos_as.1` the period is purely stylistic with zero effect on
+   the assembled value, so this is a source-text quirk of the real `CMP`
+   codegen path specifically, not a semantic difference.
+9. Shift `<<`/`>>` confirmed against `04_shift`. `c0` again emits a plain
+   "BN" `LSHIFT`/`RSHIFT` node, no special shape. `c1`'s codegen splits on
+   whether the shift count is a compile-time constant or not: a
+   **variable** count loads into a *second* working register, `CX`
+   (confirmed via `"mov\tcx,*-8.(bp)"` immediately before `"sal\tdi,cl"`
+   — the 8086's "shift by register" opcode only accepts `CL`, and this is
+   the first construct in this grammar scope to need any register other
+   than `DI`/`AX`/`DX`); the value being shifted still loads into `DI` as
+   usual. A **constant** count uses no immediate-count opcode at all —
+   plain 8086 has none (that's an 80186-only extension; `04_shift.c`'s
+   own header comment confirms this compiler targets plain 8086 only) —
+   so the real compiler instead repeats the single-bit-shift form N
+   times: confirmed via `"r = r >> 2;"` emitting two consecutive
+   `"sar\tdi,*1"` lines and `"r = a << 1;"` emitting exactly one
+   `"sal\tdi,*1"` line. `SAL`/`SAR` (not `SHL`) are the real compiler's
+   chosen mnemonics for `<<`/`>>` respectively. The immediate `*1`
+   confirms the `CMP`-immediate no-trailing-period rendering quirk
+   (delta #8 above) is not `CMP`-specific — it applies to `SAL`/`SAR`'s
+   immediate operand too, so `c1_gen.c`'s renderer for it was renamed
+   `render_bare_imm()` (from `render_cmp_imm()`) to reflect the broader
+   confirmed scope.
 
 **Current grammar/opcode scope (deliberately narrow, by design — see
 `src/mutos_cc/README.md`):** function definitions with no parameters; a
 body of `int`-only local declarations (no initializers) followed by
 `name = expr;` assignment and/or `return` statements; expressions over
-`+ - * / % & | ^ ~` (unary/binary as applicable), parens, integer
+`+ - * / % & | ^ ~ < <= > >= == != && || ! << >>` (unary/binary as
+applicable),
+parens, integer
 constants, and variable references, constant-folded at parse time exactly
 like real K&R `cc`'s own per-operation `build()`-time folding, with a real
 `NAME`/operator tree emitted the moment a variable is involved. Everything
-else (relational/logical/shift/compound-assignment operators, non-`int`
+else (compound-assignment operators, non-`int`
 types, function parameters, control flow, memory-to-memory assignment, an
 immediate `IMUL`/`IDIV` operand) is an explicit "not yet supported" error,
 not silently-wrong output — confirmed via a direct test against
-`01_expr/03_rellogic.c` (correctly rejected with a clear message, not a
+`01_expr/05_incdec.c` (correctly rejected with a clear message, not a
 crash or bad `.s`).
 
 Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root
@@ -458,10 +519,9 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `03_rellogic`
-next (relational/logical operators, the first construct needing real
-conditional branching — no `setcc` before the 386, so a 0/1 boolean result
-means `cmp` + a conditional jump). See `src/mutos_cc/README.md`'s "Next
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `05_incdec`
+next (`++`/`--`, which also needs pointer-scaled arithmetic once pointers
+exist). See `src/mutos_cc/README.md`'s "Next
 steps" for the full, dependency-ordered plan through `long`/arrays/
 pointers/structs, `03_ctrlflow`, function calls, the `09_abiprobe`
 `chkstk`-threshold goldens, and the `mutos_cc` driver itself.
