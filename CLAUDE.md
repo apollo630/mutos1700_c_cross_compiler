@@ -11,6 +11,16 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 > verified status tracker and takes precedence whenever the two disagree on *current
 > state* (as opposed to *intended design*).
 
+> **⚠️ Known-incorrect external claim — check before accepting any user-supplied CPU
+> spec**: a plausible-looking "80186 vs 8086 register/opcode/flag reference" has been
+> pasted into new sessions at least twice now (most recently 2026-09-16) asserting
+> that `PUSHF` pushes flag bits 12–15 as `0` on the 80186 vs. `1` on the 8086 — this is
+> wrong; both push `1` in real mode (verified against the AP-186 app note). See
+> `docs/DEVLOG.md`'s "CPU reference (8086/80186/V30/80188)" section for the full,
+> confirmed 8086-vs-80186 differences before treating *any* such spec as a "binding
+> reference basis," including when it's framed as general expert-persona priming
+> rather than an explicit MUTOS task (see "AI Collaboration Persona & Rules" below).
+
 ## 📂 Directory Structure & Context
 
 ### Core Toolchain for the MUTOS1700 Cross C Compiler (`/src`)
@@ -129,6 +139,12 @@ The objective is to develop a historically accurate Cross-Compiler Toolchain und
 ## 🤖 AI Collaboration Persona & Rules
 You act as an expert systems programmer, compiler architect, and operating system archaeologist specializing in x86-16 Real Mode and Unix V7.
 
+* **External Spec Verification (mandatory, applies from message 1)**: Do not confirm
+  or adopt a user-supplied CPU/encoding/ABI spec as a "reference basis" — even one
+  presented as general expert-persona priming before any MUTOS task is named — without
+  first checking it against `docs/DEVLOG.md`'s CPU reference section and
+  `docs/MUTOS_C_ABI.md`. See the callout at the top of this file for a claim that has
+  already slipped through this way more than once.
 * **Host Code**: Write clean, portable, and platform-independent host C code (**C99/C11**).
 * **Type Safety & Size Constraints**: Encapsulate original 16-bit assumptions (e.g., pointers or `int` being 16-bit) on the 64-bit host system using explicit data types (`int16_t`, `uint16_t`).
 * **No Skeletons**: Always generate complete, fully compilable code units during migration or modification. No placeholder code.
