@@ -4,8 +4,9 @@
  * Current opcode coverage (matches mutos_c0's current grammar
  * coverage - see c0_parser.c and src/mutos_cc/README.md): SYMDEF,
  * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, NAME, CON,
- * PLUS, MINUS, TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, ASSIGN,
- * RFORCE, EXPR, RETRN, SETSTK, EOFC.
+ * PLUS, MINUS, TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT,
+ * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
+ * EXCLA, ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -39,13 +40,34 @@
 
 #define VALSTACK_MAX 64
 
-typedef enum { VK_IMM, VK_MEM, VK_REG } ValKind;
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_COND } ValKind;
+
+/* A fully-resolved (never itself VK_COND) operand - used to hold the
+ * two sides of a deferred comparison inside a VK_COND Val without
+ * making the Val type self-referential. */
+typedef struct {
+    ValKind kind;   /* VK_IMM, VK_MEM or VK_REG only */
+    long    imm;
+    int     offset;
+    const char *reg;
+} SimpleVal;
 
 typedef struct {
     ValKind kind;
     long    imm;    /* VK_IMM */
     int     offset;  /* VK_MEM: bp-relative offset */
     const char *reg;  /* VK_REG: a static string ("ax", "di", "dx") */
+    /* VK_COND: a deferred, not-yet-materialized relational result -
+     * "cl <true_op> cr" (true_op is one of OP_LESS/OP_LESSEQ/
+     * OP_GREAT/OP_GREATEQ/OP_EQUAL/OP_NEQUAL). Deferring instead of
+     * immediately emitting code is what lets OP_LOGAND/OP_LOGOR fuse
+     * two comparisons into short-circuit "jumping code" without ever
+     * materializing an intermediate 0/1 - see the OP_LESS.../
+     * OP_LOGAND/OP_LOGOR/OP_EXCLA cases below and
+     * docs/DEVLOG.md's Milestone 4 section for the full derivation
+     * against 03_rellogic's goldens. */
+    int       true_op;
+    SimpleVal cl, cr;
 } Val;
 
 typedef struct {
@@ -54,6 +76,15 @@ typedef struct {
                                 * allocation is implemented yet. */
     Val  valstack[VALSTACK_MAX];
     int  valsp;
+    int  next_lab;             /* c1's own internal label counter for
+                                 * relational/logical codegen - distinct
+                                 * from temp1's own label numbers (which
+                                 * start at 1). Confirmed starting value
+                                 * 10000 via 03_rellogic.s.golden (its
+                                 * first internally-generated label is
+                                 * "L10000"); the threshold headroom
+                                 * below temp1's own label space is
+                                 * otherwise unconfirmed/arbitrary. */
 } GenState;
 
 static void gen_fatal(const char *fmt, ...)
@@ -81,9 +112,33 @@ static Val pop_val(GenState *g)
     return g->valstack[--g->valsp];
 }
 
-static Val val_imm(long v) { Val r; r.kind = VK_IMM; r.imm = v; r.offset = 0; r.reg = NULL; return r; }
-static Val val_mem(int off) { Val r; r.kind = VK_MEM; r.imm = 0; r.offset = off; r.reg = NULL; return r; }
-static Val val_reg(const char *reg) { Val r; r.kind = VK_REG; r.imm = 0; r.offset = 0; r.reg = reg; return r; }
+static Val val_imm(long v) { Val r = {0}; r.kind = VK_IMM; r.imm = v; return r; }
+static Val val_mem(int off) { Val r = {0}; r.kind = VK_MEM; r.offset = off; return r; }
+static Val val_reg(const char *reg) { Val r = {0}; r.kind = VK_REG; r.reg = reg; return r; }
+
+/* Demotes an already-resolved (non-VK_COND) Val down to a SimpleVal,
+ * for storage inside a VK_COND's cl/cr fields. */
+static SimpleVal simple_of(Val v)
+{
+    SimpleVal s;
+    s.kind = v.kind;
+    s.imm = v.imm;
+    s.offset = v.offset;
+    s.reg = v.reg;
+    return s;
+}
+
+/* Promotes a SimpleVal back to a plain Val so it can be run through
+ * the existing render_operand()/load_into_di() helpers unchanged. */
+static Val val_from_simple(SimpleVal s)
+{
+    Val v = {0};
+    v.kind = s.kind;
+    v.imm = s.imm;
+    v.offset = s.offset;
+    v.reg = s.reg;
+    return v;
+}
 
 /* Renders `v` as mutos_as-syntax operand text into `buf` (caller-
  * supplied, at least 32 bytes).
@@ -119,7 +174,208 @@ static void render_operand(char *buf, size_t n, Val v)
         break;
     case VK_MEM: snprintf(buf, n, "*%d.(bp)", v.offset); break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
+    case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     }
+}
+
+static void load_into_di(FILE *out, Val v); /* forward decl - defined
+                                               * below, needed by
+                                               * emit_cmp_and_branch()
+                                               * above its own definition */
+
+/* CMP's (and, confirmed later, SAL/SAR's) immediate operand omits
+ * the trailing "." decimal-terminator that render_operand() uses
+ * everywhere else - confirmed via 03_rellogic.s.golden's
+ * "cmp\t*-6.(bp),*0" and 04_shift.s.golden's "sar\tdi,*1" (neither
+ * has a period) vs. every "mov\t...,*N." elsewhere (with period).
+ * Per man/mutos_as.1 the period is "a stylistic decimal terminator"
+ * with zero effect on the assembled value, so this is a source-text
+ * quirk shared by these non-MOV immediate-rendering paths
+ * specifically - only rendering, not semantics. Confirmed at values
+ * 0 (CMP) and 1 (SAL/SAR); the *N/#N byte-vs-word marker threshold
+ * below is extrapolated from render_operand()'s (unconfirmed at
+ * magnitudes outside these two files' own "*0"/"*1" cases). */
+static void render_bare_imm(char *buf, size_t n, long v)
+{
+    if (v >= -128 && v <= 127)
+        snprintf(buf, n, "*%ld", v);
+    else
+        snprintf(buf, n, "#%ld", v);
+}
+
+/* -------------------------------------------------------------- */
+/* Relational/logical codegen - see the VK_COND field comment above
+ * for the deferred-materialization design this implements. All of
+ * it is reverse-engineered byte-for-byte against
+ * tests/mutos_cc/01_expr/03_rellogic.s.golden. */
+
+static const char *cond_true_mnem(int op)
+{
+    switch (op) {
+    case OP_LESS:    return "blt";
+    case OP_LESSEQ:  return "ble";
+    case OP_GREAT:   return "bgt";
+    case OP_GREATEQ: return "bge";
+    case OP_EQUAL:   return "beq";
+    case OP_NEQUAL:  return "bne";
+    default:
+        gen_fatal("internal: unknown relational op %d", op);
+        return NULL;
+    }
+}
+
+/* The branch-condition-code negation used to short-circuit the
+ * non-final operand(s) of an OP_LOGAND chain (jump to the overall
+ * false label when an early conjunct is false, i.e. when its
+ * INVERSE condition holds) - confirmed via 03_rellogic's "a < b"
+ * rendering as "bge" (LESS's inverse) when it is LOGAND's first
+ * operand, vs. plain "blt" when it appears standalone. */
+static int cond_invert(int op)
+{
+    switch (op) {
+    case OP_LESS:    return OP_GREATEQ;
+    case OP_GREATEQ: return OP_LESS;
+    case OP_LESSEQ:  return OP_GREAT;
+    case OP_GREAT:   return OP_LESSEQ;
+    case OP_EQUAL:   return OP_NEQUAL;
+    case OP_NEQUAL:  return OP_EQUAL;
+    default:
+        gen_fatal("internal: unknown relational op %d for inversion", op);
+        return -1;
+    }
+}
+
+/* Emits "cmp\t<cl>,<cr-or-di>\n" followed by a branch to L<target>
+ * using `branch_op_code`'s mnemonic (the caller passes either
+ * cond.true_op directly, for a "branch if true" site, or
+ * cond_invert(cond.true_op), for a "branch if false" site - see
+ * OP_LOGAND below). The right-hand side is loaded into DI first if
+ * it is itself a memory operand (8086 CMP cannot take two memory
+ * operands); an immediate right-hand side is rendered directly via
+ * render_cmp_imm(), matching 03_rellogic's "cmp *-6.(bp),di" (memory
+ * rhs) vs. "cmp *-6.(bp),*0" (immediate rhs) shapes exactly. */
+static void emit_cmp_and_branch(FILE *out, Val cond, int branch_op_code, int target_lab)
+{
+    Val l = val_from_simple(cond.cl);
+    Val r = val_from_simple(cond.cr);
+    char lbuf[32], rbuf[32];
+    render_operand(lbuf, sizeof lbuf, l);
+    if (r.kind == VK_MEM) {
+        load_into_di(out, r);
+        snprintf(rbuf, sizeof rbuf, "di");
+    } else if (r.kind == VK_IMM) {
+        render_bare_imm(rbuf, sizeof rbuf, r.imm);
+    } else {
+        render_operand(rbuf, sizeof rbuf, r);
+    }
+    fprintf(out, "cmp\t%s,%s\n", lbuf, rbuf);
+    fprintf(out, "%s\tL%d\n", cond_true_mnem(branch_op_code), target_lab);
+}
+
+/* Materializes a single deferred comparison into a real 0/1 value in
+ * DI - the "standalone relational" pattern (e.g. plain "r = a < b;"):
+ * branch-if-true to a fresh label, set DI=0 and jump past, or set
+ * DI=1 at the true label, then fall through (label printed with no
+ * trailing newline, matching OP_LABEL's style, so whatever the
+ * caller emits next glues onto the same source line - confirmed
+ * against "L10001:mov\t*-10.(bp),di" in the golden). */
+static void materialize_cond(FILE *out, GenState *g, Val cond)
+{
+    int ltrue = g->next_lab++;
+    int lend  = g->next_lab++;
+    emit_cmp_and_branch(out, cond, cond.true_op, ltrue);
+    fprintf(out, "mov\tdi,*0.\n");
+    fprintf(out, "jmp\tL%d\n", lend);
+    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
+    fprintf(out, "L%d:", lend);
+}
+
+/* No-op for anything already resolved; materializes a deferred
+ * VK_COND into VK_REG("di"). Called wherever a Val is about to be
+ * consumed as an ordinary value (ASSIGN's rhs, RFORCE's operand, and
+ * defensively by every other binary/unary operator below, in case a
+ * future grammar extension ever feeds a comparison's result into
+ * arithmetic). */
+static Val materialize(FILE *out, GenState *g, Val v)
+{
+    if (v.kind != VK_COND)
+        return v;
+    materialize_cond(out, g, v);
+    return val_reg("di");
+}
+
+/* Wraps a non-VK_COND value as an implicit "!= 0" truth test -
+ * OP_LOGAND/OP_LOGOR's fallback for an operand that is not itself a
+ * relational comparison (not exercised by any current golden, since
+ * both 03_rellogic's "&&"/"||" operands are always direct
+ * comparisons, but the natural, zero-risk generalization of "any
+ * nonzero value is true"). Never emits code - purely a description
+ * of a comparison to be emitted later by whoever consumes it. */
+static Val as_cond(Val v)
+{
+    if (v.kind == VK_COND)
+        return v;
+    Val c = {0};
+    c.kind = VK_COND;
+    c.true_op = OP_NEQUAL;
+    c.cl = simple_of(v);
+    c.cr = simple_of(val_imm(0));
+    return c;
+}
+
+/* OP_LOGAND: fuses two (already as_cond()'d) comparisons into
+ * classic short-circuit "jumping code" - confirmed against
+ * 03_rellogic's "(a < b) && (b > 0)":
+ *   cmp a,b; bge Lfalse     (INVERTED first condition -> false label)
+ *   cmp b,0; bgt Ltrue      (direct second condition -> true label)
+ *   Lfalse: di=0; jmp Lend
+ *   Ltrue:  di=1
+ *   Lend:
+ * Label allocation order true,false,end matches the golden's
+ * L10012(true)/L10013(false)/L10014(end) exactly (deduced from
+ * which label each mnemonic branches to, not from textual order in
+ * the .s output - the false label is referenced, hence printed,
+ * before it is themselves allocated-lowest). */
+static Val gen_logand(FILE *out, GenState *g, Val l, Val r)
+{
+    Val cl = as_cond(l);
+    Val cr = as_cond(r);
+    int ltrue  = g->next_lab++;
+    int lfalse = g->next_lab++;
+    int lend   = g->next_lab++;
+    emit_cmp_and_branch(out, cl, cond_invert(cl.true_op), lfalse);
+    emit_cmp_and_branch(out, cr, cr.true_op, ltrue);
+    fprintf(out, "L%d:mov\tdi,*0.\n", lfalse);
+    fprintf(out, "jmp\tL%d\n", lend);
+    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
+    fprintf(out, "L%d:", lend);
+    return val_reg("di");
+}
+
+/* OP_LOGOR: mirrors gen_logand() above but both conditions branch
+ * directly (not inverted) to the SAME true label, and the false case
+ * is a pure fallthrough (no separate false label needed, since
+ * nothing needs to jump there) - confirmed against 03_rellogic's
+ * "(a < 0) || (b > 0)":
+ *   cmp a,0; blt Ltrue
+ *   cmp b,0; bgt Ltrue
+ *   di=0; jmp Lend
+ *   Ltrue: di=1
+ *   Lend:
+ * matching the golden's L10015(true)/L10016(end) exactly. */
+static Val gen_logor(FILE *out, GenState *g, Val l, Val r)
+{
+    Val cl = as_cond(l);
+    Val cr = as_cond(r);
+    int ltrue = g->next_lab++;
+    int lend  = g->next_lab++;
+    emit_cmp_and_branch(out, cl, cl.true_op, ltrue);
+    emit_cmp_and_branch(out, cr, cr.true_op, ltrue);
+    fprintf(out, "mov\tdi,*0.\n");
+    fprintf(out, "jmp\tL%d\n", lend);
+    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
+    fprintf(out, "L%d:", lend);
+    return val_reg("di");
 }
 
 /* Emits "mov\tdi,<v>\n" to load `v` into DI - the confirmed generic
@@ -137,6 +393,21 @@ static void load_into_di(FILE *out, Val v)
     fprintf(out, "mov\tdi,%s\n", buf);
 }
 
+/* Emits "mov\tcx,<v>\n" to load `v` into CX - the confirmed working
+ * register for a *variable* shift count specifically (never DI,
+ * which holds the value being shifted - see OP_LSHIFT/OP_RSHIFT
+ * below), skipping the no-op "mov cx,cx" case exactly like
+ * load_into_di() above. Confirmed via 04_shift.s.golden's
+ * "mov\tcx,*-8.(bp)" immediately before "sal\tdi,cl". */
+static void load_into_cx(FILE *out, Val v)
+{
+    if (v.kind == VK_REG && strcmp(v.reg, "cx") == 0)
+        return;
+    char buf[32];
+    render_operand(buf, sizeof buf, v);
+    fprintf(out, "mov\tcx,%s\n", buf);
+}
+
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 {
     (void)temp2; /* string-literal (SNAME/temp2) support is not
@@ -144,6 +415,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                   * see src/mutos_cc/README.md. */
 
     GenState g = {0};
+    g.next_lab = 10000; /* see GenState's next_lab field comment */
 
     for (;;) {
         int op = c1_read_op(temp1, "temp1");
@@ -245,8 +517,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT)
                 gen_fatal("%s of type %d not yet supported",
                           op == OP_PLUS ? "PLUS" : "MINUS", type);
-            Val r = pop_val(&g);
-            Val l = pop_val(&g);
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
             load_into_di(out, l);
             char rbuf[32];
             render_operand(rbuf, sizeof rbuf, r);
@@ -263,8 +535,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("%s of type %d not yet supported",
                           op == OP_AND ? "AND" : op == OP_OR ? "OR" : "EXOR",
                           type);
-            Val r = pop_val(&g);
-            Val l = pop_val(&g);
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
             load_into_di(out, l);
             char rbuf[32];
             render_operand(rbuf, sizeof rbuf, r);
@@ -274,14 +546,122 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_LSHIFT:
+        case OP_RSHIFT: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("%s of type %d not yet supported",
+                          op == OP_LSHIFT ? "LSHIFT" : "RSHIFT", type);
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
+            load_into_di(out, l);
+            const char *mnem = op == OP_LSHIFT ? "sal" : "sar";
+            if (r.kind == VK_IMM) {
+                /* Constant shift count: plain 8086 has no
+                 * shift-by-immediate-count opcode (that's an
+                 * 80186-only extension - see docs/DEVLOG.md's CPU
+                 * reference - and 04_shift.c's own header comment:
+                 * this compiler targets plain 8086 only), so the
+                 * real compiler repeats the single-bit-shift form
+                 * (opcode D1 /4 or /7, count implicitly 1) N times -
+                 * confirmed via 04_shift.s.golden's "r >> 2" emitting
+                 * two consecutive "sar\tdi,*1" lines, and "a << 1"
+                 * emitting exactly one "sal\tdi,*1". */
+                if (r.imm < 0)
+                    gen_fatal("negative shift count in constant "
+                              "expression");
+                char cbuf[32];
+                render_bare_imm(cbuf, sizeof cbuf, 1);
+                for (long i = 0; i < r.imm; i++)
+                    fprintf(out, "%s\tdi,%s\n", mnem, cbuf);
+            } else {
+                /* Variable shift count: must be loaded into CL (the
+                 * only register the 8086's "shift by CL" opcode
+                 * shape accepts) - confirmed via 04_shift.s.golden's
+                 * "mov\tcx,*-8.(bp)" immediately before
+                 * "sal\tdi,cl". */
+                load_into_cx(out, r);
+                fprintf(out, "%s\tdi,cl\n", mnem);
+            }
+            push_val(&g, val_reg("di"));
+            break;
+        }
+
         case OP_COMPL: {
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("COMPL of type %d not yet supported", type);
-            Val v = pop_val(&g);
+            Val v = materialize(out, &g, pop_val(&g));
             load_into_di(out, v);
             fprintf(out, "not\tdi\n");
             push_val(&g, val_reg("di"));
+            break;
+        }
+
+        case OP_LESS:
+        case OP_LESSEQ:
+        case OP_GREAT:
+        case OP_GREATEQ:
+        case OP_EQUAL:
+        case OP_NEQUAL: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("relational/equality op of type %d not yet "
+                          "supported", type);
+            /* Deliberately does NOT emit anything here - see the
+             * VK_COND field comment: the comparison is deferred until
+             * whoever consumes it (materialize(), for a plain value
+             * context, or gen_logand()/gen_logor(), for a fused
+             * short-circuit context) decides how to compile it. Both
+             * operands are run through materialize() first only to
+             * cover the (unconfirmed by any golden) chained-relational
+             * edge case "a < b < c", where a nested comparison could
+             * otherwise flow in here as an operand. */
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
+            Val c = {0};
+            c.kind = VK_COND;
+            c.true_op = op;
+            c.cl = simple_of(l);
+            c.cr = simple_of(r);
+            push_val(&g, c);
+            break;
+        }
+
+        case OP_LOGAND:
+        case OP_LOGOR: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("%s of type %d not yet supported",
+                          op == OP_LOGAND ? "LOGAND" : "LOGOR", type);
+            Val r = pop_val(&g);
+            Val l = pop_val(&g);
+            Val result = (op == OP_LOGAND) ? gen_logand(out, &g, l, r)
+                                            : gen_logor(out, &g, l, r);
+            push_val(&g, result);
+            break;
+        }
+
+        case OP_EXCLA: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("EXCLA of type %d not yet supported", type);
+            /* "!x" == the negation of x's truth test - reuses
+             * as_cond() to get x's condition (synthesizing "x != 0"
+             * if x isn't already one) and inverts its branch sense,
+             * WITHOUT materializing - confirmed against 03_rellogic's
+             * "r = !r;", which emits no code at all until the
+             * following ASSIGN materializes the result as a single
+             * "cmp *-10.(bp),*0 / beq ..." (EQUAL, i.e. NEQUAL
+             * inverted) sequence, never a separate negation step. */
+            Val v = pop_val(&g);
+            Val c = as_cond(v);
+            Val neg = {0};
+            neg.kind = VK_COND;
+            neg.true_op = cond_invert(c.true_op);
+            neg.cl = c.cl;
+            neg.cr = c.cr;
+            push_val(&g, neg);
             break;
         }
 
@@ -289,8 +669,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("TIMES of type %d not yet supported", type);
-            Val r = pop_val(&g);
-            Val l = pop_val(&g);
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
             if (r.kind == VK_IMM)
                 gen_fatal("multiplying by an immediate is not yet "
                           "supported (8086 IMUL takes a reg/mem operand, "
@@ -311,8 +691,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT)
                 gen_fatal("%s of type %d not yet supported",
                           op == OP_DIVIDE ? "DIVIDE" : "MOD", type);
-            Val r = pop_val(&g);
-            Val l = pop_val(&g);
+            Val r = materialize(out, &g, pop_val(&g));
+            Val l = materialize(out, &g, pop_val(&g));
             if (r.kind == VK_IMM)
                 gen_fatal("dividing by an immediate is not yet supported "
                           "(8086 IDIV takes a reg/mem operand, never an "
@@ -335,7 +715,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
-            Val rhs = pop_val(&g);
+            Val rhs = materialize(out, &g, pop_val(&g));
             Val lhs = pop_val(&g);
             if (lhs.kind != VK_MEM)
                 gen_fatal("assignment to a non-lvalue is not yet supported");
@@ -361,7 +741,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT)
                 gen_fatal("RFORCE to type %d not yet supported (only "
                           "int-returning functions are covered so far)", type);
-            Val v = pop_val(&g);
+            Val v = materialize(out, &g, pop_val(&g));
             /* Matches the confirmed golden pattern exactly, for both
              * an immediate (00_smoke's "return 42;") and a memory
              * operand (01_intarith's "return c;"): load into DI

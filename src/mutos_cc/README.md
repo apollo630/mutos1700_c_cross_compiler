@@ -11,9 +11,10 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 5/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 7/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus
-`tests/mutos_cc/01_expr/01_intarith.c` and `02_bitwise.c`. See STATUS.md
+`tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
+`03_rellogic.c` and `04_shift.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -160,7 +161,8 @@ negative large-magnitude constant.
 
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus
-`tests/mutos_cc/01_expr/01_intarith.c` and `02_bitwise.c`:
+`tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
+`03_rellogic.c` and `04_shift.c`:
 
 ```
 translation-unit  := extdef*
@@ -170,13 +172,18 @@ decl              := 'int' IDENT (',' IDENT)* ';'
 stmt              := assign-stmt | return-stmt
 assign-stmt       := IDENT '=' expr ';'
 return-stmt       := 'return' expr? ';'
-expr              := BITOR
+expr              := LOGOR
+LOGOR             := LOGAND ('||' LOGAND)*
+LOGAND            := BITOR ('&&' BITOR)*
 BITOR             := BITXOR ('|' BITXOR)*
 BITXOR            := BITAND ('^' BITAND)*
-BITAND            := ADD ('&' ADD)*
+BITAND            := EQUALITY ('&' EQUALITY)*
+EQUALITY          := RELATIONAL (('=='|'!=') RELATIONAL)*
+RELATIONAL        := SHIFT (('<'|'<='|'>'|'>=') SHIFT)*
+SHIFT             := ADD (('<<'|'>>') ADD)*
 ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
-UNARY             := ('-'|'+'|'~') UNARY | PRIMARY
+UNARY             := ('-'|'+'|'~'|'!') UNARY | PRIMARY
 PRIMARY           := ICON | IDENT | '(' expr ')'
 ```
 
@@ -199,26 +206,53 @@ truncation (`trunc16()`), matching the target's 16-bit `int`.
 `mutos_c1`'s opcode coverage (`c1_gen.c`) matches exactly what the
 above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `SETREG`, `BRANCH`, `LABEL`, `ANAME`, `NAME`, `CON`, `PLUS`, `MINUS`,
-`TIMES`, `DIVIDE`, `MOD`, `AND`, `OR`, `EXOR`, `COMPL`, `ASSIGN`,
-`RFORCE`, `EXPR`, `RETRN`, `SETSTK`, `EOFC`. Its own value stack
-(`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks, for each pending
-intermediate value, whether it's an immediate, a `bp`-relative memory
-location, or a value already in a specific register - the minimum
+`TIMES`, `DIVIDE`, `MOD`, `AND`, `OR`, `EXOR`, `COMPL`, `LSHIFT`,
+`RSHIFT`, `LESS`, `LESSEQ`, `GREAT`, `GREATEQ`, `EQUAL`, `NEQUAL`,
+`LOGAND`, `LOGOR`,
+`EXCLA`, `ASSIGN`, `RFORCE`, `EXPR`, `RETRN`, `SETSTK`, `EOFC`. Its
+own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
+for each pending intermediate value, whether it's an immediate, a
+`bp`-relative memory location, a value already in a specific
+register, or - new for relational/logical support - an
+unmaterialized `VK_COND` (a deferred "L <op> R" comparison, not yet
+turned into a real 0/1 value or branch). Deferring a comparison
+instead of immediately emitting code for it is what lets `LOGAND`/
+`LOGOR` fuse two comparisons into classic short-circuit "jumping
+code" without ever materializing an intermediate 0/1 in between -
+confirmed byte-for-byte against `03_rellogic.s.golden`; see that
+file's derivation in `docs/DEVLOG.md`'s Milestone 4 section. A
+`VK_COND` is materialized into a real `di` value (`cmp` + conditional
+branch + `mov di,*0./*1.`) the moment anything other than `LOGAND`/
+`LOGOR`/`EXCLA` needs an actual value from it (`ASSIGN`'s right-hand
+side, `RFORCE`'s operand, and defensively every arithmetic/bitwise
+operator, in case a future grammar extension ever feeds a comparison
+into arithmetic - e.g. chained relational like `a < b < c`, not
+itself confirmed by any golden yet). `LSHIFT`/`RSHIFT` reuse the same
+`load_into_di()` working-register convention for the value being
+shifted, plus a new `load_into_cx()` (mirroring `load_into_di()`)
+for a *variable* shift count specifically - the 8086's "shift by a
+register" opcode shape only accepts `CL`. A *constant* shift count
+doesn't use an immediate-count opcode at all: plain 8086 has none (it's
+an 80186-only extension - `04_shift.c`'s own header comment says this
+compiler targets plain 8086 only), so the real compiler repeats the
+single-bit-shift form N times, confirmed against `04_shift.s.golden`'s
+`"r >> 2"` (two `sar\tdi,*1` lines) and `"a << 1"` (one `sal\tdi,*1`
+line). This is still the minimum
 needed to pick a legal 8086 instruction shape (e.g. `IMUL`/`IDIV`
 cannot take an immediate operand directly, and an immediate's `*`/`#`
 size-marker choice depends on whether it fits a signed byte) without
 a general table-driven register allocator (see "Next steps" below).
 
 **Anything outside this - unary `-`/`+` on a non-constant operand
-(unary `~` is covered), a non-`int` declaration,
-relational/logical/shift/compound-assignment operators, function
-parameters, a second kind of statement, memory-to-memory assignment,
-an immediate `IMUL`/`IDIV` operand, any opcode `c1` doesn't recognize
-- is a clear, explicit "not yet supported" diagnostic and a nonzero
-exit status, never silently-wrong output.** This is a deliberate
-design choice, not an oversight: `tests/mutos_cc/run_goldens.sh`
-relies on this to keep its pass count an honest measure of verified
-coverage as grammar support grows.
+(unary `~`/`!` are covered), a non-`int` declaration, shift/
+compound-assignment operators, function parameters, a second kind of
+statement, memory-to-memory assignment, an immediate `IMUL`/`IDIV`
+operand, any opcode `c1` doesn't recognize - is a clear, explicit
+"not yet supported" diagnostic and a nonzero exit status, never
+silently-wrong output.** This is a deliberate design choice, not an
+oversight: `tests/mutos_cc/run_goldens.sh` relies on this to keep its
+pass count an honest measure of verified coverage as grammar support
+grows.
 
 The lexer (`c0_lex.c`) is comparatively complete (the full K&R token
 set: all keywords, integer/float/string/char literals, every
@@ -247,14 +281,16 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 
 ## Next steps (roughly in dependency order)
 
-1. **The rest of `01_expr`** (`03_rellogic` … `08_castsize`):
-   relational/logical `< <= > >= == != && || !` (the first construct
-   needing real conditional branching - a 0/1 result on the 8086
-   means `cmp` + a conditional jump, since there's no `setcc` before
-   the 386), shift `<< >>` (a variable shift count must load into
-   `CL`), `++`/`--`, compound assignment (`+= -=` etc.), `?:`, the
-   comma operator, casts, and `sizeof` - each needs its own confirmed
-   opcode/instruction shape, the same way `+ - * / % & | ^ ~` were
+1. **The rest of `01_expr`** (`05_incdec` … `08_castsize`):
+   `03_rellogic` (relational/logical `< <= > >= == != && || !`) and
+   `04_shift` (`<< >>`, both variable-count-via-`CL` and
+   constant-count-via-repeated-single-bit-shift) are now done - see
+   the `VK_COND` design and the `LSHIFT`/`RSHIFT` handling above.
+   Remaining: `++`/`--`,
+   compound assignment (`+= -=` etc.), `?:`, the comma operator,
+   casts, and `sizeof` - each needs its own confirmed opcode/
+   instruction shape, the same way `< <= > >= == != && || ! << >>`
+   were
    derived here. `05_incdec` also needs pointer-scaled arithmetic
    (`p++` on an `int *` must step by `SZINT=2`, not 1) and thus
    arrays/pointers, pulling in some of item 2 below early.
