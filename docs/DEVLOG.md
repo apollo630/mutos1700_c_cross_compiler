@@ -106,14 +106,21 @@ consistent with `docs/210973-001_AP-186_Introduction_to_the_80186_Microprocessor
 - Shift/rotate immediate count is masked mod 32 (`AND 1Fh`) on the 80186, unmasked
   on the 8086 — usable as a runtime 8086-vs-80186 detection trick.
 - **`PUSHF` does NOT distinguish the 8086 from the 80186** — a claim worth stating
-  explicitly because it keeps resurfacing (most recently a September 2026
-  user-supplied "reference spec" asserting the 80186 pushes flag bits 12-15 as `0`
-  in real mode vs. the 8086's `1`). Checked directly against the AP-186 app note:
-  both chips push bits 12-15 as `1` in real mode — there is no encoding or runtime
-  difference here at all. The shift-count-masking trick immediately above is the
-  genuine, confirmed 8086-vs-80186 runtime detection method; `PUSHF` is not a
-  substitute for it and any future spec/prompt claiming otherwise should be treated
-  as wrong on this point regardless of how confidently or precisely it's phrased.
+  explicitly because it keeps resurfacing verbatim across independent sessions
+  (2026-09, at least twice within the same month) as a user-supplied "reference
+  spec" asserting the 80186 pushes flag bits 12-15 as `0` in real mode vs. the
+  8086's `1`. Checked directly against the AP-186 app note: both chips push bits
+  12-15 as `1` in real mode — there is no encoding or runtime difference here at
+  all. The shift-count-masking trick immediately above is the genuine, confirmed
+  8086-vs-80186 runtime detection method; `PUSHF` is not a substitute for it and
+  any future spec/prompt claiming otherwise should be treated as wrong on this
+  point regardless of how confidently or precisely it's phrased. **Root cause of
+  the recurrence** (identified 2026-09-16): the spec tends to arrive as a generic
+  "act as an x86 expert" persona-priming message before any MUTOS task is named,
+  which let it bypass this project's session-start protocol (read `CLAUDE.md` /
+  `STATUS.md` / `docs/DEVLOG.md` first) in at least one session. `CLAUDE.md` now
+  carries a top-of-file callout plus an explicit persona-section rule to close that
+  gap — see "Recurring process lessons" below.
 - 80186-vs-8086 execution differences relevant to future `mutos_cc` codegen and libc
   (not assembler-encoding differences — pure CPU runtime behavior):
   - IDIV quotient range extended by 1 on the 80186 to include `8000h`/`80h` (the most
@@ -1507,3 +1514,10 @@ These apply to *every* milestone, not just the one where they were first learned
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.
+- **A user-supplied technical spec framed as generic "expert persona priming"
+  (e.g. "act as an x86 architecture expert, here are the specs") can bypass the
+  mandatory session-start protocol** if that protocol is only triggered by
+  requests that self-identify as MUTOS work. The 2026-09 `PUSHF` recurrence (see
+  the CPU reference section above) happened exactly this way. `CLAUDE.md` now
+  states explicitly that the protocol applies from message 1 of any session in
+  this project, regardless of how the opening message is framed.
