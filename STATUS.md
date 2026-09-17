@@ -551,7 +551,7 @@ ABI-safe wins for later `-mv30` work. Full numbers and derivation in
 This is the detailed breakdown requested for this document. "Confirmed real" means
 verified byte-exact against an actual hardware-linked object file; "unconfirmed" means
 implemented per the standard 8086/80186 ISA (and, where available, hand-checked via a
-smoke test) but never exercised by any real sample. `Assembler_as.pdf` (this project's
+smoke test) but never exercised by any real sample. `MUTOS1700_Assembler_as.pdf` (this project's
 only period-accurate reference manual) documents the **K1810WM86**, a 1:1 Soviet clone
 of the plain 8086 — it does not cover any 80186/V30 opcode at all, confirmed by
 grepping all 51 OCR'd pages for "80186"/"V30"/"V20". 80186/V30 coverage below is
@@ -656,7 +656,7 @@ above:
 
 ### 8086 opcodes still missing
 
-Identified directly from `Assembler_as.pdf` Anlage A/B (the K1810WM86 base-chip
+Identified directly from `MUTOS1700_Assembler_as.pdf` Anlage A/B (the K1810WM86 base-chip
 manual) — these are documented there but have no dispatch entry in `encode.c`:
 
 - **`esc`/`escb`** (`0xD8`–`0xDF`, coprocessor escape) — Anlage A documents
@@ -710,7 +710,7 @@ far.
    opcode-coverage table's footnote ²) one way or the other once real evidence exists.
 3. `esc`/`escb`, `ret`/`reti` with an immediate, and the dedicated `int 3` encoding
    are the three remaining 8086-level gaps with enough information in
-   `Assembler_as.pdf` alone to implement without further real-hardware evidence.
+   `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Begin Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`) on top of the now-complete
    `mutos_cpp`. `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
