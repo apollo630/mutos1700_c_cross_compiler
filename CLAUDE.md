@@ -273,6 +273,15 @@ You act as an expert systems programmer, compiler architect, and operating syste
      `STATUS.md`'s current-state summary (CPU/encoding facts, full bug narratives,
      debugging methodology) belongs in `docs/DEVLOG.md` instead — added there as it's
      discovered, not just held in conversation memory (see Guideline 7 below for why).
+   * **Automated backstop**: `make check-docs` (`scripts/check_docs.py`) mechanically
+     catches the part of this that's easy to miss by hand — a number restated in more
+     than one file that fell out of sync, a stale/renamed filename still quoted
+     somewhere, a broken internal link, or a "Last updated" stamp that doesn't match
+     the file's actual last commit. It runs in CI on every push/PR touching a `.md`
+     file (`.github/workflows/docs-consistency.yml`); run it locally before committing
+     any doc change too. It is a mechanical backstop, not a substitute for the sync
+     discipline above — it only catches drift shaped like its existing checks, not a
+     claim that's internally self-consistent but wrong.
 7. **Download Delivery Format (mandatory)**: When providing repository file updates,
    default to a **git patch** (a plain `git diff`-format file, applied with `git apply
    patch.file` or `patch -p1 < patch.file` from the repo root), not a zip. Generate it

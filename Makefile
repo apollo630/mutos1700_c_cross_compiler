@@ -25,11 +25,12 @@
 #   make cc         # build just mutos_c0/mutos_c1
 #   make clean      # clean every component
 #   make test       # run every component's golden-diff test suite
+#   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
 
 CC     = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-.PHONY: all ld as cpp cc clean test
+.PHONY: all ld as cpp cc clean test check-docs
 
 all: ld as cpp cc
 
@@ -69,3 +70,13 @@ test: all
 	@cd tests/mutos_cpp && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp ./run_goldens.sh
 	@echo "== mutos_cc (c0/c1) goldens =="
 	@cd tests/mutos_cc && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp MUTOS_C0=$(CURDIR)/src/mutos_cc/mutos_c0 MUTOS_C1=$(CURDIR)/src/mutos_cc/mutos_c1 ./run_goldens.sh
+
+# Checks every *.md file for the kind of drift a rebuild/regression run
+# can't catch: numbers restated in more than one place that disagree,
+# stale file references (renamed/typo'd filenames), broken internal
+# links/anchors, and a "Last updated" stamp that doesn't match the file's
+# actual last commit. Independent of the "test" target above - this is
+# about the docs, not the toolchain build. See scripts/check_docs.py's own
+# header for exactly what it checks and why each check is shaped that way.
+check-docs:
+	@python3 scripts/check_docs.py
