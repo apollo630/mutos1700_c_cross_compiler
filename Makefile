@@ -26,11 +26,13 @@
 #   make clean      # clean every component
 #   make test       # run every component's golden-diff test suite
 #   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
+#   make install-hooks # one-time per clone: run check-docs automatically
+#                       # before every commit (see .githooks/pre-commit)
 
 CC     = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-.PHONY: all ld as cpp cc clean test check-docs
+.PHONY: all ld as cpp cc clean test check-docs install-hooks
 
 all: ld as cpp cc
 
@@ -80,3 +82,12 @@ test: all
 # header for exactly what it checks and why each check is shaped that way.
 check-docs:
 	@python3 scripts/check_docs.py
+
+# One-time setup per clone: points git at the tracked .githooks/ directory
+# instead of the untracked (and therefore un-shareable) .git/hooks/, so
+# check-docs runs automatically before every commit from here on. Safe to
+# re-run.
+install-hooks:
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit
+	@echo "Git hooks installed (core.hooksPath -> .githooks/). 'make check-docs' now runs automatically before every commit."

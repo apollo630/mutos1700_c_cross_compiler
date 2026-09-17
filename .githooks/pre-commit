@@ -1,0 +1,30 @@
+#!/bin/sh
+# Pre-commit hook: run scripts/check_docs.py before allowing a commit.
+#
+# This file only takes effect after `make install-hooks` has been run once
+# per clone (sets git's core.hooksPath to this tracked .githooks/
+# directory) - git does not read hooks out of a tracked directory on its
+# own, so that one-time step can't be skipped. See CLAUDE.md's Workflow
+# Guideline 6 / "Automated backstop".
+#
+# Runs against the working-tree files as they currently sit on disk, not
+# just the staged diff - if you've staged only part of a change with
+# `git add -p`, this checks the whole file, not just what's about to be
+# committed.
+#
+# Bypass in a pinch with `git commit --no-verify`, but then run
+# `make check-docs` by hand before pushing.
+
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+cd "$repo_root" || exit 1
+
+python3 scripts/check_docs.py
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    echo "" >&2
+    echo "pre-commit: check_docs.py found issues (see above) - commit blocked." >&2
+    echo "Fix them, or bypass with 'git commit --no-verify' (then run 'make check-docs' before pushing)." >&2
+fi
+
+exit "$status"
