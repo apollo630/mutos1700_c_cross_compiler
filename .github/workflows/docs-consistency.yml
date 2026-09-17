@@ -1,0 +1,32 @@
+name: docs-consistency
+
+# Runs scripts/check_docs.py automatically on every push and pull request
+# that touches a Markdown file, so drift like a stale "Last updated" stamp,
+# a restated number that fell out of sync, or a stale filename reference
+# gets caught in CI instead of waiting for the next manual audit.
+
+on:
+  push:
+    paths:
+      - "**.md"
+      - "scripts/check_docs.py"
+  pull_request:
+    paths:
+      - "**.md"
+      - "scripts/check_docs.py"
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check_docs.py compares each file's stated "Last updated" date
+          # against its actual last commit date via `git log`, which needs
+          # real history - a shallow (depth=1) checkout would only see the
+          # triggering commit itself and give wrong answers for files that
+          # commit didn't touch.
+          fetch-depth: 0
+
+      - name: Run check_docs.py
+        run: python3 scripts/check_docs.py
