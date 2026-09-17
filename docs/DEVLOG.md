@@ -182,7 +182,7 @@ All confirmed via real hardware-linked object-code disassembly (`malloc.o`, `mch
 and later goldens) unless marked *unconfirmed*. Standard 8086 ModRM throughout.
 
 **Number literals & markers**
-- Default base is **decimal**, not octal as `Assembler_as.pdf`'s V7/PDP-11 wording
+- Default base is **decimal**, not octal as `MUTOS1700_Assembler_as.pdf`'s V7/PDP-11 wording
   might suggest — proven via multiple real symbol values (e.g. `.comm _canonb,256`
   links to 256/`0x100`, not octal-256=174). A trailing `.` (which `c1` always emits)
   is a redundant stylistic habit, not semantically required. True octal literals (if
@@ -217,7 +217,7 @@ and later goldens) unless marked *unconfirmed*. Standard 8086 ModRM throughout.
 
 **Group1 arithmetic (`add`/`or`/`adc`/`sbb`/`and`/`sub`/`xor`/`cmp`)**
 - `AND`/`OR`/`XOR` have **no sign-extend (`s`) bit** in their real CPU encoding
-  (confirmed by reading Assembler_as.pdf Anlage C directly: their encoding is the
+  (confirmed by reading MUTOS1700_Assembler_as.pdf Anlage C directly: their encoding is the
   fixed `1000 000:w`, unlike ADD/ADC/SUB/SBB/CMP's variable `1000 00:s:w`) — these
   three **never** use `0x83`, always the full `0x80`(byte)/`0x81`(word) form,
   regardless of the immediate's marker, value, or expression shape.
@@ -390,11 +390,11 @@ Chronological, most important first for future reference:
 
 ### Opcode coverage audit
 
-A full systematic audit (not just corpus-reactive fixing) was done by unzipping
-`Assembler_as.pdf` (it's a zip archive of scanned page images *plus* per-page OCR
-`.txt` files — extract and read those directly for the full Anlage A/B/C tables) and
-cross-checking every documented mnemonic against `encode.c`'s dispatch table one by
-one. Found and fixed ~30 real gaps in one pass, including `not`/`notb`, `idiv`/
+A full systematic audit (not just corpus-reactive fixing) was done by reading
+`MUTOS1700_Assembler_as.pdf` directly (a genuine text-layer PDF, 51 pages — like
+`docs/V20_V30_Users_Manual_Oct86.pdf`, `pdftotext` extracts the full Anlage A/B/C
+tables straight out of it, no unzipping needed) and cross-checking every documented
+mnemonic against `encode.c`'s dispatch table one by one. Found and fixed ~30 real gaps in one pass, including `not`/`notb`, `idiv`/
 `idivb`, all the simple fixed single/double-byte no-operand instructions (`clc`,
 `hlt`, `lahf`, `daa`, `aam`, etc.), `cmps`/`scas` families, `repe`/`repne` synonyms,
 the remaining `jo`/`jno`/`jnae`-style Jcc aliases, `inb`/`outb` synonyms, `lds`/`les`,
@@ -408,7 +408,7 @@ standard 8086 ISA encoding, not just "doesn't break existing goldens." See
 need re-checking every session and are deliberately not duplicated here.
 
 A separate audit specifically for 80186/V30 coverage (prompted by "K1810WM86 is a
-Soviet 1:1 clone of the *base* 8086 without V30/80186 opcodes — `Assembler_as.pdf`
+Soviet 1:1 clone of the *base* 8086 without V30/80186 opcodes — `MUTOS1700_Assembler_as.pdf`
 only documents the base chip, but `mutos_as`'s final version should support as many
 80186/V30 opcodes as possible anyway") added `LEAVE`, `ENTER framesize,nestlevel`,
 `BOUND reg,mem`, and the two/three-operand `IMUL` immediate forms — all hand-verified
@@ -534,12 +534,16 @@ correctly handles `#else` transitions in both directions. See
 
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
-**Status:** not started (`src/mutos_cc/` doesn't exist yet — see `STATUS.md`). This
-section covers the groundwork done ahead of any code: ABI/calling-convention
-research, the `c0`/`c1` process-split decision, and the K&R test corpus — so
-`mutos_c1`'s code generator has a byte-level-accurate target from day one instead
-of guessing generic 8086-C-compiler conventions, and so there's a verification
-path lined up before it exists. Full ABI detail, with every rule cited against a
+**Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
+verified byte-exact, end-to-end, for 7/62 of the full corpus (`00_smoke`'s 3 files
+plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`); see `STATUS.md` for the
+current, re-verified count and grammar/opcode scope. This section starts with the
+groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
+process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
+a byte-level-accurate target from day one instead of guessing generic
+8086-C-compiler conventions, and so a verification path was lined up before it
+existed — then continues below with the byte-level wire-format derivation and
+host-tooling findings from actually building against it. Full ABI detail, with every rule cited against a
 real disassembled `.o`, lives in **`docs/MUTOS_C_ABI.md`** (not duplicated here in
 full — the ABI subsection below is the condensed "why/how we found out" pointer
 into it, matching this file's usual role).
