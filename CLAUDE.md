@@ -278,10 +278,12 @@ You act as an expert systems programmer, compiler architect, and operating syste
      than one file that fell out of sync, a stale/renamed filename still quoted
      somewhere, a broken internal link, or a "Last updated" stamp that doesn't match
      the file's actual last commit. It runs in CI on every push/PR touching a `.md`
-     file (`.github/workflows/docs-consistency.yml`); run it locally before committing
-     any doc change too. It is a mechanical backstop, not a substitute for the sync
-     discipline above — it only catches drift shaped like its existing checks, not a
-     claim that's internally self-consistent but wrong.
+     file (`.github/workflows/docs-consistency.yml`), and — after a one-time
+     `make install-hooks` per clone — automatically before every local commit too
+     (`.githooks/pre-commit`, blocks the commit on failure; bypass with
+     `git commit --no-verify` if genuinely needed). It is a mechanical backstop, not a
+     substitute for the sync discipline above — it only catches drift shaped like its
+     existing checks, not a claim that's internally self-consistent but wrong.
 7. **Download Delivery Format (mandatory)**: When providing repository file updates,
    default to a **git patch** (a plain `git diff`-format file, applied with `git apply
    patch.file` or `patch -p1 < patch.file` from the repo root), not a zip. Generate it
