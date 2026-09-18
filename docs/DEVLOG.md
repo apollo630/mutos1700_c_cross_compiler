@@ -535,8 +535,8 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 8/62 of the full corpus (`00_smoke`'s 3 files
-plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`); see `STATUS.md` for the
+verified byte-exact, end-to-end, for 9/62 of the full corpus (`00_smoke`'s 3 files
+plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
 process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
@@ -1483,10 +1483,149 @@ was needed this session — the byte-level `od` derivation above was done
 *before* writing any `c0_parser.c`/`c1_gen.c` code, the same
 derive-then-implement order every prior Milestone 4 increment used).
 Full-corpus regression (`tests/mutos_cc/run_goldens.sh`) confirms zero
-regressions elsewhere: 8/62 byte-exact (one more than the prior
-session's count), 54 "not yet
-supported" (one fewer than before — `05_incdec` moved from that bucket to
+regressions elsewhere: one more file byte-exact than the prior
+session's count, one fewer "not yet
+supported" than before (`05_incdec` moved from that bucket to
 the pass bucket), 0 genuine mismatches.
+
+### Compound assignment operators, and a real lexer bug: byte-level derivation (`01_expr/06_compasgn` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in difficulty order: `06_compasgn.c` — all ten compound-assignment
+operators (`+= -= *= /= %= <<= >>= &= |= ^=`) on a plain `int`. Same
+method, `od -A d -t u1` on `06_compasgn.1.golden`, cross-referenced
+against `06_compasgn.s.golden`'s text.
+
+**`c0`'s tree shape is pleasantly uniform, and confirms a real design
+choice already visible in `v7/cc/c0.h`'s opcode table** (`ASPLUS=70`,
+`ASMINUS=71`, `ASTIMES=72`, `ASDIV=73`, `ASMOD=74`, `ASRSH=75`,
+`ASLSH=76`, `ASSAND=77`, `ASOR=78`, `ASXOR=79` — ten dedicated,
+consecutive opcode values): every compound-assignment statement decodes
+to exactly the same shape as plain `=` (`NAME(lvalue) <rhs-expr>
+<op-tag>(type) EXPR(line)`), just with the matching `AS*` tag in place
+of `ASSIGN` — e.g. `"a += 5;"` → `NAME(a) CON(5) ASPLUS(0) EXPR(11)`.
+There is **no synthesized `NAME(a) NAME(a) CON(5) PLUS ASSIGN`-style
+tree** — the lvalue's `NAME` is emitted exactly once, doing double duty
+as both the read-location the operator implicitly reads from and the
+write-target it implicitly stores back into, confirming these are
+genuine read-modify-write nodes at the `c0` level, not front-end sugar
+for a regular assignment of a regular binary expression.
+
+**`c1`'s codegen is where the real decisions are**, confirmed against
+all ten statements in `06_compasgn.s.golden`:
+
+`+= -= &= |= ^=` (`"a += 5;"`, `"a -= 3;"`, `"a &= 0x0F;"`,
+`"a |= 0x30;"`, `"a ^= 0x11;"`) each compile to a **single** in-place
+instruction directly on the memory operand:
+```
+add  *-6.(bp),*5.
+sub  *-6.(bp),*3.
+and  *-6.(bp),*15.
+or   *-6.(bp),*48.
+xor  *-6.(bp),*17.
+```
+Never routed through `DI` the way a non-compound binary operator is
+(`OP_PLUS`/`OP_MINUS`/`OP_AND`/`OP_OR`/`OP_EXOR` above all load into `DI`
+first) — there is no separate `ASSIGN` node following these in `temp1`
+to do the memory write, so the compound-assignment node's own codegen
+has to be the one writing back, and it does so by operating on the
+`bp`-relative operand directly. `render_operand()`'s existing
+`*`/`#`-marker immediate rendering (delta #7, `02_bitwise` session)
+needed no changes — `5`/`3`/`15`(`0x0F`)/`48`(`0x30`)/`17`(`0x11`) all
+fit a signed byte, so all five render with the `*` marker and trailing
+`.`, exactly matching the golden text.
+
+`*=` (`"a *= 2;"`) is a **genuine strength-reduction confirmation, not
+a guess**:
+```
+sal  *-6.(bp),*1
+```
+**Never an `imul`.** 8086 `IMUL` cannot take an immediate operand
+directly — the exact restriction `OP_TIMES`'s own codegen already
+enforces (`gen_fatal("multiplying by an immediate is not yet
+supported...")`, confirmed in the `01_intarith` session) — so the real
+compiler substitutes a shift for a power-of-two constant multiply
+instead of the "load the immediate into a register, then `imul`
+reg"-style sequence one might otherwise guess at. `mutos_c1`'s
+`OP_ASTIMES` handler generalizes this to any power-of-two ≥ 2 via the
+same N-times-repeat-the-single-bit-shift reasoning `LSHIFT`/`RSHIFT`
+already established (`04_shift` session) — only the `*2` case (one
+repetition) is itself golden-confirmed; a non-power-of-two constant
+(or 0 or 1) falls back to the same explicit "not yet supported" rather
+than guessing the real compiler's actual strength-reduction
+thresholds (e.g. does it use `LEA` tricks for `*3`? Unconfirmed, not
+implemented).
+
+`/=`/`%=` (`"a /= 4;"`, `"a %= 3;"`) need **an extra step neither of
+the above do**:
+```
+mov  ax,*-6.(bp)
+cwd
+mov  cx,*4.        | the immediate has to be loaded into a register
+                   | first - IDIV can't take one directly either
+                   | (the same restriction OP_DIVIDE/OP_MOD already
+                   | enforce for their own right operand)
+idiv cx
+mov  *-6.(bp),ax   | explicit store-back - IDIV's result lands in
+                   | AX/DX, never directly in memory
+```
+and for `%=`, identical except the final store reads `dx` instead of
+`ax` — matching `OP_DIVIDE`/`OP_MOD`'s already-confirmed quotient-in-
+`AX`-vs-remainder-in-`DX` convention exactly (`01_intarith` session).
+This is the only pair of compound-assignment operators needing an
+explicit store-back instruction, since every other one above operates
+on the memory operand in place.
+
+**This session also found and fixed a real, pre-existing bug in
+`c0_lex.c`'s tokenizer**, unrelated to any grammar/opcode work above:
+`/=` was lexing as plain `T_SLASH`, silently dropping the `=`, which
+made `parse_assign_stmt()`'s new operator-token switch fail with
+`"expected '=' or a compound-assignment operator, found token"` at
+`"a /= 4;"` — the *third* compound-assignment statement below `*=` to
+be parsed, ruling out a simple "first attempt, first bug" explanation.
+Root cause: `skip_space_and_comments()` peeks one character past a `/`
+to decide whether it starts a `/* ... */` comment; when it doesn't
+(`c2 != '*'`), it needs to push *both* characters back (`c2`, then `c`
+itself) so the real tokenizer can read them fresh from `/`. But the
+`Lexer` struct's pushback buffer (`int peek`, sentineled by
+`LEX_NOPEEK`) only ever had room for **one** character — the second of
+the two back-to-back `lex_ungetc()` calls silently overwrote the
+first, permanently losing whichever character was pushed back first
+(`c2`). For a lone `/` (plain division, e.g. `"a / b"` with a space
+after), the lost character was just that following space — harmless,
+since whitespace insignificance meant the bug was completely invisible
+through every prior session's goldens, including `01_intarith`'s own
+division test. For `/=` specifically, the lost character is the `=`
+itself: `skip_space_and_comments()` peeks `=` as `c2`, determines it's
+not `*` (not a comment), then loses it in the double-`ungetc`, leaving
+only `/` to be read back — the main tokenizer's `case '/':` then peeks
+the *next* real character (now the space after the already-consumed-
+and-lost `=`) to decide `T_SLASH` vs. `T_SLASHEQ`, finds a space (not
+`=`), and returns plain `T_SLASH`. `06_compasgn.c` is the first
+construct in this grammar scope's test corpus to put a `/` directly
+before a `=` with nothing in between, which is exactly why this bug
+had stayed dormant through five prior sessions of goldens despite
+being a straightforward, general correctness defect (not something
+`06_compasgn`-specific). Fixed generally: `Lexer.peek` became a
+2-slot LIFO stack (`int peek[2]; int npeek;`), not a `/=`-specific
+workaround, since `skip_space_and_comments()`'s own logic (and
+potentially other call sites, though none of the rest turned out to
+need more than 1-deep pushback) legitimately needs up to 2-deep
+pushback by design. `lex_ungetc()` now rejects (`c0_error_at`, not a
+silent drop) a third consecutive pushback rather than resurrecting the
+same silent-data-loss failure mode at a new depth.
+
+**Confirmed byte-exact, full pipeline, zero mismatches**: `01_expr/
+06_compasgn.c` → real `mutos_cpp -P` → `mutos_c0` → `mutos_c1` matches
+`06_compasgn.i.golden`/`.1.golden`/`.2.golden`/`.s.golden` byte-for-byte
+once the lexer fix landed (the byte-level `od` derivation above was, as
+usual, done *before* writing the `c0_parser.c`/`c1_gen.c` codegen -
+the lexer bug was an unrelated pre-existing defect the new grammar
+coverage happened to be the first to exercise, not a flaw in that
+derive-then-implement process itself). Full-corpus regression confirms
+zero regressions elsewhere: one more file byte-exact than the prior
+session's count, one fewer "not yet supported" than before —
+`06_compasgn` moved from that bucket to the pass bucket, 0 genuine
+mismatches.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

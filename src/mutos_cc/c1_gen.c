@@ -6,8 +6,9 @@
  * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, NAME, CON,
  * PLUS, MINUS, TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT,
  * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
- * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASSIGN,
- * RFORCE, EXPR, RETRN, SETSTK, EOFC.
+ * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASPLUS,
+ * ASMINUS, ASTIMES, ASDIV, ASMOD, ASLSH, ASRSH, ASSAND, ASOR, ASXOR,
+ * ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -870,6 +871,172 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * "c = a %% b;" (takes dx) immediately after the same
              * mov/cwd/idiv sequence. */
             push_val(&g, val_reg(op == OP_DIVIDE ? "ax" : "dx"));
+            break;
+        }
+
+        case OP_ASPLUS:
+        case OP_ASMINUS:
+        case OP_ASSAND:
+        case OP_ASOR:
+        case OP_ASXOR: {
+            /* += -= &= |= ^= with a constant right-hand side - all five
+             * confirmed against 06_compasgn.s.golden to compile to a
+             * single in-place "<mnem> <lvalue>,<imm>" instruction, never
+             * routed through DI the way a non-compound binary operator
+             * is (e.g. OP_PLUS above) - there is no separate ASSIGN
+             * node following these in temp1, so the memory-operand
+             * write has to be this node's own job. */
+            int type = c1_read_num(temp1, "temp1");
+            const char *name = op == OP_ASPLUS ? "ASPLUS" :
+                                op == OP_ASMINUS ? "ASMINUS" :
+                                op == OP_ASSAND ? "ASSAND" :
+                                op == OP_ASOR ? "ASOR" : "ASXOR";
+            if (type != TY_INT)
+                gen_fatal("%s of type %d not yet supported", name, type);
+            Val rhs = materialize(out, &g, pop_val(&g));
+            Val lhs = pop_val(&g);
+            if (lhs.kind != VK_MEM)
+                gen_fatal("compound assignment to a non-memory lvalue is "
+                          "not yet supported");
+            if (rhs.kind != VK_IMM)
+                gen_fatal("compound assignment with a non-constant "
+                          "right-hand side is not yet supported (no "
+                          "golden reference confirms the register-operand "
+                          "sequence a real compiler would need here)");
+            const char *mnem = op == OP_ASPLUS ? "add" :
+                                op == OP_ASMINUS ? "sub" :
+                                op == OP_ASSAND ? "and" :
+                                op == OP_ASOR ? "or" : "xor";
+            char lbuf[32], rbuf[32];
+            render_operand(lbuf, sizeof lbuf, lhs);
+            render_operand(rbuf, sizeof rbuf, rhs);
+            fprintf(out, "%s\t%s,%s\n", mnem, lbuf, rbuf);
+            break;
+        }
+
+        case OP_ASLSH:
+        case OP_ASRSH: {
+            /* <<= >>= with a constant right-hand side - confirmed
+             * against 06_compasgn.s.golden's "a <<= 1;"/"a >>= 1;",
+             * both a single "sal"/"sar <lvalue>,*1" directly on the
+             * memory operand (no DI). Only a count of exactly 1 is
+             * golden-confirmed, but plain 8086 having no
+             * shift-by-immediate-count opcode is a hardware fact (not
+             * a codegen choice) already established by OP_LSHIFT/
+             * OP_RSHIFT above and confirmed via 04_shift.s.golden's
+             * multi-repetition case - so the same "repeat the
+             * single-bit form N times" generalization is applied here
+             * too, just against the memory operand directly instead of
+             * DI. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("%s of type %d not yet supported",
+                          op == OP_ASLSH ? "ASLSH" : "ASRSH", type);
+            Val rhs = materialize(out, &g, pop_val(&g));
+            Val lhs = pop_val(&g);
+            if (lhs.kind != VK_MEM)
+                gen_fatal("compound assignment to a non-memory lvalue is "
+                          "not yet supported");
+            if (rhs.kind != VK_IMM)
+                gen_fatal("compound shift-assignment with a non-constant "
+                          "shift count is not yet supported (no golden "
+                          "reference confirms the CX-loading sequence a "
+                          "real compiler would need here)");
+            if (rhs.imm < 0)
+                gen_fatal("negative shift count in constant expression");
+            char lbuf[32], cbuf[32];
+            render_operand(lbuf, sizeof lbuf, lhs);
+            render_bare_imm(cbuf, sizeof cbuf, 1);
+            const char *mnem = op == OP_ASLSH ? "sal" : "sar";
+            for (long i = 0; i < rhs.imm; i++)
+                fprintf(out, "%s\t%s,%s\n", mnem, lbuf, cbuf);
+            break;
+        }
+
+        case OP_ASTIMES: {
+            /* *= with a constant right-hand side - confirmed against
+             * 06_compasgn.s.golden's "a *= 2;", which compiles to a
+             * single "sal <lvalue>,*1", NOT an imul: 8086 IMUL cannot
+             * take an immediate operand directly (the same restriction
+             * OP_TIMES above already enforces), so multiplying by a
+             * power of two is strength-reduced to a shift instead -
+             * confirmed real behavior, not a guess, since that's
+             * exactly what the golden contains. Generalized to any
+             * power-of-two >= 2 via the same N-times-repeat reasoning
+             * as OP_ASLSH/OP_ASRSH above (only the single-bit case,
+             * *2, is itself golden-confirmed). Any other constant (not
+             * a power of two, including 0 and 1) falls back to the
+             * same explicit "not yet supported" OP_TIMES already gives
+             * for an immediate operand, rather than guessing the real
+             * compiler's actual strength-reduction thresholds. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("ASTIMES of type %d not yet supported", type);
+            Val rhs = materialize(out, &g, pop_val(&g));
+            Val lhs = pop_val(&g);
+            if (lhs.kind != VK_MEM)
+                gen_fatal("compound assignment to a non-memory lvalue is "
+                          "not yet supported");
+            int shift = 0;
+            if (rhs.kind == VK_IMM && rhs.imm >= 2) {
+                long v = rhs.imm;
+                while (v > 1 && (v & 1) == 0) { v >>= 1; shift++; }
+                if (v != 1)
+                    shift = 0; /* not a power of two */
+            }
+            if (shift == 0)
+                gen_fatal("multiplying by an immediate is not yet "
+                          "supported except for a power-of-two constant "
+                          "(8086 IMUL takes a reg/mem operand, never an "
+                          "immediate directly, and no golden reference "
+                          "confirms the general strength-reduction "
+                          "sequence a real compiler would need here)");
+            char lbuf[32], cbuf[32];
+            render_operand(lbuf, sizeof lbuf, lhs);
+            render_bare_imm(cbuf, sizeof cbuf, 1);
+            for (int i = 0; i < shift; i++)
+                fprintf(out, "sal\t%s,%s\n", lbuf, cbuf);
+            break;
+        }
+
+        case OP_ASDIV:
+        case OP_ASMOD: {
+            /* /= %= with a constant right-hand side - confirmed against
+             * 06_compasgn.s.golden's "a /= 4;"/"a %= 3;": since 8086
+             * IDIV cannot take an immediate operand either (the same
+             * restriction OP_DIVIDE/OP_MOD above already enforce for
+             * their own right operand), the immediate has to be loaded
+             * into a register first - CX specifically, confirmed via
+             * "mov\tcx,*4."/"mov\tcx,*3." immediately before "idiv\tcx"
+             * (not reusing the shift operators' load_into_cx() helper,
+             * since that skips loading when the value is already in
+             * CX, which an immediate literal never is). Quotient (AX)
+             * vs. remainder (DX) matches OP_DIVIDE/OP_MOD's own
+             * confirmed convention exactly. Unlike every other compound-
+             * assignment op above, this one needs an explicit store
+             * back into the lvalue afterward - IDIV's result lands in
+             * AX/DX, never directly in memory. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("%s of type %d not yet supported",
+                          op == OP_ASDIV ? "ASDIV" : "ASMOD", type);
+            Val rhs = materialize(out, &g, pop_val(&g));
+            Val lhs = pop_val(&g);
+            if (lhs.kind != VK_MEM)
+                gen_fatal("compound assignment to a non-memory lvalue is "
+                          "not yet supported");
+            if (rhs.kind != VK_IMM)
+                gen_fatal("compound division/modulo-assignment with a "
+                          "non-constant right-hand side is not yet "
+                          "supported (no golden reference confirms the "
+                          "register-operand sequence a real compiler "
+                          "would need here)");
+            char lbuf[32], rbuf[32];
+            render_operand(lbuf, sizeof lbuf, lhs);
+            render_operand(rbuf, sizeof rbuf, rhs);
+            fprintf(out, "mov\tax,%s\ncwd\nmov\tcx,%s\nidiv\tcx\n",
+                    lbuf, rbuf);
+            fprintf(out, "mov\t%s,%s\n", lbuf, op == OP_ASDIV ? "ax" : "dx");
             break;
         }
 

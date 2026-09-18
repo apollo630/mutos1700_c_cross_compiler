@@ -31,8 +31,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  8/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`,
-  `02_bitwise`, `03_rellogic`, `04_shift` and `05_incdec`) — see
+  9/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`,
+  `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec` and `06_compasgn`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
@@ -360,18 +360,22 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 8/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 9/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   `01_expr/01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
-  `04_shift.c` and `05_incdec.c` — the first
+  `04_shift.c`, `05_incdec.c` and `06_compasgn.c` — the first
   constructs needing a real symbol table, non-folded expression codegen,
   (for `03_rellogic`) deferred/fused comparison codegen for
   relational, equality and short-circuit logical operators, (for
   `04_shift`) a second working register (`CX`, for a variable shift
   count) and the "repeat a single-bit shift N times" plain-8086
-  constant-shift idiom, and (for `05_incdec`) postfix/prefix `++`/`--`
+  constant-shift idiom, (for `05_incdec`) postfix/prefix `++`/`--`
   (deferred-vs-immediate codegen ordering), pointer/array declarations,
   array-to-pointer decay, and pointer dereference as an assignment
-  target, not just
+  target, and (for `06_compasgn`) all ten compound-assignment operators
+  as their own dedicated opcodes (never a synthesized "a = a + 5"-style
+  tree) compiling to a single in-place memory-operand instruction, with
+  a genuine multiply-by-constant strength reduction to a shift for
+  `*=` by a power of two, not just
   constant folding).
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
@@ -385,8 +389,7 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category (`06_compasgn` next: `+= -= *= /= %= &= |= ^= <<=
-  >>=`) — see
+  category by category (`07_ternary` next: `?:`) — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
   dependency-ordered list (`long`/full arrays-and-pointers (subscripting,
   multi-level)/structs, control flow,

@@ -10,7 +10,9 @@
  *   decl              := 'int' declarator (',' declarator)* ';'
  *   declarator        := '*' IDENT | IDENT ('[' ICON ']')?
  *   stmt              := assign-stmt | star-assign-stmt | return-stmt
- *   assign-stmt       := IDENT '=' expr ';'
+ *   assign-stmt       := IDENT assign-op expr ';'
+ *   assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
+ *                       | '<<=' | '>>=' | '&=' | '|=' | '^='
  *   star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
  *   return-stmt       := 'return' expr? ';'
  *   expr              := LOGOR
@@ -30,7 +32,11 @@
  *
  * i.e. every declared local is 'int', 'int *' (one pointer degree) or
  * 'int' '[' N ']' (one array dimension), with no initializer; every
- * statement is a single-variable assignment, a dereferenced-pointer
+ * statement is a single-variable assignment (with '=' or any of the
+ * ten compound-assignment operators - parse_assign_stmt() handles
+ * all eleven identically, emitting the real ASPLUS/ASMINUS/ASTIMES/
+ * ASDIV/ASMOD/ASLSH/ASRSH/ASSAND/ASOR/ASXOR opcode in place of
+ * ASSIGN), a dereferenced-pointer
  * assignment (star-assign-stmt - '*<ptr-expr> = expr;', <ptr-expr>
  * being a plain pointer variable with an optional leading/trailing
  * '++'/'--'), or a 'return'; every function still takes no
@@ -40,7 +46,7 @@
  * emit_incdec()). This is
  * exactly tests/mutos_cc/00_smoke's three programs plus
  * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c,
- * 04_shift.c and 05_incdec.c. Compound-assignment operators, array
+ * 04_shift.c, 05_incdec.c and 06_compasgn.c. Array
  * subscripting, and multi-level pointers/multi-dimensional arrays are
  * not yet part of this chain - see src/mutos_cc/README.md.
  *
@@ -740,14 +746,21 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
 }
 
 /*
- * assign-stmt := IDENT '=' expr ';'
+ * assign-stmt := IDENT assign-op expr ';'
+ * assign-op   := '=' | '+=' | '-=' | '*=' | '/=' | '%='
+ *              | '<<=' | '>>=' | '&=' | '|=' | '^='
  *
  * Matches treeout()'s general ASSIGN handling: the lvalue NAME is
  * emitted first (left-to-right, matching a real assignment
  * expression's tr1), then the right-hand expression, then the
- * ASSIGN operator node itself, then the EXPR statement wrapper -
+ * operator node itself, then the EXPR statement wrapper -
  * confirmed byte-for-byte against 01_intarith's "a = 17;"/"c = a +
- * b;"/etc. goldens (see docs/DEVLOG.md).
+ * b;"/etc. goldens (see docs/DEVLOG.md). The ten compound-assignment
+ * operators share this exact same shape - c0 emits the real
+ * ASPLUS/ASMINUS/ASTIMES/ASDIV/ASMOD/ASLSH/ASRSH/ASSAND/ASOR/ASXOR
+ * opcode in place of ASSIGN, never a synthesized "a = a + 5"-style
+ * tree - confirmed against 06_compasgn.1.golden (see
+ * docs/DEVLOG.md).
  */
 static void parse_assign_stmt(Parser *p, FILE *t1)
 {
@@ -759,13 +772,30 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     SymEntry *sym = symtab_lookup(&p->syms, name);
     advance(p); /* consume IDENT */
 
-    if (!expect(p, T_ASSIGN, "'='")) {
+    int optag;
+    switch (p->cur.kind) {
+    case T_ASSIGN:    optag = OP_ASSIGN;  break;
+    case T_PLUSEQ:    optag = OP_ASPLUS;  break;
+    case T_MINUSEQ:   optag = OP_ASMINUS; break;
+    case T_STAREQ:    optag = OP_ASTIMES; break;
+    case T_SLASHEQ:   optag = OP_ASDIV;   break;
+    case T_PERCENTEQ: optag = OP_ASMOD;   break;
+    case T_SHLEQ:     optag = OP_ASLSH;   break;
+    case T_SHREQ:     optag = OP_ASRSH;   break;
+    case T_ANDEQ:     optag = OP_ASSAND;  break;
+    case T_OREQ:      optag = OP_ASOR;    break;
+    case T_XOREQ:     optag = OP_ASXOR;   break;
+    default:
+        c0_error_at(p->cur.line,
+            "expected '=' or a compound-assignment operator, found %s",
+            tok_kind_name(p->cur.kind));
         while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
             advance(p);
         if (p->cur.kind == T_SEMI)
             advance(p);
         return;
     }
+    advance(p); /* consume the assignment operator */
 
     if (!sym) {
         c0_error_at(line, "'%s' undeclared", name);
@@ -777,11 +807,14 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
-    /* ASSIGN's type argument is the LVALUE's type (TY_INT for every
-     * assignment so far, but TY_PTR_INT for "p = a;" - confirmed
-     * against 05_incdec.1.golden byte 242-243). Falls back to TY_INT
-     * for the already-reported undeclared-name case above. */
-    outcode(t1, "BN", OP_ASSIGN, sym ? sym->type : TY_INT);
+    /* The operator's type argument is the LVALUE's type (TY_INT for
+     * every case confirmed so far, but TY_PTR_INT for "p = a;" -
+     * confirmed against 05_incdec.1.golden byte 242-243; the ten
+     * compound-assignment operators reuse the same convention, though
+     * only the TY_INT case is itself golden-confirmed for them - see
+     * 06_compasgn.1.golden). Falls back to TY_INT for the
+     * already-reported undeclared-name case above. */
+    outcode(t1, "BN", optag, sym ? sym->type : TY_INT);
     outcode(t1, "BN", OP_EXPR, line);
 }
 

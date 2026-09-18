@@ -63,7 +63,16 @@ typedef struct {
     FILE *fp;
     const char *filename;   /* for diagnostics only */
     int   line;
-    int   peek;              /* one character of pushback, or -2 if empty */
+    int   peek[2];           /* small LIFO pushback stack (most
+                               * recently pushed-back char last) - 2
+                               * slots because skip_space_and_comments()
+                               * needs to push back up to 2 characters
+                               * at once (a '/' that turns out not to
+                               * start a comment, plus the character
+                               * after it that was peeked to find
+                               * that out) */
+    int   npeek;              /* 0, 1, or 2 characters currently
+                               * pushed back */
     int   at_eof;
 } Lexer;
 
