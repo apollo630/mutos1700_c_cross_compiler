@@ -50,6 +50,8 @@ SymEntry *symtab_declare_auto(SymTab *st, const char *name, int type, int size)
     truncated_name(e->name, name);
     e->hclass = SC_AUTO;
     e->type = type;
+    e->is_ptr = 0;
+    e->is_array = 0;
 
     st->autolen -= size;
     e->offset = st->autolen;

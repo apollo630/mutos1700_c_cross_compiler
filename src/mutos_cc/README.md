@@ -11,10 +11,10 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 7/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 8/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c` and `04_shift.c`. See STATUS.md
+`03_rellogic.c`, `04_shift.c` and `05_incdec.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -162,15 +162,17 @@ negative large-magnitude constant.
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c` and `04_shift.c`:
+`03_rellogic.c`, `04_shift.c` and `05_incdec.c`:
 
 ```
 translation-unit  := extdef*
 extdef            := IDENT '(' ')' compound-stmt
 compound-stmt     := '{' decl* stmt* '}'
-decl              := 'int' IDENT (',' IDENT)* ';'
-stmt              := assign-stmt | return-stmt
+decl              := 'int' declarator (',' declarator)* ';'
+declarator        := '*' IDENT | IDENT ('[' ICON ']')?
+stmt              := assign-stmt | star-assign-stmt | return-stmt
 assign-stmt       := IDENT '=' expr ';'
+star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
 return-stmt       := 'return' expr? ';'
 expr              := LOGOR
 LOGOR             := LOGAND ('||' LOGAND)*
@@ -183,15 +185,20 @@ RELATIONAL        := SHIFT (('<'|'<='|'>'|'>=') SHIFT)*
 SHIFT             := ADD (('<<'|'>>') ADD)*
 ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
-UNARY             := ('-'|'+'|'~'|'!') UNARY | PRIMARY
+UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
+POSTFIX           := PRIMARY ('++'|'--')?
 PRIMARY           := ICON | IDENT | '(' expr ')'
 ```
 
 Every function is implicitly `int`-returning (K&R default) and takes
-no parameters. A block may declare any number of plain `int` locals
+no parameters. A block may declare any number of `int`, `int *`
+(single-degree pointer), or single-dimension `int[N]` (array) locals
 (no initializers) before its statements, matching K&R's
-declarations-before-statements rule; each statement is either a
-single-variable assignment or a `return`. Expression evaluation
+declarations-before-statements rule; each statement is a
+single-variable assignment, a dereferenced-pointer assignment
+(`*<ptr-expr> = expr;`, `<ptr-expr>` being a plain pointer variable
+with an optional leading/trailing `++`/`--`), or a `return`.
+Expression evaluation
 (`c0_parser.c`'s `parse_expr()`/`parse_bitor()`/.../`parse_add()`
 family) uses the `ExprVal` fold-or-emit representation: a
 subexpression stays an unmaterialized compile-time constant for as
@@ -201,7 +208,11 @@ long as every operand feeding it is also constant (matching real K&R
 a `TIMES` opcode), and is emitted as a real `NAME`/operator tree the
 moment a variable enters the picture, materializing any constant
 sibling as a genuine `CON` leaf at that point. Folding uses 16-bit
-truncation (`trunc16()`), matching the target's 16-bit `int`.
+truncation (`trunc16()`), matching the target's 16-bit `int`. A
+postfix/prefix `++`/`--` operand and a bare array name used as an
+rvalue are never treated as compile-time constants (both always
+emit real code - see the increment/decrement/pointer/array
+derivation below).
 
 `mutos_c1`'s opcode coverage (`c1_gen.c`) matches exactly what the
 above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
@@ -209,7 +220,8 @@ above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `TIMES`, `DIVIDE`, `MOD`, `AND`, `OR`, `EXOR`, `COMPL`, `LSHIFT`,
 `RSHIFT`, `LESS`, `LESSEQ`, `GREAT`, `GREATEQ`, `EQUAL`, `NEQUAL`,
 `LOGAND`, `LOGOR`,
-`EXCLA`, `ASSIGN`, `RFORCE`, `EXPR`, `RETRN`, `SETSTK`, `EOFC`. Its
+`EXCLA`, `AMPER`, `ITOP`, `STAR`, `INCBEF`, `DECBEF`, `INCAFT`,
+`DECAFT`, `ASSIGN`, `RFORCE`, `EXPR`, `RETRN`, `SETSTK`, `EOFC`. Its
 own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
 for each pending intermediate value, whether it's an immediate, a
 `bp`-relative memory location, a value already in a specific
@@ -243,10 +255,51 @@ cannot take an immediate operand directly, and an immediate's `*`/`#`
 size-marker choice depends on whether it fits a signed byte) without
 a general table-driven register allocator (see "Next steps" below).
 
+**Postfix/prefix `++`/`--`, pointer declarations, array declarations,
+array-to-pointer decay and pointer dereference all confirmed against
+`05_incdec`.** `c0`'s tree shape for an increment/decrement is the
+lvalue's `NAME`, then a literal `CON(1)` (the "1" every `++`/`--`
+means), then - only when the lvalue is a pointer - `CON(MCC_SZINT)`
+and an `ITOP` node that scales the two, then the
+`INCAFT`/`INCBEF`/`DECAFT`/`DECBEF` tag itself (`c0_parser.c`'s
+`emit_incdec()`); `c1` folds the `CON`/`ITOP` subtree into a plain
+immediate at compile time (`OP_ITOP`'s handler) rather than emitting
+a runtime multiply - confirmed via `"add *-18.(bp),*2."`, never an
+`imul`. Postfix vs. prefix is purely a `c1`-side codegen-ordering
+choice, not a different wire shape: `gen_incdec()` in `c1_gen.c`
+commits a *prefix* op's `inc`/`dec` (or `add`/`sub`, for the
+scaled-pointer case) immediately, then loads the new value into `DI`;
+a *postfix* op loads the OLD value into `DI` first and queues the
+fixup instruction to be flushed at the enclosing statement's `EXPR`
+node - confirmed via `"j = i++;"` emitting `"mov di,*-6.(bp)"` /
+`"mov *-8.(bp),di"` / `"inc *-6.(bp)"` in that exact order (the `inc`
+strictly after the assignment's own store). A bare array name used
+as an rvalue (`"p = a;"`) decays via `NAME` (the array's base element
+type/offset, i.e. its first element) followed by `AMPER`
+(address-of), which `c1` renders as a real `lea` - confirmed via
+`"lea di,*-16.(bp)"`. This is also what surfaced that `ASSIGN`'s type
+argument is the lvalue's real type (`TY_INT`, or now `TY_PTR_INT =
+TY_INT|010` for `"p = a;"`), not hardcoded `TY_INT` as every earlier
+grammar increment happened to have (they were all plain-`int`
+assignments, so the distinction was invisible until now).
+Dereferencing a pointer as an assignment target (`"*p++ = 1;"`/
+`"*++p = 2;"`) is a new statement form
+(`c0_parser.c`'s `parse_star_assign_stmt()`, dispatched on a leading
+`*` token) whose tree is the pointer sub-expression (with its own
+optional postfix/prefix `++`/`--`, reusing `emit_incdec()`) followed
+by `STAR`; `c1` represents `STAR`'s result as a new operand kind, an
+indirect `(di)` addressing mode (`VK_IND` in the `Val`/`ValKind`
+union) - confirmed via `"mov (di),*1."`. Only pointer-to-`int` and
+single-dimension `int` arrays are supported; array subscripting
+(`a[i]`), multi-level pointers, multi-dimensional arrays, and
+explicit `&`/`*` outside array decay and this one
+dereference-assignment shape are not yet (see "Next steps" below).
+
 **Anything outside this - unary `-`/`+` on a non-constant operand
-(unary `~`/`!` are covered), a non-`int` declaration, shift/
-compound-assignment operators, function parameters, a second kind of
-statement, memory-to-memory assignment, an immediate `IMUL`/`IDIV`
+(unary `~`/`!` are covered), a non-`int`/non-pointer/non-array
+declaration, array subscripting, compound-assignment operators,
+function parameters, a third kind of statement, memory-to-memory
+assignment, an immediate `IMUL`/`IDIV`
 operand, any opcode `c1` doesn't recognize - is a clear, explicit
 "not yet supported" diagnostic and a nonzero exit status, never
 silently-wrong output.** This is a deliberate design choice, not an

@@ -27,8 +27,27 @@ typedef struct SymEntry {
                                 * CLAUDE.md's "Identifier length
                                 * limits" rule. */
     int  hclass;               /* always SC_AUTO in this scope */
-    int  type;                 /* always TY_INT in this scope */
+    int  type;                 /* TY_INT for a plain int or an array
+                                 * (arrays are referenced via their
+                                 * base element type - see
+                                 * c0_parser.c's array-decay handling),
+                                 * or TY_INT|010 (one pointer degree -
+                                 * see mutos_cc.h's XTYPE comment) for
+                                 * a pointer - confirmed against
+                                 * 05_incdec.1.golden's NAME(p) using
+                                 * type 8. */
     int  offset;                /* bp-relative offset (negative) */
+    int  is_ptr;                 /* 1 iff declared "int *name" - only
+                                   * a single pointer-to-int degree is
+                                   * supported so far (see
+                                   * src/mutos_cc/README.md). */
+    int  is_array;                /* 1 iff declared "int name[N]" -
+                                    * only a single-dimension array of
+                                    * int is supported so far; an
+                                    * array is not a modifiable lvalue
+                                    * (no postfix/prefix ++/--, no
+                                    * direct assignment target) in
+                                    * this grammar scope. */
     struct SymEntry *next;
 } SymEntry;
 

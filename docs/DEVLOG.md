@@ -535,8 +535,8 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 7/62 of the full corpus (`00_smoke`'s 3 files
-plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`); see `STATUS.md` for the
+verified byte-exact, end-to-end, for 8/62 of the full corpus (`00_smoke`'s 3 files
+plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
 process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
@@ -1370,6 +1370,123 @@ helper (mirroring the existing `load_into_di()`: loads a value into `CX`,
 skipping the no-op `"mov cx,cx"` case exactly like `load_into_di()` does
 for `DI`) and the constant-count path via a simple counted loop emitting
 `render_bare_imm()`'s rendering of the literal `1`, `r.imm` times.
+
+### Increment/decrement, pointers and arrays: byte-level derivation (`01_expr/05_incdec` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in difficulty order: `05_incdec.c` — `i++`/`++i`/`i--`/`--i` on a
+plain `int`, then `p = a;` (array-to-pointer decay), `*p++ = 1;` and
+`*++p = 2;` (pointer arithmetic + dereferenced-pointer assignment). Same
+method, `od -A d -t u1` on `05_incdec.1.golden`, cross-referenced against
+`05_incdec.s.golden`'s text.
+
+**`c0`'s tree shape for a plain-int increment/decrement**, decoded from
+`"j = i++;"` (`NAME(j) NAME(i) CON(1) INCAFT(0) ASSIGN(0) EXPR(15)`) and
+the three siblings (`"j = ++i;"` → `INCBEF`, `"j = i--;"` → `DECAFT`,
+`"j = --i;"` → `DECBEF`): the lvalue's `NAME`, then a bare `CON(1)` (the
+literal "1" every `++`/`--` means), then the operator tag itself
+(`INCBEF`=`30`=`0x1E`, `DECBEF`=`31`=`0x1F`, `INCAFT`=`32`=`0x20`,
+`DECAFT`=`33`=`0x21`). No `ASPLUS`/`ASMINUS` anywhere, unlike vanilla
+V7 `cc`'s `c00.c` (`case ASSIGN: if (andflg==0 && PLUS<=*op && *op<=EXOR)
+o = *op-- + ASPLUS - PLUS;` — that rule only fires for a real
+compound-assignment token like `+=`, not for the already-distinct
+`INCBEF`/`INCAFT`/`DECBEF`/`DECAFT` tokens the lexer produces for `++`/
+`--`, so MUTOS's `cc` keeps them as their own dedicated opcodes all the
+way to `temp1` rather than folding them into `ASPLUS`/`ASMINUS` the way
+`v7/cc/c10.c`'s codegen tables suggested they might).
+
+**The pointer case adds an explicit scaling subtree.** `"*p++ = 1;"`
+decodes to `NAME(p,type=8) CON(1) CON(2) ITOP(8) INCAFT(8) STAR(0) CON(1)
+ASSIGN(0) EXPR(21)` — i.e. the same `NAME`/`CON(1)`/`<op>` shape as the
+plain-int case, but with `CON(2)` (`MCC_SZINT`) and an `ITOP` node
+(`13`=`0x0D`) spliced in between the `CON(1)` and the `INCAFT` tag. Both
+operands feeding `ITOP` are always compile-time constants in this
+grammar scope (the literal "1" every `++`/`--` means, and the pointee's
+fixed size), so `mutos_c1`'s `OP_ITOP` handler just folds them
+(`amt.imm * size.imm`) into a single immediate rather than emitting a
+real 8086 multiply — confirmed by `05_incdec.s.golden` never containing
+an `imul` for either pointer statement, only `"add *-18.(bp),*2."`. Type
+value `8` = `TY_INT | 010` (`TY_PTR_INT` in both `c0_parser.c` and
+`c1_gen.c`) — one pointer-degree bit set per `mutos_cc.h`'s `XTYPE`
+comment, cross-referenced directly against `v7/cc/c0.h`'s own `TYPE`/
+`XTYPE` bit-layout comments (the only available reference for this bit
+packing - no MUTOS-specific manpage covers the compiler's internal type
+encoding).
+
+**Postfix vs. prefix is a `c1`-side codegen-ordering decision, not a
+different wire shape** — `INCBEF`/`DECBEF` (prefix) and `INCAFT`/
+`DECAFT` (postfix) share the identical tree shape above; only `c1`'s
+`gen_incdec()` treats them differently:
+
+Prefix (`"j = ++i;"`, commits immediately then loads the NEW value):
+```
+inc  *-6.(bp)      | side effect FIRST
+mov  di,*-6.(bp)   | then load the (now-updated) value
+mov  *-8.(bp),di   | ASSIGN
+```
+
+Postfix (`"j = i++;"`, loads the OLD value first and DEFERS the side effect):
+```
+mov  di,*-6.(bp)   | load the value BEFORE the side effect
+mov  *-8.(bp),di   | ASSIGN
+inc  *-6.(bp)      | side effect LAST - strictly after the assignment's own store
+```
+
+This is the classic K&R postfix-side-effect-deferred-to-end-of-full-
+expression rule, made concrete: `c1_gen.c`'s `GenState` gained a small
+`deferred[]` instruction-text queue (`queue_deferred()`/
+`flush_deferred()`), and `OP_EXPR`'s handler — previously a pure no-op,
+just consuming the source-line number — now flushes it. Confirmed this
+queue is flushed exactly once per statement (never straddling two
+statements) since `05_incdec.c` never nests two postfix ops in one
+expression; a real multi-postfix expression would need `DEFERRED_MAX`
+(currently 4, comfortably above the 1 this file ever needs) raised if it
+overflowed, which `gen_fatal()` would catch loudly rather than silently
+dropping a fixup.
+
+**Array-to-pointer decay** (`"p = a;"`) decodes to `NAME(a,type=0,
+offset=-16) AMPER(8)` — the array's `NAME` node uses its *base element
+type* (`TY_INT`, not some distinct "array" type value — this
+reimplementation's minimal grammar scope never encodes array-ness on the
+wire at all, only in `c0`'s own `SymEntry.is_array` bookkeeping) and its
+first element's offset, then `AMPER` (`35`=`0x23`) takes its address.
+`c1`'s `OP_AMPER` handler renders this as a real `lea`, confirmed via
+`"lea di,*-16.(bp)"`. This is also what surfaced that **`ASSIGN`'s type
+argument is the LVALUE's real type**, not always `TY_INT` as every prior
+grammar increment happened to have (each was a plain-`int`-to-`int`
+assignment, so the distinction was invisible): `"p = a;"`'s `ASSIGN` node
+uses type `8` (`TY_PTR_INT`), confirmed at byte offset 242-243 of
+`05_incdec.1.golden`. `c0_parser.c`'s `parse_assign_stmt()` was changed
+from a hardcoded `outcode(t1, "BN", OP_ASSIGN, TY_INT)` to `sym->type`.
+
+**Dereferencing a pointer as an assignment target** (`"*p++ = 1;"`/
+`"*++p = 2;"`) is a new statement form, not an expression-level
+construct reused from `assign-stmt` — `c0_parser.c`'s
+`parse_star_assign_stmt()`, dispatched off a leading `*` token at
+statement level. Its tree is exactly the pointer sub-expression (with
+its own optional postfix/prefix `++`/`--`, reusing `emit_incdec()`)
+followed by `STAR` (`36`=`0x24`, always type `0`/`TY_INT` — only
+pointer-to-`int` is in scope, so the dereferenced type never varies),
+then the ordinary rhs/`ASSIGN`/`EXPR` shape. `c1`'s `OP_STAR` handler
+loads the pointer value into `DI` (a no-op when it's already there,
+e.g. straight off the preceding `INCAFT`/`INCBEF` — see
+`load_into_di()`'s existing skip-if-already-there check) and produces a
+new operand kind, `VK_IND` (an indirect `"(di)"` addressing mode) rather
+than `VK_MEM`'s `"*N.(bp)"` — confirmed via `"mov (di),*1."`.
+`OP_ASSIGN`'s lvalue-kind check was widened from `lhs.kind != VK_MEM` to
+also accept `VK_IND`.
+
+**Confirmed byte-exact, full pipeline, zero mismatches**: `01_expr/
+05_incdec.c` → real `mutos_cpp -P` → `mutos_c0` → `mutos_c1` matches
+`05_incdec.i.golden`/`.1.golden`/`.2.golden`/`.s.golden` byte-for-byte on
+the first complete implementation attempt (no golden-mismatch iteration
+was needed this session — the byte-level `od` derivation above was done
+*before* writing any `c0_parser.c`/`c1_gen.c` code, the same
+derive-then-implement order every prior Milestone 4 increment used).
+Full-corpus regression (`tests/mutos_cc/run_goldens.sh`) confirms zero
+regressions elsewhere: 8/62 byte-exact (one more than the prior
+session's count), 54 "not yet
+supported" (one fewer than before — `05_incdec` moved from that bucket to
+the pass bucket), 0 genuine mismatches.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

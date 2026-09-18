@@ -6,7 +6,8 @@
  * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, NAME, CON,
  * PLUS, MINUS, TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT,
  * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
- * EXCLA, ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
+ * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASSIGN,
+ * RFORCE, EXPR, RETRN, SETSTK, EOFC.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -40,7 +41,19 @@
 
 #define VALSTACK_MAX 64
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_COND } ValKind;
+/* One pointer-to-int degree - matches c0_parser.c's TY_PTR_INT
+ * exactly (see mutos_cc.h's XTYPE comment); only pointer-to-int is
+ * supported in this grammar scope. */
+#define TY_PTR_INT (TY_INT | 010)
+
+#define DEFERRED_MAX 4
+
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND } ValKind;
+/* VK_IND - an indirect "(reg)" memory operand, the result of
+ * dereferencing a pointer (OP_STAR) - confirmed against
+ * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
+ * assignment target). `reg` holds the register name, same as
+ * VK_REG. */
 
 /* A fully-resolved (never itself VK_COND) operand - used to hold the
  * two sides of a deferred comparison inside a VK_COND Val without
@@ -85,6 +98,16 @@ typedef struct {
                                  * "L10000"); the threshold headroom
                                  * below temp1's own label space is
                                  * otherwise unconfirmed/arbitrary. */
+    char deferred[DEFERRED_MAX][72]; /* postfix ++/-- fixups (INCAFT/
+                                 * DECAFT) queued at the operator's
+                                 * own position, flushed at the next
+                                 * OP_EXPR - see gen_incdec()'s and
+                                 * OP_EXPR's comments; confirmed via
+                                 * 05_incdec.s.golden's "inc *-6.(bp)"
+                                 * appearing right after the enclosing
+                                 * assignment's own "mov", not at
+                                 * INCAFT's own position. */
+    int  ndeferred;
 } GenState;
 
 static void gen_fatal(const char *fmt, ...)
@@ -115,6 +138,7 @@ static Val pop_val(GenState *g)
 static Val val_imm(long v) { Val r = {0}; r.kind = VK_IMM; r.imm = v; return r; }
 static Val val_mem(int off) { Val r = {0}; r.kind = VK_MEM; r.offset = off; return r; }
 static Val val_reg(const char *reg) { Val r = {0}; r.kind = VK_REG; r.reg = reg; return r; }
+static Val val_ind(const char *reg) { Val r = {0}; r.kind = VK_IND; r.reg = reg; return r; }
 
 /* Demotes an already-resolved (non-VK_COND) Val down to a SimpleVal,
  * for storage inside a VK_COND's cl/cr fields. */
@@ -174,6 +198,7 @@ static void render_operand(char *buf, size_t n, Val v)
         break;
     case VK_MEM: snprintf(buf, n, "*%d.(bp)", v.offset); break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
+    case VK_IND: snprintf(buf, n, "(%s)", v.reg); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     }
 }
@@ -408,6 +433,68 @@ static void load_into_cx(FILE *out, Val v)
     fprintf(out, "mov\tcx,%s\n", buf);
 }
 
+/* Queues `text` (a complete, newline-terminated instruction line) to
+ * be emitted later by flush_deferred() - see DEFERRED_MAX's comment
+ * on GenState. */
+static void queue_deferred(GenState *g, const char *text)
+{
+    if (g->ndeferred >= DEFERRED_MAX)
+        gen_fatal("too many deferred postfix ++/-- fixups in one "
+                  "statement (internal limit %d)", DEFERRED_MAX);
+    snprintf(g->deferred[g->ndeferred], sizeof g->deferred[0], "%s", text);
+    g->ndeferred++;
+}
+
+static void flush_deferred(FILE *out, GenState *g)
+{
+    for (int i = 0; i < g->ndeferred; i++)
+        fputs(g->deferred[i], out);
+    g->ndeferred = 0;
+}
+
+/* Shared codegen for OP_INCBEF/OP_DECBEF/OP_INCAFT/OP_DECAFT -
+ * confirmed byte-for-byte against 05_incdec.s.golden. `lv` must be
+ * VK_MEM (a bp-relative lvalue - the only lvalue shape this grammar
+ * scope's NAME ever produces); `amt` must be VK_IMM, already scaled
+ * by OP_ITOP's own handling below for a pointer operand (so this
+ * function itself never needs to know whether the lvalue is a
+ * pointer). A unit amount (1) uses the dedicated inc/dec opcode
+ * ("inc\t<lv>"); any other amount (a scaled pointer step) uses
+ * add/sub with the immediate ("add\t<lv>,*2."). BEF commits
+ * immediately, then loads the NEW value into DI; AFT loads the OLD
+ * value into DI first, then defers the fixup instruction (see
+ * queue_deferred() above) until the enclosing statement's OP_EXPR. */
+static Val gen_incdec(FILE *out, GenState *g, int op, Val lv, Val amt)
+{
+    if (lv.kind != VK_MEM)
+        gen_fatal("'++'/'--' on a non-memory lvalue is not yet supported");
+    if (amt.kind != VK_IMM)
+        gen_fatal("internal: '++'/'--' amount did not resolve to a "
+                  "constant");
+
+    int is_incr = (op == OP_INCBEF || op == OP_INCAFT);
+    char lbuf[32];
+    render_operand(lbuf, sizeof lbuf, lv);
+    char instr[72];
+    if (amt.imm == 1) {
+        snprintf(instr, sizeof instr, "%s\t%s\n", is_incr ? "inc" : "dec", lbuf);
+    } else {
+        char abuf[32];
+        render_operand(abuf, sizeof abuf, val_imm(amt.imm));
+        snprintf(instr, sizeof instr, "%s\t%s,%s\n", is_incr ? "add" : "sub",
+                 lbuf, abuf);
+    }
+
+    if (op == OP_INCBEF || op == OP_DECBEF) {
+        fputs(instr, out);
+        load_into_di(out, lv);
+    } else {
+        load_into_di(out, lv);
+        queue_deferred(g, instr);
+    }
+    return val_reg("di");
+}
+
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 {
     (void)temp2; /* string-literal (SNAME/temp2) support is not
@@ -493,9 +580,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (hclass != SC_AUTO)
                 gen_fatal("NAME with storage class %d not yet supported "
                           "(only AUTO locals are covered so far)", hclass);
-            if (type != TY_INT)
+            if (type != TY_INT && type != TY_PTR_INT)
                 gen_fatal("NAME of type %d not yet supported (only "
-                          "TY_INT is covered so far)", type);
+                          "TY_INT/TY_PTR_INT are covered so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             push_val(&g, val_mem(offset));
             break;
@@ -595,6 +682,81 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             load_into_di(out, v);
             fprintf(out, "not\tdi\n");
             push_val(&g, val_reg("di"));
+            break;
+        }
+
+        case OP_AMPER: {
+            /* Address-of - so far only reached via array-to-pointer
+             * decay ("p = a;", c0_parser.c's parse_primary()): the
+             * operand is always a plain bp-relative NAME, rendered as
+             * a real "lea" - confirmed against 05_incdec.s.golden's
+             * "lea\tdi,*-16.(bp)". */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_PTR_INT)
+                gen_fatal("AMPER of type %d not yet supported (only "
+                          "TY_PTR_INT is covered so far)", type);
+            Val v = pop_val(&g);
+            if (v.kind != VK_MEM)
+                gen_fatal("'&' on a non-memory operand is not yet supported");
+            char buf[32];
+            render_operand(buf, sizeof buf, v);
+            fprintf(out, "lea\tdi,%s\n", buf);
+            push_val(&g, val_reg("di"));
+            break;
+        }
+
+        case OP_ITOP: {
+            /* Scales a literal "1" (the syntactic '++'/'--' amount)
+             * up to a real byte count for pointer arithmetic - both
+             * operands are always compile-time constants in this
+             * grammar scope (see emit_incdec()'s comment in
+             * c0_parser.c), so c1 just folds CON(amount)*CON(size)
+             * into a single immediate rather than emitting a runtime
+             * multiply; confirmed against 05_incdec.s.golden's
+             * "add\t*-18.(bp),*2." (never an "imul"). */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_PTR_INT)
+                gen_fatal("ITOP of type %d not yet supported (only "
+                          "TY_PTR_INT is covered so far)", type);
+            Val size = pop_val(&g);
+            Val amt  = pop_val(&g);
+            if (size.kind != VK_IMM || amt.kind != VK_IMM)
+                gen_fatal("ITOP of a non-constant operand is not yet "
+                          "supported");
+            push_val(&g, val_imm(amt.imm * size.imm));
+            break;
+        }
+
+        case OP_STAR: {
+            /* Pointer dereference - loads the pointer value into DI
+             * (a no-op if it is already there, e.g. straight off a
+             * preceding INCAFT/INCBEF - see load_into_di()) and
+             * produces an indirect "(di)" operand. Only pointer-to-
+             * int is supported, so the dereferenced type is always
+             * TY_INT - confirmed against every STAR node in
+             * 05_incdec.1.golden. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("STAR of type %d not yet supported (only "
+                          "TY_INT is covered so far)", type);
+            Val ptr = pop_val(&g);
+            load_into_di(out, ptr);
+            push_val(&g, val_ind("di"));
+            break;
+        }
+
+        case OP_INCBEF:
+        case OP_DECBEF:
+        case OP_INCAFT:
+        case OP_DECAFT: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT && type != TY_PTR_INT)
+                gen_fatal("'++'/'--' of type %d not yet supported "
+                          "(only TY_INT/TY_PTR_INT are covered so far)",
+                          type);
+            Val amt = pop_val(&g);
+            Val lv  = pop_val(&g);
+            push_val(&g, gen_incdec(out, &g, op, lv, amt));
             break;
         }
 
@@ -713,11 +875,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_ASSIGN: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
+            if (type != TY_INT && type != TY_PTR_INT)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
             Val rhs = materialize(out, &g, pop_val(&g));
             Val lhs = pop_val(&g);
-            if (lhs.kind != VK_MEM)
+            if (lhs.kind != VK_MEM && lhs.kind != VK_IND)
                 gen_fatal("assignment to a non-lvalue is not yet supported");
             if (rhs.kind == VK_MEM)
                 gen_fatal("direct memory-to-memory assignment (\"x = y;\") "
@@ -760,6 +922,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                                                  * .s output anywhere
                                                  * in the confirmed
                                                  * goldens. */
+            /* Flush any postfix ++/-- fixup queued by gen_incdec()
+             * during this statement - see DEFERRED_MAX's comment on
+             * GenState. */
+            flush_deferred(out, &g);
             break;
         }
 
