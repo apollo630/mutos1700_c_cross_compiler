@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-17.
+Last updated: 2026-09-18.
 
 ---
 
