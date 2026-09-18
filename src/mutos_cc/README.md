@@ -11,10 +11,10 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 8/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 9/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c` and `05_incdec.c`. See STATUS.md
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c` and `06_compasgn.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -162,7 +162,7 @@ negative large-magnitude constant.
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c` and `05_incdec.c`:
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c` and `06_compasgn.c`:
 
 ```
 translation-unit  := extdef*
@@ -171,7 +171,9 @@ compound-stmt     := '{' decl* stmt* '}'
 decl              := 'int' declarator (',' declarator)* ';'
 declarator        := '*' IDENT | IDENT ('[' ICON ']')?
 stmt              := assign-stmt | star-assign-stmt | return-stmt
-assign-stmt       := IDENT '=' expr ';'
+assign-stmt       := IDENT assign-op expr ';'
+assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
+                    | '<<=' | '>>=' | '&=' | '|=' | '^='
 star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
 return-stmt       := 'return' expr? ';'
 expr              := LOGOR
@@ -195,7 +197,8 @@ no parameters. A block may declare any number of `int`, `int *`
 (single-degree pointer), or single-dimension `int[N]` (array) locals
 (no initializers) before its statements, matching K&R's
 declarations-before-statements rule; each statement is a
-single-variable assignment, a dereferenced-pointer assignment
+single-variable assignment (with `=` or any of the ten
+compound-assignment operators), a dereferenced-pointer assignment
 (`*<ptr-expr> = expr;`, `<ptr-expr>` being a plain pointer variable
 with an optional leading/trailing `++`/`--`), or a `return`.
 Expression evaluation
@@ -221,7 +224,9 @@ above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `RSHIFT`, `LESS`, `LESSEQ`, `GREAT`, `GREATEQ`, `EQUAL`, `NEQUAL`,
 `LOGAND`, `LOGOR`,
 `EXCLA`, `AMPER`, `ITOP`, `STAR`, `INCBEF`, `DECBEF`, `INCAFT`,
-`DECAFT`, `ASSIGN`, `RFORCE`, `EXPR`, `RETRN`, `SETSTK`, `EOFC`. Its
+`DECAFT`, `ASPLUS`, `ASMINUS`, `ASTIMES`, `ASDIV`, `ASMOD`, `ASLSH`,
+`ASRSH`, `ASSAND`, `ASOR`, `ASXOR`, `ASSIGN`, `RFORCE`, `EXPR`,
+`RETRN`, `SETSTK`, `EOFC`. Its
 own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
 for each pending intermediate value, whether it's an immediate, a
 `bp`-relative memory location, a value already in a specific
@@ -295,12 +300,59 @@ single-dimension `int` arrays are supported; array subscripting
 explicit `&`/`*` outside array decay and this one
 dereference-assignment shape are not yet (see "Next steps" below).
 
+**All ten compound-assignment operators (`+= -= *= /= %= <<= >>= &=
+|= ^=`) confirmed against `06_compasgn`.** `c0`'s wire shape reuses
+`parse_assign_stmt()` for all eleven (`=` plus the ten
+compound-assignment tokens) - the real `ASPLUS`/`ASMINUS`/`ASTIMES`/
+`ASDIV`/`ASMOD`/`ASLSH`/`ASRSH`/`ASSAND`/`ASOR`/`ASXOR` opcode
+(`v7/cc/c0.h` already has dedicated values for each) is emitted
+directly, in the exact same `NAME`/rhs-expr/`<op-tag>`/`EXPR` shape as
+plain `=`, never a synthesized `a = a + 5`-style tree. `c1`'s codegen
+is where the interesting decisions live: `+= -= &= |= ^=` with a
+constant right-hand side each compile to a *single* in-place
+`"<mnem> <lvalue>,<imm>"` instruction - never routed through `DI` the
+way a non-compound binary operator is, since there is no separate
+`ASSIGN` node to do the memory write afterward. `*=` by a constant is
+a genuine strength-reduction confirmation, not a guess: `"a *= 2;"`
+compiles to `"sal *-6.(bp),*1"`, never an `imul` - 8086 `IMUL` cannot
+take an immediate operand directly (the same restriction `OP_TIMES`'s
+own codegen already enforces), so the real compiler substitutes a
+shift for a power-of-two constant multiply; generalized to any
+power-of-two ≥ 2 via the same N-times-repeat reasoning `LSHIFT`/
+`RSHIFT` already established (only `*2` is itself golden-confirmed).
+`/=`/`%=` need an extra step neither `+=` nor `*=` do: since `IDIV`
+can't take an immediate either, the constant is loaded into `CX`
+first (`"mov cx,*4."` before `"idiv cx"`), and - because `IDIV`'s
+result lands in `AX`/`DX`, never directly in memory - an explicit
+`"mov <lvalue>,ax"` (or `dx` for `%=`) store-back follows, the only
+compound-assignment op needing one. Only a constant right-hand side
+is supported for any of the ten operators (and only a power-of-two
+constant for `*=`) - a variable right-hand side is not yet (see
+"Next steps" below).
+
+**This also surfaced a real, pre-existing lexer bug**, unrelated to
+the grammar/opcode work above: `c0_lex.c`'s
+`skip_space_and_comments()` needs to push back *two* characters when
+a `/` turns out not to start a `/* ... */` comment (the `/` itself,
+plus the character peeked to rule that out), but the lexer's
+pushback buffer only ever had room for one - a second `lex_ungetc()`
+call silently overwrote the first, dropping a character. This was
+invisible for a lone `/` (only a harmless trailing space was lost)
+but silently ate the `=` in `/=`, turning it into plain `/` -
+`06_compasgn.c` was the first construct in this grammar scope to
+actually exercise (and expose) it. Fixed with a proper 2-slot LIFO
+pushback stack (`Lexer.peek[2]`/`npeek` in `c0_lex.h`/`c0_lex.c`), a
+general lexer-correctness fix rather than a scope-specific
+workaround.
+
 **Anything outside this - unary `-`/`+` on a non-constant operand
 (unary `~`/`!` are covered), a non-`int`/non-pointer/non-array
-declaration, array subscripting, compound-assignment operators,
+declaration, array subscripting, a compound-assignment operator's
+right-hand side being anything other than a compile-time constant
+(or, for `*=`, anything other than a power-of-two constant),
 function parameters, a third kind of statement, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
-operand, any opcode `c1` doesn't recognize - is a clear, explicit
+operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
 "not yet supported" diagnostic and a nonzero exit status, never
 silently-wrong output.** This is a deliberate design choice, not an
 oversight: `tests/mutos_cc/run_goldens.sh` relies on this to keep its
@@ -334,25 +386,31 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 
 ## Next steps (roughly in dependency order)
 
-1. **The rest of `01_expr`** (`05_incdec` … `08_castsize`):
-   `03_rellogic` (relational/logical `< <= > >= == != && || !`) and
+1. **The rest of `01_expr`** (`07_ternary`, `08_castsize`):
+   `03_rellogic` (relational/logical `< <= > >= == != && || !`),
    `04_shift` (`<< >>`, both variable-count-via-`CL` and
-   constant-count-via-repeated-single-bit-shift) are now done - see
-   the `VK_COND` design and the `LSHIFT`/`RSHIFT` handling above.
-   Remaining: `++`/`--`,
-   compound assignment (`+= -=` etc.), `?:`, the comma operator,
+   constant-count-via-repeated-single-bit-shift), `05_incdec`
+   (`++`/`--`, pointer-scaled where applicable, plus the pointer/array
+   groundwork it pulled in), and `06_compasgn` (all ten
+   compound-assignment operators, with a genuine `*=`-by-power-of-two
+   strength reduction to a shift) are now done - see the `VK_COND`
+   design, the `LSHIFT`/`RSHIFT` handling, the increment/decrement/
+   pointer/array derivation, and the compound-assignment derivation
+   above.
+   Remaining: `?:`, the comma operator,
    casts, and `sizeof` - each needs its own confirmed opcode/
    instruction shape, the same way `< <= > >= == != && || ! << >>`
    were
-   derived here. `05_incdec` also needs pointer-scaled arithmetic
-   (`p++` on an `int *` must step by `SZINT=2`, not 1) and thus
-   arrays/pointers, pulling in some of item 2 below early.
+   derived here.
 2. **`02_long`/`05_arrptr`/`06_struct` groundwork**: `long` (the
    `almul`/`aldiv`/`alrem` extended-ABI runtime calls - see
-   `docs/MUTOS_C_ABI.md` sect. 1.8), arrays, pointers, structs/
+   `docs/MUTOS_C_ABI.md` sect. 1.8), array subscripting and
+   multi-level pointers/multi-dimensional arrays (single-degree
+   pointers and single-dimension arrays already exist, from
+   `05_incdec` - see above), structs/
    unions/enums - each adds real type-system work (sizes beyond a
    flat "2 bytes", degree-of-reference, member layout) the current
-   `TY_INT`-only `SymEntry`/`ExprVal` model doesn't have yet.
+   `TY_INT`/`TY_PTR_INT`-only `SymEntry`/`ExprVal` model doesn't have yet.
 3. **`03_ctrlflow`**: `if`/`while`/`for`/`do`/`switch`/`goto` - each
    needs its own confirmed label-allocation/branch shape, the same
    way `00_smoke`'s `sloc`/`sloc+1`/`retlab` scheme was derived here.

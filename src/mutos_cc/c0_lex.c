@@ -10,23 +10,22 @@
 #include "c0_lex.h"
 #include "c0_diag.h"
 
-#define LEX_NOPEEK (-2)
+#define LEX_PUSHBACK_MAX 2
 
 void lex_init(Lexer *lx, FILE *fp, const char *filename)
 {
     lx->fp = fp;
     lx->filename = filename;
     lx->line = 1;
-    lx->peek = LEX_NOPEEK;
+    lx->npeek = 0;
     lx->at_eof = 0;
 }
 
 static int lex_rawgetc(Lexer *lx)
 {
     int c;
-    if (lx->peek != LEX_NOPEEK) {
-        c = lx->peek;
-        lx->peek = LEX_NOPEEK;
+    if (lx->npeek > 0) {
+        c = lx->peek[--lx->npeek];
     } else {
         c = getc(lx->fp);
     }
@@ -37,13 +36,23 @@ static int lex_rawgetc(Lexer *lx)
     return c;
 }
 
+/* Pushes `c` back so the next lex_rawgetc() returns it. A small LIFO
+ * stack (LEX_PUSHBACK_MAX deep), not a single slot: two consecutive
+ * ungetc calls with no intervening read - e.g.
+ * skip_space_and_comments()'s "not a comment after all, put back
+ * both characters I peeked" case below - must both survive, most
+ * recently pushed first out, matching a real character stream being
+ * rewound. */
 static void lex_ungetc(Lexer *lx, int c)
 {
     if (c == EOF)
         return;
     if (c == '\n')
         lx->line--;
-    lx->peek = c;
+    if (lx->npeek >= LEX_PUSHBACK_MAX)
+        c0_error_at(lx->line, "internal: lexer pushback buffer overflow");
+    else
+        lx->peek[lx->npeek++] = c;
     lx->at_eof = 0;
 }
 
