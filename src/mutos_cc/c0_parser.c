@@ -7,9 +7,11 @@
  *   translation-unit  := extdef*
  *   extdef            := IDENT '(' ')' compound-stmt
  *   compound-stmt     := '{' decl* stmt* '}'
- *   decl              := 'int' IDENT (',' IDENT)* ';'
- *   stmt              := assign-stmt | return-stmt
+ *   decl              := 'int' declarator (',' declarator)* ';'
+ *   declarator        := '*' IDENT | IDENT ('[' ICON ']')?
+ *   stmt              := assign-stmt | star-assign-stmt | return-stmt
  *   assign-stmt       := IDENT '=' expr ';'
+ *   star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
  *   return-stmt       := 'return' expr? ';'
  *   expr              := LOGOR
  *   LOGOR             := LOGAND ('||' LOGAND)*
@@ -22,16 +24,25 @@
  *   SHIFT             := ADD (('<<'|'>>') ADD)*
  *   ADD               := MUL (('+'|'-') MUL)*
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
- *   UNARY             := ('-'|'+'|'~'|'!') UNARY | PRIMARY
+ *   UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
+ *   POSTFIX           := PRIMARY ('++'|'--')?
  *   PRIMARY           := ICON | IDENT | '(' expr ')'
  *
- * i.e. every declared local is a plain 'int' with no initializer;
- * every statement is either a single-variable assignment or a
- * 'return'; every function still takes no parameters. This is
+ * i.e. every declared local is 'int', 'int *' (one pointer degree) or
+ * 'int' '[' N ']' (one array dimension), with no initializer; every
+ * statement is a single-variable assignment, a dereferenced-pointer
+ * assignment (star-assign-stmt - '*<ptr-expr> = expr;', <ptr-expr>
+ * being a plain pointer variable with an optional leading/trailing
+ * '++'/'--'), or a 'return'; every function still takes no
+ * parameters. A bare array name used as an rvalue decays to a
+ * pointer (see parse_primary()'s SymEntry.is_array handling); '++'/
+ * '--' on a pointer operand is scaled by MCC_SZINT (see
+ * emit_incdec()). This is
  * exactly tests/mutos_cc/00_smoke's three programs plus
- * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c
- * and 04_shift.c. Assignment-expression forms are not yet part of
- * this chain - see src/mutos_cc/README.md.
+ * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c,
+ * 04_shift.c and 05_incdec.c. Compound-assignment operators, array
+ * subscripting, and multi-level pointers/multi-dimensional arrays are
+ * not yet part of this chain - see src/mutos_cc/README.md.
  *
  * Expression handling is still "emit as you parse" (no explicit
  * struct tnode tree - see the note in the previous revision of this
@@ -46,12 +57,17 @@
  * emission) but, the moment either side is non-constant, first
  * materializes any constant operand as a genuine CON leaf and then
  * emits the operator node - reproducing real cc's per-operation
- * (not whole-expression) folding decision.
+ * (not whole-expression) folding decision. A postfix/prefix '++'/
+ * '--' operand and a bare array name used as an rvalue are never
+ * treated as compile-time constants - both always return ev_dynamic()
+ * after emitting real code (see emit_incdec()'s and the array-decay
+ * comment in parse_primary()).
  *
  * The exact opcode sequence emitted by cfunc()/doret() and the new
  * declaration/assignment/NAME-reference handling below is
  * reverse-engineered byte-for-byte from the real-hardware
- * tests/mutos_cc/00_smoke/ and tests/mutos_cc/01_expr/01_intarith
+ * tests/mutos_cc/00_smoke/, tests/mutos_cc/01_expr/01_intarith and
+ * tests/mutos_cc/01_expr/05_incdec
  * ".1.golden" files against v7/cc/c02.c's/c03.c's/c04.c's algorithm
  * shape (per CLAUDE.md Workflow Guideline 3, v7 is used as an
  * algorithmic reference only - the confirmed MUTOS-specific deltas
@@ -78,6 +94,18 @@ typedef struct {
     SymTab syms;    /* current function's local (AUTO) variables -
                       * reset at the start of each cfunc(). */
 } Parser;
+
+/* One pointer-to-int degree, matching mutos_cc.h's XTYPE bit layout
+ * (base type in the low 3 bits, degree in bits 3-4) - confirmed
+ * against 05_incdec.1.golden's NAME(p)/ASSIGN(p=a) nodes, which both
+ * use type value 8 (TY_INT | 010). Only pointer-to-int is supported
+ * in this grammar scope - see src/mutos_cc/README.md. */
+#define TY_PTR_INT (TY_INT | 010)
+
+/* SZINT - the size (bytes) of a single int/pointer, and the scale
+ * factor pointer arithmetic on an "int *" steps by. Matches
+ * v7/cc/c0.h's SZINT; this grammar scope has no other element size. */
+#define MCC_SZINT 2
 
 static void advance(Parser *p)
 {
@@ -135,6 +163,27 @@ static void emit_materialize(FILE *t1, ExprVal v)
         outcode(t1, "BNN", OP_CON, TY_INT, (int)trunc16(v.value));
 }
 
+/* Emits the CON/ITOP scaling sequence plus the final INCBEF/DECBEF/
+ * INCAFT/DECAFT node itself, for an lvalue whose NAME has already
+ * been emitted by the caller. `optag` is one of OP_INCBEF/OP_DECBEF/
+ * OP_INCAFT/OP_DECAFT; `type` is the lvalue's own type (TY_INT or
+ * TY_PTR_INT); `is_ptr` selects the extra CON(MCC_SZINT)+ITOP(type)
+ * pair that scales the literal "1" up to a real byte count for
+ * pointer arithmetic. Confirmed byte-for-byte against
+ * 05_incdec.1.golden: a plain int gets "CON(1), <op>"; a pointer gets
+ * "CON(1), CON(2), ITOP(type), <op>" (c1 folds the CON(1)*CON(2)
+ * subtree into the real "*2." immediate it emits - see
+ * src/mutos_cc/README.md). */
+static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
+{
+    outcode(t1, "BNN", OP_CON, TY_INT, 1);
+    if (is_ptr) {
+        outcode(t1, "BNN", OP_CON, TY_INT, MCC_SZINT);
+        outcode(t1, "BN", OP_ITOP, type);
+    }
+    outcode(t1, "BN", optag, type);
+}
+
 static ExprVal parse_expr(Parser *p, FILE *t1);
 
 static ExprVal parse_primary(Parser *p, FILE *t1)
@@ -157,7 +206,30 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
          * this scope, outcode("N", hoffset) rather than a symbol
          * name - merged into one "BNNN" call here since the byte
          * output is identical either way. */
+
+        if (sym->is_array) {
+            /* Array-name-as-rvalue decay ("p = a;"): the NAME node
+             * itself still uses the array's base element type/offset
+             * (the array's first element), followed by AMPER to take
+             * its address - confirmed against 05_incdec.s.golden's
+             * "lea di,*-16.(bp)". An array is never a modifiable
+             * lvalue, so no postfix '++'/'--' check follows. */
+            outcode(t1, "BNNN", OP_NAME, sym->hclass, TY_INT, sym->offset);
+            outcode(t1, "BN", OP_AMPER, TY_PTR_INT);
+            return ev_dynamic();
+        }
+
         outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+
+        if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
+            /* Postfix '++'/'--' - INCAFT/DECAFT. See emit_incdec()'s
+             * comment for the CON/ITOP scaling shape; confirmed
+             * against 05_incdec.1.golden's "j = i++;" (plain int) and
+             * "*p++ = 1;" (pointer) trees. */
+            int optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
+            advance(p);
+            emit_incdec(t1, optag, sym->type, sym->is_ptr);
+        }
         return ev_dynamic();
     }
     if (p->cur.kind == T_LPAREN) {
@@ -175,6 +247,37 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
 
 static ExprVal parse_unary(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
+        /* Prefix '++'/'--' - INCBEF/DECBEF, only on a plain variable
+         * name so far (matching this grammar scope's only confirmed
+         * use - 05_incdec.c's "++i"/"--i"/"++p"). */
+        int optag = (p->cur.kind == T_INCR) ? OP_INCBEF : OP_DECBEF;
+        int line = p->cur.line;
+        advance(p);
+        if (p->cur.kind != T_IDENT) {
+            c0_error_at(line, "prefix '++'/'--' is only supported on a "
+                               "plain variable name so far - see "
+                               "src/mutos_cc/README.md");
+            return ev_dynamic();
+        }
+        SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+        if (!sym) {
+            c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
+            advance(p);
+            return ev_const(0);
+        }
+        if (sym->is_array) {
+            c0_error_at(line, "prefix '++'/'--' on an array is not "
+                               "supported (an array is not a "
+                               "modifiable lvalue)");
+            advance(p);
+            return ev_dynamic();
+        }
+        advance(p);
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_incdec(t1, optag, sym->type, sym->is_ptr);
+        return ev_dynamic();
+    }
     if (p->cur.kind == T_MINUS) {
         int line = p->cur.line;
         advance(p);
@@ -510,7 +613,8 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
 /* Declarations */
 
 /*
- * decl := 'int' IDENT (',' IDENT)* ';'
+ * decl := 'int' declarator (',' declarator)* ';'
+ * declarator := '*' IDENT | IDENT ('[' ICON ']')?
  *
  * Matches v7/cc/c03.c's AUTO-storage-class declarator loop: each
  * name's offset is assigned by symtab_declare_auto() (autolen -=
@@ -519,6 +623,18 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * which mutos_c1 renders as a "| _name=offset." comment right after
  * the function's entry label, confirmed byte-for-byte against
  * 01_intarith's goldens (see docs/DEVLOG.md).
+ *
+ * The '*'-prefixed (pointer) and '['-suffixed (array) declarator
+ * forms are new - confirmed against 05_incdec.1.golden/.s.golden's
+ * "int *p;"/"int a[4];": a pointer occupies MCC_SZINT bytes (same as
+ * a plain int - both are 16-bit on this target) and is declared with
+ * type TY_PTR_INT; an array of N ints occupies N*MCC_SZINT bytes and
+ * is declared with plain TY_INT (its base element type - see
+ * parse_primary()'s array-decay handling), just with sym->is_array
+ * set so later references know it isn't itself an assignable/
+ * incrementable lvalue. Only these two single-degree forms are
+ * supported - "int **pp;", multi-dimensional arrays, and any
+ * non-'int' element type are not yet - see src/mutos_cc/README.md.
  */
 static void parse_decl(Parser *p, FILE *t1)
 {
@@ -535,6 +651,12 @@ static void parse_decl(Parser *p, FILE *t1)
     advance(p); /* consume 'int' */
 
     for (;;) {
+        int is_ptr = 0;
+        if (p->cur.kind == T_STAR) {
+            is_ptr = 1;
+            advance(p);
+        }
+
         if (p->cur.kind != T_IDENT) {
             c0_error_at(p->cur.line, "expected an identifier in declaration");
             break;
@@ -545,10 +667,29 @@ static void parse_decl(Parser *p, FILE *t1)
         int line = p->cur.line;
         advance(p);
 
-        SymEntry *sym = symtab_declare_auto(&p->syms, name, TY_INT, 2 /* SZINT */);
+        int is_array = 0;
+        long arraylen = 0;
+        if (!is_ptr && p->cur.kind == T_LBRACK) {
+            advance(p);
+            if (p->cur.kind != T_ICON) {
+                c0_error_at(p->cur.line, "expected an array size constant");
+            } else {
+                arraylen = p->cur.ival;
+                advance(p);
+            }
+            expect(p, T_RBRACK, "']'");
+            is_array = 1;
+        }
+
+        int size = is_array ? (int)(arraylen * MCC_SZINT) : MCC_SZINT;
+        int symtype = is_ptr ? TY_PTR_INT : TY_INT;
+
+        SymEntry *sym = symtab_declare_auto(&p->syms, name, symtype, size);
         if (!sym) {
             c0_error_at(line, "'%s' redeclared", name);
         } else {
+            sym->is_ptr = is_ptr;
+            sym->is_array = is_array;
             outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
         }
 
@@ -636,6 +777,88 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
+    /* ASSIGN's type argument is the LVALUE's type (TY_INT for every
+     * assignment so far, but TY_PTR_INT for "p = a;" - confirmed
+     * against 05_incdec.1.golden byte 242-243). Falls back to TY_INT
+     * for the already-reported undeclared-name case above. */
+    outcode(t1, "BN", OP_ASSIGN, sym ? sym->type : TY_INT);
+    outcode(t1, "BN", OP_EXPR, line);
+}
+
+/*
+ * star-assign-stmt := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
+ *
+ * Handles "*p++ = 1;" / "*++p = 2;" - an assignment through a
+ * dereferenced pointer, optionally combined with a single prefix OR
+ * postfix '++'/'--' on the pointer itself (not both - real C
+ * wouldn't parse "*++p++" as this shape either). Only a plain pointer
+ * variable is supported as the operand so far (not a general pointer
+ * expression) - see src/mutos_cc/README.md. Confirmed byte-for-byte
+ * against 05_incdec.1.golden/.s.golden's two "*p<op> = <rhs>;"
+ * statements: the pointer sub-expression's tree (NAME, plus the
+ * INCBEF/INCAFT/DECBEF/DECAFT scaling shape from emit_incdec() when
+ * an operator is present) is emitted exactly like the expression-
+ * level postfix/prefix cases above, followed by STAR (dereference,
+ * always TY_INT - only pointer-to-int is supported), then the usual
+ * rhs/ASSIGN/EXPR shape.
+ */
+static void parse_star_assign_stmt(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    advance(p); /* consume '*' */
+
+    int optag = 0;
+    if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
+        optag = (p->cur.kind == T_INCR) ? OP_INCBEF : OP_DECBEF;
+        advance(p);
+    }
+
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line,
+            "'*<expr> = ...' is only supported for a plain pointer "
+            "variable, optionally with a leading/trailing '++'/'--' "
+            "- see src/mutos_cc/README.md");
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+        return;
+    }
+
+    SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+    if (!sym) {
+        c0_error_at(line, "'%s' undeclared", p->cur.ident);
+    } else if (!sym->is_ptr) {
+        c0_error_at(line, "'*' applied to a non-pointer variable is "
+                           "not yet supported - see src/mutos_cc/README.md");
+        sym = NULL; /* best-effort: skip codegen below like undeclared */
+    }
+    advance(p); /* consume IDENT */
+
+    if (!optag && (p->cur.kind == T_INCR || p->cur.kind == T_DECR)) {
+        optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
+        advance(p);
+    }
+
+    if (sym) {
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        if (optag)
+            emit_incdec(t1, optag, sym->type, sym->is_ptr);
+    }
+    outcode(t1, "BN", OP_STAR, TY_INT);
+
+    if (!expect(p, T_ASSIGN, "'='")) {
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+        return;
+    }
+
+    ExprVal rhs = parse_expr(p, t1);
+    expect(p, T_SEMI, "';'");
+    emit_materialize(t1, rhs);
+
     outcode(t1, "BN", OP_ASSIGN, TY_INT);
     outcode(t1, "BN", OP_EXPR, line);
 }
@@ -657,6 +880,8 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
             do_return_stmt(p, t1, retlab);
         } else if (p->cur.kind == T_IDENT) {
             parse_assign_stmt(p, t1);
+        } else if (p->cur.kind == T_STAR) {
+            parse_star_assign_stmt(p, t1);
         } else {
             c0_error_at(p->cur.line,
                 "unsupported statement (mutos_c0's current grammar "

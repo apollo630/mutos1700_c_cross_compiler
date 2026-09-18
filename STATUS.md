@@ -226,9 +226,9 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 7/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 8/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c`,
-`02_bitwise.c`, `03_rellogic.c` and `04_shift.c`. ABI/
+`02_bitwise.c`, `03_rellogic.c`, `04_shift.c` and `05_incdec.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -236,7 +236,7 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
-### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift`)
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec`)
 
 Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
 symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
@@ -248,8 +248,8 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 **Verification: the real, unmodified pipeline — `<n>.c` → real
 `mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
 `tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c`,
-`02_bitwise.c`, `03_rellogic.c` and `04_shift.c`, and every intermediate
-artifact (`.i`,
+`02_bitwise.c`, `03_rellogic.c`, `04_shift.c` and `05_incdec.c`, and every
+intermediate artifact (`.i`,
 `.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
 `tests/mutos_cc/run_goldens.sh` (also wired into the top-level `Makefile`'s
@@ -257,19 +257,21 @@ matches its real-hardware golden byte-for-byte.** Re-run via
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 7
-byte-exact end-to-end, 55 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 8
+byte-exact end-to-end, 54 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
 `od`/hexdump, against the `00_smoke`, `01_intarith`, `02_bitwise`,
-`03_rellogic` and `04_shift`
+`03_rellogic`, `04_shift` and `05_incdec`
 goldens) surfaced **four confirmed MUTOS-1700-specific deltas from vanilla
 V7 `cc`** (found against `00_smoke`), the full local-variable wire format
 (found against `01_intarith`), the bitwise-operator/immediate-marker
 findings below (found against `02_bitwise`), the deferred-comparison/
-short-circuit codegen findings below (found against `03_rellogic`), and
-the shift-codegen findings below (found against `04_shift`), each
+short-circuit codegen findings below (found against `03_rellogic`), the
+shift-codegen findings below (found against `04_shift`), and the
+increment/decrement/pointer/array findings below (found against
+`05_incdec`), each
 cited against exact byte
 offsets in `docs/DEVLOG.md`'s Milestone 4 section:
 
@@ -357,23 +359,62 @@ offsets in `docs/DEVLOG.md`'s Milestone 4 section:
    immediate operand too, so `c1_gen.c`'s renderer for it was renamed
    `render_bare_imm()` (from `render_cmp_imm()`) to reflect the broader
    confirmed scope.
+10. Postfix/prefix `++`/`--` (`INCAFT`/`INCBEF`/`DECAFT`/`DECBEF`), pointer
+    declarations (`int *p;`), single-dimension array declarations
+    (`int a[N];`), array-to-pointer decay, and pointer dereference (`*p`)
+    all confirmed against `05_incdec`. `c0`'s tree shape for `i++`/`++i`/
+    etc.: the lvalue `NAME` first, then a literal `CON(1)` (the syntactic
+    "1"), then — only for a pointer operand — `CON(MCC_SZINT)` and an
+    `ITOP` node that scales the two into a real byte count, then the
+    `INCAFT`/`INCBEF`/`DECAFT`/`DECBEF` tag itself; `c1` folds the
+    `CON`/`ITOP` subtree into a plain immediate at compile time rather
+    than emitting a runtime multiply (confirmed via `"add *-18.(bp),*2."`,
+    never an `imul`). **Postfix vs. prefix is a codegen-ordering
+    distinction, not a wire-format one**: `c1` commits a *prefix*
+    op's `inc`/`dec` (or `add`/`sub`, for the scaled-pointer case)
+    immediately, then loads the new value into `DI`; a *postfix* op loads
+    the OLD value into `DI` first and defers the fixup instruction until
+    the enclosing statement's `EXPR` node — confirmed via `"j = i++;"`
+    emitting `"mov di,*-6.(bp)" / "mov *-8.(bp),di" / "inc *-6.(bp)"` in
+    that exact order (the `inc` after the assignment's own store, not
+    before). A bare array name used as an rvalue (`"p = a;"`) decays via
+    `NAME` (the array's base element type/offset) followed by `AMPER`
+    (address-of), which `c1` renders as a real `lea` — confirmed via
+    `"lea di,*-16.(bp)"`. `ASSIGN`'s own type argument is the lvalue's
+    real type (`TY_INT` or, newly, `TY_PTR_INT = TY_INT|010`, confirmed
+    via `"p = a;"`'s `ASSIGN` node), not hardcoded `TY_INT` as every prior
+    grammar increment happened to have. A dereferenced pointer used as an
+    assignment target (`"*p++ = 1;"`/`"*++p = 2;"`) is a new statement
+    form (`c0_parser.c`'s `parse_star_assign_stmt()`, dispatched on a
+    leading `*` token) whose tree is the pointer sub-expression (with its
+    own optional postfix/prefix `++`/`--`) followed by `STAR` — `c1`
+    represents `STAR`'s result as a new operand kind, an indirect `(di)`
+    addressing mode (`VK_IND`), confirmed via `"mov (di),*1."`. Only
+    pointer-to-`int` and single-dimension `int` arrays are supported —
+    multi-level pointers, multi-dimensional arrays, array subscripting
+    (`a[i]`), and explicit `&`/`*` in general (rather than array decay or
+    this one dereference-assignment shape) are not yet — see
+    `src/mutos_cc/README.md`.
 
 **Current grammar/opcode scope (deliberately narrow, by design — see
 `src/mutos_cc/README.md`):** function definitions with no parameters; a
-body of `int`-only local declarations (no initializers) followed by
-`name = expr;` assignment and/or `return` statements; expressions over
-`+ - * / % & | ^ ~ < <= > >= == != && || ! << >>` (unary/binary as
-applicable),
+body of `int`/`int *`/single-dimension `int[N]` local declarations (no
+initializers) followed by `name = expr;` assignment, `*<ptr-expr> = expr;`
+dereferenced-pointer assignment, and/or `return` statements; expressions
+over `+ - * / % & | ^ ~ < <= > >= == != && || ! << >>` (unary/binary as
+applicable), postfix/prefix `++`/`--` (pointer-scaled where applicable),
 parens, integer
-constants, and variable references, constant-folded at parse time exactly
+constants, and variable references (with array-to-pointer decay on an
+array name used as an rvalue), constant-folded at parse time exactly
 like real K&R `cc`'s own per-operation `build()`-time folding, with a real
 `NAME`/operator tree emitted the moment a variable is involved. Everything
-else (compound-assignment operators, non-`int`
-types, function parameters, control flow, memory-to-memory assignment, an
-immediate `IMUL`/`IDIV` operand) is an explicit "not yet supported" error,
-not silently-wrong output — confirmed via a direct test against
-`01_expr/05_incdec.c` (correctly rejected with a clear message, not a
-crash or bad `.s`).
+else (compound-assignment operators, non-`int` element types, array
+subscripting, multi-level pointers/multi-dimensional arrays, explicit `&`
+outside array decay, function parameters, control flow, memory-to-memory
+assignment, an immediate `IMUL`/`IDIV` operand) is an explicit "not yet
+supported" error, not silently-wrong output — confirmed via a direct test
+against `01_expr/06_compasgn.c` (correctly rejected with a clear message,
+not a crash or bad `.s`).
 
 Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root
 (see "Top-level build" above); clean build, zero warnings under `-Wall
@@ -519,11 +560,13 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `05_incdec`
-next (`++`/`--`, which also needs pointer-scaled arithmetic once pointers
-exist). See `src/mutos_cc/README.md`'s "Next
-steps" for the full, dependency-ordered plan through `long`/arrays/
-pointers/structs, `03_ctrlflow`, function calls, the `09_abiprobe`
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `06_compasgn`
+next (`+= -= *= /= %= &= |= ^= <<= >>=`), then `07_ternary` (`?:`) and
+`08_castsize` (casts/`sizeof`) to finish `01_expr`. See
+`src/mutos_cc/README.md`'s "Next
+steps" for the full, dependency-ordered plan through `long`/full
+arrays-and-pointers (subscripting, multi-level)/structs, `03_ctrlflow`,
+function calls, the `09_abiprobe`
 `chkstk`-threshold goldens, and the `mutos_cc` driver itself.
 
 ---
