@@ -127,6 +127,21 @@ enum {
     OP_CBRANCH = 103,
     OP_INIT    = 104,
     OP_SETREG  = 105,
+
+    /* OP_CTOL - char-to-long conversion. NOT present in vanilla V7's
+     * c0.h (checked: nothing is defined at 106/107/108 there either) -
+     * a genuine MUTOS-1700-specific addition, confirmed against
+     * 08_castsize.1.golden's "l = (long) c;" (opcode byte 107,
+     * sitting between OP_NAME(c) and OP_ASSIGN). Named by the same
+     * "XTOY" convention as every other conversion opcode here
+     * (OP_ITOL, OP_LTOI, OP_ITOC, OP_ITOF, OP_FTOI, OP_LTOF,
+     * OP_FTOL) - vanilla V7 apparently has no direct char->long
+     * conversion node in this numbering scheme (a real V7 compiler
+     * likely promotes char->int->long via two existing nodes
+     * instead), but MUTOS's `cc` collapses it into one dedicated
+     * opcode. See c1_gen.c's OP_CTOL handler for the confirmed
+     * codegen (a CBW/CWD sign-extension sequence). */
+    OP_CTOL    = 107,
     OP_ITOC    = 109,
     OP_RFORCE  = 110,
     OP_BRANCH  = 111,

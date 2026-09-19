@@ -8,7 +8,8 @@
  * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
  * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASPLUS,
  * ASMINUS, ASTIMES, ASDIV, ASMOD, ASLSH, ASRSH, ASSAND, ASOR, ASXOR,
- * COLON, QUEST, SEQNC, ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
+ * COLON, QUEST, SEQNC, LCON, LTOI, ITOC, CTOL, ASSIGN, RFORCE, EXPR,
+ * RETRN, SETSTK, EOFC.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -47,14 +48,27 @@
  * supported in this grammar scope. */
 #define TY_PTR_INT (TY_INT | 010)
 
+/* Matches c0_parser.c's MCC_SZINT exactly - the size (bytes) of a
+ * plain int/pointer, and (per docs/MUTOS_C_ABI.md sect. 1.6) the
+ * offset from a 'long' local's own base offset to its LOW word. */
+#define MCC_SZINT 2
+
 #define DEFERRED_MAX 4
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR } ValKind;
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG } ValKind;
 /* VK_IND - an indirect "(reg)" memory operand, the result of
  * dereferencing a pointer (OP_STAR) - confirmed against
  * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
  * assignment target). `reg` holds the register name, same as
  * VK_REG. */
+/* VK_LONG - a materialized 32-bit 'long' result: HIGH word in DI,
+ * LOW word in SI, matching docs/MUTOS_C_ABI.md sect. 1.6's "high
+ * word at the lower address" convention carried into registers -
+ * confirmed as the fixed output convention of both OP_LCON and
+ * OP_CTOL below (the only two confirmed long-value producers), and
+ * the fixed input convention OP_ASSIGN's long-target case (also
+ * below) requires. A pure marker - no extra fields needed since the
+ * DI/SI registers themselves are the only confirmed location. */
 /* VK_PAIR - OP_COLON's result: an unmaterialized pair of "?:"
  * branches, consumed only by the immediately following OP_QUEST (see
  * their handlers below and docs/DEVLOG.md's Milestone 4 section for
@@ -147,6 +161,7 @@ static Val val_imm(long v) { Val r = {0}; r.kind = VK_IMM; r.imm = v; return r; 
 static Val val_mem(int off) { Val r = {0}; r.kind = VK_MEM; r.offset = off; return r; }
 static Val val_reg(const char *reg) { Val r = {0}; r.kind = VK_REG; r.reg = reg; return r; }
 static Val val_ind(const char *reg) { Val r = {0}; r.kind = VK_IND; r.reg = reg; return r; }
+static Val val_long(void) { Val r = {0}; r.kind = VK_LONG; return r; }
 
 /* Demotes an already-resolved (non-VK_COND) Val down to a SimpleVal,
  * for storage inside a VK_COND's cl/cr fields. */
@@ -209,6 +224,7 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_IND: snprintf(buf, n, "(%s)", v.reg); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
+    case VK_LONG: snprintf(buf, n, "<unrendered-long-di:si>"); break;
     }
 }
 
@@ -633,9 +649,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (hclass != SC_AUTO)
                 gen_fatal("NAME with storage class %d not yet supported "
                           "(only AUTO locals are covered so far)", hclass);
-            if (type != TY_INT && type != TY_PTR_INT)
+            if (type != TY_INT && type != TY_PTR_INT &&
+                type != TY_CHAR && type != TY_LONG)
                 gen_fatal("NAME of type %d not yet supported (only "
-                          "TY_INT/TY_PTR_INT are covered so far)", type);
+                          "TY_INT/TY_PTR_INT/TY_CHAR/TY_LONG are covered "
+                          "so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             push_val(&g, val_mem(offset));
             break;
@@ -644,10 +662,114 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_CON: {
             int type = c1_read_num(temp1, "temp1");
             int value = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
-                gen_fatal("CON of type %d not yet supported (only TY_INT "
-                          "constants are covered so far)", type);
+            if (type != TY_INT && type != TY_UNSIGN)
+                gen_fatal("CON of type %d not yet supported (only "
+                          "TY_INT/TY_UNSIGN constants are covered so "
+                          "far)", type);
             push_val(&g, val_imm(value));
+            break;
+        }
+
+        case OP_LCON: {
+            /* A 'long' constant too large to fit a plain int -
+             * confirmed against 08_castsize.s.golden's "l = 70000;":
+             * loads the two words straight into SI(low)/DI(high) -
+             * the same DI:SI convention OP_CTOL below also produces -
+             * for OP_ASSIGN's long-target case to store. */
+            int type = c1_read_num(temp1, "temp1");
+            int hi = c1_read_num(temp1, "temp1");
+            int lo = c1_read_num(temp1, "temp1");
+            if (type != TY_LONG)
+                gen_fatal("LCON of type %d not yet supported (only "
+                          "TY_LONG is covered so far)", type);
+            char lobuf[32], hibuf[32];
+            render_operand(lobuf, sizeof lobuf, val_imm(lo));
+            render_operand(hibuf, sizeof hibuf, val_imm(hi));
+            fprintf(out, "mov\tsi,%s\n", lobuf);
+            fprintf(out, "mov\tdi,%s\n", hibuf);
+            push_val(&g, val_long());
+            break;
+        }
+
+        case OP_LTOI: {
+            /* "(int) l" - long-to-int truncation. Confirmed against
+             * 08_castsize.s.golden's "i = (int) l;": reads only the
+             * LOW word (base offset + 2, per the confirmed "high word
+             * at the lower address" convention - docs/MUTOS_C_ABI.md
+             * sect. 1.6) straight into DI, discarding the high word
+             * entirely - "mov di,*-8.(bp)" where l's own base offset
+             * is -10. Only a plain memory long (a bare NAME reference)
+             * is confirmed as LTOI's operand - not a long value still
+             * sitting in DI:SI (VK_LONG) from a preceding LCON/CTOL,
+             * which is not exercised by any golden. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("LTOI to type %d not yet supported (only "
+                          "TY_INT is covered so far)", type);
+            Val v = pop_val(&g);
+            if (v.kind != VK_MEM)
+                gen_fatal("LTOI of a non-memory long operand is not yet "
+                          "supported");
+            char buf[32];
+            render_operand(buf, sizeof buf, val_mem(v.offset + MCC_SZINT));
+            fprintf(out, "mov\tdi,%s\n", buf);
+            push_val(&g, val_reg("di"));
+            break;
+        }
+
+        case OP_ITOC: {
+            /* "(char) i" - int-to-char truncation. Confirmed against
+             * 08_castsize.s.golden's "c = (char) i;": loads the int
+             * operand into DX (not DI - the general "working
+             * register" everywhere else - presumably because the
+             * following store needs a byte-addressable register, and
+             * OP_ASSIGN's TY_CHAR case below just reuses whatever
+             * register this produces via "movb"; DI/SI have no
+             * byte-addressable half on the 8086, so this could never
+             * have been DI regardless). No explicit "mask off the
+             * high byte" instruction - the truncation is implicit in
+             * ASSIGN's later "movb" only ever touching DL, the low
+             * byte of DX. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_CHAR)
+                gen_fatal("ITOC to type %d not yet supported (only "
+                          "TY_CHAR is covered so far)", type);
+            Val v = materialize(out, &g, pop_val(&g));
+            char buf[32];
+            render_operand(buf, sizeof buf, v);
+            fprintf(out, "mov\tdx,%s\n", buf);
+            push_val(&g, val_reg("dx"));
+            break;
+        }
+
+        case OP_CTOL: {
+            /* "(long) c" - char-to-long, sign-extending. Confirmed
+             * against 08_castsize.s.golden's "l = (long) c;": the
+             * char operand is loaded via "movb" into AX specifically
+             * (not DX/CX - CBW/CWD are fixed-register 8086
+             * instructions, AL/AX only, so this is a hardware
+             * necessity, not a style choice), then CBW sign-extends
+             * AL into AX, then CWD sign-extends AX into DX:AX, then
+             * the result is moved into the DI(high):SI(low)
+             * convention OP_LCON above also produces, for OP_ASSIGN's
+             * long-target case to store. Only a plain memory char (a
+             * bare NAME reference) is confirmed as CTOL's operand. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_LONG)
+                gen_fatal("CTOL to type %d not yet supported (only "
+                          "TY_LONG is covered so far)", type);
+            Val v = pop_val(&g);
+            if (v.kind != VK_MEM)
+                gen_fatal("CTOL of a non-memory char operand is not yet "
+                          "supported");
+            char buf[32];
+            render_operand(buf, sizeof buf, v);
+            fprintf(out, "movb\tax,%s\n", buf);
+            fprintf(out, "cbw\n");
+            fprintf(out, "cwd\n");
+            fprintf(out, "mov\tdi,dx\n");
+            fprintf(out, "mov\tsi,ax\n");
+            push_val(&g, val_long());
             break;
         }
 
@@ -1165,7 +1287,36 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_ASSIGN: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT && type != TY_PTR_INT)
+            if (type == TY_LONG) {
+                /* Confirmed against 08_castsize.s.golden's "l =
+                 * 70000;" and "l = (long) c;" - both store LOW
+                 * (offset+MCC_SZINT) before HIGH (base offset),
+                 * moving si then di, matching every confirmed
+                 * long-producing opcode's DI(high):SI(low) convention
+                 * (see OP_LCON/OP_CTOL above). A fundamentally
+                 * different two-instruction shape from every other
+                 * ASSIGN case below, so it is handled first and
+                 * separately rather than folded into the single
+                 * mov/movb path. */
+                Val rhs = pop_val(&g);
+                Val lhs = pop_val(&g);
+                if (lhs.kind != VK_MEM)
+                    gen_fatal("assignment to a non-memory 'long' lvalue "
+                              "is not yet supported");
+                if (rhs.kind != VK_LONG)
+                    gen_fatal("assigning a non-'long' value to a 'long' "
+                              "lvalue is not yet supported (no golden "
+                              "reference confirms the widening sequence "
+                              "a real compiler would need here)");
+                char lobuf[32], hibuf[32];
+                render_operand(lobuf, sizeof lobuf, val_mem(lhs.offset + MCC_SZINT));
+                render_operand(hibuf, sizeof hibuf, val_mem(lhs.offset));
+                fprintf(out, "mov\t%s,si\n", lobuf);
+                fprintf(out, "mov\t%s,di\n", hibuf);
+                push_val(&g, rhs);
+                break;
+            }
+            if (type != TY_INT && type != TY_PTR_INT && type != TY_CHAR)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
             Val rhs = materialize(out, &g, pop_val(&g));
             Val lhs = pop_val(&g);
@@ -1180,7 +1331,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             char dbuf[32], sbuf[32];
             render_operand(dbuf, sizeof dbuf, lhs);
             render_operand(sbuf, sizeof sbuf, rhs);
-            fprintf(out, "mov\t%s,%s\n", dbuf, sbuf);
+            /* TY_CHAR uses "movb" instead of "mov" - confirmed against
+             * 08_castsize.s.golden's "c = (char) i;" -> "movb
+             * *-12.(bp),dx". */
+            fprintf(out, "%s\t%s,%s\n", type == TY_CHAR ? "movb" : "mov",
+                    dbuf, sbuf);
             /* Pushes the assigned value back - confirmed necessary
              * (not just harmless) by 07_ternary's embedded
              * assignments inside a parenthesized comma-list ("(a = a

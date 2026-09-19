@@ -535,8 +535,8 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 10/62 of the full corpus (`00_smoke`'s 3 files
-plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`); see `STATUS.md` for the
+verified byte-exact, end-to-end, for 11/62 of the full corpus (`00_smoke`'s 3 files
+plus all of `01_expr`: `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`/`08_castsize`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
 process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
@@ -1765,6 +1765,156 @@ touching every assignment statement in the whole corpus: one more file
 byte-exact than the prior session's count, one fewer "not yet
 supported" than before — `07_ternary` moved from that bucket to the
 pass bucket, 0 genuine mismatches.
+
+### `char`/`long`, casts, `sizeof`, and a new MUTOS-specific opcode: byte-level derivation (`01_expr/08_castsize` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Last item of `01_expr`: `08_castsize.c` — `long l; char c;` locals,
+`i = (int) l; c = (char) i; l = (long) c;`, then `sizeof(int)`/
+`sizeof(char)`/`sizeof(long)`/`sizeof(i)`. Same method, `od -A d -t u1`
+on `08_castsize.1.golden`, cross-referenced against
+`08_castsize.s.golden`'s text — but a much bigger jump than any prior
+session: this is a genuine type-system extension (`TY_CHAR=1`/
+`TY_LONG=6`/`TY_UNSIGN=7`, already present as named constants in
+`mutos_cc.h` from earlier opcode-table transcription but unused until
+now), not just a new operator over the existing `int`-only model.
+
+**Frame layout confirms `long` is 4 bytes and `char` still occupies a
+full 2-byte slot.** `i=-6` (int, 2B), `l=-10` (long, 4B - matches the
+4-byte gap from `i`), `c=-12` (char - only a 2-byte gap from `l`, not
+1). This target always word-aligns an AUTO local's stack slot,
+matching `int`'s own slot size, even for a byte-sized value — the
+1-byte VALUE is read/written within that 2-byte slot via a dedicated
+byte-move instruction (`movb`, see below), not by shrinking the slot
+itself.
+
+**`long`'s wire/memory layout matches `docs/MUTOS_C_ABI.md` §1.6's
+already-documented "high word at the lower address" convention
+exactly, down to the constant-encoding level, not just stack
+layout.** `"l = 70000;"` (`0x00011170`) decodes to a new opcode,
+`LCON` (already named in `mutos_cc.h`, `= 25`, just unused before now)
+carrying two 16-bit fields that split as `1` (high) then `4464` (low)
+— confirmed against the `.s` output: `"mov si,#4464." / "mov
+di,*1."` loads low into `SI`, high into `DI`, then `"mov
+*-8.(bp),si" / "mov *-10.(bp),di"` stores low (at `l`'s base offset +
+2) before high (at `l`'s own base offset, `-10`) — exactly the ABI's
+own "high word at lower address" rule, reproduced at the register/
+constant level, not just where the final bytes land in memory.
+
+**A previously-undocumented opcode, `107`, sits between the
+already-named `OP_SETREG=105` and `OP_ITOC=109`.** Confirmed absent
+from vanilla V7's `c0.h` too (checked directly: nothing is defined at
+106/107/108 there either) — a genuine MUTOS-1700-specific addition,
+not something earlier opcode-table transcription simply missed.
+Decoded from `"l = (long) c;"`'s tree (`NAME(c) <107>(type=6)
+ASSIGN(6)`) and named `OP_CTOL` (char-to-long) by the same `XTOY`
+convention as every other conversion opcode already in the table
+(`ITOL`, `LTOI`, `ITOC`, `ITOF`, `FTOI`, `LTOF`, `FTOL`). Its codegen
+is a textbook 8086 sign-extension idiom:
+```
+movb ax,*-12.(bp)   | the char, loaded into AX specifically
+cbw                   | sign-extend AL -> AX
+cwd                    | sign-extend AX -> DX:AX
+mov  di,dx               | high word -> DI
+mov  si,ax                | low word -> SI
+```
+`AX` (not `DX`/`CX`) is forced here — `CBW`/`CWD` are fixed-register
+8086 instructions, `AL`/`AX` only, so this is a hardware necessity,
+not a style choice, unlike `ITOC`'s own register pick below.
+
+**Casts decode to one of three confirmed conversion opcodes**, chosen
+by (source type, target type), each a single new node between the
+operand's `NAME` and the enclosing `ASSIGN`:
+- `"i = (int) l;"` → `NAME(l,type=6) LTOI(type=0)`. Codegen: `"mov
+  di,*-8.(bp)"` — reads ONLY the low word (base offset `-10`, plus
+  `MCC_SZINT`), discarding the high word entirely. Truncation is
+  simply "don't read the other word," no masking instruction needed.
+- `"c = (char) i;"` → `NAME(i,type=0) ITOC(type=1)`. Codegen: `"mov
+  dx,*-6.(bp)"` — loads into `DX` specifically, not the usual `DI`
+  "working register" everywhere else. `DI`/`SI` have no
+  byte-addressable half on the 8086, and the following `ASSIGN`'s
+  `movb` needs one, so this could never have been `DI` regardless —
+  but `DX` over `AX`/`CX` isn't itself hardware-forced the way
+  `CTOL`'s `AX` is; the golden simply confirms `DX`, so `DX` is what
+  `mutos_c1` now hardcodes, without inventing a broader "byte
+  operations always use DX" theory beyond what's shown.
+- `"l = (long) c;"` → `CTOL` as above.
+
+Real C's cast-expression grammar allows a full unary-expr operand;
+`08_castsize.c`'s three casts are all bare variables, so
+`c0_parser.c`'s `cast-expr` production is narrowed to exactly that
+(`'(' ('int'|'char'|'long') ')' IDENT`) rather than guessing how a
+more complex operand would need to flow through these new opcodes.
+Disambiguating a cast's leading `'('` from the existing
+parenthesized-comma-list `'('` (from the `07_ternary` session) reuses
+that session's `peek2_kind()` lookahead: a type keyword immediately
+after `'('` means cast, anything else means comma-list/grouping —
+resolved before emitting anything, no backtracking needed.
+
+**`OP_ASSIGN` gained two more type-dispatched shapes.** `TY_CHAR`
+reuses the existing single-`mov`-instruction path but with `"movb"` in
+place of `"mov"` — confirmed via `"c = (char) i;"`'s `"movb
+*-12.(bp),dx"`. `TY_LONG` is a genuinely different shape, handled
+first and separately: the right-hand side must be the new `VK_LONG`
+marker (a value sitting in `DI`(high)`:SI`(low) — the fixed
+convention both `LCON` and `CTOL` produce), and the left-hand side
+gets TWO stores, low word (`offset+MCC_SZINT`) before high word (own
+base offset) — confirmed identical in both `"l = 70000;"` and `"l =
+(long) c;"`.
+
+**`sizeof(...)` never emits a wire opcode of its own at all — not even
+`OP_SIZEOF` (already named in `mutos_cc.h`, unused).** All four
+`sizeof(...)` calls in `08_castsize.c` — `sizeof(int)`, `sizeof(char)`,
+`sizeof(long)`, and `sizeof(i)` (a *variable*, not a type name) — fold
+directly to `CON(TY_UNSIGN, <size>)` at parse time: `2`, `1`, `4`, and
+`2` respectively. For `sizeof(i)`, `i`'s own `NAME` is never emitted
+anywhere on the wire — confirming `sizeof`'s operand is genuinely
+never evaluated, only its type inspected, exactly matching real C
+semantics (`sizeof` is famously one of the few C constructs that
+doesn't evaluate its operand). `CON`'s type field being `TY_UNSIGN`
+rather than `TY_INT` here (`sizeof` yields an unsigned type in real C)
+required widening `OP_CON`'s own type check in `c1_gen.c` to accept
+`TY_UNSIGN` alongside `TY_INT` — numerically identical codegen either
+way in this scope, the constant just flows through as a plain 2-byte
+immediate; the enclosing `ASSIGN`'s own type argument (following the
+*lvalue*, an ordinary `int`, per the convention established back in
+the `05_incdec` session) is what actually governs the store
+instruction, not `CON`'s own type tag. Since `c0_parser.c`'s `ExprVal`
+carries no type tag at all (only `is_const`/`is_long`/`value`),
+`sizeof` is parsed as an *immediate, unconditional* emission
+(`outcode()` called directly, returning `ev_dynamic()`) rather than
+deferred as a further-foldable constant the way every other constant
+expression in this grammar is — the simplest correct choice given
+no golden exercises combining a `sizeof(...)` result with anything
+else at parse time (e.g. `sizeof(int) + 1` would not itself constant-
+fold here, though it would compile: the `CON(TY_UNSIGN,2)` gets
+emitted immediately, then `PLUS` combines it with a materialized
+`CON(TY_INT,1)` at runtime like any other non-constant addition).
+
+**Large integer literals are automatically promoted to `long`**,
+standard K&R/C89 constant promotion (K&R2 §A2.5.1: a decimal constant
+too large for `int` becomes `long`) — confirmed via `"l = 70000;"`
+using `LCON` rather than a truncated `CON`. `c0_parser.c`'s `ExprVal`
+gained an `is_long` flag for exactly this: `parse_primary()`'s
+`T_ICON` handling checks the raw (pre-`trunc16()`) literal value
+against `32767` (the largest value representable in a 16-bit signed
+`int`) and keeps the full, untruncated value when it doesn't fit;
+`emit_materialize()` checks the flag and emits `LCON`'s two-word split
+instead of a plain `CON`. This flag is never propagated through any
+arithmetic combinator (`PLUS`, `MINUS`, etc.) — no golden exercises
+`long` arithmetic, only a bare literal, directly and immediately
+assigned, so a long-typed intermediate combined with another operator
+remains explicitly unsupported territory (`02_long` proper, next).
+
+**Confirmed byte-exact, full pipeline, zero mismatches**: `01_expr/
+08_castsize.c` → real `mutos_cpp -P` → `mutos_c0` → `mutos_c1` matches
+`08_castsize.i.golden`/`.1.golden`/`.2.golden`/`.s.golden` byte-for-byte
+on the first complete implementation attempt (the byte-level `od`
+derivation above was, as usual, done *before* writing any
+`c0_parser.c`/`c1_gen.c` code). Full-corpus regression confirms zero
+regressions elsewhere: one more file byte-exact than the prior
+session's count, one fewer "not yet supported" than before —
+`08_castsize` moved from that bucket to the pass bucket, 0 genuine
+mismatches. **This completes `01_expr` (all 9 files) end-to-end.**
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

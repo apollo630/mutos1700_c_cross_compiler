@@ -31,8 +31,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  10/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus `01_expr/01_intarith`,
-  `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn` and `07_ternary`) — see
+  11/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  `01_intarith`,
+  `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
+  `08_castsize`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
@@ -360,9 +362,10 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 10/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
-  `01_expr/01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
-  `04_shift.c`, `05_incdec.c`, `06_compasgn.c` and `07_ternary.c` — the first
+  for 11/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
+  `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
+  `08_castsize.c` — the first
   constructs needing a real symbol table, non-folded expression codegen,
   (for `03_rellogic`) deferred/fused comparison codegen for
   relational, equality and short-circuit logical operators, (for
@@ -375,15 +378,22 @@ scope and intent, not a snapshot of what's done.
   as their own dedicated opcodes (never a synthesized "a = a + 5"-style
   tree) compiling to a single in-place memory-operand instruction, with
   a genuine multiply-by-constant strength reduction to a shift for
-  `*=` by a power of two, and (for `07_ternary`) the `?:` conditional
+  `*=` by a power of two, (for `07_ternary`) the `?:` conditional
   operator (an inverted-condition-branches-to-false-label codegen
   shape, distinct from a bare comparison's true-label pattern), the
   comma operator (emitting no code of its own - a pure value-discard),
   a parenthesized comma-list allowing embedded `IDENT = expr`
   assignments (not otherwise reachable from expression context), a
   confirmed `+1`-specific `INC` codegen shape, and `ASSIGN` now
-  pushing its result value so a comma-list can discard it, not just
-  constant folding).
+  pushing its result value so a comma-list can discard it, and (for
+  `08_castsize`) a genuine `char`/`long` type-system extension - three
+  new confirmed conversion opcodes (`LTOI`, `ITOC`, and a
+  MUTOS-specific `CTOL` absent even from vanilla V7), a `long`
+  constant/local matching the already-documented "high word at the
+  lower address" ABI convention down to the wire-format level, and
+  `sizeof` folding entirely at parse time (never a wire opcode of its
+  own), not just
+  constant folding). **`01_expr` is now fully covered.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -396,9 +406,11 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category (`08_castsize` next: casts/`sizeof`) — see
+  category by category (`02_long` next: `long` arithmetic via the
+  `almul`/`aldiv`/`alrem` extended-ABI runtime helpers - see
+  `docs/MUTOS_C_ABI.md` sect. 1.8) — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list (`long`/full arrays-and-pointers (subscripting,
+  dependency-ordered list (full arrays-and-pointers (subscripting,
   multi-level)/structs, control flow,
   function calls, the `chkstk` threshold, then the `mutos_cc` driver itself).
 
