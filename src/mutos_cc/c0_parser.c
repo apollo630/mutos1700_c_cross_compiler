@@ -209,21 +209,31 @@ static long trunc16(long v)
 
 typedef struct {
     int  is_const;
-    int  is_long;  /* valid iff is_const - set only by an integer
-                     * literal too large for a plain 16-bit int (see
-                     * parse_primary()'s T_ICON handling); never
-                     * propagated through any arithmetic combinator
-                     * below (no golden exercises long arithmetic, only
-                     * a bare long literal directly assigned - see
-                     * 08_castsize.c) */
+    int  is_long;  /* valid iff is_const - set by an integer literal
+                     * too large for a plain 16-bit int, or by an
+                     * explicit 'l'/'L' suffix (see parse_primary()'s
+                     * T_ICON/T_LCON handling). */
     long value;   /* valid iff is_const - the FULL, untruncated value
                     * when is_long (see emit_materialize()'s LCON
                     * case), otherwise the trunc16()'d int value */
+    int  type;    /* TY_INT or TY_LONG - valid always (both for a
+                     * still-const value and for an already-emitted
+                     * dynamic one, e.g. a NAME of a 'long' local).
+                     * Mirrors is_long for the const case; only
+                     * consulted so far by parse_mul()'s '*'/'/' /'%'
+                     * to pick OP_TIMES/OP_DIVIDE/OP_MOD's TY_LONG vs.
+                     * TY_INT operand - confirmed against
+                     * 02_long/02_muldiv.1.golden's "c = a * b;" (a, b,
+                     * c all 'long'), the only golden exercising
+                     * long-typed arithmetic so far. Not propagated by
+                     * '+'/'-' (parse_add()) or any other combinator -
+                     * no golden yet confirms those. */
 } ExprVal;
 
-static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; return e; }
-static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; return e; }
-static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; return e; }
+static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; e.type = TY_INT; return e; }
+static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; e.type = TY_LONG; return e; }
+static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; e.type = TY_INT; return e; }
+static ExprVal ev_dynamic_typed(int ty) { ExprVal e = ev_dynamic(); e.type = ty; return e; }
 
 /* If `v` is still an unmaterialized constant, emits it now as a real
  * CON leaf (treeout()'s CON case: outcode("BNN", CON, type, value)) -
@@ -335,6 +345,21 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             return ev_const_long(raw);
         return ev_const(trunc16(raw));
     }
+    if (p->cur.kind == T_LCON) {
+        /* An integer literal with an explicit 'l'/'L' suffix - always
+         * 'long', regardless of magnitude (unlike a plain T_ICON,
+         * which is only promoted to 'long' when too big for a plain
+         * int - see above). Confirmed against 02_long/02_muldiv.
+         * 1.golden's "b = 37L;": 37 fits a plain int, but the
+         * explicit suffix still produces the same LCON(TY_LONG, hi,
+         * lo) shape as a magnitude-promoted literal (see
+         * emit_materialize()'s LCON case) - byte-identical wire
+         * output to "a = 123456L;" immediately before it, whose
+         * magnitude alone would already force LCON either way. */
+        long raw = p->cur.ival;
+        advance(p);
+        return ev_const_long(raw);
+    }
     if (p->cur.kind == T_IDENT) {
         SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
         if (!sym) {
@@ -372,7 +397,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             advance(p);
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
         }
-        return ev_dynamic();
+        return ev_dynamic_typed(sym->type);
     }
     if (p->cur.kind == T_LPAREN) {
         if (peek2_kind(p) == T_KW_INT || peek2_kind(p) == T_KW_CHAR ||
@@ -605,8 +630,14 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            outcode(t1, "BN", OP_TIMES, TY_INT);
-            v = ev_dynamic();
+            /* TY_LONG iff either operand is 'long' - confirmed
+             * against 02_long/02_muldiv.1.golden's "c = a * b;" (a, b
+             * both 'long' -> OP_TIMES(TY_LONG)); a mixed long/int
+             * case is not exercised by any golden but follows the
+             * same ordinary-C-promotion reasoning. */
+            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            outcode(t1, "BN", OP_TIMES, optype);
+            v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_SLASH) {
             int line = p->cur.line;
             advance(p);
@@ -622,8 +653,9 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            outcode(t1, "BN", OP_DIVIDE, TY_INT);
-            v = ev_dynamic();
+            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            outcode(t1, "BN", OP_DIVIDE, optype);
+            v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_PERCENT) {
             int line = p->cur.line;
             advance(p);
@@ -639,8 +671,9 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            outcode(t1, "BN", OP_MOD, TY_INT);
-            v = ev_dynamic();
+            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            outcode(t1, "BN", OP_MOD, optype);
+            v = ev_dynamic_typed(optype);
         } else {
             break;
         }

@@ -31,10 +31,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  11/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  12/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
-  `08_castsize`) — see
+  `08_castsize`, plus `02_long/02_muldiv`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
@@ -362,10 +362,14 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 11/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 12/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
-  `08_castsize.c` — the first
+  `08_castsize.c`, plus `02_long/02_muldiv.c` (`long` `*`/`/`/`%` via the
+  `lmul`/`ldiv`/`lrem` runtime helpers - see `docs/MUTOS_C_ABI.md` sect.
+  1.8, though the real confirmed calling shape is simpler than that
+  section's own prose: both operands passed flat, never a pointer - see
+  `STATUS.md`) — the first
   constructs needing a real symbol table, non-folded expression codegen,
   (for `03_rellogic`) deferred/fused comparison codegen for
   relational, equality and short-circuit logical operators, (for
@@ -406,9 +410,10 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category (`02_long` next: `long` arithmetic via the
-  `almul`/`aldiv`/`alrem` extended-ABI runtime helpers - see
-  `docs/MUTOS_C_ABI.md` sect. 1.8) — see
+  category by category. `02_long`'s remaining three files are blocked on
+  other categories, not more `long`-arithmetic work: `01_addsub.c` needs
+  `if` (control flow), `03_retval.c`/`04_params.c` need function
+  calls/parameters — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
   dependency-ordered list (full arrays-and-pointers (subscripting,
   multi-level)/structs, control flow,

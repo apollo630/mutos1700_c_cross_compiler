@@ -564,6 +564,51 @@ static Val gen_incdec(FILE *out, GenState *g, int op, Val lv, Val amt)
     return val_reg("di");
 }
 
+/* Shared codegen for a 'long' '*'/'/'/'%' - the 8086 has no 32x32
+ * hardware multiply/divide, so this goes through one of the
+ * compiler's own internal runtime helpers (docs/MUTOS_C_ABI.md sect.
+ * 1.8) via `helper` ("lmul"/"ldiv"/"lrem"). Confirmed byte-for-byte
+ * against 02_long/02_muldiv.s.golden's "c = a * b;"/"c = a / b;"/
+ * "c = a %% b;": both operands are passed flat, as two ordinary
+ * two-word 'long's (never the ABI doc's own prose-described pointer/
+ * lvalue-and-result convention, which this specific golden does not
+ * use) - right-to-left per sect. 1.1, so `r` (the second/right
+ * operand) is pushed whole before `l`, and each operand's own two
+ * words are pushed low-then-high per sect. 1.6 - i.e. push order is
+ * r_low, r_high, l_low, l_high. The result comes back in DX:AX (high:
+ * low) per sect. 1.5's ordinary long-return convention, then moved
+ * into the DI(high):SI(low) convention every other long-value
+ * producer here uses (OP_LCON/OP_CTOL) for OP_ASSIGN's long-target
+ * case to consume. Only a plain memory long (a bare NAME reference)
+ * is confirmed for either operand - not a value still sitting in
+ * DI:SI (VK_LONG) from a preceding long op, which this one golden
+ * (each operand used exactly once, straight from its own local) does
+ * not exercise. */
+static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
+{
+    if (l.kind != VK_MEM || r.kind != VK_MEM)
+        gen_fatal("'long' %s with a non-memory operand is not yet "
+                  "supported", helper);
+    char buf[32];
+    render_operand(buf, sizeof buf, val_mem(r.offset + MCC_SZINT));
+    fprintf(out, "mov\tdi,%s\n", buf);
+    fprintf(out, "push\tdi\n");
+    render_operand(buf, sizeof buf, val_mem(r.offset));
+    fprintf(out, "mov\tdi,%s\n", buf);
+    fprintf(out, "push\tdi\n");
+    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
+    fprintf(out, "mov\tdi,%s\n", buf);
+    fprintf(out, "push\tdi\n");
+    render_operand(buf, sizeof buf, val_mem(l.offset));
+    fprintf(out, "mov\tdi,%s\n", buf);
+    fprintf(out, "push\tdi\n");
+    fprintf(out, "call\t%s\n", helper);
+    fprintf(out, "add\tsp,*8.\n");
+    fprintf(out, "mov\tdi,dx\n");
+    fprintf(out, "mov\tsi,ax\n");
+    return val_long();
+}
+
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 {
     (void)temp2; /* string-literal (SNAME/temp2) support is not
@@ -671,22 +716,48 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_LCON: {
-            /* A 'long' constant too large to fit a plain int -
-             * confirmed against 08_castsize.s.golden's "l = 70000;":
-             * loads the two words straight into SI(low)/DI(high) -
-             * the same DI:SI convention OP_CTOL below also produces -
-             * for OP_ASSIGN's long-target case to store. */
+            /* A 'long' constant. Two different confirmed shapes,
+             * chosen by whether the value actually needs 32 real
+             * bits or is just an ordinary int-range value that
+             * happens to be 'long'-typed (an explicit 'L' suffix, or
+             * plain promotion - see c0_parser.c's parse_primary()):
+             *
+             * - Genuinely 32-bit (hi is NOT the sign-extension of
+             *   lo): loads the two words straight into SI(low)/
+             *   DI(high) - the same DI:SI convention OP_CTOL below
+             *   also produces - confirmed against 08_castsize.s.
+             *   golden's "l = 70000;" and 02_long/02_muldiv.s.
+             *   golden's "a = 123456L;" (hi=1, lo=-7616 - not -1, so
+             *   not a sign-extension of a negative lo either).
+             * - In int range (hi IS lo's sign-extension, e.g. "b =
+             *   37L;": hi=0, lo=37): loads lo into AX as a plain int
+             *   immediate, then CWD sign-extends it into DX:AX (the
+             *   same idiom OP_CTOL below uses starting from a char
+             *   instead of an immediate), then moves into the DI/SI
+             *   convention - confirmed against 02_muldiv.s.golden's
+             *   "b = 37L;" -> "mov ax,*37. / cwd / mov di,dx / mov
+             *   si,ax", never the direct-split shape, even though 37L
+             *   has an explicit 'L' suffix like 123456L does. */
             int type = c1_read_num(temp1, "temp1");
             int hi = c1_read_num(temp1, "temp1");
             int lo = c1_read_num(temp1, "temp1");
             if (type != TY_LONG)
                 gen_fatal("LCON of type %d not yet supported (only "
                           "TY_LONG is covered so far)", type);
-            char lobuf[32], hibuf[32];
-            render_operand(lobuf, sizeof lobuf, val_imm(lo));
-            render_operand(hibuf, sizeof hibuf, val_imm(hi));
-            fprintf(out, "mov\tsi,%s\n", lobuf);
-            fprintf(out, "mov\tdi,%s\n", hibuf);
+            if (hi == (lo < 0 ? -1 : 0)) {
+                char buf[32];
+                render_operand(buf, sizeof buf, val_imm(lo));
+                fprintf(out, "mov\tax,%s\n", buf);
+                fprintf(out, "cwd\n");
+                fprintf(out, "mov\tdi,dx\n");
+                fprintf(out, "mov\tsi,ax\n");
+            } else {
+                char lobuf[32], hibuf[32];
+                render_operand(lobuf, sizeof lobuf, val_imm(lo));
+                render_operand(hibuf, sizeof hibuf, val_imm(hi));
+                fprintf(out, "mov\tsi,%s\n", lobuf);
+                fprintf(out, "mov\tdi,%s\n", hibuf);
+            }
             push_val(&g, val_long());
             break;
         }
@@ -1075,6 +1146,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_TIMES: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG) {
+                Val r = pop_val(&g);
+                Val l = pop_val(&g);
+                push_val(&g, gen_long_binop_call(out, l, r, "lmul"));
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("TIMES of type %d not yet supported", type);
             Val r = materialize(out, &g, pop_val(&g));
@@ -1096,6 +1173,21 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_DIVIDE:
         case OP_MOD: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG) {
+                /* lrem/ldiv both return their result in DX:AX -
+                 * confirmed via 02_muldiv.s.golden's "c = a %% b;"
+                 * using the exact same call/add-sp/mov-di,dx/mov-si,ax
+                 * shape as "c = a / b;", just calling "lrem" instead
+                 * of "ldiv" - unlike the plain-int DIVIDE/MOD split
+                 * below (quotient in AX, remainder in DX, no helper
+                 * call), there is only one long helper per operator,
+                 * not a shared call whose result register differs. */
+                Val r = pop_val(&g);
+                Val l = pop_val(&g);
+                const char *helper = (op == OP_DIVIDE) ? "ldiv" : "lrem";
+                push_val(&g, gen_long_binop_call(out, l, r, helper));
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("%s of type %d not yet supported",
                           op == OP_DIVIDE ? "DIVIDE" : "MOD", type);

@@ -226,10 +226,11 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 11/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 12/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
-`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`. ABI/
+`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
+`02_long/02_muldiv.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -250,7 +251,8 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 `mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
 `tests/mutos_cc/00_smoke/` files plus all of `01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
-`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, and every
+`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
+`02_long/02_muldiv.c`, and every
 intermediate artifact (`.i`,
 `.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
@@ -259,8 +261,8 @@ matches its real-hardware golden byte-for-byte.** Re-run via
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 11
-byte-exact end-to-end, 51 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 12
+byte-exact end-to-end, 50 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
@@ -602,6 +604,82 @@ compiled `long` variables (see `CLAUDE.md`'s "PDP-11 Middle-Endian" rule, which
 explicitly calls out that this is where the rule will actually start mattering — now
 confirmed true, see below).
 
+### `mutos_c0`/`mutos_c1`: verified this session (`02_long/02_muldiv`)
+
+**`long` `*`/`/`/`%` confirmed against `02_long/02_muldiv.c`** — the first
+construct in `02_long`'s own scope (`long` arithmetic; `long` locals/casts/
+constants were already done, from `08_castsize`). Two real gaps had to be
+fixed, both found by byte-decoding `02_muldiv.1.golden`/`.s.golden` rather
+than by guessing from `docs/MUTOS_C_ABI.md` §1.8's prose alone:
+
+1. **A genuine `mutos_c0` lexer/parser bug, unrelated to `long` arithmetic
+   itself**: `parse_primary()` never had a case for `T_LCON` (an integer
+   literal with an explicit `l`/`L` suffix) — only a bare oversized literal
+   (e.g. `70000`, auto-promoted per K&R/C89 magnitude rules) reached the
+   existing `LCON`-emission path. A small literal with an explicit suffix
+   (`37L`) fell through to "expected an expression, found long constant".
+   Fixed by giving `T_LCON` its own `parse_primary()` case that always
+   returns a `long`-typed constant, regardless of magnitude.
+2. **`long`-typed arithmetic needed real type propagation through `c0`,
+   not just a bigger opcode table in `c1`.** `ExprVal` previously tracked
+   `is_long` only for the constant-folding path, never for an
+   already-emitted (dynamic) value like a `NAME` reference — every binary
+   operator's wire-format type argument was hardcoded `TY_INT`. Added a
+   `type` field (set from a `NAME`'s own declared `sym->type`, or `TY_INT`/
+   `TY_LONG` for a constant) that `parse_mul()`'s `*`/`/`/`%` now consult to
+   pick `OP_TIMES`/`OP_DIVIDE`/`OP_MOD`'s `TY_LONG` vs. `TY_INT` operand —
+   confirmed byte-for-byte against `02_muldiv.1.golden`'s `"c = a * b;"`
+   (`a`, `b`, `c` all `long`) tree. Deliberately **not** propagated into
+   `parse_add()`'s `+`/`-` yet — no golden for `long` `+`/`-` can be
+   re-verified this session (`02_long/01_addsub.c` also needs an `if`
+   statement, which is `03_ctrlflow` scope, not yet implemented — see
+   "Next up" below), so guessing its `c1` codegen shape is out of scope.
+
+**`c1`'s actual confirmed calling convention for `long` `*`/`/`/`%`
+differs from `docs/MUTOS_C_ABI.md` §1.8's own prose** (which describes
+`almul`/`aldiv`/`alrem` using a pointer/lvalue-and-result convention,
+explicitly hedged as "presumably" how the code generator uses them).
+`02_muldiv.s.golden`'s actual generated code instead calls plain `lmul`/
+`ldiv`/`lrem` (the *integer counterparts* §1.8 also names) with both
+`long` operands passed **flat**, as two ordinary two-word `long`s per
+§1.6, right-to-left per §1.1 — i.e. push order is `r_low, r_high, l_low,
+l_high` (the right/second operand's own low-then-high pair, then the
+left/first operand's) — never a pointer. Result comes back in `DX:AX`
+per §1.5's ordinary `long`-return convention, then moved into the
+`DI`(high)`:SI`(low) convention every other confirmed `long`-value
+producer (`OP_LCON`/`OP_CTOL`) already uses, so `OP_ASSIGN`'s existing
+`TY_LONG` case (no changes needed there) stores it correctly. Implemented
+as a single shared `gen_long_binop_call()` helper in `c1_gen.c` used by
+all three operators; only a plain memory (`NAME`) operand is supported so
+far for either side (matches `02_muldiv.c`'s only confirmed shape — both
+operands are bare locals, never an immediate or a nested long expression).
+
+**`OP_LCON`'s `c1` codegen has two real, distinct confirmed shapes**, not
+one — found only because `02_muldiv.c`'s `"b = 37L;"` (small magnitude,
+explicit suffix) sits right next to `"a = 123456L;"` (genuinely 32-bit) in
+the same golden:
+- When the 32-bit value's high word is **not** the sign-extension of its
+  low word (`hi != (lo < 0 ? -1 : 0)`, e.g. `123456L`, or `08_castsize`'s
+  `70000`): direct split, `mov si,<lo> / mov di,<hi>` (unchanged from the
+  prior implementation).
+- When it **is** (e.g. `37L`, an ordinary int-range value that merely
+  carries a `long` suffix/type): `mov ax,<lo> / cwd / mov di,dx / mov
+  si,ax` — the same sign-extension idiom `OP_CTOL` already uses starting
+  from a `movb`, just starting from a plain immediate here instead.
+  Confirmed via `02_muldiv.s.golden`'s `"b = 37L;"` using this shape, not
+  the direct-split one, even though `37L`'s explicit suffix takes the same
+  `T_LCON`/`LCON` wire path as `123456L`.
+
+`02_long/01_addsub.c`, `03_retval.c` and `04_params.c` remain "not yet
+supported" — confirmed to be blocked on `if`/function-call/parameter
+support (`03_ctrlflow`/`04_funcs` scope), not on anything `long`-arithmetic
+-specific; re-run of the full golden suite after this session's changes
+shows their same pre-existing diagnostics, unchanged, and zero regressions
+anywhere else in the 62-file corpus.
+
+Build: `cd src/mutos_cc && make`; clean build, zero warnings under `-Wall
+-Wextra -Wpedantic`.
+
 ### ABI research (carried from prior session records — 2026-09-06)
 
 Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
@@ -732,9 +810,14 @@ section; headline findings:
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr` is
-now fully covered; `02_long` next (`long` arithmetic via the
-`almul`/`aldiv`/`alrem` extended-ABI runtime helpers, `docs/MUTOS_C_ABI.md`
-sect. 1.8). See
+now fully covered; `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem`
+runtime helpers) is now confirmed too (`02_long/02_muldiv`). The other
+three `02_long` files are blocked on other categories, not on more
+`long`-arithmetic work: `01_addsub.c` needs `if` (`03_ctrlflow`), and
+`03_retval.c`/`04_params.c` need function calls/parameters (`04_funcs`) —
+so `long` `+`/`-` and a `long`-returning function's `DX:AX` return-value
+convention remain unconfirmed and unimplemented until one of those two
+categories is done and can supply a re-verifiable golden. See
 `src/mutos_cc/README.md`'s "Next
 steps" for the full, dependency-ordered plan through full
 arrays-and-pointers (subscripting, multi-level)/structs, `03_ctrlflow`,
