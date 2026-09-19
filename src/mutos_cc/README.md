@@ -11,11 +11,12 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 12/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 20/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
-`07_ternary.c` and `08_castsize.c`, plus `02_long/02_muldiv.c`. See STATUS.md
+`07_ternary.c` and `08_castsize.c`, plus `02_long/01_addsub.c` and
+`02_muldiv.c`, plus all 7 of `03_ctrlflow`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -474,9 +475,110 @@ word's sign-extension (e.g. `37L`) uses `mov ax,<lo> / cwd / mov
 di,dx / mov si,ax` (`OP_CTOL`'s idiom, starting from an immediate
 instead of a `movb`), while a genuinely 32-bit value (e.g. `123456L`,
 or `08_castsize`'s `70000`) keeps the prior direct `mov si,<lo> / mov
-di,<hi>` split. `long` `+`/`-` remain unconfirmed - `02_long/01_addsub.c`
-also needs `if` (`03_ctrlflow` scope), so there is no golden to verify
-their `c1` codegen shape against yet.
+di,<hi>` split. `long` `+`/`-` were unconfirmed as of that session -
+02_long/01_addsub.c` also needed `if` (`03_ctrlflow` scope) to get a
+verifiable golden; both are now confirmed too (see below).
+
+**All of `03_ctrlflow` confirmed: `if`/`else`, `while`, `do`/`while`,
+`for`, nested `break`/`continue`, `switch`/`case`/`default`, and
+`goto`/labels.** `mutos_c0` gained a real recursive-descent statement
+dispatcher (`parse_statement()`) in place of the prior flat assign/
+return-only loop; every construct reuses the existing `CBRANCH`/
+`BRANCH`/`LABEL` opcodes and `p->isn` as the same function-wide label
+counter `cfunc()` already seeded - only `switch` needed a genuinely new
+opcode (`SWIT`). `if`/`else`'s `CBRANCH(false_lab, cond=0)` skips the
+true-branch on false, allocating a second `end_lab` only once an
+`else` is actually seen; its own `line` argument is confirmed to be
+the line of whatever token follows the condition's `)`, not the `if`'s
+own line - a direct, for-free consequence of v7/cc's one-token
+lookahead there (done to check for the "simpif" shortcut below).
+`while` is the textbook 2-label shape; `do`/`while` allocates 3 labels
+up front in a fixed order (`contlab`, `brklab`, then the body's own
+top label) but only places the top label immediately, deferring
+`contlab`'s placement to right before the trailing condition test.
+`for` matches `v7/cc/c02.c`'s `forstmt()` exactly, including its most
+surprising piece: the increment clause is PARSED before the body (to
+keep the token stream in order) but its EMITTED CODE is deferred until
+after the body, keeping the increment's own `EXPR` opcode on the
+source line it was originally written on (the `for`-header's own
+line), not wherever body-parsing left off - since `mutos_c0` streams
+wire bytes as it parses (no AST to re-emit later the way real `cc`'s
+`rcexpr(st)` does), this is implemented by buffering the increment's
+bytes via `open_memstream()` and flushing them verbatim after the
+body. `break`/`continue` (`p->brklab`/`p->contlab`, plain ints) are
+saved locally and restored by each loop/switch parser function around
+its own body, so nesting falls entirely out of C's own call stack.
+**The "simpif" shortcut**: an `if`'s body that is EXACTLY a bare
+`goto label;`/`break;`/`continue;` compiles to a single direct
+`CBRANCH(target, cond=1)` - no extra label at all - confirmed against
+both `05_breakcont.c` and `07_goto.c`; without it, `if (j == 3) break;`
+would emit a different, non-matching shape. `goto`/labels use a small
+function-scoped label-name table (name -> label number, allocated on
+first mention - whichever comes first, a `name:` definition or a
+`goto name;` reference), correctly resolving both a backward
+definition (`"loop:"`) and a forward reference (`"done:"`, referenced
+before its own definition). `switch`/`case`/`default` matches v7/cc's
+`pswitch()`: the controlling expression is `RFORCE`'d (the same
+wrapper `return` uses) and emitted as its own statement, a `BRANCH`
+jumps past the body to a fresh dispatch label, the body parses inline
+(case/default just place a label and record a `(label, value)` pair,
+or, for `default`, the label alone as `deflab`), and the dispatch site
+gets `OP_SWIT(deflab, line)` followed by every collected pair and a
+single lone zero-word terminator (`line` is the body's own closing
+`}`, needing a new `p->prev_line` field - "the line of the token most
+recently consumed" - since the nested `parse_statement()` call had
+already moved past it by the time control returns). `c1`'s dispatch
+codegen is a genuine jump table (`sub`/`cmp`/`bhi`/`shl`/`xchg`/
+`seg cs`/indirect `jmp`) - confirmed only for a DENSE, CONTIGUOUS run
+of case values; a sparse switch's compare-chain shape is unconfirmed
+and explicitly not yet supported. One confirmed, unexplained quirk:
+the subtract-to-normalize immediate renders in HEX (`sub ax,#/1`, per
+`man/mutos_as.1`'s leading-`/` literal syntax), unlike every other
+immediate in this codegen; and the table's own internal label burns
+one extra label first (`L10001`, not `L10000`) for reasons this one
+example can't derive.
+
+**`long` `+`/`-`, an implicit `int`->`long` widening conversion, and a
+`long`-vs-constant relational comparison, all confirmed against
+`02_long/01_addsub.c`.** `OP_PLUS`/`OP_MINUS` now carry `TY_LONG` when
+either operand is `long` (the same rule already confirmed for `*`/`/`/
+`%`). Codegen has two confirmed shapes depending on the right operand:
+a plain memory operand loads the left into `DI:SI` then `ADD`/`ADC`
+(or `SUB`/`SBB`) read the right straight out of memory; an in-range
+`long` CONSTANT right operand is sign-extended into `DX:AX`, pushed to
+the stack to free those registers, has the left operand loaded into
+`SI:DI`, then popped back into `BX`(high)`:CX`(low) before the same
+`ADD`/`ADC` pair - confirmed down to a literal real-hardware asymmetry:
+the second `pop` renders as `"pop cx"` with a plain space, not a tab,
+unlike every other instruction here. Assigning a plain int-range
+constant (no `L` suffix, e.g. `"b = 23456;"`) to a `long` lvalue now
+inserts a new `OP_ITOL` opcode before `ASSIGN` - `c1`'s codegen is the
+same `CWD` sign-extension idiom `OP_CTOL` already uses, just starting
+from a plain immediate. A `long` relational comparison against a
+constant (`"if (c > 0L)"`) is genuinely different from a 16-bit one - a
+32-bit signed comparison on a 16-bit ALU compares HIGH words SIGNED
+first (deciding the answer outright whenever they differ), only
+falling through to an UNSIGNED low-word compare when they're equal;
+only this exact shape (`OP_GREAT` against a literal `0L`, at a "branch
+if false" `CBRANCH` site) is confirmed, any other operator/operand/
+branch-sense combination is explicit "not yet supported". This also
+surfaced that a comparison's own wire `type` argument is ALWAYS plain
+`TY_INT` regardless of operand type (a comparison's RESULT is always
+`int`), so `long`-ness is detected from the operands themselves - which
+in turn required `OP_LCON` to become LAZILY materialized (a raw,
+unmaterialized `(hi, lo)` pair pushed with no code emitted at all, since
+a `long` constant used as a comparison operand never loads into
+registers in the real output - it folds straight into a bare `cmp`
+immediate), confirmed backward-compatible with every already-passing
+golden since `ASSIGN` was already always the very next opcode after
+`LCON` in every one of those cases.
+
+**A real, pre-existing bug was also found and fixed**: `CMP`'s
+immediate right-hand side does NOT universally omit the trailing `"."`
+decimal-terminator - every confirmed `03_rellogic` case happened to be
+value `0` specifically (the one genuine exception); `03_ctrlflow`'s
+non-zero cases confirm the period is present otherwise, matching
+`render_operand()`'s ordinary convention.
 
 **Anything outside this - unary `-`/`+` on a non-constant operand
 (unary `~`/`!` are covered), a non-`int`/non-pointer/non-array/non-
@@ -487,8 +589,9 @@ right-hand side being anything other than a compile-time constant
 branch that is itself a bare relational comparison, a compound-
 assignment operator inside a comma-list, a cast combination other
 than the three confirmed ones, `sizeof` on an array or a general
-expression, `long` `+`/`-` or any `long` operand outside a bare
-`NAME`, a `char`/`long` pointer or array,
+expression, any `long` operand outside a bare `NAME` or a directly-
+confirmed constant shape, a `char`/`long` pointer or array, a sparse
+(non-contiguous) `switch`, block-scoped declarations,
 function parameters, a third kind of statement, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
@@ -525,7 +628,7 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 
 ## Next steps (roughly in dependency order)
 
-1. **All of `01_expr` is now done.**
+1. **All of `01_expr` and `03_ctrlflow` are now done.**
    `03_rellogic` (relational/logical `< <= > >= == != && || !`),
    `04_shift` (`<< >>`, both variable-count-via-`CL` and
    constant-count-via-repeated-single-bit-shift), `05_incdec`
@@ -544,35 +647,39 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    pointer/array derivation, the compound-assignment derivation, the
    ternary/comma-operator derivation, and the char/long/cast/sizeof
    derivation
-   above.
-2. **`02_long` arithmetic (remainder), `05_arrptr`/`06_struct` groundwork**:
+   above. `03_ctrlflow`'s `if`/`else`, `while`, `do`/`while`, `for`,
+   nested `break`/`continue`, `switch`/`case`/`default` (a genuine
+   jump table), and `goto`/labels are done too - a real recursive-
+   descent statement dispatcher replaced the prior flat assign/
+   return-only loop; see "Current scope" above for the full
+   derivation.
+2. **`02_long` arithmetic, `05_arrptr`/`06_struct` groundwork**:
    `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem` runtime helper calls -
    see `docs/MUTOS_C_ABI.md` sect. 1.8, though the real confirmed calling
    shape turned out simpler than that section's own prose - see "Current
-   scope" above) is now done, confirmed against `02_muldiv.c` (`long`
+   scope" above), `long` `+`/`-`, an implicit `int`->`long` widening
+   conversion, and a `long`-vs-constant relational comparison are all
+   now done too (`long`
    *locals*, casts, and constants already existed, from `08_castsize` -
-   see above). Still open in `02_long` itself: `long` `+`/`-`
-   (`01_addsub.c` - blocked on `if`, i.e. `03_ctrlflow`, not on anything
-   `long`-specific) and a `long`-returning function's `DX:AX` return-value
+   see above). Still open in `02_long` itself: a `long`-returning
+   function's `DX:AX` return-value
    convention plus `long` parameters (`03_retval.c`/`04_params.c` -
-   blocked on `04_funcs`). Array subscripting and
+   blocked on `04_funcs`, not on anything `long`-specific). Array subscripting and
    multi-level pointers/multi-dimensional arrays (single-degree
    pointers and single-dimension arrays already exist, from
    `05_incdec` - see above), structs/
    unions/enums - each adds real type-system work (sizes beyond a
    flat "2 bytes", degree-of-reference, member layout) the current
    `SymEntry`/`ExprVal` model doesn't fully have yet.
-3. **`03_ctrlflow`**: `if`/`while`/`for`/`do`/`switch`/`goto` - each
-   needs its own confirmed label-allocation/branch shape, the same
-   way `00_smoke`'s `sloc`/`sloc+1`/`retlab` scheme was derived here.
-4. **Function parameters and calls** (`04_funcs`): parameter offsets
+3. **Function parameters and calls** (`04_funcs`): parameter offsets
    (`bp+4, bp+6, ...` per `docs/MUTOS_C_ABI.md` sect. 1.3), the
    right-to-left-push/caller-cleanup call sequence, and (for
-   `07_funcptr`) function-pointer types.
-5. **`09_abiprobe/frame*`**: pins down the real `chkstk` threshold
+   `07_funcptr`) function-pointer types. Completing this also
+   completes `02_long` (`03_retval.c`/`04_params.c` - see above).
+4. **`09_abiprobe/frame*`**: pins down the real `chkstk` threshold
    once those goldens exist, unblocking `SETSTK`'s unconfirmed
    `(76,256]` gap.
-6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
+5. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
    `tests/mutos_cc/run_goldens.sh`). The `-P`/`-S` interaction

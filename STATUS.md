@@ -226,11 +226,13 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 12/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 20/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
-`02_long/02_muldiv.c`. ABI/
+`02_long/01_addsub.c` and `02_muldiv.c`, plus all 7 of `03_ctrlflow`:
+`01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
+`05_breakcont.c`, `06_switch.c` and `07_goto.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -252,7 +254,8 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 `tests/mutos_cc/00_smoke/` files plus all of `01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
-`02_long/02_muldiv.c`, and every
+`02_long/01_addsub.c` and `02_muldiv.c`, plus all 7 of `03_ctrlflow`, and
+every
 intermediate artifact (`.i`,
 `.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
@@ -261,8 +264,8 @@ matches its real-hardware golden byte-for-byte.** Re-run via
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 12
-byte-exact end-to-end, 50 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 20
+byte-exact end-to-end, 42 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
@@ -680,6 +683,182 @@ anywhere else in the 62-file corpus.
 Build: `cd src/mutos_cc && make`; clean build, zero warnings under `-Wall
 -Wextra -Wpedantic`.
 
+### `mutos_c0`/`mutos_c1`: verified this session (all of `03_ctrlflow`, plus `02_long/01_addsub`)
+
+**All 7 of `03_ctrlflow` are now confirmed** - `if`/`else`, `while`,
+`do`/`while`, `for`, nested `break`/`continue`, `switch`/`case`/`default`,
+and `goto`/labels. `mutos_c0` gained a real recursive-descent statement
+dispatcher (`parse_statement()`) in place of the prior flat assign/return-
+only loop; every construct reuses the existing `CBRANCH`/`BRANCH`/`LABEL`
+opcodes and `p->isn` as the same function-wide label counter `cfunc()`
+already seeded (`sloc`/`sloc+1`/`retlab`) - no new opcodes were needed for
+`if`/`while`/`do`/`for`/`break`/`continue`/`goto` (only `switch` added one:
+`SWIT`). Byte-decoded every `.1.golden`/`.s.golden` in the category via
+`od` before writing any code, per this project's standing methodology.
+
+**`if`/`else` (`01_ifelse`)**: `CBRANCH(false_lab, cond=0)` skips the
+true-branch on a false condition; an `else` additionally allocates a second
+label (`end_lab`) only once actually seen, and the true-branch `BRANCH`es
+past the else-branch to it - confirmed against a 2-level `else if` chain
+allocating its labels in the same left-to-right, two-per-level order
+(4,5 outer; 6,7 inner). `CBRANCH`'s own `line` argument is confirmed to be
+the line of whatever token follows the condition's `)` - not the `if`'s own
+line - a direct, for-free consequence of v7/cc's one-token lookahead there
+(done to check for the shortcut below), which this parser reproduces simply
+because `p->cur` already sits on that next token once `)` is consumed.
+
+**`while`/`do`-`while` (`02_while`/`03_dowhile`)**: `while` is the textbook
+2-label shape (`LABEL(top)` doubling as `continue`'s target, `CBRANCH(end,
+cond=0)`, body, `BRANCH(top)`, `LABEL(end)` as `break`'s target). `do`-
+`while` allocates 3 labels up front in a fixed order - `contlab`, `brklab`,
+then the loop's own top-of-body label - but only the top label is placed
+immediately; `contlab` isn't placed until after the body (right before the
+condition test), and the trailing `CBRANCH` branches back to the top label
+on a TRUE condition (`cond=1`), falling through to `brklab` otherwise.
+Neither construct's `CBRANCH` line shifts the way `if`'s does - no extra
+lookahead happens for either, so `line` is simply the condition's own
+closing `)`.
+
+**`for` (`04_for`)**: matches `v7/cc/c02.c`'s `forstmt()` exactly, including
+its most surprising piece - the increment clause is PARSED before the body
+(to keep the token stream in order) but its EMITTED CODE is deferred until
+after the body, and its own `EXPR` opcode keeps the source line where it
+was originally written (the `for`-header's own line), not wherever body-
+parsing left off - confirmed via `04_for`'s increment (`i = i + 1`, on the
+header's line 9) carrying `EXPR(9)` despite appearing in the byte stream
+after the body (whose own line is 10), and equivalently for both the outer
+and inner loops of `05_breakcont`'s nested case. Since `mutos_c0` streams
+wire bytes as it parses (no AST to re-emit later the way real `cc`'s
+`rcexpr(st)` does), the increment's bytes are buffered via
+`open_memstream()` and flushed verbatim after the body. `continue` inside
+the body targets a NEW label placed right before this deferred increment,
+reassigned only once the increment's presence is known - matching v7's
+`l = contlab; contlab = isn++;` exactly.
+
+**`break`/`continue`, including nested loops (`05_breakcont`)**: `p->brklab`/
+`p->contlab` are plain ints, saved locally and restored by each loop/switch
+parser function around its own body - nesting falls entirely out of C's own
+call stack, with no explicit stack structure needed, confirmed against the
+nested-`for` case's label numbering (outer allocates 4,5,6; inner,
+recursed into from the outer's own body-parsing call, continues from 7,8,9).
+
+**The `if (cond) goto X;`/`break;`/`continue;` "simpif" shortcut** (confirmed
+in both `05_breakcont` and `07_goto`): when an `if`'s body is EXACTLY a bare
+`goto label;`/`break;`/`continue;`, it compiles to a single direct
+`CBRANCH(target, cond=1)` - no extra label at all - rather than the general
+two-label shape. `target` is the `goto`'s own label (allocated now if this
+is a forward reference), or the enclosing `brklab`/`contlab`. This is v7/
+cc's own "simpif" optimization (`c02.c`'s `statement()`, the `IF` case's
+inner `switch`), reproduced deliberately rather than incidentally - without
+it, `if (j == 3) break;` would emit a different, non-matching shape.
+
+**`goto`/labels (`07_goto`)**: a small function-scoped label-name table
+(`name → intermediate-code label number`, allocated on first mention -
+whichever comes first, a `name:` definition or a `goto name;` reference)
+handles forward references cleanly; `"loop:"` (defined before any reference)
+and `"done:"` (referenced by a forward `goto` before its own definition)
+both resolve to the correct, single label number either way.
+
+**`switch`/`case`/`default` (`06_switch`)**: the deepest single addition
+this session. Matches v7/cc's `pswitch()` precisely: the controlling
+expression is `RFORCE`'d (the exact same "force into the return-value
+convention" wrapper `return` itself uses) and emitted as its own
+expression-statement (loading it into `AX`), then a `BRANCH` jumps PAST the
+whole body to a fresh dispatch label; the body is parsed inline, with
+`case`/`default` just placing a label and recording a `(label, value)`
+pair (or, for `default`, recording the label separately as `deflab`); once
+the body is done, the dispatch label gets a genuine JUMP TABLE:
+```
+sub ax,#/1          ; normalize to a 0-based index (min case value = 1) -
+                     ; the ONE confirmed immediate rendered in HEX
+                     ; (man/mutos_as.1's leading-'/' literal), not this
+                     ; project's usual decimal '*N.'/'#N.'
+cmp ax,*3.           ; range check (max-min), ordinary decimal
+bhi L10              ; out of range (unsigned-above) -> default's label
+shl ax,#1            ; scale index to a word offset
+xchg bx,ax
+seg cs
+jmp @L10001(bx)      ; indirect jump through the table
+L10001:L6            ; the table: one case-body label per word, ascending
+L7                   ; by case value
+L8
+L9
+```
+Only a DENSE, CONTIGUOUS run of case values (no gaps) is implemented - a
+genuinely sparse `switch` would need a linear compare-chain instead, which
+no golden confirms, so that stays an explicit "not yet supported" rather
+than a guess. The table's own internal label is confirmed to burn one
+extra label first (`L10001`, not `L10000`, even though this switch is the
+only internal-label consumer in the file) - not derivable from this one
+example, so it's reproduced as an observed constant rather than explained.
+`OP_SWIT`'s own wire format matches v7 exactly too: `deflab`, then a source
+line (the body's own closing `}`, requiring a new `p->prev_line` - "the
+line of the token most recently consumed" - since a nested
+`parse_statement()` call had already moved `p->cur` past it by the time
+control returns), then a run of `(label, value)` pairs, then a single LONE
+zero word as the table's terminator (never a `(0,0)` pair).
+
+**`02_long/01_addsub` also fell out of this session** - it was blocked only
+on `if` (per the prior session's notes), but implementing `if` surfaced
+three more real, confirmed gaps needed to actually complete it:
+- **Implicit `int`→`long` widening (`ITOL`, a new opcode)**: an int-range
+  constant assigned to a `long` lvalue with no explicit `L` suffix (e.g.
+  `"b = 23456;"`) takes the ordinary `CON` path, not `LCON`'s - `c0_parser.c`
+  now wraps it in `OP_ITOL(TY_LONG)` before `ASSIGN`; `c1`'s codegen is the
+  same `CWD` sign-extension idiom `OP_CTOL`/`materialize_long()` already
+  use, just starting from a plain immediate.
+- **`long` `+`/`-`**: `OP_PLUS`/`OP_MINUS` now carry `TY_LONG` when either
+  operand is `long` (same rule `02_muldiv` already confirmed for `*`/`/`/
+  `%`). Codegen has TWO confirmed shapes depending on the right operand: a
+  plain memory operand loads the left into `DI:SI` then `ADD`/`ADC` (or
+  `SUB`/`SBB`) read the right straight out of memory; an in-range `long`
+  CONSTANT right operand is sign-extended into `DX:AX`, pushed to the
+  stack (low then high) to free those registers, has the left operand
+  loaded into `SI:DI`, then popped back into `BX`(high)`:CX`(low) before
+  the same `ADD`/`ADC` pair - confirmed down to a literal real-hardware
+  asymmetry: the second `pop` renders as `"pop cx"` with a plain space, not
+  a tab, unlike every other instruction here.
+- **`long` relational comparison against a constant**: genuinely different
+  from a 16-bit comparison - a 32-bit signed comparison on a 16-bit ALU
+  compares HIGH words SIGNED first (which alone decides the answer whenever
+  they differ), only falling through to an UNSIGNED low-word compare when
+  the high words are equal. Confirmed only for `"if (c > 0L)"` (`OP_GREAT`
+  against a literal `0L`, at a `CBRANCH` "branch if false" site) - any other
+  operator, non-zero/non-constant operand, or "branch if true" site is an
+  explicit "not yet supported" rather than a guess. This also surfaced that
+  a comparison's own `type` wire argument is ALWAYS plain `TY_INT`,
+  regardless of operand type (a comparison's RESULT is always `int`, per
+  ordinary C semantics) - `long`-ness is detected instead from the
+  operands themselves, which in turn required redesigning `OP_LCON` to be
+  LAZILY materialized: a raw, unmaterialized `(hi, lo)` pair (`VK_LCON`) is
+  pushed with no code emitted at all, since a `long` constant used as a
+  comparison operand never loads into registers in the real output - it
+  folds straight into a bare `cmp` immediate. Confirmed backward-compatible
+  with every already-passing golden (`02_muldiv`, `08_castsize`), since
+  `ASSIGN` was already always the very next opcode after `LCON` in every
+  one of those cases, with nothing in between to observe the difference.
+
+**A real, pre-existing bug was also found and fixed along the way**: `CMP`'s
+immediate right-hand side does NOT universally omit the trailing `"."`
+decimal-terminator the way a prior session's `03_rellogic`-only derivation
+concluded - every `CMP` immediate confirmed there happened to be value `0`
+(`"cmp *-6.(bp),*0"`), which is genuinely the one exception; `03_ctrlflow`'s
+non-zero cases (`"cmp *-6.(bp),*10."`, `"*5."`, `"*3."`) confirm the
+period IS present otherwise, matching `render_operand()`'s ordinary
+convention. `render_bare_imm()` (still correct, and still used, for
+`SAL`/`SAR`'s own confirmed no-period shift-count operand) was split from a
+new, correctly-scoped `render_cmp_imm()`.
+
+Full-corpus regression (`tests/mutos_cc/run_goldens.sh`) confirms zero
+regressions anywhere: 20/62 byte-exact (up from 12), 0 genuine mismatches.
+`02_long/03_retval.c` and `04_params.c` were re-checked and confirmed to
+still fail with their same pre-existing diagnostics - both need function
+calls/parameters (`04_funcs` scope), not more control-flow or `long`-
+arithmetic work.
+
+Build: `cd src/mutos_cc && make`; clean build, zero warnings under `-Wall
+-Wextra -Wpedantic`.
+
 ### ABI research (carried from prior session records — 2026-09-06)
 
 Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
@@ -809,19 +988,21 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr` is
-now fully covered; `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem`
-runtime helpers) is now confirmed too (`02_long/02_muldiv`). The other
-three `02_long` files are blocked on other categories, not on more
-`long`-arithmetic work: `01_addsub.c` needs `if` (`03_ctrlflow`), and
-`03_retval.c`/`04_params.c` need function calls/parameters (`04_funcs`) —
-so `long` `+`/`-` and a `long`-returning function's `DX:AX` return-value
-convention remain unconfirmed and unimplemented until one of those two
-categories is done and can supply a re-verifiable golden. See
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr` and
+`03_ctrlflow` are now both fully covered (`if`/`else`, `while`, `do`/
+`while`, `for`, `break`/`continue`, `switch`/`case`/`default`, `goto`/
+labels), and `02_long/01_addsub.c`/`02_muldiv.c` are done too (`long`
+`+`/`-`/`*`/`/`/`%`, an `int`→`long` widening conversion, and a `long`-
+vs-constant relational comparison). Only `02_long/03_retval.c` and
+`04_params.c` remain, both blocked on `04_funcs` specifically (a
+`long`-returning function's `DX:AX` convention, and `long` parameters) —
+next up is function calls/parameters (`04_funcs`), which would complete
+`02_long` as a side effect the same way `if` completed most of it this
+session. See
 `src/mutos_cc/README.md`'s "Next
 steps" for the full, dependency-ordered plan through full
-arrays-and-pointers (subscripting, multi-level)/structs, `03_ctrlflow`,
-function calls, the `09_abiprobe`
+arrays-and-pointers (subscripting, multi-level)/structs, function calls,
+the `09_abiprobe`
 `chkstk`-threshold goldens, and the `mutos_cc` driver itself.
 
 ---

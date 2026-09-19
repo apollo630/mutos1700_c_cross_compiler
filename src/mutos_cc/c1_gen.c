@@ -55,20 +55,39 @@
 
 #define DEFERRED_MAX 4
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG } ValKind;
+/* Matches c0_parser.c's own MCC_NCASES - the max number of 'case'
+ * labels OP_SWIT's handler below will collect for one 'switch'. */
+#define MCC_NCASES 32
+
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG, VK_LCON } ValKind;
 /* VK_IND - an indirect "(reg)" memory operand, the result of
  * dereferencing a pointer (OP_STAR) - confirmed against
  * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
  * assignment target). `reg` holds the register name, same as
  * VK_REG. */
-/* VK_LONG - a materialized 32-bit 'long' result: HIGH word in DI,
- * LOW word in SI, matching docs/MUTOS_C_ABI.md sect. 1.6's "high
- * word at the lower address" convention carried into registers -
- * confirmed as the fixed output convention of both OP_LCON and
- * OP_CTOL below (the only two confirmed long-value producers), and
- * the fixed input convention OP_ASSIGN's long-target case (also
- * below) requires. A pure marker - no extra fields needed since the
- * DI/SI registers themselves are the only confirmed location. */
+/* VK_LONG - a MATERIALIZED 32-bit 'long' result already sitting in
+ * registers: HIGH word in DI, LOW word in SI, matching
+ * docs/MUTOS_C_ABI.md sect. 1.6's "high word at the lower address"
+ * convention carried into registers - confirmed as the fixed output
+ * convention of OP_CTOL and of materialize_long() (see VK_LCON just
+ * below) below, and the fixed input convention OP_ASSIGN's
+ * long-target case (also below) requires. A pure marker - no extra
+ * fields needed since the DI/SI registers themselves are the only
+ * confirmed location. */
+/* VK_LCON - an UNMATERIALIZED 'long' constant: OP_LCON's raw (hi,lo)
+ * pair (stored in `imm`=lo, `offset`=hi below), with NO code emitted
+ * yet. Deliberately deferred, unlike every other value-producing
+ * opcode here: a 'long' constant used as a relational-comparison
+ * operand (confirmed against 02_long/01_addsub.s.golden's
+ * "if (c > 0L)") never materializes into DI/SI at all - the
+ * comparison's own codegen (gen_long_cmp() below) folds it directly
+ * into a bare immediate operand instead. Whoever actually needs a
+ * real DI:SI value (OP_ASSIGN's long-target case, so far the only
+ * other confirmed consumer) calls materialize_long() first, which
+ * reproduces the same two shapes this constant used to emit eagerly
+ * (still byte-identical for every already-confirmed case, since
+ * ASSIGN was already always the very next opcode after LCON with
+ * nothing in between). */
 /* VK_PAIR - OP_COLON's result: an unmaterialized pair of "?:"
  * branches, consumed only by the immediately following OP_QUEST (see
  * their handlers below and docs/DEVLOG.md's Milestone 4 section for
@@ -79,9 +98,11 @@ typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG } ValKi
 
 /* A fully-resolved (never itself VK_COND) operand - used to hold the
  * two sides of a deferred comparison inside a VK_COND Val without
- * making the Val type self-referential. */
+ * making the Val type self-referential. kind is usually VK_IMM,
+ * VK_MEM or VK_REG, but can also be VK_LCON for a 'long' comparison's
+ * (unmaterialized) constant operand - see gen_long_cmp(). */
 typedef struct {
-    ValKind kind;   /* VK_IMM, VK_MEM or VK_REG only */
+    ValKind kind;
     long    imm;
     int     offset;
     const char *reg;
@@ -89,8 +110,8 @@ typedef struct {
 
 typedef struct {
     ValKind kind;
-    long    imm;    /* VK_IMM */
-    int     offset;  /* VK_MEM: bp-relative offset */
+    long    imm;    /* VK_IMM; VK_LCON's low word */
+    int     offset;  /* VK_MEM: bp-relative offset; VK_LCON's high word */
     const char *reg;  /* VK_REG: a static string ("ax", "di", "dx") */
     /* VK_COND: a deferred, not-yet-materialized relational result -
      * "cl <true_op> cr" (true_op is one of OP_LESS/OP_LESSEQ/
@@ -103,6 +124,13 @@ typedef struct {
      * against 03_rellogic's goldens. */
     int       true_op;
     SimpleVal cl, cr;
+    int       cond_is_long; /* VK_COND only: set when cl/cr are 'long'
+     * operands (gen_long_cmp()'s shape below) rather than the
+     * ordinary 16-bit shape emit_cmp_and_branch() renders - only
+     * OP_CBRANCH is confirmed to consume one (03_ctrlflow/01_addsub's
+     * "if (c > 0L)"); every other consumer (materialize(), OP_LOGAND/
+     * OP_LOGOR, OP_QUEST) gen_fatal()s on it rather than guessing a
+     * shape no golden confirms. */
 } Val;
 
 typedef struct {
@@ -225,7 +253,44 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
     case VK_LONG: snprintf(buf, n, "<unrendered-long-di:si>"); break;
+    case VK_LCON: snprintf(buf, n, "<unmaterialized-long-const>"); break;
     }
+}
+
+/* Materializes a VK_LCON (OP_LCON's deferred raw (hi,lo) pair - see
+ * its ValKind comment above) into a real VK_LONG sitting in DI:SI -
+ * pass-through for anything already resolved (VK_LONG from OP_CTOL
+ * or a runtime-helper call, in particular). The two shapes are the
+ * same ones OP_LCON itself used to emit eagerly, now emitted lazily
+ * at the point of actual use: an int-range value whose high word is
+ * just its low word's sign-extension (e.g. 37L) uses the CWD idiom;
+ * a genuinely 32-bit value (e.g. 123456L, or 70000) direct-splits
+ * into SI/DI - confirmed against 02_long/02_muldiv.s.golden and
+ * 08_castsize.s.golden respectively (both still byte-identical under
+ * this lazier scheme, since OP_ASSIGN's long-target case - the only
+ * confirmed consumer needing a real materialized value - was already
+ * always the very next opcode after LCON in every one of those
+ * cases, with nothing in between to observe the difference). */
+static Val materialize_long(FILE *out, Val v)
+{
+    if (v.kind != VK_LCON)
+        return v;
+    long lo = v.imm, hi = v.offset;
+    if (hi == (lo < 0 ? -1 : 0)) {
+        char buf[32];
+        render_operand(buf, sizeof buf, val_imm(lo));
+        fprintf(out, "mov\tax,%s\n", buf);
+        fprintf(out, "cwd\n");
+        fprintf(out, "mov\tdi,dx\n");
+        fprintf(out, "mov\tsi,ax\n");
+    } else {
+        char lobuf[32], hibuf[32];
+        render_operand(lobuf, sizeof lobuf, val_imm(lo));
+        render_operand(hibuf, sizeof hibuf, val_imm(hi));
+        fprintf(out, "mov\tsi,%s\n", lobuf);
+        fprintf(out, "mov\tdi,%s\n", hibuf);
+    }
+    return val_long();
 }
 
 static void load_into_di(FILE *out, Val v); /* forward decl - defined
@@ -233,24 +298,49 @@ static void load_into_di(FILE *out, Val v); /* forward decl - defined
                                                * emit_cmp_and_branch()
                                                * above its own definition */
 
-/* CMP's (and, confirmed later, SAL/SAR's) immediate operand omits
- * the trailing "." decimal-terminator that render_operand() uses
- * everywhere else - confirmed via 03_rellogic.s.golden's
- * "cmp\t*-6.(bp),*0" and 04_shift.s.golden's "sar\tdi,*1" (neither
- * has a period) vs. every "mov\t...,*N." elsewhere (with period).
- * Per man/mutos_as.1 the period is "a stylistic decimal terminator"
- * with zero effect on the assembled value, so this is a source-text
- * quirk shared by these non-MOV immediate-rendering paths
- * specifically - only rendering, not semantics. Confirmed at values
- * 0 (CMP) and 1 (SAL/SAR); the *N/#N byte-vs-word marker threshold
- * below is extrapolated from render_operand()'s (unconfirmed at
- * magnitudes outside these two files' own "*0"/"*1" cases). */
+/* SAL/SAR's immediate shift-count operand omits the trailing "."
+ * decimal-terminator that render_operand() uses everywhere else -
+ * confirmed via 04_shift.s.golden's "sar\tdi,*1" (no period) vs.
+ * every "mov\t...,*N." elsewhere (with period). Per man/mutos_as.1
+ * the period is "a stylistic decimal terminator" with zero effect on
+ * the assembled value, so this is a source-text quirk of this one
+ * instruction shape specifically - only rendering, not semantics.
+ * Confirmed only at value 1 (04_shift's only confirmed constant-count
+ * shift); the *N/#N byte-vs-word marker threshold below is
+ * extrapolated from render_operand()'s own (unconfirmed at
+ * magnitudes outside that single case). CMP's own immediate operand
+ * turned out NOT to share this shape in general - see
+ * render_cmp_imm() below - so this function is no longer used for
+ * CMP. */
 static void render_bare_imm(char *buf, size_t n, long v)
 {
     if (v >= -128 && v <= 127)
         snprintf(buf, n, "*%ld", v);
     else
         snprintf(buf, n, "#%ld", v);
+}
+
+/* CMP's immediate right-hand side: unlike SAL/SAR's above, a
+ * genuinely non-zero CMP immediate DOES carry the trailing "."
+ * decimal-terminator, matching render_operand()'s ordinary
+ * convention exactly - confirmed against 03_ctrlflow's goldens
+ * ("cmp\t*-6.(bp),*10.", "*5.", "*3."). The ONE exception is a bare
+ * comparison against 0 specifically, which omits it ("cmp\t*-6.(bp),
+ * *0", confirmed against 01_expr/03_rellogic.s.golden) - every CMP
+ * immediate confirmed there is value 0, so that was the only
+ * magnitude an earlier session's "CMP's immediate never has a
+ * period" conclusion actually verified; it did not generalize to
+ * other values, as 03_ctrlflow's non-zero cases now show. The *N/#N
+ * byte-vs-word marker threshold is render_operand()'s own,
+ * unconfirmed at a magnitude needing '#' for CMP specifically. */
+static void render_cmp_imm(char *buf, size_t n, long v)
+{
+    if (v == 0)
+        snprintf(buf, n, "*0");
+    else if (v >= -128 && v <= 127)
+        snprintf(buf, n, "*%ld.", v);
+    else
+        snprintf(buf, n, "#%ld.", v);
 }
 
 /* -------------------------------------------------------------- */
@@ -314,12 +404,51 @@ static void emit_cmp_and_branch(FILE *out, Val cond, int branch_op_code, int tar
         load_into_di(out, r);
         snprintf(rbuf, sizeof rbuf, "di");
     } else if (r.kind == VK_IMM) {
-        render_bare_imm(rbuf, sizeof rbuf, r.imm);
+        render_cmp_imm(rbuf, sizeof rbuf, r.imm);
     } else {
         render_operand(rbuf, sizeof rbuf, r);
     }
     fprintf(out, "cmp\t%s,%s\n", lbuf, rbuf);
     fprintf(out, "%s\tL%d\n", cond_true_mnem(branch_op_code), target_lab);
+}
+
+/* Codegen for a 'long' relational comparison consumed by OP_CBRANCH -
+ * see Val's cond_is_long field comment. A 32-bit signed comparison on
+ * a 16-bit ALU genuinely needs a different branch shape per operator
+ * (compare high words SIGNED first - that alone decides the answer
+ * whenever they differ; only when they're equal does the low word's
+ * UNSIGNED comparison matter), so only the single shape
+ * 02_long/01_addsub.c's "if (c > 0L)" confirms is implemented here:
+ * a 'long' lvalue (VK_MEM) OP_GREAT a literal 0L (VK_LCON with hi==0
+ * && lo==0), consumed at a "branch if FALSE" CBRANCH site (cond_sense
+ * ==0, e.g. an 'if' with no matching goto/break/continue shortcut -
+ * see parse_if_stmt()). Confirmed byte-for-byte against
+ * 01_addsub.s.golden:
+ *   cmp <l.high>,*0 / blt <target> / bgt <fresh-true-label> /
+ *   cmp <l.low>,*0. / blos <target> / <fresh-true-label>:
+ * Every other combination - a different operator, a non-zero or
+ * non-constant right operand, cond_sense==1 (a "branch if true" site)
+ * - is an explicit "not yet supported" rather than a guess, per this
+ * project's verification rule. */
+static void gen_long_cmp(FILE *out, GenState *g, int op, SimpleVal l,
+                          SimpleVal r, int cond_sense, int target_lab)
+{
+    if (op != OP_GREAT || l.kind != VK_MEM || r.kind != VK_LCON ||
+        r.imm != 0 || r.offset != 0 || cond_sense != 0)
+        gen_fatal("this 'long' relational comparison shape is not yet "
+                  "supported (only 'longvar > 0L' as an 'if'/'while'/"
+                  "'for' condition is confirmed - see docs/DEVLOG.md)");
+
+    int true_lab = g->next_lab++;
+    char hibuf[32], lobuf[32];
+    render_operand(hibuf, sizeof hibuf, val_mem(l.offset));
+    render_operand(lobuf, sizeof lobuf, val_mem(l.offset + MCC_SZINT));
+    fprintf(out, "cmp\t%s,*0\n", hibuf);
+    fprintf(out, "blt\tL%d\n", target_lab);
+    fprintf(out, "bgt\tL%d\n", true_lab);
+    fprintf(out, "cmp\t%s,*0.\n", lobuf);
+    fprintf(out, "blos\tL%d\n", target_lab);
+    fprintf(out, "L%d:", true_lab);
 }
 
 /* Materializes a single deferred comparison into a real 0/1 value in
@@ -609,6 +738,85 @@ static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
     return val_long();
 }
 
+/* One case's (label, value) pair, as collected by OP_SWIT's own
+ * handler from its trailing table before handing off to
+ * gen_switch_dispatch() below. */
+typedef struct { int lab; int val; } CaseSwitchEntry;
+
+/* Codegen for OP_SWIT's jump table - confirmed byte-for-byte against
+ * 03_ctrlflow/06_switch.s.golden. Only the single confirmed shape is
+ * implemented: `cases` (already collected by OP_SWIT's own handler)
+ * covers a DENSE, CONTIGUOUS run of case values with no gaps - a
+ * genuinely sparse switch would need a linear compare-chain instead,
+ * which no golden confirms, so that's an explicit "not yet supported"
+ * rather than a guess. AX already holds the switch's controlling
+ * value (via OP_RFORCE - c0_parser.c's parse_switch_stmt() always
+ * wraps it in one) at this handler's entry point:
+ *   sub ax,#/<min>         normalizes the value to a 0-based index -
+ *                          the ONE confirmed immediate rendered in
+ *                          HEX (man/mutos_as.1's leading-'/' literal)
+ *                          rather than this project's usual decimal
+ *                          '*N.'/'#N.' - unexplained but confirmed.
+ *   cmp ax,<range>.        range = max-min (ordinary decimal here)
+ *   bhi L<deflab>          out of range (unsigned-above) -> default
+ *   shl ax,#1               scale the index to a word offset
+ *   xchg bx,ax               move it into bx (the indirect-jump's
+ *                            index register)
+ *   seg cs                   segment-override prefix
+ *   jmp @L<table>(bx)         indirect jump through the table
+ *   L<table>:L<case0> / L<case1> / ...   the table itself, one
+ *                            case-body label per word, ascending by
+ *                            case value - confirmed via the exact
+ *                            "L<table>:L<first-entry>" no-newline
+ *                            join every OP_LABEL elsewhere also uses.
+ * `table`'s own label number is confirmed to burn one extra internal
+ * label first (06_switch.s.golden's table sits at L10001, not
+ * L10000, even though it is the only internal label this file uses)
+ * - the reason isn't derivable from this one example, so it's
+ * reproduced as an observed constant rather than explained. */
+static void gen_switch_dispatch(FILE *out, GenState *g, int deflab,
+                                 CaseSwitchEntry *cases, int ncases)
+{
+    if (ncases == 0)
+        gen_fatal("an empty 'switch' is not yet supported");
+
+    /* Insertion sort by value ascending - ncases is always small. */
+    for (int i = 1; i < ncases; i++) {
+        CaseSwitchEntry key = cases[i];
+        int j = i - 1;
+        while (j >= 0 && cases[j].val > key.val) {
+            cases[j + 1] = cases[j];
+            j--;
+        }
+        cases[j + 1] = key;
+    }
+    for (int i = 1; i < ncases; i++)
+        if (cases[i].val != cases[i - 1].val + 1)
+            gen_fatal("a 'switch' whose case values are not a dense, "
+                      "contiguous run is not yet supported (no golden "
+                      "confirms the sparse/compare-chain shape a real "
+                      "compiler would need here)");
+
+    long min = cases[0].val;
+    long range = cases[ncases - 1].val - min;
+
+    char buf[32];
+    fprintf(out, "sub\tax,#/%lX\n", (unsigned long)((uint16_t)min));
+    render_operand(buf, sizeof buf, val_imm(range));
+    fprintf(out, "cmp\tax,%s\n", buf);
+    fprintf(out, "bhi\tL%d\n", deflab);
+    fprintf(out, "shl\tax,#1\n");
+    fprintf(out, "xchg\tbx,ax\n");
+    fprintf(out, "seg\tcs\n");
+    (void)g->next_lab++; /* confirmed-but-unexplained burned label -
+                           * see the derivation comment above. */
+    int table_lab = g->next_lab++;
+    fprintf(out, "jmp\t@L%d(bx)\n", table_lab);
+    fprintf(out, "L%d:", table_lab);
+    for (int i = 0; i < ncases; i++)
+        fprintf(out, "L%d\n", cases[i].lab);
+}
+
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 {
     (void)temp2; /* string-literal (SNAME/temp2) support is not
@@ -716,49 +924,24 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_LCON: {
-            /* A 'long' constant. Two different confirmed shapes,
-             * chosen by whether the value actually needs 32 real
-             * bits or is just an ordinary int-range value that
-             * happens to be 'long'-typed (an explicit 'L' suffix, or
-             * plain promotion - see c0_parser.c's parse_primary()):
-             *
-             * - Genuinely 32-bit (hi is NOT the sign-extension of
-             *   lo): loads the two words straight into SI(low)/
-             *   DI(high) - the same DI:SI convention OP_CTOL below
-             *   also produces - confirmed against 08_castsize.s.
-             *   golden's "l = 70000;" and 02_long/02_muldiv.s.
-             *   golden's "a = 123456L;" (hi=1, lo=-7616 - not -1, so
-             *   not a sign-extension of a negative lo either).
-             * - In int range (hi IS lo's sign-extension, e.g. "b =
-             *   37L;": hi=0, lo=37): loads lo into AX as a plain int
-             *   immediate, then CWD sign-extends it into DX:AX (the
-             *   same idiom OP_CTOL below uses starting from a char
-             *   instead of an immediate), then moves into the DI/SI
-             *   convention - confirmed against 02_muldiv.s.golden's
-             *   "b = 37L;" -> "mov ax,*37. / cwd / mov di,dx / mov
-             *   si,ax", never the direct-split shape, even though 37L
-             *   has an explicit 'L' suffix like 123456L does. */
+            /* A 'long' constant. Deliberately deferred (unlike every
+             * other value-producing opcode here) - pushes a raw
+             * VK_LCON(hi,lo) pair with NO code emitted yet; see its
+             * ValKind comment above for why (a comparison operand
+             * never materializes at all) and materialize_long() for
+             * the two confirmed shapes an actual consumer (OP_
+             * ASSIGN's long-target case) renders this into. */
             int type = c1_read_num(temp1, "temp1");
             int hi = c1_read_num(temp1, "temp1");
             int lo = c1_read_num(temp1, "temp1");
             if (type != TY_LONG)
                 gen_fatal("LCON of type %d not yet supported (only "
                           "TY_LONG is covered so far)", type);
-            if (hi == (lo < 0 ? -1 : 0)) {
-                char buf[32];
-                render_operand(buf, sizeof buf, val_imm(lo));
-                fprintf(out, "mov\tax,%s\n", buf);
-                fprintf(out, "cwd\n");
-                fprintf(out, "mov\tdi,dx\n");
-                fprintf(out, "mov\tsi,ax\n");
-            } else {
-                char lobuf[32], hibuf[32];
-                render_operand(lobuf, sizeof lobuf, val_imm(lo));
-                render_operand(hibuf, sizeof hibuf, val_imm(hi));
-                fprintf(out, "mov\tsi,%s\n", lobuf);
-                fprintf(out, "mov\tdi,%s\n", hibuf);
-            }
-            push_val(&g, val_long());
+            Val v = {0};
+            v.kind = VK_LCON;
+            v.imm = lo;
+            v.offset = hi;
+            push_val(&g, v);
             break;
         }
 
@@ -844,9 +1027,110 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_ITOL: {
+            /* Implicit 'int'->'long' widening, inserted by
+             * c0_parser.c whenever a plain-int-typed value is
+             * assigned to a 'long' lvalue (an int-range constant with
+             * no explicit 'L' suffix, e.g. "b = 23456;" where b is
+             * 'long') - confirmed against 02_long/01_addsub.s.golden:
+             * "mov ax,<v> / cwd / mov di,dx / mov si,ax", the exact
+             * same CWD sign-extension idiom materialize_long()'s
+             * in-range branch and OP_CTOL above both already use,
+             * just starting from a plain int value (here, an
+             * immediate) instead of a char or a 'long' constant. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_LONG)
+                gen_fatal("ITOL to type %d not yet supported (only "
+                          "TY_LONG is covered so far)", type);
+            Val v = materialize(out, &g, pop_val(&g));
+            char buf[32];
+            render_operand(buf, sizeof buf, v);
+            fprintf(out, "mov\tax,%s\n", buf);
+            fprintf(out, "cwd\n");
+            fprintf(out, "mov\tdi,dx\n");
+            fprintf(out, "mov\tsi,ax\n");
+            push_val(&g, val_long());
+            break;
+        }
+
         case OP_PLUS:
         case OP_MINUS: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG) {
+                /* 32-bit add/subtract - textbook 8086 idiom (ADD/SUB
+                 * the low words, then ADC/SBB the high words using
+                 * the resulting carry/borrow), but the confirmed
+                 * shape genuinely differs by what the right operand
+                 * is:
+                 *
+                 * - A plain memory (NAME) right operand: the LEFT
+                 *   operand is loaded into DI(high):SI(low), then
+                 *   ADD/SUB/ADC/SBB read the right operand straight
+                 *   out of memory - confirmed against "c = a + b;"
+                 *   ("mov si,*-6.(bp) / mov di,*-8.(bp) / add si,
+                 *   *-10.(bp) / adc di,*-12.(bp)") and "c = a - b;"
+                 *   (identical shape, sub/sbb).
+                 * - An in-range 'long' CONSTANT right operand (VK_
+                 *   LCON, sign-extension-shaped - see materialize_
+                 *   long()): confirmed against "c = c + 1L;", a
+                 *   genuinely different, more roundabout shape - the
+                 *   constant is sign-extended into DX:AX, pushed
+                 *   (low then high) to get it off of DX:AX, THEN the
+                 *   left operand is loaded into SI:DI, then the
+                 *   pushed constant is popped back into BX(high):
+                 *   CX(low) (freeing DX:AX first is presumably why -
+                 *   materializing the left operand via CWD in the
+                 *   general case, per materialize_long(), would
+                 *   clobber DX:AX before it's used here), and ADD/
+                 *   ADC (or SUB/SBB) combine SI:DI with CX:BX. The
+                 *   second `pop` is confirmed to render as "pop cx"
+                 *   with a literal space, not a tab, unlike every
+                 *   other instruction here - a genuine real-hardware
+                 *   asymmetry, not a transcription slip. Neither a
+                 *   genuinely 32-bit constant operand (direct-split
+                 *   shaped) nor a left operand that is itself
+                 *   anything but a plain memory reference is
+                 *   confirmed by any golden. */
+                Val r = pop_val(&g);
+                Val l = pop_val(&g);
+                if (l.kind != VK_MEM)
+                    gen_fatal("'long' %s with a non-memory left operand "
+                              "is not yet supported",
+                              op == OP_PLUS ? "addition" : "subtraction");
+                char buf[32];
+                if (r.kind == VK_MEM) {
+                    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
+                    fprintf(out, "mov\tsi,%s\n", buf);
+                    render_operand(buf, sizeof buf, val_mem(l.offset));
+                    fprintf(out, "mov\tdi,%s\n", buf);
+                    render_operand(buf, sizeof buf, val_mem(r.offset + MCC_SZINT));
+                    fprintf(out, "%s\tsi,%s\n", op == OP_PLUS ? "add" : "sub", buf);
+                    render_operand(buf, sizeof buf, val_mem(r.offset));
+                    fprintf(out, "%s\tdi,%s\n", op == OP_PLUS ? "adc" : "sbb", buf);
+                } else if (r.kind == VK_LCON && r.offset == (r.imm < 0 ? -1 : 0)) {
+                    render_operand(buf, sizeof buf, val_imm(r.imm));
+                    fprintf(out, "mov\tax,%s\n", buf);
+                    fprintf(out, "cwd\n");
+                    fprintf(out, "push\tax\n");
+                    fprintf(out, "push\tdx\n");
+                    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
+                    fprintf(out, "mov\tsi,%s\n", buf);
+                    render_operand(buf, sizeof buf, val_mem(l.offset));
+                    fprintf(out, "mov\tdi,%s\n", buf);
+                    fprintf(out, "pop\tbx\n");
+                    fprintf(out, "pop cx\n"); /* confirmed literal
+                                               * space, not a tab -
+                                               * see comment above. */
+                    fprintf(out, "%s\tsi,cx\n", op == OP_PLUS ? "add" : "sub");
+                    fprintf(out, "%s\tdi,bx\n", op == OP_PLUS ? "adc" : "sbb");
+                } else {
+                    gen_fatal("'long' %s with this right-operand shape "
+                              "is not yet supported",
+                              op == OP_PLUS ? "addition" : "subtraction");
+                }
+                push_val(&g, val_long());
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("%s of type %d not yet supported",
                           op == OP_PLUS ? "PLUS" : "MINUS", type);
@@ -1043,7 +1327,57 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             c.true_op = op;
             c.cl = simple_of(l);
             c.cr = simple_of(r);
+            /* A 'long' comparison - NOT signaled by `type` above
+             * (confirmed always TY_INT here regardless of operand
+             * type: a comparison's own RESULT is always plain int,
+             * per ordinary C semantics - see 02_long/01_addsub.1.
+             * golden's "c > 0L", whose GREAT node carries type 0).
+             * Detected instead from the operands themselves: either
+             * side being VK_LCON (an unmaterialized 'long' constant -
+             * see OP_LCON above) or VK_LONG (an already-materialized
+             * one) means this is a 'long' comparison, needing
+             * gen_long_cmp()'s genuinely different codegen rather than
+             * emit_cmp_and_branch()'s ordinary 16-bit shape. Only
+             * OP_CBRANCH is confirmed to consume one - see its own
+             * comment below. */
+            if (l.kind == VK_LCON || l.kind == VK_LONG ||
+                r.kind == VK_LCON || r.kind == VK_LONG)
+                c.cond_is_long = 1;
             push_val(&g, c);
+            break;
+        }
+
+        case OP_CBRANCH: {
+            /* "Branch to lbl if the tree's value is TRUE together
+             * with cond" - matches v7/cc/c04.c's cbranch(t,lbl,cond)
+             * exactly (see docs/DEVLOG.md): cond=1 means branch-if-
+             * true (the condition's own comparison mnemonic, e.g.
+             * "blt" for a bare OP_LESS), cond=0 means branch-if-false
+             * (the INVERTED mnemonic, e.g. "bge") - confirmed against
+             * 03_ctrlflow/01_ifelse.s.golden's "if (a > 0)" using
+             * cond=0 (skip the true-branch on false) and 07_goto.
+             * s.golden's "if (i >= 10) goto done;" using cond=1 (a
+             * direct branch-if-true to the goto's own target, c0's
+             * "simpif" shortcut - see c0_parser.c). Reuses
+             * gen_logand()/gen_logor()'s own `as_cond()` wrapper so a
+             * non-comparison condition (not exercised by any current
+             * golden, but the same zero-risk "any nonzero value is
+             * true" generalization those two already rely on) is
+             * handled uniformly. */
+            int lbl = c1_read_num(temp1, "temp1");
+            int cond_sense = c1_read_num(temp1, "temp1");
+            (void)c1_read_num(temp1, "temp1"); /* source line - not
+                                                 * rendered into the
+                                                 * .s output, same as
+                                                 * OP_EXPR's. */
+            Val v = pop_val(&g);
+            Val c = as_cond(v);
+            if (c.cond_is_long) {
+                gen_long_cmp(out, &g, c.true_op, c.cl, c.cr, cond_sense, lbl);
+                break;
+            }
+            int branch_op_code = cond_sense ? c.true_op : cond_invert(c.true_op);
+            emit_cmp_and_branch(out, c, branch_op_code, lbl);
             break;
         }
 
@@ -1395,6 +1729,15 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 if (lhs.kind != VK_MEM)
                     gen_fatal("assignment to a non-memory 'long' lvalue "
                               "is not yet supported");
+                rhs = materialize_long(out, rhs); /* VK_LCON -> VK_LONG,
+                                                    * a no-op for
+                                                    * anything already
+                                                    * VK_LONG (OP_CTOL,
+                                                    * OP_ITOL, a
+                                                    * runtime-helper
+                                                    * call) - see
+                                                    * materialize_long()
+                                                    * above. */
                 if (rhs.kind != VK_LONG)
                     gen_fatal("assigning a non-'long' value to a 'long' "
                               "lvalue is not yet supported (no golden "
@@ -1500,6 +1843,33 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * during this statement - see DEFERRED_MAX's comment on
              * GenState. */
             flush_deferred(out, &g);
+            break;
+        }
+
+        case OP_SWIT: {
+            /* deflab, then a source line (not rendered into the .s
+             * output, same as OP_EXPR's), then a run of (label,value)
+             * pairs, then a single lone zero word terminating the
+             * table (outcode("0") in c0_parser.c/v7's own pswitch() -
+             * never a (0,0) pair) - confirmed against 06_switch.
+             * 1.golden. */
+            int deflab = c1_read_num(temp1, "temp1");
+            (void)c1_read_num(temp1, "temp1"); /* line */
+            CaseSwitchEntry cases[MCC_NCASES];
+            int ncases = 0;
+            for (;;) {
+                int lab = c1_read_num(temp1, "temp1");
+                if (lab == 0)
+                    break;
+                int val = c1_read_num(temp1, "temp1");
+                if (ncases >= MCC_NCASES)
+                    gen_fatal("too many 'case' labels in one 'switch' "
+                              "(internal limit %d)", MCC_NCASES);
+                cases[ncases].lab = lab;
+                cases[ncases].val = val;
+                ncases++;
+            }
+            gen_switch_dispatch(out, &g, deflab, cases, ncases);
             break;
         }
 
