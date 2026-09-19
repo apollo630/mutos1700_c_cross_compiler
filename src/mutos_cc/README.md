@@ -11,10 +11,11 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 9/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 10/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c`, `05_incdec.c` and `06_compasgn.c`. See STATUS.md
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c` and
+`07_ternary.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -162,7 +163,8 @@ negative large-magnitude constant.
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus
 `tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c`, `05_incdec.c` and `06_compasgn.c`:
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c` and
+`07_ternary.c`:
 
 ```
 translation-unit  := extdef*
@@ -176,7 +178,7 @@ assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
                     | '<<=' | '>>=' | '&=' | '|=' | '^='
 star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
 return-stmt       := 'return' expr? ';'
-expr              := LOGOR
+expr              := LOGOR ('?' LOGOR ':' LOGOR)?
 LOGOR             := LOGAND ('||' LOGAND)*
 LOGAND            := BITOR ('&&' BITOR)*
 BITOR             := BITXOR ('|' BITXOR)*
@@ -189,7 +191,8 @@ ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
 UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
 POSTFIX           := PRIMARY ('++'|'--')?
-PRIMARY           := ICON | IDENT | '(' expr ')'
+PRIMARY           := ICON | IDENT | '(' comma-item (',' comma-item)* ')'
+comma-item        := (IDENT '=' expr) | expr
 ```
 
 Every function is implicitly `int`-returning (K&R default) and takes
@@ -215,7 +218,13 @@ truncation (`trunc16()`), matching the target's 16-bit `int`. A
 postfix/prefix `++`/`--` operand and a bare array name used as an
 rvalue are never treated as compile-time constants (both always
 emit real code - see the increment/decrement/pointer/array
-derivation below).
+derivation below). A `?:` with a compile-time-constant condition
+folds to whichever branch is selected (matching real K&R `cc`'s own
+`build()`-time folding again), though not itself exercised by any
+golden (`07_ternary`'s own condition is always a real comparison).
+A parenthesized comma-list's embedded `IDENT '=' expr` items are
+never constants (an assignment always has a side effect, so it is
+always emitted for real, exactly like `assign-stmt`'s own handling).
 
 `mutos_c1`'s opcode coverage (`c1_gen.c`) matches exactly what the
 above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
@@ -225,7 +234,8 @@ above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `LOGAND`, `LOGOR`,
 `EXCLA`, `AMPER`, `ITOP`, `STAR`, `INCBEF`, `DECBEF`, `INCAFT`,
 `DECAFT`, `ASPLUS`, `ASMINUS`, `ASTIMES`, `ASDIV`, `ASMOD`, `ASLSH`,
-`ASRSH`, `ASSAND`, `ASOR`, `ASXOR`, `ASSIGN`, `RFORCE`, `EXPR`,
+`ASRSH`, `ASSAND`, `ASOR`, `ASXOR`, `COLON`, `QUEST`, `SEQNC`,
+`ASSIGN`, `RFORCE`, `EXPR`,
 `RETRN`, `SETSTK`, `EOFC`. Its
 own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
 for each pending intermediate value, whether it's an immediate, a
@@ -345,11 +355,54 @@ pushback stack (`Lexer.peek[2]`/`npeek` in `c0_lex.h`/`c0_lex.c`), a
 general lexer-correctness fix rather than a scope-specific
 workaround.
 
+**The `?:` conditional operator and the `,` comma operator confirmed
+against `07_ternary`.** `c0`'s tree shape for `a > b ? a : b` matches
+real K&R `cc` exactly: the condition (`GREAT`), then the two branches
+wrapped in a `COLON` node, then `QUEST`. `c1`'s codegen is a **new
+branch polarity**, not a reuse of `materialize_cond()`'s existing
+bare-comparison-as-0/1-value pattern (`03_rellogic`): the *inverted*
+condition branches to a false label, and the *true* branch's code
+sits inline at the fallthrough - confirmed via
+`"cmp *-6.(bp),di" / "ble L10000" / "mov di,*-6.(bp)" / "jmp L10001" /
+"L10000:mov di,*-8.(bp)" / "L10001:"`. Each branch reloads its value
+into `DI` unconditionally inside its own arm, with no cross-branch
+value tracking - confirmed by the false branch re-loading `b`
+(`"mov di,*-8.(bp)"`) even though the comparison's own setup had
+already loaded `b` into `DI` moments earlier. The comma operator
+emits **no code of its own** - `SEQNC` is a pure value-discard, since
+the left operand's side effects (if any) were already emitted by
+whichever opcode produced it. This surfaced that a parenthesized
+comma-list can contain an embedded plain assignment (`"a = a + 1"` as
+a comma-item) - not otherwise reachable from expression context,
+since `assign-stmt` is a distinct, statement-level-only production;
+supporting it needed `c0_parser.c` to gain one token of lookahead
+(`peek2_kind()`) to tell `"IDENT = expr"` apart from a bare `IDENT`
+starting a larger expression, both of which begin identically. It
+also surfaced that `ASSIGN`'s own result value now has a real
+consumer: an assignment used as a discarded comma-operand needs
+something on `c1`'s value stack for `SEQNC` to pop, so `OP_ASSIGN`
+now pushes the assigned value (previously nothing, since no prior
+golden ever consumed one) - which in turn required `OP_EXPR` to
+discard that now-leftover value for every *plain* top-level
+assignment statement (`gen_fatal`-guarded to at most one leftover
+value). The ten compound-assignment operators deliberately do
+**not** push a result - `c0`'s grammar structure makes a compound-
+assignment expression unreachable from anywhere but a statement's
+sole top-level operator, a structural guarantee rather than an
+untested convention. Separately, `"a = a + 1;"` surfaced a confirmed
+`+1`-specific codegen shape: `"a + 1"` compiles to a plain `INC`,
+never `"add di,*1."`; `OP_MINUS` is deliberately left unchanged
+(still `"sub di,*N."` unconditionally, including by 1) since no
+golden yet shows whether `"x - 1"` gets the symmetric `DEC`
+treatment.
+
 **Anything outside this - unary `-`/`+` on a non-constant operand
 (unary `~`/`!` are covered), a non-`int`/non-pointer/non-array
 declaration, array subscripting, a compound-assignment operator's
 right-hand side being anything other than a compile-time constant
-(or, for `*=`, anything other than a power-of-two constant),
+(or, for `*=`, anything other than a power-of-two constant), a `?:`
+branch that is itself a bare relational comparison, a compound-
+assignment operator inside a comma-list,
 function parameters, a third kind of statement, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
@@ -386,19 +439,22 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 
 ## Next steps (roughly in dependency order)
 
-1. **The rest of `01_expr`** (`07_ternary`, `08_castsize`):
+1. **The rest of `01_expr`** (`08_castsize`):
    `03_rellogic` (relational/logical `< <= > >= == != && || !`),
    `04_shift` (`<< >>`, both variable-count-via-`CL` and
    constant-count-via-repeated-single-bit-shift), `05_incdec`
    (`++`/`--`, pointer-scaled where applicable, plus the pointer/array
-   groundwork it pulled in), and `06_compasgn` (all ten
+   groundwork it pulled in), `06_compasgn` (all ten
    compound-assignment operators, with a genuine `*=`-by-power-of-two
-   strength reduction to a shift) are now done - see the `VK_COND`
+   strength reduction to a shift), and `07_ternary` (`?:` with a new
+   inverted-condition-branches-to-false-label codegen shape, and the
+   `,` comma operator, which emits no code of its own) are now done -
+   see the `VK_COND`
    design, the `LSHIFT`/`RSHIFT` handling, the increment/decrement/
-   pointer/array derivation, and the compound-assignment derivation
+   pointer/array derivation, the compound-assignment derivation, and
+   the ternary/comma-operator derivation
    above.
-   Remaining: `?:`, the comma operator,
-   casts, and `sizeof` - each needs its own confirmed opcode/
+   Remaining: casts, and `sizeof` - each needs its own confirmed opcode/
    instruction shape, the same way `< <= > >= == != && || ! << >>`
    were
    derived here.
