@@ -11,11 +11,11 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 11/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 12/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
-`07_ternary.c` and `08_castsize.c`. See STATUS.md
+`07_ternary.c` and `08_castsize.c`, plus `02_long/02_muldiv.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -449,6 +449,35 @@ type inspected - matching real C semantics exactly. Only these three
 operand, and a memory (not register-pair) `long`/`char` operand for
 every new opcode are supported.
 
+**`long` `*`/`/`/`%` confirmed against `02_long/02_muldiv.c`.** An
+integer literal with an explicit `l`/`L` suffix (`37L`) is now its own
+`T_LCON` token, always `long`-typed regardless of magnitude (unlike a
+bare oversized literal like `70000`, which is only promoted to `long`
+by K&R/C89's usual too-big-for-`int` rule) - `parse_primary()` gained a
+dedicated case for it. `ExprVal` gained a `type` field, tracked for a
+`NAME` reference too (not just a still-folded constant), so
+`parse_mul()`'s `*`/`/`/`%` can emit `OP_TIMES`/`OP_DIVIDE`/`OP_MOD`
+with a `TY_LONG` operand type whenever either side is `long` -
+confirmed against `"c = a * b;"` (`a`, `b`, `c` all `long`). `c1`'s
+codegen for these three is a real runtime-helper call, not inline
+8086 instructions (the 8086 has no 32x32 hardware multiply/divide):
+both operands pushed flat as ordinary two-word `long`s, right-to-left
+(`r_low, r_high, l_low, l_high`), `call lmul`/`ldiv`/`lrem`, `add
+sp,*8.`, result read from `DX:AX` into the `DI`(high)`:SI`(low)
+convention `OP_LCON`/`OP_CTOL` already use - **not** the pointer/
+lvalue-and-result convention `docs/MUTOS_C_ABI.md` sect. 1.8's own
+prose speculates, which this golden does not use. Only a plain memory
+(`NAME`) operand is supported on either side so far. Separately,
+`OP_LCON`'s own `c1` codegen turned out to have two distinct confirmed
+shapes, not one: an int-range value whose high word is just its low
+word's sign-extension (e.g. `37L`) uses `mov ax,<lo> / cwd / mov
+di,dx / mov si,ax` (`OP_CTOL`'s idiom, starting from an immediate
+instead of a `movb`), while a genuinely 32-bit value (e.g. `123456L`,
+or `08_castsize`'s `70000`) keeps the prior direct `mov si,<lo> / mov
+di,<hi>` split. `long` `+`/`-` remain unconfirmed - `02_long/01_addsub.c`
+also needs `if` (`03_ctrlflow` scope), so there is no golden to verify
+their `c1` codegen shape against yet.
+
 **Anything outside this - unary `-`/`+` on a non-constant operand
 (unary `~`/`!` are covered), a non-`int`/non-pointer/non-array/non-
 `char`/non-`long`
@@ -458,7 +487,8 @@ right-hand side being anything other than a compile-time constant
 branch that is itself a bare relational comparison, a compound-
 assignment operator inside a comma-list, a cast combination other
 than the three confirmed ones, `sizeof` on an array or a general
-expression, `long` arithmetic, a `char`/`long` pointer or array,
+expression, `long` `+`/`-` or any `long` operand outside a bare
+`NAME`, a `char`/`long` pointer or array,
 function parameters, a third kind of statement, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
@@ -515,11 +545,17 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    ternary/comma-operator derivation, and the char/long/cast/sizeof
    derivation
    above.
-2. **`02_long` arithmetic, `05_arrptr`/`06_struct` groundwork**:
-   `long` *arithmetic* (the
-   `almul`/`aldiv`/`alrem` extended-ABI runtime calls - see
-   `docs/MUTOS_C_ABI.md` sect. 1.8 - `long` *locals*, casts, and
-   constants already exist, from `08_castsize` - see above), array subscripting and
+2. **`02_long` arithmetic (remainder), `05_arrptr`/`06_struct` groundwork**:
+   `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem` runtime helper calls -
+   see `docs/MUTOS_C_ABI.md` sect. 1.8, though the real confirmed calling
+   shape turned out simpler than that section's own prose - see "Current
+   scope" above) is now done, confirmed against `02_muldiv.c` (`long`
+   *locals*, casts, and constants already existed, from `08_castsize` -
+   see above). Still open in `02_long` itself: `long` `+`/`-`
+   (`01_addsub.c` - blocked on `if`, i.e. `03_ctrlflow`, not on anything
+   `long`-specific) and a `long`-returning function's `DX:AX` return-value
+   convention plus `long` parameters (`03_retval.c`/`04_params.c` -
+   blocked on `04_funcs`). Array subscripting and
    multi-level pointers/multi-dimensional arrays (single-degree
    pointers and single-dimension arrays already exist, from
    `05_incdec` - see above), structs/

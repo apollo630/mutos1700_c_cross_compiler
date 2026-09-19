@@ -535,8 +535,8 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 11/62 of the full corpus (`00_smoke`'s 3 files
-plus all of `01_expr`: `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`/`08_castsize`); see `STATUS.md` for the
+verified byte-exact, end-to-end, for 12/62 of the full corpus (`00_smoke`'s 3 files
+plus all of `01_expr`: `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`/`08_castsize`, plus `02_long/02_muldiv`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
 process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
@@ -1915,6 +1915,117 @@ regressions elsewhere: one more file byte-exact than the prior
 session's count, one fewer "not yet supported" than before —
 `08_castsize` moved from that bucket to the pass bucket, 0 genuine
 mismatches. **This completes `01_expr` (all 9 files) end-to-end.**
+
+### `02_long/02_muldiv` — `long` `*`/`/`/`%` via runtime helpers
+
+First construct in `02_long`'s own scope (`long` locals/casts/constants
+already existed, from `08_castsize`). As always, byte-decoded
+`02_muldiv.1.golden`/`.s.golden` (`od`) *before* writing any
+`c0_parser.c`/`c1_gen.c` code — and doing so this time turned up a real
+divergence from `docs/MUTOS_C_ABI.md` sect. 1.8's own prose, not just new
+opcode plumbing.
+
+**Two real gaps, found before any codegen work even started, since
+`mutos_c0` itself rejected the file:**
+1. A pre-existing lexer/parser bug, orthogonal to `long` arithmetic:
+   `parse_primary()` had no case for `T_LCON` — an integer literal with an
+   explicit `l`/`L` suffix. `08_castsize`'s prior session only ever
+   exercised `long`-promotion via *magnitude* (`70000`, too big for `int`,
+   auto-promoted per K&R/C89), which lexes as `T_ICON` with `is_long`
+   unset at the token level (the promotion decision happens later, in
+   `parse_primary()` itself). `37L` — small enough to fit a plain `int`,
+   but carrying an explicit suffix — lexes as a genuinely different token
+   kind, `T_LCON`, which nothing in `parse_primary()` handled at all:
+   `"expected an expression, found long constant"`. Fixed with a
+   dedicated `T_LCON` case that always returns a `long`-typed constant
+   regardless of magnitude, reusing the same `ev_const_long()`/
+   `emit_materialize()` path the magnitude-promotion case already used.
+2. `ExprVal` tracked `is_long` only for the constant-folding path (per
+   the `08_castsize` entry above, explicitly flagged there as "never
+   propagated through any arithmetic combinator"). A `NAME` reference to
+   a `long` local — a fully dynamic, already-emitted value — carried no
+   type information at all, so `parse_mul()`'s `*`/`/`/`%` always
+   hardcoded `OP_TIMES`/`OP_DIVIDE`/`OP_MOD`'s type argument to `TY_INT`.
+   Added a `type` field to `ExprVal` (set to `TY_LONG`/`TY_INT`
+   consistently for both the const and dynamic cases — a `NAME`'s `type`
+   field comes straight from its own `SymEntry.type`), and had
+   `parse_mul()` pick `TY_LONG` whenever either operand's `type` is
+   `TY_LONG`. Confirmed against `02_muldiv.1.golden`'s `"c = a * b;"`
+   tree (`a`, `b`, `c` all `long`) — the wire shape itself
+   (`NAME`/`NAME`/`TIMES`/`ASSIGN`/`EXPR`) needed zero new opcodes, only
+   the correct type argument on `TIMES`. Deliberately *not* extended to
+   `parse_add()`'s `+`/`-` — `02_long/01_addsub.c` (the file that would
+   confirm it) also needs `if`, `03_ctrlflow` scope, not yet built, so
+   there is no golden to verify a `long` `+`/`-` codegen shape against
+   this session; guessing it would violate this project's own
+   verification rule.
+
+**The actual confirmed `c1` calling convention differs from
+`docs/MUTOS_C_ABI.md` sect. 1.8's own prose** — worth flagging explicitly
+since that section is written with some hedging ("presumably... both
+patterns are present") rather than as a flat confirmed fact. Real
+generated code for `"c = a * b;"` (and `/`, `%`) calls plain `lmul`/
+`ldiv`/`lrem` — never `almul`/`aldiv`/`alrem` — with **both operands
+passed flat**, as two ordinary two-word `long`s per sect. 1.6, right-to-
+left per sect. 1.1: push `b`'s low word, `b`'s high word, `a`'s low word,
+`a`'s high word (4 words, 8 bytes — matching the golden's `"add
+sp,*8."`), `call lmul`, then the result comes back in `DX:AX` per sect.
+1.5's ordinary `long`-return convention — never through a pointer/
+lvalue-and-result parameter the way sect. 1.8's prose speculates library
+helpers of this shape might work. `DX:AX` is then moved into `DI`(high)`:
+SI`(low) (`mov di,dx` / `mov si,ax`), the same convention `OP_LCON`/
+`OP_CTOL` already produce, so `OP_ASSIGN`'s existing `TY_LONG` case
+(unchanged) stores it correctly with no new logic needed there.
+Implemented as one shared `gen_long_binop_call()` helper in `c1_gen.c`,
+parameterized only by the helper name (`"lmul"`/`"ldiv"`/`"lrem"`) —
+`MOD`'s result comes back the same `DX:AX` → `DI:SI` way as `TIMES`/
+`DIVIDE`, unlike the plain-`int` `DIVIDE`/`MOD` split just above it in
+the same file (quotient in `AX`, remainder in `DX`, no helper call at
+all) — there is only one long helper call per operator here, not a
+shared call whose result register differs by operator. Only a plain
+memory (`NAME`) operand is confirmed for either side — `02_muldiv.c`
+never nests a long expression or uses an immediate operand here.
+
+**`OP_LCON`'s `c1` codegen turned out to have two real, distinct
+confirmed shapes, not one** — invisible in the `08_castsize` session
+because its only two `LCON` producers (`"l = 70000;"` and the `CTOL`
+sign-extension path) both happened to need the direct split. This
+session's `"b = 37L;"` sits right next to `"a = 123456L;"` in the same
+golden and takes a visibly different shape:
+- `123456L` (`hi=1, lo=-7616` — `hi` is *not* the sign-extension of
+  `lo`, since `lo` is negative and `hi` isn't `-1`): direct split, `mov
+  si,<lo> / mov di,<hi>` (the pre-existing, unchanged shape).
+- `37L` (`hi=0, lo=37` — `hi` *is* `lo`'s sign-extension, an ordinary
+  int-range value that merely carries a `long` suffix/type): `mov
+  ax,<lo> / cwd / mov di,dx / mov si,ax` — reusing the exact
+  sign-extension idiom `OP_CTOL` already established for `char`→`long`,
+  just starting from a plain immediate load into `AX` instead of a
+  `movb`.
+
+  The dispatch condition implemented in `c1_gen.c`: `hi == (lo < 0 ? -1
+  : 0)` picks the sign-extension shape, else the direct split. Confirmed
+  the `08_castsize` cases still take their original (direct-split) path
+  unchanged (`70000`'s `hi=1` doesn't equal `0`, so no behavior change
+  there) — full-corpus regression run confirmed this explicitly, not
+  just assumed from the logic.
+
+**Confirmed byte-exact, full pipeline, zero mismatches**: `02_long/
+02_muldiv.c` → real `mutos_cpp -P` → `mutos_c0` → `mutos_c1` matches
+`02_muldiv.i.golden`/`.1.golden`/`.2.golden`/`.s.golden` byte-for-byte —
+this one *did* need one golden-mismatch iteration (the `OP_LCON`
+sign-extension-vs-direct-split distinction above was only found by
+diffing the first codegen attempt's `.s` output against the golden line
+by line; the `T_LCON` parser fix and the `TIMES`/`DIVIDE`/`MOD`
+long-helper-call codegen were both correct on the first attempt, derived
+from the `od` dump beforehand as usual). Full-corpus regression
+(`tests/mutos_cc/run_goldens.sh`) confirms zero regressions elsewhere:
+one more file byte-exact than the prior session's count (12/62), one
+fewer "not yet supported" than before (`02_long/02_muldiv` moved from
+that bucket to the pass bucket), 0 genuine mismatches anywhere.
+`02_long/01_addsub.c`, `03_retval.c` and `04_params.c` were re-checked
+and confirmed to still fail with their same pre-existing diagnostics
+(unrelated to this session's changes — blocked on `03_ctrlflow`/
+`04_funcs`, not on `long` arithmetic).
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
