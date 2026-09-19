@@ -715,3 +715,36 @@ every stage (`.i`/`.1`/`.2`/`.s`) byte-for-byte, reporting "not yet
 supported" separately from a genuine mismatch (see "Current scope"
 above) so the exit status stays a meaningful signal as coverage
 grows.
+
+## Tooling
+
+`dump_temp.py` is a standalone, human-readable decoder for any
+`temp1`/`temp2` (`.1`/`.2`) file - one `mutos_c0` just generated, or a
+real-hardware `*.1.golden`/`*.2.golden` reference. It is not a mode of
+`mutos_c0` itself (which could never read a golden file it didn't
+produce), so it works equally on both:
+
+```
+src/mutos_cc/dump_temp.py tests/mutos_cc/03_ctrlflow/06_switch.1.golden
+src/mutos_cc/dump_temp.py tests/mutos_cc/00_smoke/*.1.golden
+```
+
+For each `B`-tagged opcode it prints the byte offset, the opcode's
+name, and every `N`/`S` argument that follows it, resolving `TY_*`/
+`SC_*` constants to their names (e.g. `type=TY_LONG(6)`,
+`hclass=SC_AUTO(11)`) rather than leaving them as bare numbers, and
+handling `OP_SWIT`'s variable-length case table and `OP_NAME`'s
+`SC_EXTERN`-vs-otherwise conditional shape (a symbol name vs. a
+numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. An
+opcode it has no confirmed argument shape for (a construct outside
+`mutos_c0`'s current grammar/opcode scope, e.g. a struct or a function
+call) stops the dump cleanly with a clear message rather than
+guessing and silently desyncing the rest of the file - the same
+"explicit not yet supported, never silently wrong" rule this project
+applies everywhere else.
+
+`dump_temp.py`'s own `OPCODES` table is a hand-transcribed copy of
+every `outcode()` call site's argument shape, not something derived
+automatically from the wire format at read time - see `CLAUDE.md`'s
+Workflow Guideline 8 for the mandatory rule that keeps it in sync
+whenever an opcode's shape (or the `TY_*`/`SC_*` constants) changes.

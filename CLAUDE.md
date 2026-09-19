@@ -36,7 +36,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus `02_long/01_addsub`/`02_muldiv`, plus all 7 of `03_ctrlflow`) — see
   `src/mutos_cc/README.md` for the confirmed
-  `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
+  `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
+  contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
+  (generated or golden) — see `src/mutos_cc/README.md`'s "Tooling" section, and
+  Workflow Guideline 8 below for the rule that keeps it in sync with the wire format.
+  The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
   `STATUS.md`.
 
@@ -304,6 +308,22 @@ You act as an expert systems programmer, compiler architect, and operating syste
    brand-new binary content that isn't already routed through this project's
    base64-text convention (see the `.o`/`.a` golden files above) and so has nothing
    meaningful to diff.
+8. **`dump_temp.py` sync (mandatory)**: `src/mutos_cc/dump_temp.py` (a standalone
+   human-readable decoder for any `temp1`/`temp2` — i.e. `.1`/`.2` — file, generated or
+   golden) decodes each opcode's argument list from a hardcoded table (`OPCODES`),
+   transcribed directly from `c0_parser.c`/`c0_main.c`'s own `outcode()` call sites —
+   it does not infer shapes from the byte stream itself. This table goes stale
+   silently otherwise, so: any change that adds a new opcode `mutos_c0` emits, changes
+   an existing opcode's argument count/order, or adds a new `TY_*`/`SC_*` constant
+   (`decode_type()`/`decode_sc()`/`SC_NAMES` in the same file) must update
+   `dump_temp.py` in the same change — not as separate follow-up work, the same
+   standard Workflow Guideline 6 holds `STATUS.md` to. Verify the update the same way
+   `dump_temp.py` was originally verified: re-run it against every affected
+   `*.1.golden`/`*.2.golden` (`tests/mutos_cc/**/*.1.golden` covers the full corpus)
+   and confirm no new opcode stops the dump with a "no confirmed argument shape"
+   message that should now be decodable. A new opcode `mutos_c0` does not yet emit
+   (still future grammar/opcode scope) does not need an entry — `dump_temp.py` is
+   meant to stop cleanly there, per its own header comment, rather than guess.
 
 ---
 
