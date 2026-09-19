@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-18.
+Last updated: 2026-09-19.
 
 ---
 
@@ -226,10 +226,10 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 10/62 of the full corpus: `tests/mutos_cc/
-00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c`,
+byte-exact, end-to-end, for 11/62 of the full corpus: `tests/mutos_cc/
+00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
-`06_compasgn.c` and `07_ternary.c`. ABI/
+`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -237,7 +237,7 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
-### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn` + `07_ternary`)
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn` + `07_ternary` + `08_castsize`)
 
 Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
 symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
@@ -248,9 +248,9 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 
 **Verification: the real, unmodified pipeline — `<n>.c` → real
 `mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
-`tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c`,
+`tests/mutos_cc/00_smoke/` files plus all of `01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
-`06_compasgn.c` and `07_ternary.c`, and every
+`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, and every
 intermediate artifact (`.i`,
 `.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
@@ -259,13 +259,14 @@ matches its real-hardware golden byte-for-byte.** Re-run via
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 10
-byte-exact end-to-end, 52 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 11
+byte-exact end-to-end, 51 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
 `od`/hexdump, against the `00_smoke`, `01_intarith`, `02_bitwise`,
-`03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn` and `07_ternary`
+`03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
+`08_castsize`
 goldens) surfaced **four confirmed MUTOS-1700-specific deltas from vanilla
 V7 `cc`** (found against `00_smoke`), the full local-variable wire format
 (found against `01_intarith`), the bitwise-operator/immediate-marker
@@ -274,8 +275,9 @@ short-circuit codegen findings below (found against `03_rellogic`), the
 shift-codegen findings below (found against `04_shift`), the
 increment/decrement/pointer/array findings below (found against
 `05_incdec`), the compound-assignment findings below (found against
-`06_compasgn`), and the ternary/comma-operator findings below (found
-against `07_ternary`), each
+`06_compasgn`), the ternary/comma-operator findings below (found
+against `07_ternary`), and the char/long/cast/sizeof findings below
+(found against `08_castsize`), each
 cited against exact byte
 offsets in `docs/DEVLOG.md`'s Milestone 4 section:
 
@@ -492,33 +494,97 @@ offsets in `docs/DEVLOG.md`'s Milestone 4 section:
     `OP_MINUS` is deliberately left unchanged (still `"sub di,*N."`
     unconditionally, including by 1) since no golden yet shows whether
     `"x - 1"` gets the symmetric `DEC` treatment.
+13. `char`/`long` locals, casts between `int`/`char`/`long`, and `sizeof`
+    confirmed against `08_castsize` — a genuine type-system extension, not
+    just a new operator. `TY_CHAR=1`/`TY_LONG=6`/`TY_UNSIGN=7` already
+    existed as named constants in `mutos_cc.h` (from earlier sessions'
+    opcode-table transcription) but were unused until now. **A `long`'s
+    wire/memory layout matches `docs/MUTOS_C_ABI.md` §1.6's already-
+    documented "high word at the lower address" convention exactly**, down
+    to the constant-encoding level, not just stack layout — confirmed via
+    `"l = 70000;"` (`0x00011170`) splitting into an `LCON` node whose two
+    fields decode to `1` (high) then `4464` (low), and via every
+    long-producing/consuming opcode moving the low word through `SI` and
+    the high word through `DI`, storing low-then-high. A `char` local
+    occupies a full `MCC_SZINT`-sized (2-byte) stack slot despite its real
+    1-byte value — confirmed by `"long l;"` (offset `-10`) immediately
+    followed by `"char c;"` landing at `-12`, a 2-byte gap, not 1 — this
+    target always word-aligns an AUTO local's slot, even for a byte value.
+    **A previously-undocumented opcode, `107`, sits between the already-
+    named `OP_SETREG=105` and `OP_ITOC=109`** — confirmed absent from
+    vanilla V7's `c0.h` too (nothing is defined at 106/107/108 there
+    either), so this is a genuine MUTOS-1700-specific addition, not
+    something earlier opcode-table transcription simply missed. Named
+    `OP_CTOL` (char-to-long) by the same `XTOY` convention as every other
+    conversion opcode here — confirmed via `"l = (long) c;"`'s tree
+    (`NAME(c)`, `CTOL`, `ASSIGN`), and its codegen is a textbook 8086
+    sign-extension idiom: `"movb ax,<mem>"` (the char, loaded into `AX`
+    specifically — `CBW`/`CWD` are fixed-register instructions, `AL`/`AX`
+    only, so this is a hardware necessity, not a style choice) then `CBW`
+    then `CWD` then moved into the `DI`(high)`:SI`(low) convention. Casts
+    are narrowly scoped to a bare-variable operand
+    (`'(' ('int'|'char'|'long') ')' IDENT`, not a general unary-expr) and
+    compile to one of three confirmed conversion opcodes chosen by
+    (source-type, target-type): `LTOI` (long→int, truncation — reads only
+    the long's low word, discarding the high word entirely: `"mov
+    di,*-8.(bp)"` where `l`'s own base offset is `-10`), `ITOC` (int→char,
+    truncation — loads into `DX` specifically, not the usual `DI`
+    "working register," since the subsequent `movb` store needs a
+    byte-addressable register and `DI`/`SI` have none on the 8086), and
+    `CTOL` as above. **`sizeof` never emits a wire opcode of its own at
+    all** — every `sizeof(...)` in `08_castsize.c`, including `sizeof(i)`
+    (a variable, not a type name), folds directly to `CON(TY_UNSIGN,
+    <size>)` at parse time — for `sizeof(i)`, `i`'s own `NAME` is never
+    even emitted, confirming `sizeof`'s operand is genuinely never
+    evaluated, only its type inspected, matching real C semantics exactly.
+    Large integer literals (`70000`) are automatically promoted to `long`
+    (standard K&R/C89 constant promotion — K&R2 §A2.5.1: a decimal
+    constant too big for `int` becomes `long`), threaded through via a new
+    `is_long` flag on `c0_parser.c`'s `ExprVal`, never propagated through
+    any arithmetic combinator (no golden exercises `long` arithmetic —
+    only a bare literal, directly and immediately assigned). Only these
+    three (source, target) cast pairs, a bare-`IDENT`/bare-type-keyword
+    `sizeof` operand, and a memory (not register-pair) `long`/`char`
+    operand for every new opcode are supported — anything else (a fourth
+    cast combination, `long` arithmetic, `sizeof` on an array or a general
+    expression, a `long`/`char` pointer or array) is an explicit "not yet
+    supported."
 
 **Current grammar/opcode scope (deliberately narrow, by design — see
 `src/mutos_cc/README.md`):** function definitions with no parameters; a
-body of `int`/`int *`/single-dimension `int[N]` local declarations (no
-initializers) followed by `name <assign-op> expr;` assignment (`=` or any
+body of `int`/`int *`/single-dimension `int[N]`/`char`/`long` local
+declarations (no
+initializers; `char`/`long` support only a plain-`IDENT` declarator, no
+pointer/array form) followed by `name <assign-op> expr;` assignment (`=` or any
 of the ten compound-assignment operators `+= -= *= /= %= <<= >>= &= |=
 ^=`), `*<ptr-expr> = expr;`
 dereferenced-pointer assignment, and/or `return` statements; expressions
 over `+ - * / % & | ^ ~ < <= > >= == != && || ! << >> ?:` (unary/binary as
 applicable), postfix/prefix `++`/`--` (pointer-scaled where applicable),
-parens (including a parenthesized comma-list, optionally containing a
+a narrowly-scoped cast (`'(' ('int'|'char'|'long') ')' IDENT`) and
+`sizeof` (`sizeof '(' ('int'|'char'|'long'|IDENT) ')'`), parens
+(including a parenthesized comma-list, optionally containing a
 plain `=` assignment per comma-item), integer
-constants, and variable references (with array-to-pointer decay on an
+constants (automatically `long`-promoted per K&R/C89 rules when too large
+for a plain `int`), and variable references (with array-to-pointer decay on an
 array name used as an rvalue), constant-folded at parse time exactly
 like real K&R `cc`'s own per-operation `build()`-time folding, with a real
-`NAME`/operator tree emitted the moment a variable is involved. Everything
+`NAME`/operator tree emitted the moment a variable is involved. **`01_expr`
+is now fully covered.** Everything
 else (a compound-assignment operator's right-hand side being anything
 other than a compile-time constant, `*=`/`/=`/`%=` by a non-power-of-two
 or non-constant, a `?:` branch that is itself a bare relational
-comparison, a compound-assignment operator inside a comma-list, non-`int`
-element types, array
+comparison, a compound-assignment operator inside a comma-list, a cast
+combination other than the three confirmed ones (long→int, int→char,
+char→long), `sizeof` on an array or a general expression, `long`
+arithmetic, a `char`/`long` pointer or array, any other
+element type, array
 subscripting, multi-level pointers/multi-dimensional arrays, explicit `&`
 outside array decay, function parameters, control flow, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV` operand outside a confirmed
 compound-assignment shape) is an explicit "not yet
 supported" error, not silently-wrong output — confirmed via a direct test
-against `01_expr/08_castsize.c` (correctly rejected with a clear message,
+against `02_long/01_addsub.c` (correctly rejected with a clear message,
 not a crash or bad `.s`).
 
 Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root
@@ -665,10 +731,12 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `08_castsize`
-next (casts/`sizeof`) to finish `01_expr`. See
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr` is
+now fully covered; `02_long` next (`long` arithmetic via the
+`almul`/`aldiv`/`alrem` extended-ABI runtime helpers, `docs/MUTOS_C_ABI.md`
+sect. 1.8). See
 `src/mutos_cc/README.md`'s "Next
-steps" for the full, dependency-ordered plan through `long`/full
+steps" for the full, dependency-ordered plan through full
 arrays-and-pointers (subscripting, multi-level)/structs, `03_ctrlflow`,
 function calls, the `09_abiprobe`
 `chkstk`-threshold goldens, and the `mutos_cc` driver itself.

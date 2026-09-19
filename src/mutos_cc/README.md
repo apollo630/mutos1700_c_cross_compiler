@@ -11,11 +11,11 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 10/62 of the full corpus:**
-`tests/mutos_cc/00_smoke/`'s three files, plus
-`tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c` and
-`07_ternary.c`. See STATUS.md
+`mutos_c0` → `mutos_c1` → `.s`), for 11/62 of the full corpus:**
+`tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
+`01_intarith.c`, `02_bitwise.c`,
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
+`07_ternary.c` and `08_castsize.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -161,16 +161,17 @@ negative large-magnitude constant.
 ## Current scope
 
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
-exactly `tests/mutos_cc/00_smoke`'s three programs plus
-`tests/mutos_cc/01_expr/01_intarith.c`, `02_bitwise.c`,
-`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c` and
-`07_ternary.c`:
+exactly `tests/mutos_cc/00_smoke`'s three programs plus all of
+`tests/mutos_cc/01_expr`: `01_intarith.c`, `02_bitwise.c`,
+`03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
+`07_ternary.c` and `08_castsize.c`:
 
 ```
 translation-unit  := extdef*
 extdef            := IDENT '(' ')' compound-stmt
 compound-stmt     := '{' decl* stmt* '}'
-decl              := 'int' declarator (',' declarator)* ';'
+decl              := ('int' declarator (',' declarator)*
+                      | ('char'|'long') IDENT (',' IDENT)*) ';'
 declarator        := '*' IDENT | IDENT ('[' ICON ']')?
 stmt              := assign-stmt | star-assign-stmt | return-stmt
 assign-stmt       := IDENT assign-op expr ';'
@@ -191,14 +192,19 @@ ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
 UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
 POSTFIX           := PRIMARY ('++'|'--')?
-PRIMARY           := ICON | IDENT | '(' comma-item (',' comma-item)* ')'
+PRIMARY           := ICON | IDENT | cast-expr | sizeof-expr
+                    | '(' comma-item (',' comma-item)* ')'
+cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
+sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
 comma-item        := (IDENT '=' expr) | expr
 ```
 
 Every function is implicitly `int`-returning (K&R default) and takes
 no parameters. A block may declare any number of `int`, `int *`
-(single-degree pointer), or single-dimension `int[N]` (array) locals
-(no initializers) before its statements, matching K&R's
+(single-degree pointer), `int[N]` (single-dimension array), `char`, or
+`long` locals
+(no initializers; `char`/`long` support only the plain-`IDENT`
+declarator, no `*`/`[` forms) before its statements, matching K&R's
 declarations-before-statements rule; each statement is a
 single-variable assignment (with `=` or any of the ten
 compound-assignment operators), a dereferenced-pointer assignment
@@ -214,7 +220,10 @@ long as every operand feeding it is also constant (matching real K&R
 a `TIMES` opcode), and is emitted as a real `NAME`/operator tree the
 moment a variable enters the picture, materializing any constant
 sibling as a genuine `CON` leaf at that point. Folding uses 16-bit
-truncation (`trunc16()`), matching the target's 16-bit `int`. A
+truncation (`trunc16()`), matching the target's 16-bit `int` - except
+an integer literal too large for a plain `int` (K&R/C89 promotion
+rule: `ExprVal` gains an `is_long` flag, carrying the full untruncated
+value; see the char/long/cast/sizeof derivation below). A
 postfix/prefix `++`/`--` operand and a bare array name used as an
 rvalue are never treated as compile-time constants (both always
 emit real code - see the increment/decrement/pointer/array
@@ -225,6 +234,10 @@ golden (`07_ternary`'s own condition is always a real comparison).
 A parenthesized comma-list's embedded `IDENT '=' expr` items are
 never constants (an assignment always has a side effect, so it is
 always emitted for real, exactly like `assign-stmt`'s own handling).
+`sizeof(...)` is the one exception to the fold-or-emit model
+entirely: it emits its own `CON(TY_UNSIGN, <size>)` node immediately
+and unconditionally, never deferred as a further-foldable `ExprVal`
+constant (see that derivation below for why).
 
 `mutos_c1`'s opcode coverage (`c1_gen.c`) matches exactly what the
 above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
@@ -235,6 +248,7 @@ above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `EXCLA`, `AMPER`, `ITOP`, `STAR`, `INCBEF`, `DECBEF`, `INCAFT`,
 `DECAFT`, `ASPLUS`, `ASMINUS`, `ASTIMES`, `ASDIV`, `ASMOD`, `ASLSH`,
 `ASRSH`, `ASSAND`, `ASOR`, `ASXOR`, `COLON`, `QUEST`, `SEQNC`,
+`LCON`, `LTOI`, `ITOC`, `CTOL`,
 `ASSIGN`, `RFORCE`, `EXPR`,
 `RETRN`, `SETSTK`, `EOFC`. Its
 own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
@@ -396,13 +410,55 @@ never `"add di,*1."`; `OP_MINUS` is deliberately left unchanged
 golden yet shows whether `"x - 1"` gets the symmetric `DEC`
 treatment.
 
+**`char`/`long` locals, casts, and `sizeof` confirmed against
+`08_castsize`** - a genuine type-system extension, not just a new
+operator. A `long`'s wire/memory layout matches
+`docs/MUTOS_C_ABI.md` §1.6's already-documented "high word at the
+lower address" convention exactly, down to the constant-encoding
+level - confirmed via `"l = 70000;"` (`0x00011170`) splitting into an
+`LCON` node whose two fields decode to `1` (high) then `4464` (low),
+and via every long-producing/consuming opcode moving the low word
+through `SI` and the high word through `DI`, storing low-then-high. A
+`char` local occupies a full 2-byte stack slot despite its real 1-byte
+value - confirmed by `"long l;"` (offset `-10`) immediately followed
+by `"char c;"` landing at `-12`, a 2-byte gap, not 1. A
+previously-undocumented opcode, `107`, sits between the already-named
+`OP_SETREG=105` and `OP_ITOC=109` - confirmed absent from vanilla V7's
+`c0.h` too, so this is a genuine MUTOS-1700-specific addition. Named
+`OP_CTOL` (char-to-long) by the same `XTOY` convention as every other
+conversion opcode here, its codegen is a textbook 8086 sign-extension
+idiom: `"movb ax,<mem>"` (the char, loaded into `AX` specifically -
+`CBW`/`CWD` are fixed-register instructions, `AL`/`AX` only, a
+hardware necessity, not a style choice) then `CBW` then `CWD` then
+moved into the `DI`(high)`:SI`(low) convention `LCON` also produces.
+Casts are narrowly scoped to a bare-variable operand
+(`cast-expr` above, not a general unary-expr) and compile to one of
+three confirmed conversion opcodes chosen by (source-type,
+target-type): `LTOI` (long→int, truncation - reads only the long's low
+word, discarding the high word entirely), `ITOC` (int→char, truncation
+- loads into `DX` specifically, not the usual `DI` "working register,"
+since the subsequent `movb` store needs a byte-addressable register
+and `DI`/`SI` have none on the 8086), and `CTOL` as above.
+`sizeof(...)` never emits a wire opcode of its own at all - every
+`sizeof(...)` in `08_castsize.c`, including `sizeof(i)` (a variable,
+not a type name), folds directly to `CON(TY_UNSIGN, <size>)` at parse
+time; for `sizeof(i)`, `i`'s own `NAME` is never even emitted,
+confirming `sizeof`'s operand is genuinely never evaluated, only its
+type inspected - matching real C semantics exactly. Only these three
+(source, target) cast pairs, a bare-`IDENT`/bare-type-keyword `sizeof`
+operand, and a memory (not register-pair) `long`/`char` operand for
+every new opcode are supported.
+
 **Anything outside this - unary `-`/`+` on a non-constant operand
-(unary `~`/`!` are covered), a non-`int`/non-pointer/non-array
+(unary `~`/`!` are covered), a non-`int`/non-pointer/non-array/non-
+`char`/non-`long`
 declaration, array subscripting, a compound-assignment operator's
 right-hand side being anything other than a compile-time constant
 (or, for `*=`, anything other than a power-of-two constant), a `?:`
 branch that is itself a bare relational comparison, a compound-
-assignment operator inside a comma-list,
+assignment operator inside a comma-list, a cast combination other
+than the three confirmed ones, `sizeof` on an array or a general
+expression, `long` arithmetic, a `char`/`long` pointer or array,
 function parameters, a third kind of statement, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
@@ -439,34 +495,37 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 
 ## Next steps (roughly in dependency order)
 
-1. **The rest of `01_expr`** (`08_castsize`):
+1. **All of `01_expr` is now done.**
    `03_rellogic` (relational/logical `< <= > >= == != && || !`),
    `04_shift` (`<< >>`, both variable-count-via-`CL` and
    constant-count-via-repeated-single-bit-shift), `05_incdec`
    (`++`/`--`, pointer-scaled where applicable, plus the pointer/array
    groundwork it pulled in), `06_compasgn` (all ten
    compound-assignment operators, with a genuine `*=`-by-power-of-two
-   strength reduction to a shift), and `07_ternary` (`?:` with a new
+   strength reduction to a shift), `07_ternary` (`?:` with a new
    inverted-condition-branches-to-false-label codegen shape, and the
-   `,` comma operator, which emits no code of its own) are now done -
+   `,` comma operator, which emits no code of its own), and
+   `08_castsize` (`char`/`long` locals, casts between `int`/`char`/
+   `long` via three confirmed conversion opcodes including the
+   MUTOS-specific `CTOL`, and `sizeof` folded entirely at parse time)
+   are now done -
    see the `VK_COND`
    design, the `LSHIFT`/`RSHIFT` handling, the increment/decrement/
-   pointer/array derivation, the compound-assignment derivation, and
-   the ternary/comma-operator derivation
+   pointer/array derivation, the compound-assignment derivation, the
+   ternary/comma-operator derivation, and the char/long/cast/sizeof
+   derivation
    above.
-   Remaining: casts, and `sizeof` - each needs its own confirmed opcode/
-   instruction shape, the same way `< <= > >= == != && || ! << >>`
-   were
-   derived here.
-2. **`02_long`/`05_arrptr`/`06_struct` groundwork**: `long` (the
+2. **`02_long` arithmetic, `05_arrptr`/`06_struct` groundwork**:
+   `long` *arithmetic* (the
    `almul`/`aldiv`/`alrem` extended-ABI runtime calls - see
-   `docs/MUTOS_C_ABI.md` sect. 1.8), array subscripting and
+   `docs/MUTOS_C_ABI.md` sect. 1.8 - `long` *locals*, casts, and
+   constants already exist, from `08_castsize` - see above), array subscripting and
    multi-level pointers/multi-dimensional arrays (single-degree
    pointers and single-dimension arrays already exist, from
    `05_incdec` - see above), structs/
    unions/enums - each adds real type-system work (sizes beyond a
    flat "2 bytes", degree-of-reference, member layout) the current
-   `TY_INT`/`TY_PTR_INT`-only `SymEntry`/`ExprVal` model doesn't have yet.
+   `SymEntry`/`ExprVal` model doesn't fully have yet.
 3. **`03_ctrlflow`**: `if`/`while`/`for`/`do`/`switch`/`goto` - each
    needs its own confirmed label-allocation/branch shape, the same
    way `00_smoke`'s `sloc`/`sloc+1`/`retlab` scheme was derived here.

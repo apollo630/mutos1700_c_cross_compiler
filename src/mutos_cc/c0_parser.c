@@ -7,7 +7,8 @@
  *   translation-unit  := extdef*
  *   extdef            := IDENT '(' ')' compound-stmt
  *   compound-stmt     := '{' decl* stmt* '}'
- *   decl              := 'int' declarator (',' declarator)* ';'
+ *   decl              := ('int' declarator (',' declarator)*
+ *                        | ('char'|'long') IDENT (',' IDENT)*) ';'
  *   declarator        := '*' IDENT | IDENT ('[' ICON ']')?
  *   stmt              := assign-stmt | star-assign-stmt | return-stmt
  *   assign-stmt       := IDENT assign-op expr ';'
@@ -28,11 +29,16 @@
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
  *   UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
  *   POSTFIX           := PRIMARY ('++'|'--')?
- *   PRIMARY           := ICON | IDENT | '(' comma-item (',' comma-item)* ')'
+ *   PRIMARY           := ICON | IDENT | cast-expr | sizeof-expr
+ *                       | '(' comma-item (',' comma-item)* ')'
+ *   cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
+ *   sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
  *   comma-item        := (IDENT '=' expr) | expr
  *
- * i.e. every declared local is 'int', 'int *' (one pointer degree) or
- * 'int' '[' N ']' (one array dimension), with no initializer; every
+ * i.e. every declared local is 'int', 'int *' (one pointer degree),
+ * 'int' '[' N ']' (one array dimension), 'char', or 'long' (the
+ * latter two: plain IDENT declarators only, no '*'/'[' forms), with
+ * no initializer; every
  * statement is a single-variable assignment (with '=' or any of the
  * ten compound-assignment operators - parse_assign_stmt() handles
  * all eleven identically, emitting the real ASPLUS/ASMINUS/ASTIMES/
@@ -49,11 +55,21 @@
  * peek2_kind()-based lookahead) - not otherwise reachable from
  * expression context, since assign-stmt above is a distinct,
  * statement-level-only production; only '=' is supported there, not
- * any of the ten compound-assignment operators. This is
- * exactly tests/mutos_cc/00_smoke's three programs plus
- * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c,
- * 04_shift.c, 05_incdec.c, 06_compasgn.c and 07_ternary.c. Array
- * subscripting, and multi-level pointers/multi-dimensional arrays are
+ * any of the ten compound-assignment operators. cast-expr is
+ * narrowly scoped to a bare-variable operand (not a general
+ * unary-expr), picking one of three confirmed conversion opcodes
+ * (LTOI/ITOC/the MUTOS-specific CTOL - see mutos_cc.h) by the
+ * operand's declared type and the parsed target type - see
+ * parse_primary()'s T_LPAREN handling. sizeof-expr folds entirely at
+ * parse time to a CON(TY_UNSIGN, <size>) leaf, never a wire opcode of
+ * its own, and never evaluates an IDENT operand's own NAME - see
+ * parse_unary()'s T_KW_SIZEOF handling. This is
+ * exactly tests/mutos_cc/00_smoke's three programs plus all of
+ * tests/mutos_cc/01_expr: 01_intarith.c, 02_bitwise.c, 03_rellogic.c,
+ * 04_shift.c, 05_incdec.c, 06_compasgn.c, 07_ternary.c and
+ * 08_castsize.c. Array
+ * subscripting, multi-level pointers/multi-dimensional arrays, and
+ * 'long' arithmetic are
  * not yet part of this chain - see src/mutos_cc/README.md.
  *
  * Expression handling is still "emit as you parse" (no explicit
@@ -122,6 +138,15 @@ typedef struct {
  * v7/cc/c0.h's SZINT; this grammar scope has no other element size. */
 #define MCC_SZINT 2
 
+/* SZCHAR/SZLONG - char's and long's VALUE sizes (1 and 4 bytes
+ * respectively - confirmed against 08_castsize.s.golden's "s2 =
+ * matching its real value size). A char
+ * local's STACK SLOT is 2 bytes regardless (see parse_decl()'s
+ * declarator loop) - these two constants are the C-visible value
+ * sizes sizeof() reports, not necessarily the allocation size. */
+#define MCC_SZCHAR 1
+#define MCC_SZLONG 4
+
 static void advance(Parser *p)
 {
     if (p->have_la) {
@@ -184,11 +209,21 @@ static long trunc16(long v)
 
 typedef struct {
     int  is_const;
-    long value;   /* valid iff is_const */
+    int  is_long;  /* valid iff is_const - set only by an integer
+                     * literal too large for a plain 16-bit int (see
+                     * parse_primary()'s T_ICON handling); never
+                     * propagated through any arithmetic combinator
+                     * below (no golden exercises long arithmetic, only
+                     * a bare long literal directly assigned - see
+                     * 08_castsize.c) */
+    long value;   /* valid iff is_const - the FULL, untruncated value
+                    * when is_long (see emit_materialize()'s LCON
+                    * case), otherwise the trunc16()'d int value */
 } ExprVal;
 
-static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.value = v; return e; }
-static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.value = 0; return e; }
+static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; return e; }
+static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; return e; }
+static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; return e; }
 
 /* If `v` is still an unmaterialized constant, emits it now as a real
  * CON leaf (treeout()'s CON case: outcode("BNN", CON, type, value)) -
@@ -197,8 +232,23 @@ static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.value = 0; retur
  * no-op if `v` was already emitted (is_const == 0). */
 static void emit_materialize(FILE *t1, ExprVal v)
 {
-    if (v.is_const)
+    if (!v.is_const)
+        return;
+    if (v.is_long) {
+        /* LCON's wire format mirrors the confirmed "long" memory/ABI
+         * convention (docs/MUTOS_C_ABI.md sect. 1.6: high word at the
+         * LOWER address) even at this constant-encoding level, not
+         * just for stack layout: two 16-bit words, high word first -
+         * confirmed against 08_castsize.1.golden's "l = 70000;"
+         * (0x00011170), whose LCON node's two N-fields decode to 1
+         * (high) then 4464 (low, =0x1170). */
+        long uv = (uint32_t)v.value;
+        long hi = (int16_t)(uint16_t)((uv >> 16) & 0xFFFFL);
+        long lo = (int16_t)(uint16_t)(uv & 0xFFFFL);
+        outcode(t1, "BNNN", OP_LCON, TY_LONG, hi, lo);
+    } else {
         outcode(t1, "BNN", OP_CON, TY_INT, (int)trunc16(v.value));
+    }
 }
 
 /* Emits the CON/ITOP scaling sequence plus the final INCBEF/DECBEF/
@@ -269,9 +319,21 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
 static ExprVal parse_primary(Parser *p, FILE *t1)
 {
     if (p->cur.kind == T_ICON) {
-        long v = trunc16(p->cur.ival);
+        /* An integer literal too large for a plain (16-bit, signed)
+         * int is automatically 'long' - standard K&R/C89 integer-
+         * constant promotion (K&R2 sect. A2.5.1), confirmed against
+         * 08_castsize.1.golden's "l = 70000;" (70000 > 32767) using
+         * LCON rather than a truncated CON. Only a bare literal is
+         * covered - no golden exercises long-typed arithmetic (a
+         * long literal combined with '+'/'-'/etc.), so is_long is
+         * never propagated by any combinator below; only
+         * emit_materialize() (a direct assignment's rhs) ever reads
+         * it. */
+        long raw = p->cur.ival;
         advance(p);
-        return ev_const(v);
+        if (raw > 32767)
+            return ev_const_long(raw);
+        return ev_const(trunc16(raw));
     }
     if (p->cur.kind == T_IDENT) {
         SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
@@ -313,6 +375,62 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
         return ev_dynamic();
     }
     if (p->cur.kind == T_LPAREN) {
+        if (peek2_kind(p) == T_KW_INT || peek2_kind(p) == T_KW_CHAR ||
+            peek2_kind(p) == T_KW_LONG) {
+            /* cast-expr := '(' ('int'|'char'|'long') ')' IDENT
+             *
+             * Only a plain variable name as the operand - not a
+             * general unary-expr - matching 08_castsize.c's only
+             * confirmed uses ("(int) l", "(char) i", "(long) c").
+             * The source type comes from the identifier's own
+             * declared type (no general type-tracking exists on
+             * ExprVal - see sizeof's comment above), which together
+             * with the parsed target type picks one of the three
+             * conversion opcodes confirmed against
+             * 08_castsize.1.golden: long->int is LTOI, int->char is
+             * ITOC, char->long is the MUTOS-specific CTOL (see
+             * mutos_cc.h). Any other (source, target) pair - int-
+             * >int, int->long, char->int, long->char, char->char,
+             * long->long - is not yet supported; none is exercised
+             * by this file. */
+            advance(p); /* consume '(' */
+            int target = (p->cur.kind == T_KW_INT) ? TY_INT
+                        : (p->cur.kind == T_KW_CHAR) ? TY_CHAR : TY_LONG;
+            advance(p); /* consume the type keyword */
+            if (!expect(p, T_RPAREN, "')'"))
+                return ev_dynamic();
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line,
+                    "a cast's operand must be a plain variable name so "
+                    "far - see src/mutos_cc/README.md");
+                if (p->cur.kind != T_EOF)
+                    advance(p);
+                return ev_const(0);
+            }
+            int line = p->cur.line;
+            SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+            if (!sym) {
+                c0_error_at(line, "'%s' undeclared", p->cur.ident);
+                advance(p);
+                return ev_const(0);
+            }
+            advance(p); /* consume IDENT */
+            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            int optag;
+            if (sym->type == TY_LONG && target == TY_INT)
+                optag = OP_LTOI;
+            else if (sym->type == TY_INT && target == TY_CHAR)
+                optag = OP_ITOC;
+            else if (sym->type == TY_CHAR && target == TY_LONG)
+                optag = OP_CTOL;
+            else {
+                c0_error_at(line, "this cast combination is not yet "
+                                   "supported - see src/mutos_cc/README.md");
+                return ev_dynamic();
+            }
+            outcode(t1, "BN", optag, target);
+            return ev_dynamic();
+        }
         advance(p);
         /* '(' comma-item (',' comma-item)* ')' - the ',' handling
          * (SEQNC) evaluates every item but the last purely for its
@@ -344,6 +462,64 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
 
 static ExprVal parse_unary(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_KW_SIZEOF) {
+        /* sizeof '(' ('int'|'char'|'long'|IDENT) ')' - confirmed
+         * against 08_castsize.1.golden: every sizeof(...) folds
+         * directly to a CON(TY_UNSIGN, <size>) leaf at parse time -
+         * NEVER an OP_SIZEOF wire node, and (for "sizeof(i)")
+         * without so much as emitting i's own NAME - sizeof's
+         * operand is never evaluated, only its type inspected. This
+         * is emitted immediately here (not deferred as a further-
+         * foldable ExprVal constant like every other constant
+         * elsewhere in this file) since ExprVal carries no type tag
+         * to remember "this constant must render as TY_UNSIGN if
+         * ever materialized" - not exercised by any golden anyway,
+         * since every sizeof(...) in 08_castsize.c is immediately
+         * assigned, never combined further at parse time. Real C
+         * also allows a general "sizeof unary-expr" form and other
+         * type names (short/float/double/struct/pointer types/...) -
+         * none of that is exercised here, so only this one
+         * parenthesized-type-or-plain-variable form is supported. */
+        advance(p);
+        if (!expect(p, T_LPAREN, "'('"))
+            return ev_const(0);
+        long size;
+        if (p->cur.kind == T_KW_INT) {
+            size = MCC_SZINT;
+            advance(p);
+        } else if (p->cur.kind == T_KW_CHAR) {
+            size = MCC_SZCHAR;
+            advance(p);
+        } else if (p->cur.kind == T_KW_LONG) {
+            size = MCC_SZLONG;
+            advance(p);
+        } else if (p->cur.kind == T_IDENT) {
+            SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+            if (!sym) {
+                c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
+                size = 0;
+            } else if (sym->is_array) {
+                c0_error_at(p->cur.line, "sizeof of an array is not yet "
+                                          "supported - see src/mutos_cc/README.md");
+                size = 0;
+            } else if (sym->is_ptr) {
+                size = MCC_SZINT; /* a pointer is word-sized, same as int */
+            } else switch (sym->type) {
+                case TY_CHAR: size = MCC_SZCHAR; break;
+                case TY_LONG: size = MCC_SZLONG; break;
+                default:      size = MCC_SZINT;  break;
+            }
+            advance(p);
+        } else {
+            c0_error_at(p->cur.line,
+                "sizeof's operand must be 'int'/'char'/'long' or a plain "
+                "variable name so far - see src/mutos_cc/README.md");
+            size = 0;
+        }
+        expect(p, T_RPAREN, "')'");
+        outcode(t1, "BNN", OP_CON, TY_UNSIGN, size);
+        return ev_dynamic();
+    }
     if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
         /* Prefix '++'/'--' - INCBEF/DECBEF, only on a plain variable
          * name so far (matching this grammar scope's only confirmed
@@ -744,7 +920,7 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
 /* Declarations */
 
 /*
- * decl := 'int' declarator (',' declarator)* ';'
+ * decl := ('int' declarator (',' declarator)* | 'char' IDENT (',' IDENT)* | 'long' IDENT (',' IDENT)*) ';'
  * declarator := '*' IDENT | IDENT ('[' ICON ']')?
  *
  * Matches v7/cc/c03.c's AUTO-storage-class declarator loop: each
@@ -764,22 +940,76 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * parse_primary()'s array-decay handling), just with sym->is_array
  * set so later references know it isn't itself an assignable/
  * incrementable lvalue. Only these two single-degree forms are
- * supported - "int **pp;", multi-dimensional arrays, and any
- * non-'int' element type are not yet - see src/mutos_cc/README.md.
+ * supported - "int **pp;", multi-dimensional arrays are not yet -
+ * see src/mutos_cc/README.md.
+ *
+ * 'char'/'long' locals - confirmed against 08_castsize.1.golden/
+ * .s.golden's "long l;"/"char c;" ANAME offsets - only support the
+ * plain-IDENT declarator (no '*'/'[' forms; not exercised by any
+ * golden yet). A 'long' occupies MCC_SZLONG (4) bytes of frame space,
+ * matching its real value size. A 'char' occupies MCC_SZINT (2) bytes
+ * of frame space DESPITE its real value size being MCC_SZCHAR (1) -
+ * confirmed by "long l;" (offset -10) immediately followed by
+ * "char c;" landing at offset -12, a 2-byte gap, not 1 - this target
+ * always word-aligns an AUTO local's stack slot, matching int's own
+ * slot size, even for a byte-sized value (see OP_ITOC's/OP_CTOL's
+ * "movb" handling in c1_gen.c for how the 1-byte VALUE is actually
+ * read/written within that 2-byte slot).
  */
 static void parse_decl(Parser *p, FILE *t1)
 {
-    if (p->cur.kind != T_KW_INT) {
+    int symtype, slotsize;
+    if (p->cur.kind == T_KW_INT) {
+        symtype = TY_INT;
+        slotsize = MCC_SZINT;
+    } else if (p->cur.kind == T_KW_CHAR) {
+        symtype = TY_CHAR;
+        slotsize = MCC_SZINT; /* slot size, not value size - see above */
+    } else if (p->cur.kind == T_KW_LONG) {
+        symtype = TY_LONG;
+        slotsize = MCC_SZLONG;
+    } else {
         c0_error_at(p->cur.line,
-            "only 'int' local declarations are supported so far - "
-            "see src/mutos_cc/README.md");
+            "only 'int'/'char'/'long' local declarations are supported "
+            "so far - see src/mutos_cc/README.md");
         while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
             advance(p);
         if (p->cur.kind == T_SEMI)
             advance(p);
         return;
     }
-    advance(p); /* consume 'int' */
+    advance(p); /* consume 'int'/'char'/'long' */
+
+    if (symtype != TY_INT) {
+        /* 'char'/'long': plain IDENT declarators only (no '*'/'['
+         * forms - not exercised by any golden yet). */
+        for (;;) {
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line, "expected an identifier in declaration");
+                break;
+            }
+            char name[LEX_IDENT_MAX];
+            strncpy(name, p->cur.ident, sizeof name - 1);
+            name[sizeof name - 1] = '\0';
+            int line = p->cur.line;
+            advance(p);
+
+            SymEntry *sym = symtab_declare_auto(&p->syms, name, symtype, slotsize);
+            if (!sym) {
+                c0_error_at(line, "'%s' redeclared", name);
+            } else {
+                outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
+            }
+
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            break;
+        }
+        expect(p, T_SEMI, "';'");
+        return;
+    }
 
     for (;;) {
         int is_ptr = 0;
@@ -813,9 +1043,9 @@ static void parse_decl(Parser *p, FILE *t1)
         }
 
         int size = is_array ? (int)(arraylen * MCC_SZINT) : MCC_SZINT;
-        int symtype = is_ptr ? TY_PTR_INT : TY_INT;
+        int decltype = is_ptr ? TY_PTR_INT : TY_INT;
 
-        SymEntry *sym = symtab_declare_auto(&p->syms, name, symtype, size);
+        SymEntry *sym = symtab_declare_auto(&p->syms, name, decltype, size);
         if (!sym) {
             c0_error_at(line, "'%s' redeclared", name);
         } else {
@@ -1027,10 +1257,11 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
         return;
 
     /* Declarations must precede statements within a block, matching
-     * K&R block structure - only 'int' declarations are recognized
-     * as such right now, so the loop condition doubles as "have we
-     * reached the first statement yet". */
-    while (p->cur.kind == T_KW_INT)
+     * K&R block structure - 'int'/'char'/'long' declarations are
+     * recognized as such right now, so the loop condition doubles as
+     * "have we reached the first statement yet". */
+    while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
+           p->cur.kind == T_KW_LONG)
         parse_decl(p, t1);
 
     while (p->cur.kind != T_RBRACE && p->cur.kind != T_EOF) {
