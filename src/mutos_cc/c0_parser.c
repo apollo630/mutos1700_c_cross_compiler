@@ -103,7 +103,13 @@
  * docs/DEVLOG.md).
  */
 
+#define _POSIX_C_SOURCE 200809L /* for open_memstream() under -std=c11 -
+                                  * see parse_for_stmt()'s deferred-
+                                  * increment-emission comment. */
+
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mutos_cc.h"
@@ -112,6 +118,33 @@
 #include "c0_outcode.h"
 #include "c0_sym.h"
 #include "c0_parser.h"
+
+/* Function-scoped goto-label table: name -> intermediate-code label
+ * number, allocated on first mention (a 'name:' definition or a
+ * 'goto name;' reference, whichever comes first - see
+ * label_for_name()) - matches K&R C's own function-scope label
+ * namespace (separate from ordinary variable names, so no interaction
+ * with SymTab). Sized generously; 07_goto.c only ever uses 2. */
+#define MCC_NLABELS 32
+typedef struct {
+    char name[LEX_IDENT_MAX];
+    int  lab;
+} LabelEntry;
+
+/* One 'switch' case's (label, constant-value) pair - v7/cc's own
+ * struct swtab (c0.h), collected while parsing a switch's body and
+ * written out verbatim as OP_SWIT's trailing table - see
+ * parse_switch_stmt(). Sized generously; 06_switch.c only ever uses
+ * 4. Cases from a still-open ENCLOSING switch stay in this same
+ * array (matching v7/cc's own shared, cursor-delimited `swtab`) so a
+ * nested switch (not exercised by any golden) would not need its own
+ * separate storage - parse_switch_stmt() only ever iterates its own
+ * [case_base, p->ncases) slice. */
+#define MCC_NCASES 32
+typedef struct {
+    int lab;
+    long val;
+} CaseEntry;
 
 typedef struct {
     Lexer  lx;
@@ -124,6 +157,52 @@ typedef struct {
                      * translation unit. */
     SymTab syms;    /* current function's local (AUTO) variables -
                       * reset at the start of each cfunc(). */
+    int    brklab;  /* v7/cc/c02.c's global `brklab`: the label a bare
+                      * 'break;' branches to - the innermost enclosing
+                      * loop's or switch's end label, 0 (never a valid
+                      * label - isn starts at 1) when not inside one.
+                      * Saved/restored by each loop/switch parser
+                      * function around its own body, so nesting falls
+                      * naturally out of C's own call stack - matching
+                      * v7/cc's own save-a-local/restore-the-global
+                      * pattern (e.g. WHILE's "o2 = brklab; ...;
+                      * brklab = o2;") without needing an explicit
+                      * stack structure. Reset to 0 at the start of
+                      * each cfunc(). */
+    int    contlab; /* v7/cc's global `contlab`: the label a bare
+                      * 'continue;' branches to. Same save/restore
+                      * discipline as brklab; FOR additionally
+                      * reassigns it mid-construct once its own
+                      * increment clause is known - see
+                      * parse_for_stmt(). */
+    LabelEntry labels[MCC_NLABELS]; /* goto-label table - see its
+                      * typedef comment above. Reset (nlabels = 0) at
+                      * the start of each cfunc(), matching labels'
+                      * function-scoped namespace. */
+    int    nlabels;
+    int    prev_line; /* the line of the token most recently consumed
+                      * (i.e. what p->cur held just before its last
+                      * advance() away) - needed wherever a construct's
+                      * own line has to be read back out AFTER a
+                      * recursive parse_statement() call already moved
+                      * p->cur past it (OP_SWIT's line - see
+                      * parse_switch_stmt()); every other construct's
+                      * own line-capture (if/while/do/for's CBRANCH)
+                      * captures p->cur.line directly at the right
+                      * moment instead and has no need for this. */
+    int    deflab;  /* v7/cc's global `deflab`: the label a 'default:'
+                      * inside the current switch was given, or 0 if
+                      * none has been seen yet - saved/restored around
+                      * a switch's own body the same way brklab/
+                      * contlab are (see parse_switch_stmt()). */
+    int    in_switch; /* depth counter - >0 while parsing a switch's
+                      * body, so parse_case_stmt()/parse_default_stmt()
+                      * can tell a stray 'case'/'default' apart from
+                      * one genuinely inside a switch (not exercised by
+                      * any golden, but the natural, symmetric check
+                      * v7/cc's own "swp==0" test makes). */
+    CaseEntry cases[MCC_NCASES]; /* see CaseEntry's own comment above. */
+    int    ncases;
 } Parser;
 
 /* One pointer-to-int degree, matching mutos_cc.h's XTYPE bit layout
@@ -149,6 +228,11 @@ typedef struct {
 
 static void advance(Parser *p)
 {
+    p->prev_line = p->cur.line; /* the line of the token we're about
+                                  * to move past - see the Parser
+                                  * field's own comment (needed by
+                                  * parse_switch_stmt()'s OP_SWIT, the
+                                  * one confirmed consumer so far). */
     if (p->have_la) {
         p->cur = p->la;
         p->have_la = 0;
@@ -283,6 +367,8 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 }
 
 static ExprVal parse_expr(Parser *p, FILE *t1);
+static void parse_statement(Parser *p, FILE *t1, int retlab);
+static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
 
 /*
  * comma-item := (IDENT '=' expr) | expr
@@ -454,7 +540,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 return ev_dynamic();
             }
             outcode(t1, "BN", optag, target);
-            return ev_dynamic();
+            return ev_dynamic_typed(target);
         }
         advance(p);
         /* '(' comma-item (',' comma-item)* ')' - the ',' handling
@@ -694,8 +780,13 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            outcode(t1, "BN", OP_PLUS, TY_INT);
-            v = ev_dynamic();
+            /* TY_LONG iff either operand is 'long' - confirmed
+             * against 02_long/01_addsub.1.golden's "c = a + b;" (a, b
+             * both 'long' -> OP_PLUS(TY_LONG)), same rule already
+             * confirmed for '*'/'/' /'%' in parse_mul() above. */
+            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            outcode(t1, "BN", OP_PLUS, optype);
+            v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_MINUS) {
             advance(p);
             ExprVal r = parse_mul(p, t1);
@@ -705,8 +796,9 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            outcode(t1, "BN", OP_MINUS, TY_INT);
-            v = ev_dynamic();
+            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            outcode(t1, "BN", OP_MINUS, optype);
+            v = ev_dynamic_typed(optype);
         } else {
             break;
         }
@@ -1195,6 +1287,18 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
+    /* An int-typed value assigned to a 'long' lvalue needs an
+     * explicit widening conversion first - a plain int is only 2
+     * bytes wide, and a 'long' lvalue's ASSIGN case expects a real
+     * VK_LONG-producing value (see c1_gen.c) - confirmed against
+     * 02_long/01_addsub.1.golden's "b = 23456;" (23456 fits a plain
+     * int, so it takes the ordinary CON path, not LCON's), which
+     * wraps the CON in OP_ITOL(TY_LONG) before ASSIGN. Only applies
+     * to plain '=' - the ten compound-assignment operators are not
+     * confirmed for a 'long' lvalue by any golden. */
+    if (optag == OP_ASSIGN && sym && sym->type == TY_LONG && rhs.type != TY_LONG)
+        outcode(t1, "BN", OP_ITOL, TY_LONG);
+
     /* The operator's type argument is the LVALUE's type (TY_INT for
      * every case confirmed so far, but TY_PTR_INT for "p = a;" -
      * confirmed against 05_incdec.1.golden byte 242-243; the ten
@@ -1284,6 +1388,576 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     outcode(t1, "BN", OP_EXPR, line);
 }
 
+/* ------------------------------------------------------------------ */
+/* Control flow: if/else, while, do/while, for, break, continue,
+ * goto/labels - see docs/DEVLOG.md's 03_ctrlflow section for the
+ * full byte-level derivation against tests/mutos_cc/03_ctrlflow's
+ * goldens. All of it reuses OP_CBRANCH (v7/cc/c04.c's cbranch(t,lbl,
+ * cond): branch to lbl if the tree's truth value equals `cond` -
+ * cond=1 is branch-if-true, cond=0 is branch-if-false) plus the
+ * already-existing OP_BRANCH/OP_LABEL, and p->isn as the same
+ * function-wide label counter cfunc() already seeds (sloc/sloc+1/
+ * retlab). */
+
+/* Function-scoped goto-label lookup: returns the existing label
+ * number for `name`, or allocates a fresh one (p->isn++) on first
+ * mention - whichever comes first, a 'name:' definition or a 'goto
+ * name;' reference. Matches K&R C's function-scoped, separate-from-
+ * ordinary-identifiers label namespace; not exercised beyond 2
+ * distinct names by any current golden (07_goto.c's "loop"/"done"),
+ * so MCC_NLABELS is sized generously rather than tightly. */
+static int label_for_name(Parser *p, const char *name, int line)
+{
+    for (int i = 0; i < p->nlabels; i++)
+        if (strcmp(p->labels[i].name, name) == 0)
+            return p->labels[i].lab;
+    if (p->nlabels >= MCC_NLABELS) {
+        c0_error_at(line, "too many labels in one function (internal "
+                    "limit %d)", MCC_NLABELS);
+        return p->isn; /* best-effort: doesn't consume a real slot */
+    }
+    int lab = p->isn++;
+    strncpy(p->labels[p->nlabels].name, name, LEX_IDENT_MAX - 1);
+    p->labels[p->nlabels].name[LEX_IDENT_MAX - 1] = '\0';
+    p->labels[p->nlabels].lab = lab;
+    p->nlabels++;
+    return lab;
+}
+
+/*
+ * labeled-stmt := IDENT ':' statement
+ *
+ * Confirmed against 07_goto.1.golden's "loop:" - emits the label,
+ * then parses the statement it prefixes as an ordinary recursive
+ * parse_statement() call (matching v7/cc's own "label(...); goto
+ * stmt;" - looping back to re-enter statement() is equivalent to a
+ * plain recursive call here, since nothing on the stack needs
+ * unwinding first).
+ */
+static void parse_label_stmt(Parser *p, FILE *t1, int retlab)
+{
+    int line = p->cur.line;
+    char name[LEX_IDENT_MAX];
+    strncpy(name, p->cur.ident, sizeof name - 1);
+    name[sizeof name - 1] = '\0';
+    advance(p); /* consume IDENT */
+    advance(p); /* consume ':' */
+    int lab = label_for_name(p, name, line);
+    label_op(t1, lab);
+    parse_statement(p, t1, retlab);
+}
+
+/*
+ * goto-stmt := 'goto' IDENT ';'
+ *
+ * The general (not-inside-an-if) case: matches v7/cc's
+ * "if (o1=simplegoto()) branch(o1);" - a plain unconditional BRANCH
+ * to the label's number (allocated now if this is a forward
+ * reference - see label_for_name()). Confirmed against 07_goto.
+ * 1.golden's "goto loop;" -> "BRANCH(4)" (loop's own, already-
+ * allocated label).
+ */
+static void parse_goto_stmt(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    advance(p); /* consume 'goto' */
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line, "expected a label name after 'goto'");
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+        return;
+    }
+    int lab = label_for_name(p, p->cur.ident, line);
+    advance(p); /* consume IDENT */
+    branch_op(t1, lab);
+    expect(p, T_SEMI, "';'");
+}
+
+/*
+ * break-stmt := 'break' ';'
+ *
+ * The general (not-inside-an-if) case - matches v7/cc's
+ * "chconbrk(brklab); branch(brklab);". p->brklab is 0 (never a valid
+ * label - isn starts at 1) outside any loop/switch, matching
+ * chconbrk()'s "not in a loop" check.
+ */
+static void parse_break_stmt(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    advance(p); /* consume 'break' */
+    if (p->brklab == 0)
+        c0_error_at(line, "'break' outside a loop or switch is not supported");
+    else
+        branch_op(t1, p->brklab);
+    expect(p, T_SEMI, "';'");
+}
+
+/* continue-stmt := 'continue' ';' - mirrors parse_break_stmt() above,
+ * targeting p->contlab instead. */
+static void parse_continue_stmt(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    advance(p); /* consume 'continue' */
+    if (p->contlab == 0)
+        c0_error_at(line, "'continue' outside a loop is not supported");
+    else
+        branch_op(t1, p->contlab);
+    expect(p, T_SEMI, "';'");
+}
+
+/*
+ * if-stmt := 'if' '(' expr ')' statement ('else' statement)?
+ *
+ * General shape confirmed against 01_ifelse.1.golden: CBRANCH(
+ * false_lab, cond=0) skips the true-branch on a false condition;
+ * when an 'else' follows, the true-branch additionally BRANCHes past
+ * it to a second, end_lab, allocated only once 'else' is actually
+ * seen (matching v7/cc's "o1=isn++" for false_lab up front, "o2=isn++"
+ * for end_lab only inside the 'if (...==ELSE)' branch) - so a chain
+ * of "else if"s allocates its labels in the same left-to-right,
+ * two-per-level order confirmed there (4,5 outer; 6,7 inner).
+ *
+ * `line`'s value is confirmed to be the line of whatever token
+ * follows the condition's ')' - NOT the 'if' statement's own line -
+ * a direct consequence of v7/cc's own one-token lookahead there (done
+ * to check for the shortcut below), which our parser reproduces for
+ * free since p->cur already sits on that next token once the ')' is
+ * consumed.
+ */
+static void parse_if_stmt(Parser *p, FILE *t1, int retlab)
+{
+    advance(p); /* consume 'if' */
+    expect(p, T_LPAREN, "'('");
+    ExprVal cond = parse_expr(p, t1);
+    expect(p, T_RPAREN, "')'");
+    emit_materialize(t1, cond);
+    int line = p->cur.line;
+
+    /* v7/cc's "simpif" shortcut: an if-body that is exactly a bare
+     * 'goto label;' / 'break;' / 'continue;' compiles to a single
+     * direct CBRANCH(target, cond=1) - no extra label allocated at
+     * all - confirmed against 07_goto.s.golden ('if (i>=10) goto
+     * done;') and 05_breakcont.s.golden ('if (j==3) break;' / 'if (i
+     * ==j) continue;'). Only recognized when nothing but the bare
+     * keyword (+ target, for goto) + ';' follows; anything else
+     * (including a trailing 'else', not exercised by any golden)
+     * falls through to the general shape below. */
+    if (p->cur.kind == T_KW_GOTO && peek2_kind(p) == T_IDENT) {
+        advance(p); /* 'goto' */
+        char name[LEX_IDENT_MAX];
+        strncpy(name, p->cur.ident, sizeof name - 1);
+        name[sizeof name - 1] = '\0';
+        advance(p); /* IDENT */
+        if (p->cur.kind == T_SEMI) {
+            advance(p);
+            int lab = label_for_name(p, name, line);
+            outcode(t1, "BNNN", OP_CBRANCH, lab, 1, line);
+        }
+        return;
+    }
+    if (p->cur.kind == T_KW_BREAK || p->cur.kind == T_KW_CONTINUE) {
+        int is_break = (p->cur.kind == T_KW_BREAK);
+        advance(p);
+        if (p->cur.kind == T_SEMI) {
+            advance(p);
+            int target = is_break ? p->brklab : p->contlab;
+            if (target == 0)
+                c0_error_at(line, "'%s' outside a loop%s is not supported",
+                            is_break ? "break" : "continue",
+                            is_break ? " or switch" : "");
+            else
+                outcode(t1, "BNNN", OP_CBRANCH, target, 1, line);
+        }
+        return;
+    }
+
+    int false_lab = p->isn++;
+    outcode(t1, "BNNN", OP_CBRANCH, false_lab, 0, line);
+    parse_statement(p, t1, retlab);
+    if (p->cur.kind == T_KW_ELSE) {
+        advance(p);
+        int end_lab = p->isn++;
+        branch_op(t1, end_lab);
+        label_op(t1, false_lab);
+        parse_statement(p, t1, retlab);
+        label_op(t1, end_lab);
+    } else {
+        label_op(t1, false_lab);
+    }
+}
+
+/*
+ * while-stmt := 'while' '(' expr ')' statement
+ *
+ * Confirmed against 02_while.1.golden: LABEL(top) before the test
+ * (this doubles as 'continue''s target), CBRANCH(end,cond=0) after
+ * it, body, BRANCH(top), LABEL(end) ('break''s target). `line` is the
+ * line of the condition's own closing ')' - unlike 'if' above, no
+ * extra lookahead happens here in v7/cc, so nothing shifts it to the
+ * following token.
+ */
+static void parse_while_stmt(Parser *p, FILE *t1, int retlab)
+{
+    advance(p); /* consume 'while' */
+    int saved_brklab = p->brklab, saved_contlab = p->contlab;
+
+    int top_lab = p->isn++;
+    p->contlab = top_lab;
+    label_op(t1, top_lab);
+
+    expect(p, T_LPAREN, "'('");
+    ExprVal cond = parse_expr(p, t1);
+    emit_materialize(t1, cond);
+    int line = p->cur.line; /* p->cur is still ')' here */
+    expect(p, T_RPAREN, "')'");
+
+    int end_lab = p->isn++;
+    p->brklab = end_lab;
+    outcode(t1, "BNNN", OP_CBRANCH, end_lab, 0, line);
+
+    parse_statement(p, t1, retlab);
+    branch_op(t1, p->contlab);
+    label_op(t1, end_lab);
+
+    p->brklab = saved_brklab;
+    p->contlab = saved_contlab;
+}
+
+/*
+ * do-stmt := 'do' statement 'while' '(' expr ')' ';'
+ *
+ * Confirmed against 03_dowhile.1.golden: THREE labels allocated up
+ * front, in this exact order - contlab, brklab, then the loop's own
+ * top-of-body label - but contlab is only LABELed after the body
+ * (right before the condition test), while the top label is LABELed
+ * first (right after 'do'). CBRANCH branches back to the top label
+ * on a TRUE condition (cond=1), falling through to brklab otherwise.
+ */
+static void parse_do_stmt(Parser *p, FILE *t1, int retlab)
+{
+    advance(p); /* consume 'do' */
+    int saved_brklab = p->brklab, saved_contlab = p->contlab;
+
+    int cont_lab = p->isn++;
+    int brk_lab  = p->isn++;
+    int top_lab  = p->isn++;
+    p->contlab = cont_lab;
+    p->brklab  = brk_lab;
+
+    label_op(t1, top_lab);
+    parse_statement(p, t1, retlab);
+    label_op(t1, cont_lab);
+
+    if (!expect(p, T_KW_WHILE, "'while'")) {
+        p->brklab = saved_brklab;
+        p->contlab = saved_contlab;
+        return;
+    }
+    expect(p, T_LPAREN, "'('");
+    ExprVal cond = parse_expr(p, t1);
+    emit_materialize(t1, cond);
+    int line = p->cur.line; /* p->cur is still ')' here - same
+                              * last-consumed-token convention as
+                              * 'while' above. */
+    expect(p, T_RPAREN, "')'");
+    outcode(t1, "BNNN", OP_CBRANCH, top_lab, 1, line);
+    label_op(t1, brk_lab);
+    expect(p, T_SEMI, "';'");
+
+    p->brklab = saved_brklab;
+    p->contlab = saved_contlab;
+}
+
+/*
+ * for-stmt := 'for' '(' expr? ';' expr? ';' expr? ')' statement
+ *
+ * Confirmed against 04_for.1.golden (and, for the nested case, 05_
+ * breakcont.1.golden): the init clause compiles in place, immediately
+ * before the loop; the test clause compiles right after LABEL(test),
+ * CBRANCH(brk,cond=0); but the INCREMENT clause is genuinely special
+ * - matching v7/cc/c02.c's forstmt() exactly, it is PARSED (to keep
+ * the token stream in order) before the body, but its EMITTED CODE is
+ * deferred until after the body, and its own OP_EXPR keeps the source
+ * LINE where it was originally written (the for-header's own line),
+ * not wherever body-parsing left off - confirmed via 04_for's
+ * increment ("i = i + 1", on the for-header's line 9) carrying
+ * EXPR(9) even though it appears in the byte stream after the body
+ * (whose own statement is on line 10), and equivalently for both the
+ * outer and inner loops of 05_breakcont's nested case. Since c0
+ * streams wire bytes as it parses (no AST to re-emit later the way
+ * real cc's rcexpr(st) does), the increment's bytes are buffered via
+ * open_memstream() instead and flushed verbatim after the body.
+ * 'continue' inside the body must target a NEW label placed right
+ * before this deferred increment, not the original test label - so
+ * contlab is reassigned here exactly once the increment's presence is
+ * known, matching v7's "l = contlab; contlab = isn++;".
+ */
+static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
+{
+    advance(p); /* consume 'for' */
+    expect(p, T_LPAREN, "'('");
+
+    if (p->cur.kind != T_SEMI) {
+        int line = p->cur.line;
+        ExprVal v = parse_comma_item(p, t1);
+        emit_materialize(t1, v);
+        outcode(t1, "BN", OP_EXPR, line);
+    }
+    expect(p, T_SEMI, "';'");
+
+    int saved_brklab = p->brklab, saved_contlab = p->contlab;
+    int test_lab = p->isn++;
+    int brk_lab  = p->isn++;
+    p->contlab = test_lab;
+    p->brklab  = brk_lab;
+
+    label_op(t1, test_lab);
+
+    if (p->cur.kind != T_SEMI) {
+        ExprVal cond = parse_expr(p, t1);
+        emit_materialize(t1, cond);
+        int line = p->cur.line; /* p->cur is still ';' here */
+        outcode(t1, "BNNN", OP_CBRANCH, brk_lab, 0, line);
+    }
+    expect(p, T_SEMI, "';'");
+
+    if (p->cur.kind != T_RPAREN) {
+        int new_cont_lab = p->isn++;
+        p->contlab = new_cont_lab;
+
+        int incr_line = p->cur.line;
+        char *buf = NULL;
+        size_t bufsz = 0;
+        FILE *mem = open_memstream(&buf, &bufsz);
+        if (!mem) {
+            c0_error_at(incr_line, "internal: could not buffer the "
+                        "'for' increment (out of memory)");
+        } else {
+            ExprVal v = parse_comma_item(p, mem);
+            emit_materialize(mem, v);
+            outcode(mem, "BN", OP_EXPR, incr_line);
+            fclose(mem);
+        }
+        expect(p, T_RPAREN, "')'");
+
+        parse_statement(p, t1, retlab);
+
+        label_op(t1, new_cont_lab);
+        if (buf) {
+            fwrite(buf, 1, bufsz, t1);
+            free(buf);
+        }
+        branch_op(t1, test_lab);
+    } else {
+        expect(p, T_RPAREN, "')'");
+        parse_statement(p, t1, retlab);
+        branch_op(t1, p->contlab);
+    }
+
+    label_op(t1, brk_lab);
+
+    p->brklab = saved_brklab;
+    p->contlab = saved_contlab;
+}
+
+/*
+ * switch-stmt := 'switch' '(' expr ')' statement
+ *
+ * Matches v7/cc/c02.c's SWITCH case + pswitch() exactly - confirmed
+ * against 06_switch.1.golden: the controlling expression is RFORCE'd
+ * (the same "force into the return-value convention" wrapper 'return'
+ * itself uses - see do_return_stmt()) and emitted as its own
+ * expression-statement, THEN a BRANCH jumps past the whole body to a
+ * fresh dispatch label (swlab), the body is parsed inline (case/
+ * default labels and their values are collected into p->cases[] as
+ * they're encountered - see parse_case_stmt()/parse_default_stmt()),
+ * and finally OP_SWIT itself - deflab, then the line of the body's
+ * own closing '}' (captured via p->prev_line, since parse_statement()
+ * already consumed past it by the time control returns here), then
+ * every collected (label, value) pair, then a zero-word terminator -
+ * is emitted at the dispatch label, immediately followed by brklab
+ * (both 'break' and a falling-off-the-end body land here).
+ */
+static void parse_switch_stmt(Parser *p, FILE *t1, int retlab)
+{
+    advance(p); /* consume 'switch' */
+    int saved_brklab = p->brklab;
+    int saved_deflab = p->deflab;
+    int saved_in_switch = p->in_switch;
+    int case_base = p->ncases;
+
+    expect(p, T_LPAREN, "'('");
+    ExprVal cond = parse_expr(p, t1);
+    emit_materialize(t1, cond);
+    int line = p->cur.line; /* p->cur is still ')' here - same
+                              * last-consumed-token convention as
+                              * 'while'/'do'/'for' above. */
+    expect(p, T_RPAREN, "')'");
+    outcode(t1, "BN", OP_RFORCE, TY_INT);
+    outcode(t1, "BN", OP_EXPR, line);
+
+    p->brklab = p->isn++;
+    int swlab = p->isn++;
+    branch_op(t1, swlab);
+
+    p->deflab = 0;
+    p->in_switch++;
+    parse_statement(p, t1, retlab); /* the switch body */
+    p->in_switch = saved_in_switch;
+
+    branch_op(t1, p->brklab);
+    label_op(t1, swlab);
+    if (p->deflab == 0)
+        p->deflab = p->brklab;
+    outcode(t1, "BNN", OP_SWIT, p->deflab, p->prev_line);
+    for (int i = case_base; i < p->ncases; i++)
+        outcode(t1, "NN", p->cases[i].lab, (int)p->cases[i].val);
+    outcode(t1, "0");
+    label_op(t1, p->brklab);
+
+    p->ncases = case_base;
+    p->deflab = saved_deflab;
+    p->brklab = saved_brklab;
+}
+
+/*
+ * case-stmt := 'case' constant-expr ':' statement
+ *
+ * Matches v7/cc's CASE case exactly: a fresh label per case,
+ * collected into p->cases[] (written out by parse_switch_stmt()'s own
+ * OP_SWIT once the whole body is parsed) - confirmed against 06_
+ * switch.1.golden. Only a directly-foldable constant expression (a
+ * bare integer literal, or simple constant arithmetic - anything
+ * parse_expr() itself constant-folds) is supported, matching this
+ * grammar's existing constant-expression handling elsewhere (e.g.
+ * array bounds are not yet a thing here at all). Falls through to the
+ * statement it prefixes exactly like a labeled-stmt (see
+ * parse_label_stmt()) - real K&R grammar treats 'case'/'default' as
+ * label forms.
+ */
+static void parse_case_stmt(Parser *p, FILE *t1, int retlab)
+{
+    int line = p->cur.line;
+    advance(p); /* consume 'case' */
+    ExprVal v = parse_expr(p, t1);
+    if (!expect(p, T_COLON, "':'")) {
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        return;
+    }
+    if (!v.is_const) {
+        c0_error_at(line, "a 'case' label must be a constant expression");
+        return;
+    }
+    if (p->in_switch == 0) {
+        c0_error_at(line, "'case' not inside a 'switch'");
+        return;
+    }
+    if (p->ncases >= MCC_NCASES) {
+        c0_error_at(line, "too many 'case' labels in one 'switch' "
+                    "(internal limit %d)", MCC_NCASES);
+        return;
+    }
+    int lab = p->isn++;
+    p->cases[p->ncases].lab = lab;
+    p->cases[p->ncases].val = v.value;
+    p->ncases++;
+    label_op(t1, lab);
+    parse_statement(p, t1, retlab);
+}
+
+/*
+ * default-stmt := 'default' ':' statement
+ *
+ * Mirrors parse_case_stmt() above, but records the label into
+ * p->deflab instead of the case table - confirmed against 06_switch.
+ * 1.golden's OP_SWIT, whose deflab argument is the 'default:' clause's
+ * own label (10) exactly.
+ */
+static void parse_default_stmt(Parser *p, FILE *t1, int retlab)
+{
+    int line = p->cur.line;
+    advance(p); /* consume 'default' */
+    if (!expect(p, T_COLON, "':'")) {
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        return;
+    }
+    if (p->in_switch == 0) {
+        c0_error_at(line, "'default' not inside a 'switch'");
+        return;
+    }
+    if (p->deflab != 0) {
+        c0_error_at(line, "more than one 'default' in a 'switch'");
+        return;
+    }
+    p->deflab = p->isn++;
+    label_op(t1, p->deflab);
+    parse_statement(p, t1, retlab);
+}
+
+/*
+ * statement := compound-stmt | if-stmt | while-stmt | do-stmt |
+ *              for-stmt | break-stmt | continue-stmt | goto-stmt |
+ *              labeled-stmt | return-stmt | assign-stmt |
+ *              star-assign-stmt
+ *
+ * The single recursive-descent dispatcher every statement-accepting
+ * position (a compound-stmt's body, an if/while/do/for's own body)
+ * now goes through - see each parse_<x>_stmt() above for its own
+ * confirmed wire shape. "IDENT ':'" (a label definition) is checked
+ * with one token of lookahead before falling back to a plain
+ * assignment, since both start identically.
+ */
+static void parse_statement(Parser *p, FILE *t1, int retlab)
+{
+    if (p->cur.kind == T_LBRACE) {
+        parse_compound_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_RETURN) {
+        do_return_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_IF) {
+        parse_if_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_WHILE) {
+        parse_while_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_DO) {
+        parse_do_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_FOR) {
+        parse_for_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_SWITCH) {
+        parse_switch_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_CASE) {
+        parse_case_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_DEFAULT) {
+        parse_default_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_KW_BREAK) {
+        parse_break_stmt(p, t1);
+    } else if (p->cur.kind == T_KW_CONTINUE) {
+        parse_continue_stmt(p, t1);
+    } else if (p->cur.kind == T_KW_GOTO) {
+        parse_goto_stmt(p, t1);
+    } else if (p->cur.kind == T_IDENT && peek2_kind(p) == T_COLON) {
+        parse_label_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_IDENT) {
+        parse_assign_stmt(p, t1);
+    } else if (p->cur.kind == T_STAR) {
+        parse_star_assign_stmt(p, t1);
+    } else {
+        c0_error_at(p->cur.line,
+            "unsupported statement (mutos_c0's current grammar "
+            "coverage handles 'if'/'else', 'while', 'do'/'while', "
+            "'for', 'switch'/'case'/'default', 'break', 'continue', "
+            "'goto'/labels, simple 'name = expr;' assignment, and "
+            "'return' statements - "
+            "see src/mutos_cc/README.md for the expansion plan)");
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+    }
+}
+
 static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
 {
     if (!expect(p, T_LBRACE, "'{'"))
@@ -1292,30 +1966,18 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
     /* Declarations must precede statements within a block, matching
      * K&R block structure - 'int'/'char'/'long' declarations are
      * recognized as such right now, so the loop condition doubles as
-     * "have we reached the first statement yet". */
+     * "have we reached the first statement yet". A nested compound-
+     * stmt (a loop/if body written as "{ ... }") re-enters here too;
+     * none of the current corpus's nested blocks declare their own
+     * locals, so this decl-loop simply finds none and falls straight
+     * through - a block-scoped declaration is not yet supported (see
+     * src/mutos_cc/README.md). */
     while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
            p->cur.kind == T_KW_LONG)
         parse_decl(p, t1);
 
-    while (p->cur.kind != T_RBRACE && p->cur.kind != T_EOF) {
-        if (p->cur.kind == T_KW_RETURN) {
-            do_return_stmt(p, t1, retlab);
-        } else if (p->cur.kind == T_IDENT) {
-            parse_assign_stmt(p, t1);
-        } else if (p->cur.kind == T_STAR) {
-            parse_star_assign_stmt(p, t1);
-        } else {
-            c0_error_at(p->cur.line,
-                "unsupported statement (mutos_c0's current grammar "
-                "coverage handles only simple 'name = expr;' assignment "
-                "and 'return' statements - see src/mutos_cc/README.md "
-                "for the expansion plan)");
-            while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
-                advance(p);
-            if (p->cur.kind == T_SEMI)
-                advance(p);
-        }
-    }
+    while (p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+        parse_statement(p, t1, retlab);
 
     expect(p, T_RBRACE, "'}'");
 }
@@ -1349,6 +2011,12 @@ static void cfunc(Parser *p, const char *name, FILE *t1)
     int retlab = p->isn++;
 
     symtab_init(&p->syms);
+    p->brklab = 0;
+    p->contlab = 0;
+    p->nlabels = 0;
+    p->deflab = 0;
+    p->in_switch = 0;
+    p->ncases = 0;
     parse_compound_stmt(p, t1, retlab);
 
     outcode(t1, "BNBN", OP_LABEL, retlab, OP_RETRN, TY_INT);

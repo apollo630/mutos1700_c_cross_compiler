@@ -31,10 +31,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  12/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  20/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
-  `08_castsize`, plus `02_long/02_muldiv`) — see
+  `08_castsize`, plus `02_long/01_addsub`/`02_muldiv`, plus all 7 of `03_ctrlflow`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. The
   `mutos_cc` driver itself (chaining `cpp|c0|c1|as|ld`) is not yet written — see
@@ -362,14 +362,19 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 12/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 20/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
-  `08_castsize.c`, plus `02_long/02_muldiv.c` (`long` `*`/`/`/`%` via the
-  `lmul`/`ldiv`/`lrem` runtime helpers - see `docs/MUTOS_C_ABI.md` sect.
-  1.8, though the real confirmed calling shape is simpler than that
-  section's own prose: both operands passed flat, never a pointer - see
-  `STATUS.md`) — the first
+  `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
+  `+`/`-`/`*`/`/`/`%`, an implicit `int`→`long` widening conversion
+  (`ITOL`), and a `long`-vs-constant relational comparison - see
+  `STATUS.md`), plus all 7 of `03_ctrlflow` (`if`/`else`, `while`, `do`/
+  `while`, `for` - including v7/cc's deferred-increment-emission trick,
+  reproduced via `open_memstream()` since this compiler streams wire
+  bytes as it parses rather than building an AST - nested `break`/
+  `continue`, `switch`/`case`/`default` via a real jump table, and
+  `goto`/labels with forward-reference resolution; full derivation in
+  `docs/DEVLOG.md`) — the first
   constructs needing a real symbol table, non-folded expression codegen,
   (for `03_rellogic`) deferred/fused comparison codegen for
   relational, equality and short-circuit logical operators, (for
@@ -397,7 +402,7 @@ scope and intent, not a snapshot of what's done.
   lower address" ABI convention down to the wire-format level, and
   `sizeof` folding entirely at parse time (never a wire opcode of its
   own), not just
-  constant folding). **`01_expr` is now fully covered.**
+  constant folding). **`01_expr` and `03_ctrlflow` are now fully covered.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -410,13 +415,13 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category. `02_long`'s remaining three files are blocked on
-  other categories, not more `long`-arithmetic work: `01_addsub.c` needs
-  `if` (control flow), `03_retval.c`/`04_params.c` need function
-  calls/parameters — see
+  category by category. Only `02_long/03_retval.c` and `04_params.c`
+  remain in that category, both blocked on `04_funcs` (function calls/
+  parameters) specifically, not more control-flow or `long`-arithmetic
+  work — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
   dependency-ordered list (full arrays-and-pointers (subscripting,
-  multi-level)/structs, control flow,
+  multi-level)/structs,
   function calls, the `chkstk` threshold, then the `mutos_cc` driver itself).
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
