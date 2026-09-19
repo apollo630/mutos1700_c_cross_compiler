@@ -8,7 +8,7 @@
  * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
  * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASPLUS,
  * ASMINUS, ASTIMES, ASDIV, ASMOD, ASLSH, ASRSH, ASSAND, ASOR, ASXOR,
- * ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
+ * COLON, QUEST, SEQNC, ASSIGN, RFORCE, EXPR, RETRN, SETSTK, EOFC.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -49,12 +49,19 @@
 
 #define DEFERRED_MAX 4
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND } ValKind;
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR } ValKind;
 /* VK_IND - an indirect "(reg)" memory operand, the result of
  * dereferencing a pointer (OP_STAR) - confirmed against
  * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
  * assignment target). `reg` holds the register name, same as
  * VK_REG. */
+/* VK_PAIR - OP_COLON's result: an unmaterialized pair of "?:"
+ * branches, consumed only by the immediately following OP_QUEST (see
+ * their handlers below and docs/DEVLOG.md's Milestone 4 section for
+ * the 07_ternary derivation). Reuses the Val struct's cl/cr fields
+ * (see the VK_COND comment below) purely as convenient storage for
+ * two already-resolved SimpleVals - true-branch in cl, false-branch
+ * in cr - not as an actual comparison. */
 
 /* A fully-resolved (never itself VK_COND) operand - used to hold the
  * two sides of a deferred comparison inside a VK_COND Val without
@@ -201,6 +208,7 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
     case VK_IND: snprintf(buf, n, "(%s)", v.reg); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
+    case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
     }
 }
 
@@ -400,6 +408,50 @@ static Val gen_logor(FILE *out, GenState *g, Val l, Val r)
     fprintf(out, "mov\tdi,*0.\n");
     fprintf(out, "jmp\tL%d\n", lend);
     fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
+    fprintf(out, "L%d:", lend);
+    return val_reg("di");
+}
+
+/* OP_QUEST: the "?:" ternary select, given the (already-computed)
+ * condition `cond` and the VK_PAIR of branch values (`pair.cl`=true,
+ * `pair.cr`=false) OP_COLON packaged - confirmed against
+ * 07_ternary's "a > b ? a : b":
+ *   cmp a,b; ble Lfalse    (INVERTED condition branches to the false
+ *                            label; fallthrough is the TRUE branch -
+ *                            the opposite polarity from
+ *                            materialize_cond()'s bare-comparison-as-
+ *                            0/1-value pattern above, which branches
+ *                            to a TRUE label instead. "?:" selects
+ *                            between two arbitrary values rather than
+ *                            producing a fixed 0/1, so each branch's
+ *                            own codegen has to live inline inside
+ *                            its own arm rather than behind a shared
+ *                            "set di=1"/"set di=0" instruction)
+ *   mov di,a                 (true branch, inline at the fallthrough)
+ *   jmp Lend
+ *   Lfalse: mov di,b          (false branch)
+ *   Lend:
+ * Label allocation order false,end matches the golden's
+ * L10000(false)/L10001(end) exactly - only two labels, unlike
+ * gen_logand()'s three, since there is no separate "true" label to
+ * jump to (the true branch's code sits directly at the fallthrough
+ * point, not behind its own jump target). Each branch is reloaded
+ * into DI unconditionally, with no attempt to notice DI might
+ * already hold the right value from the comparison's own setup (e.g.
+ * the false branch here happens to equal what the "cmp"'s own
+ * right-hand-side load already put in DI) - confirmed by the golden
+ * itself re-doing "mov di,*-8.(bp)" at the false label rather than
+ * omitting it. */
+static Val gen_quest(FILE *out, GenState *g, Val cond, Val pair)
+{
+    Val c = as_cond(cond);
+    int lfalse = g->next_lab++;
+    int lend   = g->next_lab++;
+    emit_cmp_and_branch(out, c, cond_invert(c.true_op), lfalse);
+    load_into_di(out, val_from_simple(pair.cl));
+    fprintf(out, "jmp\tL%d\n", lend);
+    fprintf(out, "L%d:", lfalse);
+    load_into_di(out, val_from_simple(pair.cr));
     fprintf(out, "L%d:", lend);
     return val_reg("di");
 }
@@ -608,9 +660,20 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             Val r = materialize(out, &g, pop_val(&g));
             Val l = materialize(out, &g, pop_val(&g));
             load_into_di(out, l);
-            char rbuf[32];
-            render_operand(rbuf, sizeof rbuf, r);
-            fprintf(out, "%s\tdi,%s\n", op == OP_PLUS ? "add" : "sub", rbuf);
+            if (op == OP_PLUS && r.kind == VK_IMM && r.imm == 1) {
+                /* "+ 1" specifically compiles to a plain INC, not
+                 * "add di,*1." - confirmed against 07_ternary.s.golden's
+                 * "a = a + 1;" -> "inc\tdi" (never an "add"). Only
+                 * this exact PLUS-by-1 case is confirmed; MINUS is
+                 * left as a plain "sub" unconditionally (including
+                 * by 1) since no golden yet shows whether "a - 1"
+                 * gets the symmetric DEC treatment. */
+                fprintf(out, "inc\tdi\n");
+            } else {
+                char rbuf[32];
+                render_operand(rbuf, sizeof rbuf, r);
+                fprintf(out, "%s\tdi,%s\n", op == OP_PLUS ? "add" : "sub", rbuf);
+            }
             push_val(&g, val_reg("di"));
             break;
         }
@@ -825,6 +888,66 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             neg.cl = c.cl;
             neg.cr = c.cr;
             push_val(&g, neg);
+            break;
+        }
+
+        case OP_COLON: {
+            /* Packages the two "?:" branch values for the
+             * immediately following OP_QUEST - emits no code of its
+             * own; each branch's own codegen has to live inside
+             * QUEST's conditional branches, not run unconditionally
+             * here (see gen_quest() above) - confirmed against
+             * 07_ternary.s.golden, which has no instruction
+             * corresponding to COLON itself. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("COLON of type %d not yet supported", type);
+            Val f = pop_val(&g);
+            Val t = pop_val(&g);
+            if (t.kind == VK_COND || f.kind == VK_COND)
+                gen_fatal("a '?:' branch that is itself a bare "
+                          "relational comparison is not yet supported");
+            Val pair = {0};
+            pair.kind = VK_PAIR;
+            pair.cl = simple_of(t);
+            pair.cr = simple_of(f);
+            push_val(&g, pair);
+            break;
+        }
+
+        case OP_QUEST: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("QUEST of type %d not yet supported", type);
+            Val pair = pop_val(&g);
+            Val cond = pop_val(&g);
+            if (pair.kind != VK_PAIR)
+                gen_fatal("internal: QUEST without a preceding COLON pair");
+            push_val(&g, gen_quest(out, &g, cond, pair));
+            break;
+        }
+
+        case OP_SEQNC: {
+            /* The comma operator: the left operand's side effects (if
+             * any) were already emitted by whichever opcode produced
+             * it - its value is simply discarded here, unmaterialized,
+             * exactly like any other unused value in this grammar
+             * scope (see OP_EXPR's own discard below) - confirmed
+             * against 07_ternary.s.golden's "(a = a + 1, b = b + 1,
+             * a + b)", where no instruction at all corresponds to
+             * either SEQNC node. Only reachable via
+             * c0_parser.c's parse_comma_item(), which restricts the
+             * left operand to something that was already fully
+             * emitted (a plain expression or an embedded assignment -
+             * never a still-unmaterialized compile-time constant),
+             * so there is never anything here that needs
+             * materializing before being dropped. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("SEQNC of type %d not yet supported", type);
+            Val rhs = pop_val(&g);
+            (void)pop_val(&g); /* lhs - discarded, never materialized */
+            push_val(&g, rhs);
             break;
         }
 
@@ -1058,10 +1181,27 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             render_operand(dbuf, sizeof dbuf, lhs);
             render_operand(sbuf, sizeof sbuf, rhs);
             fprintf(out, "mov\t%s,%s\n", dbuf, sbuf);
-            /* No push: nothing in this grammar scope consumes an
-             * assignment expression's own value (every assignment is
-             * a full statement, immediately followed by EXPR - see
-             * c0_parser.c's parse_assign_stmt()). */
+            /* Pushes the assigned value back - confirmed necessary
+             * (not just harmless) by 07_ternary's embedded
+             * assignments inside a parenthesized comma-list ("(a = a
+             * + 1, b = b + 1, a + b)": each "a = a + 1" is itself a
+             * comma-operand whose value OP_SEQNC needs something real
+             * to pop and discard). Every plain top-level assign-stmt/
+             * star-assign-stmt (the only other places ASSIGN appears)
+             * now has exactly one extra value on the stack at its
+             * closing OP_EXPR, which discards it there instead - see
+             * OP_EXPR below. Reusing `rhs` costs no extra
+             * instructions (it is already sitting in a register or is
+             * a plain immediate) and is never read back in any
+             * confirmed case anyway, since OP_SEQNC only ever
+             * discards it. The ten compound-assignment operators
+             * deliberately do NOT push - c0's grammar never lets one
+             * appear anywhere but as a statement's sole top-level
+             * operator (parse_assign_stmt() is only reachable from
+             * the statement dispatcher, never from parse_expr()'s
+             * precedence chain or parse_comma_item()), so nothing
+             * would ever consume such a value. */
+            push_val(&g, rhs);
             break;
         }
 
@@ -1089,6 +1229,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                                                  * .s output anywhere
                                                  * in the confirmed
                                                  * goldens. */
+            /* Discards the just-completed statement's leftover
+             * expression value, if it left one - an expression
+             * statement's value is always unused. Confirmed to be
+             * exactly 0 or 1 items here, never more, across every
+             * statement form this grammar scope has: OP_RFORCE
+             * (return-stmt) already consumes its one value without
+             * repushing, so there is nothing left; a plain OP_ASSIGN
+             * (assign-stmt/star-assign-stmt) now leaves exactly one
+             * (see OP_ASSIGN's comment above); the ten compound-
+             * assignment operators push nothing, so there is also
+             * nothing left after those. gen_fatal on anything else
+             * catches a genuine stack-imbalance bug rather than
+             * silently discarding more than one stray value. */
+            if (g.valsp > 1)
+                gen_fatal("internal: %d unconsumed expression value(s) "
+                          "at end of statement (expected 0 or 1) - "
+                          "malformed temp1 stream or a c1_gen.c bug",
+                          g.valsp);
+            if (g.valsp == 1)
+                pop_val(&g);
             /* Flush any postfix ++/-- fixup queued by gen_incdec()
              * during this statement - see DEFERRED_MAX's comment on
              * GenState. */

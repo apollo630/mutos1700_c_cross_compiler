@@ -226,10 +226,10 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 9/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 10/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus `tests/mutos_cc/01_expr/01_intarith.c`,
-`02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c` and
-`06_compasgn.c`. ABI/
+`02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
+`06_compasgn.c` and `07_ternary.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -237,7 +237,7 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
-### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn`)
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn` + `07_ternary`)
 
 Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
 symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
@@ -249,8 +249,8 @@ CLAUDE.md Workflow Guideline 3, not copied wholesale).
 **Verification: the real, unmodified pipeline — `<n>.c` → real
 `mutos_cpp -P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 3
 `tests/mutos_cc/00_smoke/` files plus `01_expr/01_intarith.c`,
-`02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c` and
-`06_compasgn.c`, and every
+`02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
+`06_compasgn.c` and `07_ternary.c`, and every
 intermediate artifact (`.i`,
 `.1`, `.2`, `.s`)
 matches its real-hardware golden byte-for-byte.** Re-run via
@@ -259,13 +259,13 @@ matches its real-hardware golden byte-for-byte.** Re-run via
 outside current grammar/opcode coverage as an explicit, expected "not yet
 supported" diagnostic (nonzero exit, clear message) — distinct from a
 genuine byte mismatch, so the script's pass count is an honest,
-non-inflated measure of verified coverage. Current full-corpus result: 9
-byte-exact end-to-end, 53 "not yet supported" (expected), **0 genuine
+non-inflated measure of verified coverage. Current full-corpus result: 10
+byte-exact end-to-end, 52 "not yet supported" (expected), **0 genuine
 mismatches anywhere** (`.i`, `.1`, `.2`, or `.s`).
 
 Reverse-engineering the real `temp1`/`temp2` wire format (byte-level, via
 `od`/hexdump, against the `00_smoke`, `01_intarith`, `02_bitwise`,
-`03_rellogic`, `04_shift`, `05_incdec` and `06_compasgn`
+`03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn` and `07_ternary`
 goldens) surfaced **four confirmed MUTOS-1700-specific deltas from vanilla
 V7 `cc`** (found against `00_smoke`), the full local-variable wire format
 (found against `01_intarith`), the bitwise-operator/immediate-marker
@@ -273,8 +273,9 @@ findings below (found against `02_bitwise`), the deferred-comparison/
 short-circuit codegen findings below (found against `03_rellogic`), the
 shift-codegen findings below (found against `04_shift`), the
 increment/decrement/pointer/array findings below (found against
-`05_incdec`), and the compound-assignment findings below (found against
-`06_compasgn`), each
+`05_incdec`), the compound-assignment findings below (found against
+`06_compasgn`), and the ternary/comma-operator findings below (found
+against `07_ternary`), each
 cited against exact byte
 offsets in `docs/DEVLOG.md`'s Milestone 4 section:
 
@@ -442,6 +443,55 @@ offsets in `docs/DEVLOG.md`'s Milestone 4 section:
     positive power of two (for `*=`) is an explicit "not yet supported"
     — no golden confirms the register-operand sequence a real compiler
     would need there.
+12. The `?:` conditional operator and the `,` comma operator confirmed
+    against `07_ternary`. `c0`'s tree shape for `a > b ? a : b` is the
+    condition (`GREAT`, already-established comparison codegen) followed
+    by the two branches wrapped in a `COLON` node (`tr1`=true, `tr2`=false),
+    followed by `QUEST` — matching real K&R `cc`'s tree shape exactly (a
+    `QUEST` node's `tr1` is the condition, `tr2` is the `COLON` node). `c1`'s
+    codegen is a **new branch polarity**, not a reuse of the existing
+    bare-comparison-as-0/1-value pattern (`materialize_cond()`, confirmed
+    against `03_rellogic`): `"a > b ? a : b"` compiles to
+    `"cmp a,b" / "ble Lfalse"` — the **inverted** condition branches to a
+    false label, and the **true** branch's code sits inline at the
+    fallthrough (never behind its own jump target), unlike
+    `materialize_cond()`'s branch-to-true-label/fallthrough-false shape.
+    Each branch loads its value into `DI` unconditionally inside its own
+    arm — confirmed by the false branch re-loading `b` into `DI` via
+    `"mov di,*-8.(bp)"` even though the comparison's own right-hand-side
+    setup had already loaded `b` into `DI` moments earlier (no
+    cross-branch value tracking). The comma operator emits **no code of
+    its own**: `SEQNC` is a pure value-discard — the left operand's side
+    effects (if any) were already emitted by whichever opcode produced it,
+    and its value is simply dropped, unmaterialized. This surfaced that a
+    parenthesized comma-list can contain an **embedded plain assignment**
+    (`"a = a + 1"` as one comma-item) — not otherwise reachable from
+    expression context, since `assign-stmt` (handling `=` and the ten
+    compound-assignment operators) is a distinct, statement-level-only
+    production. Only a bare `=` is supported there, not any compound-
+    assignment operator (unconfirmed in that position). Supporting this
+    required `c0_parser.c` to gain one token of lookahead (`peek2_kind()`)
+    to distinguish `"IDENT = expr"` from a bare `IDENT` starting a larger
+    expression, both of which begin identically. It also surfaced that
+    **`ASSIGN`'s own result value now has a real consumer**: an assignment
+    used as a discarded comma-operand needs something on `c1`'s value
+    stack for `SEQNC` to pop, so `OP_ASSIGN`'s handler was changed to push
+    the assigned value (previously it pushed nothing, since no prior
+    golden ever consumed an assignment's value) — which in turn required
+    `OP_EXPR` to discard that now-leftover value for every *plain*
+    top-level assignment statement (`gen_fatal`-guarded to at most one
+    leftover value, to catch a real stack-imbalance bug rather than mask
+    one). The ten compound-assignment operators deliberately do **not**
+    push a result — `c0`'s grammar structure makes a compound-assignment
+    expression unreachable from anywhere but a statement's sole top-level
+    operator, so nothing would ever consume such a value; this is a
+    grammar-structural guarantee; not merely an untested convention.
+    Separately, `"a = a + 1;"` surfaced a confirmed `+1`-specific codegen
+    shape: `"a + 1"` compiles to a plain `INC`, never `"add di,*1."` — an
+    `OP_PLUS` special case for an immediate right-hand side of exactly 1.
+    `OP_MINUS` is deliberately left unchanged (still `"sub di,*N."`
+    unconditionally, including by 1) since no golden yet shows whether
+    `"x - 1"` gets the symmetric `DEC` treatment.
 
 **Current grammar/opcode scope (deliberately narrow, by design — see
 `src/mutos_cc/README.md`):** function definitions with no parameters; a
@@ -450,22 +500,25 @@ initializers) followed by `name <assign-op> expr;` assignment (`=` or any
 of the ten compound-assignment operators `+= -= *= /= %= <<= >>= &= |=
 ^=`), `*<ptr-expr> = expr;`
 dereferenced-pointer assignment, and/or `return` statements; expressions
-over `+ - * / % & | ^ ~ < <= > >= == != && || ! << >>` (unary/binary as
+over `+ - * / % & | ^ ~ < <= > >= == != && || ! << >> ?:` (unary/binary as
 applicable), postfix/prefix `++`/`--` (pointer-scaled where applicable),
-parens, integer
+parens (including a parenthesized comma-list, optionally containing a
+plain `=` assignment per comma-item), integer
 constants, and variable references (with array-to-pointer decay on an
 array name used as an rvalue), constant-folded at parse time exactly
 like real K&R `cc`'s own per-operation `build()`-time folding, with a real
 `NAME`/operator tree emitted the moment a variable is involved. Everything
 else (a compound-assignment operator's right-hand side being anything
 other than a compile-time constant, `*=`/`/=`/`%=` by a non-power-of-two
-or non-constant, non-`int` element types, array
+or non-constant, a `?:` branch that is itself a bare relational
+comparison, a compound-assignment operator inside a comma-list, non-`int`
+element types, array
 subscripting, multi-level pointers/multi-dimensional arrays, explicit `&`
 outside array decay, function parameters, control flow, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV` operand outside a confirmed
 compound-assignment shape) is an explicit "not yet
 supported" error, not silently-wrong output — confirmed via a direct test
-against `01_expr/07_ternary.c` (correctly rejected with a clear message,
+against `01_expr/08_castsize.c` (correctly rejected with a clear message,
 not a crash or bad `.s`).
 
 Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root
@@ -612,9 +665,8 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `07_ternary`
-next (`?:`), then
-`08_castsize` (casts/`sizeof`) to finish `01_expr`. See
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `08_castsize`
+next (casts/`sizeof`) to finish `01_expr`. See
 `src/mutos_cc/README.md`'s "Next
 steps" for the full, dependency-ordered plan through `long`/full
 arrays-and-pointers (subscripting, multi-level)/structs, `03_ctrlflow`,

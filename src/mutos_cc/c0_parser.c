@@ -15,7 +15,7 @@
  *                       | '<<=' | '>>=' | '&=' | '|=' | '^='
  *   star-assign-stmt  := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
  *   return-stmt       := 'return' expr? ';'
- *   expr              := LOGOR
+ *   expr              := LOGOR ('?' LOGOR ':' LOGOR)?
  *   LOGOR             := LOGAND ('||' LOGAND)*
  *   LOGAND            := BITOR ('&&' BITOR)*
  *   BITOR             := BITXOR ('|' BITXOR)*
@@ -28,7 +28,8 @@
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
  *   UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
  *   POSTFIX           := PRIMARY ('++'|'--')?
- *   PRIMARY           := ICON | IDENT | '(' expr ')'
+ *   PRIMARY           := ICON | IDENT | '(' comma-item (',' comma-item)* ')'
+ *   comma-item        := (IDENT '=' expr) | expr
  *
  * i.e. every declared local is 'int', 'int *' (one pointer degree) or
  * 'int' '[' N ']' (one array dimension), with no initializer; every
@@ -43,10 +44,15 @@
  * parameters. A bare array name used as an rvalue decays to a
  * pointer (see parse_primary()'s SymEntry.is_array handling); '++'/
  * '--' on a pointer operand is scaled by MCC_SZINT (see
- * emit_incdec()). This is
+ * emit_incdec()). A parenthesized comma-list may embed a plain '='
+ * assignment per comma-item (see parse_comma_item()'s
+ * peek2_kind()-based lookahead) - not otherwise reachable from
+ * expression context, since assign-stmt above is a distinct,
+ * statement-level-only production; only '=' is supported there, not
+ * any of the ten compound-assignment operators. This is
  * exactly tests/mutos_cc/00_smoke's three programs plus
  * tests/mutos_cc/01_expr/01_intarith.c, 02_bitwise.c, 03_rellogic.c,
- * 04_shift.c, 05_incdec.c and 06_compasgn.c. Array
+ * 04_shift.c, 05_incdec.c, 06_compasgn.c and 07_ternary.c. Array
  * subscripting, and multi-level pointers/multi-dimensional arrays are
  * not yet part of this chain - see src/mutos_cc/README.md.
  *
@@ -94,6 +100,9 @@
 typedef struct {
     Lexer  lx;
     Token  cur;
+    Token  la;      /* one token of lookahead beyond cur, valid iff
+                       * have_la - see peek2_kind()'s comment below */
+    int    have_la;
     int    isn;    /* next free intermediate-code label number - v7/cc/
                      * c00.c's global `isn`, initialized to 1 per
                      * translation unit. */
@@ -115,7 +124,30 @@ typedef struct {
 
 static void advance(Parser *p)
 {
-    p->cur = lex_next(&p->lx);
+    if (p->have_la) {
+        p->cur = p->la;
+        p->have_la = 0;
+    } else {
+        p->cur = lex_next(&p->lx);
+    }
+}
+
+/* Returns the token kind after p->cur, without consuming it -
+ * buffered in p->la so a subsequent advance() returns it rather than
+ * re-reading from the lexer. Only needed by parse_comma_item() below,
+ * to tell "IDENT '=' expr" (an embedded assignment) apart from a bare
+ * IDENT starting a larger expression - both look identical for the
+ * first token, and assignment sits at a lower precedence than
+ * anything else parse_expr() otherwise handles, so a single token of
+ * lookahead resolves it without backtracking or speculative
+ * emission. */
+static TokKind peek2_kind(Parser *p)
+{
+    if (!p->have_la) {
+        p->la = lex_next(&p->lx);
+        p->have_la = 1;
+    }
+    return p->la.kind;
 }
 
 /* Consumes the current token if it matches `k`; otherwise reports an
@@ -192,6 +224,48 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 
 static ExprVal parse_expr(Parser *p, FILE *t1);
 
+/*
+ * comma-item := (IDENT '=' expr) | expr
+ *
+ * Only reachable from inside a parenthesized comma-list (see
+ * parse_primary()'s T_LPAREN case below) - a bare assignment
+ * expression is not otherwise reachable from parse_expr()'s
+ * precedence chain (assign-stmt, handling '=' and the ten compound-
+ * assignment operators, is a distinct, statement-level-only
+ * production - see parse_assign_stmt()). Only plain '=' is supported
+ * here, not any compound-assignment operator - not exercised by any
+ * confirmed golden in this position (07_ternary.c's own
+ * "(a = a + 1, b = b + 1, a + b)" only ever uses '='). The NAME node
+ * for the identifier is emitted the same way either way (see
+ * parse_assign_stmt()'s identical emission), so peek2_kind() decides
+ * which continuation to take before anything is emitted - no
+ * speculative emission or backtracking needed.
+ */
+static ExprVal parse_comma_item(Parser *p, FILE *t1)
+{
+    if (p->cur.kind == T_IDENT && peek2_kind(p) == T_ASSIGN) {
+        char name[LEX_IDENT_MAX];
+        strncpy(name, p->cur.ident, sizeof name - 1);
+        name[sizeof name - 1] = '\0';
+        int line = p->cur.line;
+        SymEntry *sym = symtab_lookup(&p->syms, name);
+        advance(p); /* consume IDENT */
+        advance(p); /* consume '=' */
+
+        if (!sym) {
+            c0_error_at(line, "'%s' undeclared", name);
+        } else {
+            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        }
+
+        ExprVal rhs = parse_expr(p, t1);
+        emit_materialize(t1, rhs);
+        outcode(t1, "BN", OP_ASSIGN, sym ? sym->type : TY_INT);
+        return ev_dynamic();
+    }
+    return parse_expr(p, t1);
+}
+
 static ExprVal parse_primary(Parser *p, FILE *t1)
 {
     if (p->cur.kind == T_ICON) {
@@ -240,7 +314,24 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
     }
     if (p->cur.kind == T_LPAREN) {
         advance(p);
-        ExprVal v = parse_expr(p, t1);
+        /* '(' comma-item (',' comma-item)* ')' - the ',' handling
+         * (SEQNC) evaluates every item but the last purely for its
+         * side effects, discarding its value and keeping only the
+         * final item's - confirmed against 07_ternary.s.golden's
+         * "(a = a + 1, b = b + 1, a + b)" (no code at all is emitted
+         * for SEQNC itself; c1's OP_SEQNC just drops the earlier
+         * value off its stack - see c1_gen.c). A lone parenthesized
+         * expression (no comma) takes this same path with the loop
+         * never running, identical to the plain "'(' expr ')'"
+         * behavior every prior session already confirmed. */
+        ExprVal v = parse_comma_item(p, t1);
+        while (p->cur.kind == T_COMMA) {
+            advance(p);
+            emit_materialize(t1, v);
+            ExprVal rhs = parse_comma_item(p, t1);
+            outcode(t1, "BN", OP_SEQNC, TY_INT);
+            v = rhs;
+        }
         expect(p, T_RPAREN, "')'");
         return v;
     }
@@ -604,15 +695,49 @@ static ExprVal parse_logor(Parser *p, FILE *t1)
     return v;
 }
 
-/* expr := LOGOR - standard C precedence, restricted to the levels
- * this grammar scope currently supports: '||' (loosest) > '&&' >
- * '|' > '^' > '&' > '=='/'!=' > '<'/'<='/'>'/'>=' > '<<'/'>>' >
- * '+'/'-' > '*'/'/'/'%' > unary > primary. Assignment-expression
- * operators are not yet part of this chain - see
+/* expr := LOGOR ('?' LOGOR ':' LOGOR)? - standard C precedence,
+ * restricted to the levels this grammar scope currently supports:
+ * '?:' (loosest, confirmed against 07_ternary.c) > '||' > '&&' > '|'
+ * > '^' > '&' > '=='/'!=' > '<'/'<='/'>'/'>=' > '<<'/'>>' > '+'/'-' >
+ * '*'/'/'/'%' > unary > primary. Both branches of '?:' are
+ * themselves restricted to LOGOR (not a nested ternary, and not a
+ * comma-list) - the only shape 07_ternary.c's "a > b ? a : b"
+ * confirms; real C allows a full expression for the true-branch and
+ * a full conditional-expression (right-associative chaining) for the
+ * false-branch, neither of which is exercised here. Assignment
+ * operators are not part of this chain either (except inside a
+ * parenthesized comma-list - see parse_comma_item()) - see
  * src/mutos_cc/README.md. */
 static ExprVal parse_expr(Parser *p, FILE *t1)
 {
-    return parse_logor(p, t1);
+    ExprVal cond = parse_logor(p, t1);
+    if (p->cur.kind != T_QUEST)
+        return cond;
+    advance(p); /* consume '?' */
+    ExprVal t = parse_logor(p, t1);
+    if (!expect(p, T_COLON, "':'"))
+        return ev_dynamic();
+    ExprVal f = parse_logor(p, t1);
+
+    if (cond.is_const) {
+        /* Compile-time-constant condition - matches this file's
+         * established "fold whenever every operand is constant"
+         * policy elsewhere (real K&R cc's build() folds this too),
+         * though not itself exercised by 07_ternary.c (its condition
+         * is always a real, non-constant comparison). */
+        return (cond.value != 0) ? t : f;
+    }
+
+    /* cond is already fully emitted here (parse_relational()/etc.
+     * never leave a non-constant result unmaterialized - only a
+     * still-foldable compile-time constant ever does, and that case
+     * already returned above), so only the two branches might still
+     * need materializing. */
+    emit_materialize(t1, t);
+    emit_materialize(t1, f);
+    outcode(t1, "BN", OP_COLON, TY_INT);
+    outcode(t1, "BN", OP_QUEST, TY_INT);
+    return ev_dynamic();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1008,6 +1133,7 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     Parser p;
     lex_init(&p.lx, in, c0_diag_filename);
     p.isn = 1;
+    p.have_la = 0;
     p.syms.head = NULL;
     advance(&p);
 

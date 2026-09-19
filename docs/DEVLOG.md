@@ -535,8 +535,8 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 9/62 of the full corpus (`00_smoke`'s 3 files
-plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`); see `STATUS.md` for the
+verified byte-exact, end-to-end, for 10/62 of the full corpus (`00_smoke`'s 3 files
+plus `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
 process-split decision, and the K&R test corpus — so `mutos_c1`'s code generator had
@@ -1626,6 +1626,145 @@ zero regressions elsewhere: one more file byte-exact than the prior
 session's count, one fewer "not yet supported" than before —
 `06_compasgn` moved from that bucket to the pass bucket, 0 genuine
 mismatches.
+
+### The `?:` conditional and `,` comma operator, plus a confirmed `ASSIGN`-value-consumer: byte-level derivation (`01_expr/07_ternary` — `mutos_c0`/`mutos_c1` extended and verified this session)
+
+Next in difficulty order: `07_ternary.c` — `m = a > b ? a : b;` then
+`m = (a = a + 1, b = b + 1, a + b);`. Same method, `od -A d -t u1` on
+`07_ternary.1.golden`, cross-referenced against `07_ternary.s.golden`'s
+text.
+
+**`c0`'s tree shape for `?:` matches real K&R `cc` exactly** —
+confirmed via the decode: `NAME(a) NAME(b) GREAT(0) NAME(a) NAME(b)
+COLON(0) QUEST(0)`. `GREAT` is the condition (nothing new — the same
+comparison codegen `03_rellogic` already established). `COLON`
+(opcode `8`) then packages the two already-emitted branch values
+(`tr1`=true, `tr2`=false in real `cc`'s tree terms), and `QUEST`
+(opcode `90`) combines the condition with the `COLON` pair — a
+`QUEST` node's `tr1` is the condition, `tr2` is the `COLON` node,
+confirmed purely from emission order (condition emitted first, then
+both branches, then `COLON`, then `QUEST` last).
+
+**`c1`'s `?:` codegen is a *new* branch polarity**, not a reuse of
+`materialize_cond()`'s existing bare-comparison-as-0/1-value pattern
+(confirmed in the `03_rellogic` session):
+```
+mov  di,*-8.(bp)   | b -> di, setting up the cmp's rhs
+cmp  *-6.(bp),di
+ble  L10000          | INVERTED condition (a<=b) branches to the FALSE label
+mov  di,*-6.(bp)       | TRUE branch: inline at the fallthrough, no jump target of its own
+jmp  L10001
+L10000:mov di,*-8.(bp)   | FALSE branch
+L10001:                    | end: di now holds the selected value
+```
+Contrast with `materialize_cond()`'s shape for a bare `"r = a < b;"`
+(confirmed in `03_rellogic`): `blt Ltrue` (the ORIGINAL, not inverted,
+condition branches to a true label), fallthrough sets `di=0`, the true
+label sets `di=1`. The difference makes sense once the value being
+produced is considered: `materialize_cond()` only ever needs to
+produce one of exactly two fixed constants (0 or 1), so it can afford
+a shared "set di=1" instruction behind a jump target; `?:` selects
+between two *arbitrary* values, so each branch's own load has to live
+inline in its own arm rather than behind a shared instruction — the
+true branch gets the cheaper "no jump target" treatment since it's the
+fallthrough, and the false branch gets its own label. Confirmed the
+false branch re-loads `b` into `DI` (`"mov di,*-8.(bp)"`) even though
+the comparison's own right-hand-side setup already loaded `b` into
+`DI` moments earlier — no cross-branch value tracking, a plain,
+unconditional reload in each arm. Label allocation order is
+false-then-end (`L10000`/`L10001`) — only two labels, unlike
+`gen_logand()`'s three (`03_rellogic`), since there's no separate
+"true" label to jump to.
+
+**The comma operator emits *no* code of its own.** Decoding
+`"(a = a + 1, b = b + 1, a + b)"`:
+```
+NAME(a) NAME(a) CON(1) PLUS(0) ASSIGN(0)   | "a = a + 1"
+NAME(b) NAME(b) CON(1) PLUS(0) ASSIGN(0)   | "b = b + 1"
+SEQNC(0)                                    | combines the two ASSIGNs
+NAME(a) NAME(b) PLUS(0)                       | "a + b"
+SEQNC(0)                                        | combines with the running result
+```
+`SEQNC` (opcode `97`) is a pure value-discard: the left operand's side
+effects were already emitted by whichever opcode produced it (here,
+`ASSIGN`'s own `mov`), so `SEQNC` itself corresponds to **zero**
+instructions in the `.s` output — confirmed by there being no
+instruction anywhere in the golden that could plausibly correspond to
+either `SEQNC` node; the `.s` output for this whole statement is just
+the two assignments' own code followed directly by `"a + b"`'s code.
+
+**This surfaced a real gap in the existing grammar**: an embedded
+plain assignment (`"a = a + 1"`) used as a comma-item is not reachable
+from `parse_expr()`'s precedence chain at all — `assign-stmt`
+(handling `=` and the ten compound-assignment operators) is a
+distinct, statement-level-only production, only ever invoked from the
+top-level statement dispatcher. Supporting `07_ternary.c`'s actual
+syntax required a new grammar rule,
+`comma-item := (IDENT '=' expr) | expr`, reachable only from inside a
+parenthesized list. Telling the two comma-item shapes apart needs to
+happen *before* committing to either parse path (an `IDENT` starts
+both), so `c0_parser.c`'s `Parser` gained a genuine one-token
+lookahead (`peek2_kind()`, backed by a small `Token la; int have_la;`
+pair) rather than relying on speculative emission — `NAME`'s wire
+encoding happens to be identical whether the identifier turns out to
+be an rvalue reference or an assignment's lvalue, so speculative
+emission would have worked here, but committing to a real lookahead
+mechanism is more honest about what the grammar is actually doing and
+generalizes better than relying on that coincidence.
+
+**This also surfaced that `ASSIGN`'s own result value now has a real
+consumer, for the first time.** Every prior session's `ASSIGN` handler
+in `c1_gen.c` pushed nothing back onto the value stack, with a comment
+stating plainly that nothing in this grammar scope ever consumed an
+assignment expression's value. `07_ternary.c` breaks that: `"a = a +
+1"` as a comma-item needs *something* real on the stack for `SEQNC`
+to pop and discard. Fixed by having `OP_ASSIGN` push the already-
+computed `rhs` value back (free — it costs no extra instructions,
+since `rhs` is already sitting in a register or is a plain immediate,
+and it is never actually read again in any confirmed case, only
+discarded). This immediately raised a bookkeeping question: does a
+*plain* top-level `"a = 4;"` (no comma involved) now leak a value onto
+the stack forever, since nothing was previously popping anything at
+`EXPR` time? Yes — so `OP_EXPR`'s handler, previously a pure no-op
+beyond flushing the postfix-`++`/`--` deferred queue, now discards
+exactly one leftover value if present (`gen_fatal` if more than one is
+found, to catch a genuine stack-imbalance bug rather than silently
+eating it). This correctly generalizes across every statement form
+currently supported: `RFORCE` (return-stmt) already consumes its
+value without repushing, so there is nothing left for `EXPR` to
+discard there; the ten compound-assignment operators still push
+nothing, so nothing is left after those either — and c0's own grammar
+structure *guarantees* a compound-assignment expression can never
+appear anywhere but a statement's sole top-level operator (it is only
+reachable from the statement dispatcher, never from `parse_expr()`'s
+chain or `parse_comma_item()`), so there is no way for a future test
+to need one to push a value the way plain `ASSIGN` now does.
+
+**Separately, `"a = a + 1;"` surfaced a confirmed `+1`-specific
+codegen shape**, unrelated to the ternary/comma work above:
+```
+mov di,*-6.(bp)
+inc di            | NOT "add di,*1."
+mov *-6.(bp),di
+```
+`OP_PLUS`'s handler now special-cases an immediate right-hand side of
+exactly `1`, emitting a plain `INC` instead of the general `"add
+di,<imm>"` shape. `OP_MINUS` is deliberately left untouched (still
+`"sub di,*N."` unconditionally, including by 1) — no golden yet shows
+`"x - 1"`, so whether the real compiler gives it the symmetric `DEC`
+treatment remains unconfirmed rather than guessed.
+
+**Confirmed byte-exact, full pipeline, zero mismatches**: `01_expr/
+07_ternary.c` → real `mutos_cpp -P` → `mutos_c0` → `mutos_c1` matches
+`07_ternary.i.golden`/`.1.golden`/`.2.golden`/`.s.golden` byte-for-byte
+on the first complete implementation attempt (the byte-level `od`
+derivation above was, as usual, done *before* writing any
+`c0_parser.c`/`c1_gen.c` code). Full-corpus regression confirms zero
+regressions elsewhere despite the `ASSIGN`/`EXPR` stack-balance change
+touching every assignment statement in the whole corpus: one more file
+byte-exact than the prior session's count, one fewer "not yet
+supported" than before — `07_ternary` moved from that bucket to the
+pass bucket, 0 genuine mismatches.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
