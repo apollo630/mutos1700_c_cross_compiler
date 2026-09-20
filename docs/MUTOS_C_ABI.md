@@ -584,17 +584,24 @@ it; the note says so where that's the case.
 - [x] Every function: `push bp / mov bp,sp / push di / push si` prologue,
       unconditionally (§1.2). Implemented and verified in every passing
       golden so far (`c1_gen.c`'s `SAVE` handler).
-- [ ] Parameters at `bp+4, bp+6, bp+8, ...` (§1.3) — **not yet
-      implemented**: `mutos_c0`'s current grammar accepts no function
-      parameters at all.
+- [x] Parameters at `bp+4, bp+6, bp+8, ...` (§1.3). Implemented and
+      verified (`c0_sym.c`'s `symtab_declare_param()`, confirmed via
+      `04_funcs/01_call`'s `_a=4`/`_b=6` and `02_manyargs`'s six
+      parameters up to `_f=14`; also confirmed for a mixed int/`long`
+      parameter list via `02_long/04_params`).
 - [x] Locals at `bp-6, bp-8, bp-10, ...` (§1.4). Implemented and verified
       (`c0_sym.c`'s offset assignment, confirmed via `01_intarith`/
       `02_bitwise`'s `a`/`b`/`c` landing at exactly `-6`/`-8`/`-10`).
-- [ ] Arguments pushed right-to-left; caller cleans up with `add sp,N` after every
-      call (§1.1) — **not yet implemented**: no function calls are
-      supported yet.
+- [x] Arguments pushed right-to-left; caller cleans up with `add sp,N` after every
+      call (§1.1). Implemented and verified (`c1_gen.c`'s `gen_call()`,
+      confirmed via `04_funcs/01_call`/`02_manyargs`'s reverse-order
+      pushes and `02_long/04_params`'s `add sp,*8.` word-count-based
+      cleanup for a `long` argument).
 - [x] Return: `AX` for (`int`) scalars (§1.5). Implemented and verified
-      (`c1_gen.c`'s `RFORCE` handler). `char`/pointer scalars aren't
+      (`c1_gen.c`'s `RFORCE` handler, now also confirmed to skip its
+      usual move when the value is already `AX` — a call result or an
+      `OP_TIMES`/`OP_DIVIDE` quotient, see `04_funcs/01_call`/
+      `03_recfact`). `char`/pointer scalars aren't
       distinguished yet, since `mutos_c0`'s type system is currently
       `int`-only.
 - [ ] Return: `DX:AX` (`DX`=high) for `long` (§1.5) — **not yet

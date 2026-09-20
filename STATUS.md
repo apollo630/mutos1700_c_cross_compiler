@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-19.
+Last updated: 2026-09-20.
 
 ---
 
@@ -226,13 +226,15 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 20/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 27/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
-`02_long/01_addsub.c` and `02_muldiv.c`, plus all 7 of `03_ctrlflow`:
-`01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
-`05_breakcont.c`, `06_switch.c` and `07_goto.c`. ABI/
+`02_long/01_addsub.c`, `02_muldiv.c` and `04_params.c`, plus all 7 of
+`03_ctrlflow`: `01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
+`05_breakcont.c`, `06_switch.c` and `07_goto.c`, plus 6 of 7 of
+`04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`, `04_mutrec.c`,
+`05_staticvar.c` and `07_funcptr.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -240,7 +242,149 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
-### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn` + `07_ternary` + `08_castsize`)
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `04_funcs`'s `01_call` + `02_manyargs` + `03_recfact` + `04_mutrec` + `05_staticvar` + `07_funcptr`, plus `02_long/04_params`)
+
+Function definitions with K&R-style parameters (`bp+4, bp+6, ...` offsets),
+direct and indirect (through a function-pointer variable) calls, local
+`static` variables, and function pointers are now implemented in
+`src/mutos_cc/` — a from-scratch, modern-C11 reimplementation per this
+project's established approach (`v7/cc/` used as an algorithmic reference
+only, per CLAUDE.md Workflow Guideline 3).
+
+**Verification: the real, unmodified pipeline — `<n>.c` → real `mutos_cpp
+-P` → `mutos_c0` → `mutos_c1` → `<n>.s` — was run for all 6 of `04_funcs`'s
+files that have goldens (`01_call.c`, `02_manyargs.c`, `03_recfact.c`,
+`04_mutrec.c`, `05_staticvar.c`, `07_funcptr.c`) and for `02_long/
+04_params.c`, and every intermediate artifact (`.i`, `.1`, `.2`, `.s`)
+matches its real-hardware golden byte-for-byte.** Re-run via
+`tests/mutos_cc/run_goldens.sh` (or `make test` from the repo root).
+Current full-corpus result: 27 byte-exact end-to-end, 35 "not yet
+supported" (expected), **0 genuine mismatches anywhere**.
+
+Findings, each cited against exact byte offsets in `docs/DEVLOG.md`'s
+Milestone 4 section:
+
+1. **Parameter offsets** (`docs/MUTOS_C_ABI.md` sect. 1.3): a parameter is
+   `hclass SC_AUTO` — the exact same AUTO-with-a-numeric-offset
+   representation as a body local, differing only in the sign/magnitude of
+   the offset — with offsets `MCC_STARG=4, 6, 8, ...` in K&R parameter-LIST
+   order (not necessarily the order their own type-declaration statements
+   happen to appear in, though every confirmed golden's order matches
+   both). Confirmed via `01_call.1.golden`'s `_a=4`/`_b=6` and
+   `02_manyargs.1.golden`'s six parameters up to `_f=14`.
+2. **Parameter `ANAME`s are emitted between `SETREG` and the body's own
+   `BRANCH`/`LABEL` pair** — a genuine, confirmed ordering difference from
+   a body-local's own `ANAME` (which comes AFTER that `LABEL`, inside the
+   compound-statement's own decl loop) — matching v7/cc/c02.c's `cfunc()`
+   structurally (`funchead()`, which emits each parameter's declaration,
+   runs before `branch(sloc)`/`label(sloc+1)` there too).
+3. **A direct call's callee is `NAME(SC_EXTERN, TY_INT|FUNC=16, name)`** —
+   K&R's implicit "extern function returning int" declaration; no prior
+   declaration or prototype is required, and the callee is never looked up
+   in the local (AUTO) symbol table. `TY_INT|FUNC` matches v7/cc/c04.c's
+   `incref()`/`FUNC` derived-type tag exactly (`FUNC=020` octal = 16
+   decimal, distinct from `PTR=010`=8's already-confirmed one-pointer-
+   degree tag).
+4. **Call arguments are built as a left-associative chain of
+   `COMMA`(`TY_INT`) nodes** (wire opcode `9` — the *token* value K&R
+   reuses as a tree operator, entirely distinct from the already-confirmed
+   comma-*operator*'s own `SEQNC`=97), one per argument beyond the first;
+   a single argument uses no `COMMA` at all, and zero arguments emits a
+   single `NULLOP`(`218`) leaf — v7/cc/c04.c's `treeout(NULL)` shape.
+   Confirmed via `02_manyargs.1.golden`'s six-`CON`/five-`COMMA` chain,
+   `03_recfact.1.golden`'s single-`CON` no-`COMMA` call, and
+   `05_staticvar.1.golden`'s zero-argument `counter()` call.
+5. **Every argument is pushed right-to-left** (`docs/MUTOS_C_ABI.md` sect.
+   1.1), caller-cleanup via `add sp,N` (`N` = 2 bytes per argument WORD,
+   not per argument — a `long` argument occupies two words). An ordinary
+   argument is pushed AS-IS whenever 8086's `PUSH` can take it directly (a
+   register or any addressable memory operand); only a genuine immediate
+   needs `DI` first (`PUSH` has no immediate form). Confirmed via
+   `01_call.s.golden`'s `mov di,*4./push di` (immediate) vs.
+   `07_funcptr.s.golden`'s `push *-6.(bp)` (a plain local, pushed with no
+   preceding `mov` at all). A `long` constant argument instead pushes its
+   own two words directly (low word first, then high) — confirmed via
+   `02_long/04_params.s.golden`'s `myseek(3, 90000L, 1)`.
+6. **A call's result is always in `AX`** (sect. 1.5); `RFORCE` now skips
+   its usual `mov di,.../mov ax,di` pair when the value is *already* `AX`
+   (a call result, or an `OP_TIMES`/`OP_DIVIDE` quotient) — a real,
+   confirmed compiler optimization (mirroring v7/cc/c10.c's own
+   `rcexpr()`/`movreg()` "already in the target register" skip), not
+   something this project invented. When the AX-resident value instead
+   becomes an *operand* of a further `TIMES` (`03_recfact`'s `n *
+   fact(n - 1)`), that operator's own existing "load left into AX" codegen
+   now checks: whichever side is already `AX` KEEPS `AX` (even a redundant
+   `mov ax,ax` self-move, matching this project's no-peephole-optimization
+   ethos exactly) and the other side becomes the `IMUL` operand —
+   regardless of source left/right position.
+7. **The confirmed `+1`→`INC` codegen delta now has a confirmed symmetric
+   `-1`→`DEC` case too** (`03_recfact`'s/`04_mutrec`'s `n - 1`) — no
+   longer left unconfirmed as prior sessions' notes had it.
+8. **`(int)` (`LTOI`) applied to a `long` PARAMETER must NOT eagerly
+   materialize into a register** the way it does as a plain assignment's
+   rhs (`08_castsize`'s already-confirmed `mov di,*-8.(bp)` shape) —
+   confirmed against `02_long/04_params.s.golden`'s `fd + (int) offset`
+   rendering as `add di,*8.(bp)` (the converted low-word memory reference
+   used directly as `PLUS`'s operand, no separate `mov` at all). Both
+   shapes are real; the difference is which opcode CONSUMES the converted
+   value (`OP_ASSIGN`'s plain-type case still needs a register, since 8086
+   `MOV` cannot take two memory operands — an ordinary, still-unconfirmed
+   `"x = y;"` stays rejected either way).
+9. **A local `static` variable lives in its own dedicated `.bss` block**,
+   tagged by a fresh intermediate-code label rather than a stack offset —
+   `BSS`, `LABEL`(fresh), `SSPACE`(size), `PROG` opens it; `SNAME`(name,
+   same label) declares it (`hclass SC_STATIC`); every later reference
+   reuses that same label number as its "offset". Renders as `.bss` /
+   `L<n>:.blkb N.` / `.text` / `| name=L<n>` and a bare `L<n>` operand
+   wherever referenced (`mov di,L4`, `mov L4,di`) — confirmed against
+   `05_staticvar.s.golden`. Its value genuinely persists across calls, for
+   free, since nothing about it is stack-relative.
+10. **A function pointer's declared type is `TY_INT|FUNC|PTR = 72`**
+    (v7/cc's `incref(FUNC) = ((FUNC & ~TYPE) << TYLEN) | (FUNC & TYPE) |
+    PTR`, `TYPE=7`/`TYLEN=2`/`PTR=8` — confirmed: `incref(16) = 72`),
+    declared as `'(' '*' IDENT ')' '(' ')'` for both a local variable
+    (`int (*fp)();`) and a parameter (`int (*f)();`). A bare function name
+    used as a *value* (not called — `fp = square;`) is the same
+    `NAME(SC_EXTERN, TY_INT|FUNC)` a direct call's callee uses, wrapped in
+    `AMPER`(72) — but, since a function's address is a link-time constant,
+    **no code at all is emitted for that `AMPER`** (unlike the already-
+    confirmed array-decay `AMPER`, which needs a real `lea` for its
+    genuinely runtime bp-relative address): the assignment goes straight
+    to a memory-immediate `mov *-6.(bp),#_square`. An indirect call
+    (`(*f)(x)`) dereferences `f` via `STAR`(`TY_INT|FUNC`=16) — likewise a
+    PURE TYPE-LEVEL operation emitting no code of its own, leaving `f`'s
+    own plain memory reference untouched for `CALL` to render as `call
+    @*4.(bp)` (`@` = mutos_as's indirect-call marker). Confirmed against
+    `07_funcptr.s.golden` in full.
+
+**Current grammar/opcode scope, `04_funcs` additions (deliberately narrow —
+see `src/mutos_cc/README.md`):** K&R-style function definitions with
+parameters (`name(a, b) int a, b; { ... }`), a top-level function
+prototype (`int name();`, entirely discarded — no wire output of its own),
+direct and indirect function calls with up to `MCC_MAXPARAMS`/
+`MCC_MAXCALLARGS` (16) arguments, local `static` `int`/`char`/`long`
+variables (plain-`IDENT` declarator only), and a plain function-pointer
+local/parameter (`int (*name)();`, zero-argument callee signature only).
+Everything else — the `register` storage-class hint actually changing
+codegen (`06_regclass.c` — parsing `register` at all is not yet
+implemented; real register-variable allocation would be a substantial,
+separate feature, not attempted this session), a `long`-returning
+function's `DX:AX` return-value convention and `long` parameters'
+interaction with it (`02_long/03_retval.c`; `04_params.c`'s mixed int/long
+parameters themselves ARE now supported — see above), a function pointer
+with a non-empty parameter signature, a function-pointer array or struct
+member, block-scoped declarations, or a function with a non-`int` return
+type — remains an explicit "not yet supported" error, not silently-wrong
+output.
+
+Build: `cd src/mutos_cc && make`, or `make`/`make test` from the repo root.
+Clean build, zero warnings under `-Wall -Wextra -Wpedantic`.
+`mutos_cc` (the driver chaining `cpp|c0|c1|as|ld`) is not yet written —
+see `src/mutos_cc/README.md`'s "Next steps" for the full plan (`long`
+return values, `06_regclass`'s register variables, `09_abiprobe`'s
+`chkstk` threshold, then the driver).
+
+### `mutos_c0`/`mutos_c1`: verified in an earlier session (byte-exact, `00_smoke` + `01_intarith` + `02_bitwise` + `03_rellogic` + `04_shift` + `05_incdec` + `06_compasgn` + `07_ternary` + `08_castsize` + `02_long/01_addsub`/`02_muldiv` + `03_ctrlflow`)
 
 Built `mutos_c0` (lexer, diagnostics, the `temp1`/`temp2` stream writer, a
 symbol table, and a front-end driver) and `mutos_c1` (the stream reader and
@@ -850,7 +994,7 @@ convention. `render_bare_imm()` (still correct, and still used, for
 new, correctly-scoped `render_cmp_imm()`.
 
 Full-corpus regression (`tests/mutos_cc/run_goldens.sh`) confirms zero
-regressions anywhere: 20/62 byte-exact (up from 12), 0 genuine mismatches.
+regressions anywhere: 20 of 62 byte-exact (up from 12), 0 genuine mismatches.
 `02_long/03_retval.c` and `04_params.c` were re-checked and confirmed to
 still fail with their same pre-existing diagnostics - both need function
 calls/parameters (`04_funcs` scope), not more control-flow or `long`-
@@ -988,22 +1132,22 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr` and
-`03_ctrlflow` are now both fully covered (`if`/`else`, `while`, `do`/
-`while`, `for`, `break`/`continue`, `switch`/`case`/`default`, `goto`/
-labels), and `02_long/01_addsub.c`/`02_muldiv.c` are done too (`long`
-`+`/`-`/`*`/`/`/`%`, an `int`→`long` widening conversion, and a `long`-
-vs-constant relational comparison). Only `02_long/03_retval.c` and
-`04_params.c` remain, both blocked on `04_funcs` specifically (a
-`long`-returning function's `DX:AX` convention, and `long` parameters) —
-next up is function calls/parameters (`04_funcs`), which would complete
-`02_long` as a side effect the same way `if` completed most of it this
-session. See
-`src/mutos_cc/README.md`'s "Next
-steps" for the full, dependency-ordered plan through full
-arrays-and-pointers (subscripting, multi-level)/structs, function calls,
-the `09_abiprobe`
-`chkstk`-threshold goldens, and the `mutos_cc` driver itself.
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
+`03_ctrlflow` are fully covered, and `04_funcs` is now done except
+`06_regclass` (see below). `02_long/01_addsub.c`/`02_muldiv.c`/
+`04_params.c` are done too (`long` `+`/`-`/`*`/`/`/`%`, an `int`→`long`
+widening conversion, a `long`-vs-constant relational comparison, and mixed
+int/long function parameters); only `03_retval.c` (a `long`-returning
+function's `DX:AX` convention) remains in `02_long` itself. Next up:
+`06_regclass.c` (real register-variable allocation — a substantial,
+separate feature, deliberately not attempted alongside the rest of
+`04_funcs` this session), `02_long/03_retval.c`, then
+`05_arrptr`/`06_struct` (array subscripting, multi-level pointers,
+structs/unions/enums — each adds real type-system work the current
+`SymEntry`/`ExprVal` model doesn't fully have yet), the `09_abiprobe`
+`chkstk`-threshold goldens, and the `mutos_cc` driver itself. See
+`src/mutos_cc/README.md`'s "Next steps" for the full, dependency-ordered
+plan.
 
 ---
 

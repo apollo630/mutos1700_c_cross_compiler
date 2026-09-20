@@ -246,6 +246,28 @@ enum {
  *      any of the budget.
  */
 #define MCC_STAUTO         (-4)
+#define MCC_STARG          4   /* offset of the 1st parameter, bp+4 -
+                                 * matches docs/MUTOS_C_ABI.md sect.
+                                 * 1.3 exactly (V7's own STARG is also
+                                 * 4 - unlike STAUTO, this delta is
+                                 * NOT MUTOS-specific: bp+0 = saved
+                                 * caller bp, bp+2 = return address,
+                                 * so bp+4 is the first parameter
+                                 * regardless of how many registers
+                                 * the callee's own prologue saves).
+                                 * Confirmed against every 04_funcs
+                                 * golden's first ANAME/NAME offset
+                                 * (=4) - see src/mutos_cc/README.md's
+                                 * Milestone 4 "Function parameters
+                                 * and calls" section. A parameter is
+                                 * emitted with hclass SC_AUTO (not
+                                 * SC_ARG, despite that constant's
+                                 * existence below) - real, confirmed
+                                 * MUTOS behavior: params live in the
+                                 * exact same AUTO-with-a-numeric-
+                                 * offset representation as a body
+                                 * local, differing only in the sign/
+                                 * magnitude of that offset. */
 #define MCC_INIT_REGVAR    4
 #define MCC_NSAVEREG       3   /* bp, di, si - see docs/MUTOS_C_ABI.md
                                  * sect. 1.2; SAVE's fixed prologue

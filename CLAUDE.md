@@ -31,10 +31,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  20/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  27/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
-  `08_castsize`, plus `02_long/01_addsub`/`02_muldiv`, plus all 7 of `03_ctrlflow`) — see
+  `08_castsize`, plus `02_long/01_addsub`/`02_muldiv`/`04_params`, plus all 7 of
+  `03_ctrlflow`, plus 6 of 7 of `04_funcs`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -382,7 +383,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 20/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 27/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
@@ -422,7 +423,17 @@ scope and intent, not a snapshot of what's done.
   lower address" ABI convention down to the wire-format level, and
   `sizeof` folding entirely at parse time (never a wire opcode of its
   own), not just
-  constant folding). **`01_expr` and `03_ctrlflow` are now fully covered.**
+  constant folding), and (for `04_funcs`) K&R-style function parameters
+  (`bp+4, bp+6, ...`), direct and indirect (through a function-pointer
+  variable) calls with a full right-to-left-push/caller-cleanup sequence,
+  local `static` variables (their own dedicated `.bss` block, not the
+  stack frame), and function pointers - full derivation in
+  `docs/DEVLOG.md`, including a real, previously-unconfirmed compiler
+  optimization this surfaced (a call's/multiply's result, when already
+  sitting in the return register `AX`, is never redundantly re-moved).
+  **`01_expr` and `03_ctrlflow` are now fully covered, and `04_funcs` is
+  done except `06_regclass.c` (real register-variable allocation - a
+  substantial separate feature, deliberately not attempted).**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -435,14 +446,13 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category. Only `02_long/03_retval.c` and `04_params.c`
-  remain in that category, both blocked on `04_funcs` (function calls/
-  parameters) specifically, not more control-flow or `long`-arithmetic
-  work — see
+  category by category. `06_regclass.c` (register variables) and
+  `02_long/03_retval.c` (a `long`-returning function's `DX:AX` convention)
+  remain in their categories — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
   dependency-ordered list (full arrays-and-pointers (subscripting,
   multi-level)/structs,
-  function calls, the `chkstk` threshold, then the `mutos_cc` driver itself).
+  the `chkstk` threshold, then the `mutos_cc` driver itself).
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

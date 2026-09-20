@@ -146,6 +146,20 @@ typedef struct {
     long val;
 } CaseEntry;
 
+/* Function names registered so far in this translation unit (by
+ * parse_extdef()'s own definitions and by parse_top_prototype()'s
+ * forward declarations) - a GLOBAL, whole-file table, unlike
+ * Parser::syms (reset per-function) - matching v7/cc's own single,
+ * persistent hshtab: a function's own definition/prototype earlier
+ * in the file makes its name a recognized function for the rest of
+ * the file. The only current consumer is parse_primary()'s "bare
+ * function name used as a value" fallback (see its own comment) -
+ * confirmed necessary against 07_funcptr.1.golden's "fp = square;"
+ * (main() is the LAST function in that file, so "square"/"cube" are
+ * already registered by the time it's parsed). Sized generously;
+ * 07_funcptr.c only ever registers 3. */
+#define MCC_MAXFUNCS 64
+
 typedef struct {
     Lexer  lx;
     Token  cur;
@@ -203,6 +217,9 @@ typedef struct {
                       * v7/cc's own "swp==0" test makes). */
     CaseEntry cases[MCC_NCASES]; /* see CaseEntry's own comment above. */
     int    ncases;
+    char   funcnames[MCC_MAXFUNCS][LEX_IDENT_MAX]; /* see MCC_MAXFUNCS's
+                                                      * own comment above. */
+    int    nfuncnames;
 } Parser;
 
 /* One pointer-to-int degree, matching mutos_cc.h's XTYPE bit layout
@@ -211,6 +228,34 @@ typedef struct {
  * use type value 8 (TY_INT | 010). Only pointer-to-int is supported
  * in this grammar scope - see src/mutos_cc/README.md. */
 #define TY_PTR_INT (TY_INT | 010)
+
+/* "function returning int" - v7/cc/c0.h's FUNC(020) derived-type tag,
+ * used only for the NAME leaf that names a CALLED function (see
+ * parse_call() below) - confirmed against every 04_funcs .1.golden's
+ * "NAME hclass=SC_EXTERN type=TY_INT ptr\u00d72(16)" callee reference.
+ * Unlike TY_PTR_INT (a single degree-of-reference step, v7/cc's PTR
+ * tag alone), this is one FUNC step - see v7/cc/c04.c's incref()
+ * (mutos_c0 does not need a general incref() implementation, since
+ * this grammar scope only ever derives exactly this one fixed
+ * type). */
+#define TY_FUNC_INT (TY_INT | 020)
+
+/* "pointer to function returning int" - v7/cc/c04.c's incref()
+ * applied to TY_FUNC_INT: incref(t) = ((t & ~TYPE) << TYLEN) |
+ * (t & TYPE) | PTR (TYPE=7, TYLEN=2, PTR=8 - v7/cc/c0.h), giving
+ * incref(16) = 72 - confirmed against 07_funcptr.1.golden's "int
+ * (*f)()"/"int (*fp)()" declarator (every ANAME/NAME/AMPER/ASSIGN
+ * touching `f`/`fp` uses type 72). A literal constant rather than a
+ * general incref() implementation since this grammar scope only
+ * ever derives this one specific type (a plain function-pointer
+ * variable/parameter - no pointer-to-pointer-to-function or any
+ * other multi-level derived type is exercised). */
+#define TY_PTR_FUNC_INT 72
+
+/* Maximum K&R-style parameters a single function definition can
+ * declare - sized generously; 04_funcs/02_manyargs.c's six-parameter
+ * sum6() is the largest confirmed case in the current corpus. */
+#define MCC_MAXPARAMS 16
 
 /* SZINT - the size (bytes) of a single int/pointer, and the scale
  * factor pointer arithmetic on an "int *" steps by. Matches
@@ -412,6 +457,164 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
     return parse_expr(p, t1);
 }
 
+/*
+ * call-expr := IDENT '(' (expr (',' expr)*)? ')'
+ *
+ * A direct function call. The callee is referenced by a
+ * NAME(SC_EXTERN, TY_FUNC_INT, name) leaf - K&R's implicit "extern
+ * function returning int" declaration: no prior declaration or
+ * prototype is required (matching real K&R semantics), and this
+ * grammar scope never looks the name up in the local (AUTO) symbol
+ * table for a call - confirmed against every 04_funcs .1.golden's
+ * callee NAME. The argument list is built exactly like the
+ * parenthesized comma-list in parse_primary()'s T_LPAREN case below
+ * (a left-associative chain of COMMA(TY_INT) nodes, one per argument
+ * beyond the first), EXCEPT that every argument is materialized
+ * immediately as it is parsed (never left as a still-foldable
+ * ExprVal constant, unlike that comma-list's own final item) - each
+ * argument must become a genuine part of the call's tree the moment
+ * it is parsed, matching real K&R's per-argument build() during
+ * call parsing. Confirmed against 02_manyargs.1.golden's six-CON-
+ * plus-five-COMMA argument list and against 03_recfact.1.golden's
+ * "fact(6)" (a single, immediately-materialized CON(6), no COMMA at
+ * all). Zero arguments emits a single NULLOP leaf - v7/cc/c04.c's
+ * treeout(NULL) shape (an empty argument-list tree is a null
+ * pointer there) - confirmed against 05_staticvar.1.golden's
+ * "counter()". The call's own result type is always TY_INT - no
+ * function with a different return type is exercised by this
+ * grammar scope yet (every function definition is still implicitly
+ * int-returning - see cfunc()).
+ */
+
+/* Registers `name` as a known function (a definition or a
+ * prototype), so a later bare reference to it (parse_primary()'s
+ * T_IDENT fallback below) can be recognized as "the address of this
+ * function" rather than an undeclared-identifier error - see
+ * MCC_MAXFUNCS's own comment on the Parser struct. A no-op (not an
+ * error) if already registered - a function's own definition and an
+ * earlier prototype for it both call this, and registering twice is
+ * harmless. */
+static void register_func(Parser *p, const char *name)
+{
+    for (int i = 0; i < p->nfuncnames; i++)
+        if (strncmp(p->funcnames[i], name, LEX_IDENT_MAX) == 0)
+            return;
+    if (p->nfuncnames >= MCC_MAXFUNCS) {
+        c0_error_at(p->cur.line,
+            "too many distinct function names (internal limit %d)",
+            MCC_MAXFUNCS);
+        return;
+    }
+    snprintf(p->funcnames[p->nfuncnames], LEX_IDENT_MAX, "%s", name);
+    p->nfuncnames++;
+}
+
+static int is_known_func(Parser *p, const char *name)
+{
+    for (int i = 0; i < p->nfuncnames; i++)
+        if (strncmp(p->funcnames[i], name, LEX_IDENT_MAX) == 0)
+            return 1;
+    return 0;
+}
+
+/*
+ * arg-list-and-call := '(' (expr (',' expr)*)? ')'
+ *
+ * Shared tail end of both parse_call() (direct call, callee already
+ * emitted as a NAME) and parse_indirect_call() (indirect call,
+ * callee already emitted as NAME+STAR) - see each of their own
+ * comments for the confirmed argument-list/NULLOP/CALL shape this
+ * implements. The caller has already consumed the opening '(' and
+ * emitted the callee expression; this function consumes everything
+ * from the first argument (if any) through the closing ')' and the
+ * trailing CALL opcode itself.
+ */
+static void parse_call_args_and_emit(Parser *p, FILE *t1)
+{
+    if (p->cur.kind == T_RPAREN) {
+        outcode(t1, "B", OP_NULLOP);
+    } else {
+        ExprVal v = parse_expr(p, t1);
+        emit_materialize(t1, v);
+        while (p->cur.kind == T_COMMA) {
+            advance(p);
+            ExprVal rhs = parse_expr(p, t1);
+            emit_materialize(t1, rhs);
+            outcode(t1, "BN", OP_COMMA, TY_INT);
+        }
+    }
+    expect(p, T_RPAREN, "')'");
+    outcode(t1, "BN", OP_CALL, TY_INT);
+}
+
+static ExprVal parse_call(Parser *p, FILE *t1)
+{
+    char name[LEX_IDENT_MAX];
+    strncpy(name, p->cur.ident, sizeof name - 1);
+    name[sizeof name - 1] = '\0';
+    advance(p); /* consume IDENT */
+    advance(p); /* consume '(' */
+
+    outcode(t1, "BNNS", OP_NAME, SC_EXTERN, TY_FUNC_INT, name);
+
+    parse_call_args_and_emit(p, t1);
+    return ev_dynamic();
+}
+
+/*
+ * indirect-call-expr := '(' '*' IDENT ')' '(' (expr (',' expr)*)? ')'
+ *
+ * A call through a function-pointer VARIABLE (as opposed to
+ * parse_call()'s direct call by name) - e.g. 07_funcptr.c's
+ * "(*f)(x)". `f` (a local of type TY_PTR_FUNC_INT - see parse_decl()/
+ * parse_param_decls()) is referenced as an ordinary NAME leaf, then
+ * OP_STAR(TY_FUNC_INT) dereferences it (v7/cc/c04.c's decref(72)=16,
+ * mirroring parse_call()'s TY_FUNC_INT - not a general decref()
+ * implementation, since this grammar scope only ever needs this one
+ * specific dereference), and the result feeds the same argument-list-
+ * plus-CALL shape parse_call() itself uses - confirmed against
+ * 07_funcptr.1.golden's "return (*f)(x);" (NAME(f), STAR, NAME(x),
+ * CALL). Only a plain pointer VARIABLE is supported as the callee
+ * expression (not a general pointer-typed expression) - matching
+ * this grammar scope's equally narrow treatment of star-assign-stmt
+ * elsewhere.
+ */
+static ExprVal parse_indirect_call(Parser *p, FILE *t1)
+{
+    advance(p); /* consume '(' */
+    advance(p); /* consume '*' */
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line,
+            "expected a function-pointer variable name after '(*'");
+        return ev_dynamic();
+    }
+    int line = p->cur.line;
+    SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+    if (!sym) {
+        c0_error_at(line, "'%s' undeclared", p->cur.ident);
+        advance(p);
+        return ev_dynamic();
+    }
+    advance(p); /* consume IDENT */
+    if (!expect(p, T_RPAREN, "')'"))
+        return ev_dynamic();
+
+    if (sym->type != TY_PTR_FUNC_INT) {
+        c0_error_at(line,
+            "'%s' is not a function-pointer variable - an indirect "
+            "call through anything else is not yet supported - see "
+            "src/mutos_cc/README.md", sym->name);
+        return ev_dynamic();
+    }
+    outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+    outcode(t1, "BN", OP_STAR, TY_FUNC_INT);
+
+    if (!expect(p, T_LPAREN, "'('"))
+        return ev_dynamic();
+    parse_call_args_and_emit(p, t1);
+    return ev_dynamic();
+}
+
 static ExprVal parse_primary(Parser *p, FILE *t1)
 {
     if (p->cur.kind == T_ICON) {
@@ -447,8 +650,32 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
         return ev_const_long(raw);
     }
     if (p->cur.kind == T_IDENT) {
+        if (peek2_kind(p) == T_LPAREN)
+            return parse_call(p, t1);
         SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
         if (!sym) {
+            if (is_known_func(p, p->cur.ident)) {
+                /* A bare function name used as a value (not called) -
+                 * e.g. 07_funcptr.c's "fp = square;". K&R's implicit
+                 * function-address rule: the name is the same
+                 * NAME(SC_EXTERN, TY_FUNC_INT, name) leaf parse_call()
+                 * uses for a callee, but taken by address (AMPER)
+                 * instead of called - confirmed against
+                 * 07_funcptr.1.golden's "fp = square;" (NAME(_square,
+                 * EXTERN, FUNC), AMPER(TY_PTR_FUNC_INT)). Only
+                 * recognized for a name this translation unit has
+                 * already seen defined/prototyped (see
+                 * MCC_MAXFUNCS's own comment) - an otherwise-
+                 * undeclared identifier still falls through to the
+                 * ordinary "undeclared" error below. */
+                char name[LEX_IDENT_MAX];
+                strncpy(name, p->cur.ident, sizeof name - 1);
+                name[sizeof name - 1] = '\0';
+                advance(p);
+                outcode(t1, "BNNS", OP_NAME, SC_EXTERN, TY_FUNC_INT, name);
+                outcode(t1, "BN", OP_AMPER, TY_PTR_FUNC_INT);
+                return ev_dynamic_typed(TY_PTR_FUNC_INT);
+            }
             c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
             advance(p);
             return ev_const(0);
@@ -486,6 +713,8 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
         return ev_dynamic_typed(sym->type);
     }
     if (p->cur.kind == T_LPAREN) {
+        if (peek2_kind(p) == T_STAR)
+            return parse_indirect_call(p, t1);
         if (peek2_kind(p) == T_KW_INT || peek2_kind(p) == T_KW_CHAR ||
             peek2_kind(p) == T_KW_LONG) {
             /* cast-expr := '(' ('int'|'char'|'long') ')' IDENT
@@ -1137,6 +1366,48 @@ static void parse_decl(Parser *p, FILE *t1)
     }
 
     for (;;) {
+        if (p->cur.kind == T_LPAREN) {
+            /* Function-pointer declarator: '(' '*' IDENT ')' '(' ')'
+             * - e.g. "int (*fp)();" - confirmed against
+             * 07_funcptr.1.golden's main()'s "_fp" ANAME. Only this
+             * exact shape (an empty parameter list) is supported -
+             * see src/mutos_cc/README.md. */
+            advance(p); /* consume '(' */
+            if (!expect(p, T_STAR, "'*'"))
+                break;
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line,
+                    "expected an identifier in a function-pointer "
+                    "declaration");
+                break;
+            }
+            char fname[LEX_IDENT_MAX];
+            strncpy(fname, p->cur.ident, sizeof fname - 1);
+            fname[sizeof fname - 1] = '\0';
+            int fline = p->cur.line;
+            advance(p); /* consume IDENT */
+            if (!expect(p, T_RPAREN, "')'"))
+                break;
+            if (!expect(p, T_LPAREN, "'('"))
+                break;
+            if (!expect(p, T_RPAREN, "')'"))
+                break;
+
+            SymEntry *fsym = symtab_declare_auto(&p->syms, fname,
+                                                  TY_PTR_FUNC_INT, MCC_SZINT);
+            if (!fsym) {
+                c0_error_at(fline, "'%s' redeclared", fname);
+            } else {
+                outcode(t1, "BSN", OP_ANAME, fsym->name, fsym->offset);
+            }
+
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            break;
+        }
+
         int is_ptr = 0;
         if (p->cur.kind == T_STAR) {
             is_ptr = 1;
@@ -1188,8 +1459,85 @@ static void parse_decl(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
 }
 
-/* ------------------------------------------------------------------ */
-/* Statements */
+/*
+ * static-decl := 'static' ('int'|'char'|'long') IDENT (',' IDENT)* ';'
+ *
+ * A local STATIC variable - unlike an AUTO local, it is NOT part of
+ * the stack frame at all: it lives in a dedicated BSS block (one per
+ * declared name), tagged with its own fresh intermediate-code label,
+ * and keeps its value across calls. Matches v7/cc/c03.c's declist()
+ * STATIC case ("dsym->hoffset = isn; outcode(\"BBNBN\", BSS, LABEL,
+ * isn++, SSPACE, rlength(dsym)); outcode(\"B\", PROG);" then prste()'s
+ * own "outcode(\"BSN\", SNAME, name, hoffset)"), confirmed
+ * byte-for-byte against 04_funcs/05_staticvar.1.golden's "static int
+ * n;" (BSS, LABEL(4), SSPACE(2), PROG, SNAME("_n", 4)) - `symtab_
+ * declare_static()`'s `offset` is this same label number, not a
+ * stack offset (see its own comment in c0_sym.h); every later NAME
+ * reference to `n` reuses it unchanged (SC_STATIC, offset=4),
+ * confirmed via "n = n + 1;"'s two NAME(n) nodes. Only a plain-IDENT
+ * declarator is supported (no '*'/'[' forms) - not exercised by any
+ * golden, matching 'char'/'long' locals' own scope restriction in
+ * parse_decl() above.
+ */
+static void parse_static_decl(Parser *p, FILE *t1)
+{
+    advance(p); /* consume 'static' */
+
+    int symtype, slotsize;
+    if (p->cur.kind == T_KW_INT) {
+        symtype = TY_INT;
+        slotsize = MCC_SZINT;
+    } else if (p->cur.kind == T_KW_CHAR) {
+        symtype = TY_CHAR;
+        slotsize = MCC_SZINT; /* slot size, not value size - see
+                                * parse_decl()'s own comment above */
+    } else if (p->cur.kind == T_KW_LONG) {
+        symtype = TY_LONG;
+        slotsize = MCC_SZLONG;
+    } else {
+        c0_error_at(p->cur.line,
+            "only 'int'/'char'/'long' static declarations are "
+            "supported so far - see src/mutos_cc/README.md");
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+        return;
+    }
+    advance(p); /* consume 'int'/'char'/'long' */
+
+    for (;;) {
+        if (p->cur.kind != T_IDENT) {
+            c0_error_at(p->cur.line, "expected an identifier in declaration");
+            break;
+        }
+        char name[LEX_IDENT_MAX];
+        strncpy(name, p->cur.ident, sizeof name - 1);
+        name[sizeof name - 1] = '\0';
+        int line = p->cur.line;
+        advance(p);
+
+        int label = p->isn++;
+        outcode(t1, "BBNBN", OP_BSS, OP_LABEL, label, OP_SSPACE, slotsize);
+        outcode(t1, "B", OP_PROG);
+
+        SymEntry *sym = symtab_declare_static(&p->syms, name, symtype, label);
+        if (!sym) {
+            c0_error_at(line, "'%s' redeclared", name);
+        } else {
+            outcode(t1, "BSN", OP_SNAME, sym->name, sym->offset);
+        }
+
+        if (p->cur.kind == T_COMMA) {
+            advance(p);
+            continue;
+        }
+        break;
+    }
+    expect(p, T_SEMI, "';'");
+}
+
+
 
 /*
  * doret() - matches v7/cc/c04.c's doret() shape: a bare "return;"
@@ -1964,7 +2312,8 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
         return;
 
     /* Declarations must precede statements within a block, matching
-     * K&R block structure - 'int'/'char'/'long' declarations are
+     * K&R block structure - 'int'/'char'/'long' declarations (and
+     * 'static int'/'char'/'long' - see parse_static_decl() above) are
      * recognized as such right now, so the loop condition doubles as
      * "have we reached the first statement yet". A nested compound-
      * stmt (a loop/if body written as "{ ... }") re-enters here too;
@@ -1973,8 +2322,12 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
      * through - a block-scoped declaration is not yet supported (see
      * src/mutos_cc/README.md). */
     while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
-           p->cur.kind == T_KW_LONG)
-        parse_decl(p, t1);
+           p->cur.kind == T_KW_LONG || p->cur.kind == T_KW_STATIC) {
+        if (p->cur.kind == T_KW_STATIC)
+            parse_static_decl(p, t1);
+        else
+            parse_decl(p, t1);
+    }
 
     while (p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
         parse_statement(p, t1, retlab);
@@ -1986,11 +2339,159 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
 /* Function / external definitions */
 
 /*
+ * param-decls := (('int'/'char'/'long') param-declarator (',' param-declarator)* ';')*
+ * param-declarator := '*' IDENT | IDENT
+ *
+ * The K&R-style parameter TYPE declarations between a function's
+ * '(' name-list ')' and its '{' - matches v7/cc/c03.c's own
+ * declarator loop shape (reused from parse_decl() above), except
+ * each name is bound to one of `param_names[]` (by K&R parameter-
+ * LIST position, not by the order these decl statements happen to
+ * declare them in - see c0_sym.h's paramlen comment) rather than to
+ * a fresh AUTO local. A `param_names[]` entry with no matching decl
+ * statement defaults to a plain 'int' (K&R's implicit-int parameter
+ * rule) - not exercised by any golden yet (every confirmed 04_funcs
+ * function declares every one of its parameters), but a direct,
+ * low-risk consequence of the same rule already applied to a called-
+ * but-undeclared function's own implicit return type (see
+ * parse_call()). Offsets are assigned, and ANAME emitted, in
+ * `param_names[]` order (bp+4, bp+6, ... - docs/MUTOS_C_ABI.md sect.
+ * 1.3), confirmed byte-for-byte against every 04_funcs .1.golden's
+ * ANAME sequence.
+ */
+static void parse_param_decls(Parser *p, FILE *t1,
+                               char param_names[][LEX_IDENT_MAX], int nparams)
+{
+    if (nparams == 0)
+        return;
+
+    int ptype[MCC_MAXPARAMS];
+    int pptr[MCC_MAXPARAMS];
+    int pfunc[MCC_MAXPARAMS]; /* 1 iff declared "int (*name)()" - a
+                                * function-pointer parameter, e.g.
+                                * 07_funcptr.c's "int (*f)();" - see
+                                * parse_decl()'s matching local-
+                                * variable declarator for the wire
+                                * shape this mirrors. */
+    int pdeclared[MCC_MAXPARAMS];
+    for (int i = 0; i < nparams; i++) {
+        ptype[i] = TY_INT;
+        pptr[i] = 0;
+        pfunc[i] = 0;
+        pdeclared[i] = 0;
+    }
+
+    while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
+           p->cur.kind == T_KW_LONG) {
+        int symtype = (p->cur.kind == T_KW_INT) ? TY_INT
+                    : (p->cur.kind == T_KW_CHAR) ? TY_CHAR : TY_LONG;
+        advance(p);
+        for (;;) {
+            if (symtype == TY_INT && p->cur.kind == T_LPAREN) {
+                advance(p); /* consume '(' */
+                if (!expect(p, T_STAR, "'*'"))
+                    break;
+                if (p->cur.kind != T_IDENT) {
+                    c0_error_at(p->cur.line,
+                        "expected an identifier in a function-pointer "
+                        "parameter declaration");
+                    break;
+                }
+                int idx = -1;
+                for (int i = 0; i < nparams; i++) {
+                    if (strncmp(param_names[i], p->cur.ident, LEX_IDENT_MAX) == 0) {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx < 0)
+                    c0_error_at(p->cur.line,
+                        "'%s' is not one of this function's declared "
+                        "parameters", p->cur.ident);
+                advance(p); /* consume IDENT */
+                if (!expect(p, T_RPAREN, "')'"))
+                    break;
+                if (!expect(p, T_LPAREN, "'('"))
+                    break;
+                if (!expect(p, T_RPAREN, "')'"))
+                    break;
+                if (idx >= 0) {
+                    pfunc[idx] = 1;
+                    pdeclared[idx] = 1;
+                }
+                if (p->cur.kind == T_COMMA) {
+                    advance(p);
+                    continue;
+                }
+                break;
+            }
+
+            int is_ptr = 0;
+            if (symtype == TY_INT && p->cur.kind == T_STAR) {
+                is_ptr = 1;
+                advance(p);
+            }
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line,
+                    "expected a parameter name in declaration");
+                break;
+            }
+            int idx = -1;
+            for (int i = 0; i < nparams; i++) {
+                if (strncmp(param_names[i], p->cur.ident, LEX_IDENT_MAX) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0) {
+                c0_error_at(p->cur.line,
+                    "'%s' is not one of this function's declared "
+                    "parameters", p->cur.ident);
+            } else {
+                ptype[idx] = symtype;
+                pptr[idx] = is_ptr;
+                pdeclared[idx] = 1;
+            }
+            advance(p); /* consume IDENT */
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            break;
+        }
+        expect(p, T_SEMI, "';'");
+    }
+    (void)pdeclared; /* recorded for a future "warn on undeclared
+                       * parameter" diagnostic - not yet needed since
+                       * every confirmed golden declares every
+                       * parameter explicitly. */
+
+    for (int i = 0; i < nparams; i++) {
+        int decltype = pfunc[i] ? TY_PTR_FUNC_INT : pptr[i] ? TY_PTR_INT : ptype[i];
+        int size = (pfunc[i] || pptr[i]) ? MCC_SZINT
+                 : (ptype[i] == TY_LONG) ? MCC_SZLONG
+                 : MCC_SZINT; /* slot size - a char parameter still
+                                * occupies a full word, same as a
+                                * char LOCAL (see parse_decl()'s own
+                                * comment); not yet exercised by a
+                                * golden for a parameter specifically. */
+        SymEntry *sym = symtab_declare_param(&p->syms, param_names[i], decltype, size);
+        if (!sym) {
+            c0_error_at(p->cur.line, "'%s' redeclared", param_names[i]);
+            continue;
+        }
+        sym->is_ptr = pptr[i];
+        outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
+    }
+}
+
+/*
  * cfunc() - matches v7/cc/c02.c's cfunc() shape, with the MUTOS-
  * specific deltas documented in mutos_cc.h applied (extra EVEN,
  * STAUTO=-4, initial regvar=4, RETRN's extra type argument).
  */
-static void cfunc(Parser *p, const char *name, FILE *t1)
+static void cfunc(Parser *p, const char *name, FILE *t1,
+                   char param_names[][LEX_IDENT_MAX], int nparams)
 {
     int sloc = p->isn;
     p->isn += 2;
@@ -2005,11 +2506,16 @@ static void cfunc(Parser *p, const char *name, FILE *t1)
     outcode(t1, "B", OP_SAVE);
     outcode(t1, "BN", OP_SETREG, regvar);
 
-    branch_op(t1, sloc);
-    label_op(t1, sloc + 1);
-
-    int retlab = p->isn++;
-
+    /* Parameter ANAMEs are emitted here - between SETREG and the
+     * BRANCH/LABEL pair that brackets the body - NOT after LABEL
+     * like a body-local's own ANAME (see parse_decl()/
+     * parse_compound_stmt()). This matches v7/cc/c02.c's cfunc()
+     * shape structurally (funchead(), which emits each parameter's
+     * ANAME, runs before branch(sloc)/label(sloc+1) there too),
+     * confirmed byte-for-byte here against every 04_funcs .1.golden:
+     * SAVE, SETREG, ANAME(s) (if any params), BRANCH, LABEL, then
+     * the body (whose own locals' ANAMEs - if any - come AFTER this
+     * LABEL, inside parse_compound_stmt() as always). */
     symtab_init(&p->syms);
     p->brklab = 0;
     p->contlab = 0;
@@ -2017,6 +2523,13 @@ static void cfunc(Parser *p, const char *name, FILE *t1)
     p->deflab = 0;
     p->in_switch = 0;
     p->ncases = 0;
+    parse_param_decls(p, t1, param_names, nparams);
+
+    branch_op(t1, sloc);
+    label_op(t1, sloc + 1);
+
+    int retlab = p->isn++;
+
     parse_compound_stmt(p, t1, retlab);
 
     outcode(t1, "BNBN", OP_LABEL, retlab, OP_RETRN, TY_INT);
@@ -2028,8 +2541,66 @@ static void cfunc(Parser *p, const char *name, FILE *t1)
     symtab_clear(&p->syms);
 }
 
+/*
+ * top-level function prototype: ('int'|'char'|'long') IDENT '(' ')' ';'
+ *
+ * A K&R forward declaration (04_mutrec.c's "int iseven();", needed
+ * before "isodd" calls "iseven" so real K&R source has SOME
+ * declaration preceding the use). Parsed and entirely discarded -
+ * confirmed against 04_mutrec.1.golden, which contains no additional
+ * wire output at all for this line: every call site emits the exact
+ * same NAME(SC_EXTERN, TY_FUNC_INT, name) leaf regardless of whether
+ * a prototype preceded it (see parse_call()), so this declaration
+ * exists purely to accept the source syntax. A global VARIABLE
+ * declaration ("int x;", no following '(') or a prototype with a
+ * nonempty parameter list is not yet supported - neither is
+ * exercised by any golden in this grammar scope.
+ */
+static void parse_top_prototype(Parser *p, FILE *t1)
+{
+    (void)t1;
+    advance(p); /* consume 'int'/'char'/'long' */
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line,
+            "expected an identifier in top-level declaration");
+        return;
+    }
+    char name[LEX_IDENT_MAX];
+    strncpy(name, p->cur.ident, sizeof name - 1);
+    name[sizeof name - 1] = '\0';
+    advance(p); /* consume IDENT */
+    if (p->cur.kind != T_LPAREN) {
+        c0_error_at(p->cur.line,
+            "a top-level declaration must be a function prototype "
+            "('name();') - a global variable declaration is not yet "
+            "supported - see src/mutos_cc/README.md");
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+            advance(p);
+        if (p->cur.kind == T_SEMI)
+            advance(p);
+        return;
+    }
+    advance(p); /* consume '(' */
+    if (p->cur.kind != T_RPAREN) {
+        c0_error_at(p->cur.line,
+            "a function prototype's parameter list must be empty "
+            "('()') so far - see src/mutos_cc/README.md");
+        while (p->cur.kind != T_RPAREN && p->cur.kind != T_EOF)
+            advance(p);
+    }
+    expect(p, T_RPAREN, "')'");
+    expect(p, T_SEMI, "';'");
+    register_func(p, name);
+}
+
 static void parse_extdef(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
+        p->cur.kind == T_KW_LONG) {
+        parse_top_prototype(p, t1);
+        return;
+    }
+
     if (p->cur.kind != T_IDENT) {
         c0_error_at(p->cur.line,
             "external definition syntax (expected a function name - "
@@ -2044,18 +2615,41 @@ static void parse_extdef(Parser *p, FILE *t1)
 
     if (!expect(p, T_LPAREN, "'('"))
         return;
+
+    /*
+     * K&R-style parameter-NAME list (bare identifiers only - types
+     * follow separately, see parse_param_decls() above). An empty
+     * '()' (no params) takes the pre-existing, unchanged path.
+     */
+    char param_names[MCC_MAXPARAMS][LEX_IDENT_MAX];
+    int nparams = 0;
     if (p->cur.kind != T_RPAREN) {
-        c0_error_at(p->cur.line,
-            "function parameters are not yet supported by mutos_c0 - "
-            "see src/mutos_cc/README.md");
-        while (p->cur.kind != T_RPAREN && p->cur.kind != T_EOF)
+        for (;;) {
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line, "expected a parameter name");
+                break;
+            }
+            if (nparams >= MCC_MAXPARAMS) {
+                c0_error_at(p->cur.line,
+                    "too many parameters (internal limit %d)", MCC_MAXPARAMS);
+                break;
+            }
+            snprintf(param_names[nparams], LEX_IDENT_MAX, "%s", p->cur.ident);
+            nparams++;
             advance(p);
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            break;
+        }
     }
     if (!expect(p, T_RPAREN, "')'"))
         return;
 
     outcode(t1, "BS", OP_SYMDEF, name_tok.ident);
-    cfunc(p, name_tok.ident, t1);
+    register_func(p, name_tok.ident);
+    cfunc(p, name_tok.ident, t1, param_names, nparams);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2067,6 +2661,7 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     p.isn = 1;
     p.have_la = 0;
     p.syms.head = NULL;
+    p.nfuncnames = 0;
     advance(&p);
 
     while (p.cur.kind != T_EOF)

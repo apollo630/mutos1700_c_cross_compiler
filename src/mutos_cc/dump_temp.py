@@ -113,17 +113,39 @@ OPCODES = {
     114: ("RLABEL", [S("name")]),
     0:   ("EOFC", []),
 
+    # -- local STATIC variables (Milestone 4's "Function parameters and
+    # calls" increment - v7/cc/c03.c's declist() STATIC case) - a local
+    # static lives in its own dedicated BSS block, tagged with a fresh
+    # intermediate-code label, rather than on the stack frame; confirmed
+    # byte-for-byte against 04_funcs/05_staticvar.1.golden's "static int
+    # n;" (BSS, LABEL(4), SSPACE(2), PROG, SNAME("_n", 4)) --
+    204: ("BSS", []),                          # opens the block; the
+                                                # LABEL/SSPACE that always
+                                                # immediately follow carry
+                                                # its own label/size
+    206: ("SSPACE", [N("bytes")]),              # reserves N bytes in the
+                                                 # block BSS/DATA just opened
+    215: ("SNAME", [S("name"), N("label")]),    # declares `name` as this
+                                                 # label's own static
+                                                 # variable - same "BSN"
+                                                 # shape as ANAME, but
+                                                 # `label` is an internal
+                                                 # LABEL NUMBER, not a
+                                                 # bp-relative offset (see
+                                                 # mutos_c1's own VK_STATIC)
+
     # -- expression-tree leaves/operators (treeout()) --
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name
-                               # (hclass == SC_EXTERN) OR a numeric offset
-                               # (any other hclass) - confirmed against
-                               # v7/cc/c04.c's treeout() NAME case; mutos_c0
-                               # itself only ever emits SC_AUTO (a numeric
-                               # offset) today, but a real-hardware golden
-                               # for an as-yet-unimplemented construct
-                               # (e.g. a function call referencing an
-                               # SC_EXTERN symbol by name) can use the
-                               # other shape - see dump_name() below.
+                               # (hclass == SC_EXTERN - a called function's
+                               # own name, or a bare function name used as
+                               # a value, per parse_call()/parse_primary())
+                               # OR a numeric offset (hclass == SC_AUTO, a
+                               # bp-relative stack offset, OR hclass ==
+                               # SC_STATIC, an internal BSS label number -
+                               # see SNAME above) - confirmed against
+                               # v7/cc/c04.c's treeout() NAME case and
+                               # against every 04_funcs .1.golden - see
+                               # dump_name() below.
     21:  ("CON", [N("type", decode_type), N("value")]),
     25:  ("LCON", [N("type", decode_type), N("hi"), N("lo")]),
     13:  ("ITOP", [N("type", decode_type)]),
@@ -173,7 +195,36 @@ OPCODES = {
     97:  ("SEQNC", [N("type", decode_type)]),
     110: ("RFORCE", [N("type", decode_type)]),
     103: ("CBRANCH", [N("label"), N("cond"), N("line")]),
+
+    # -- function calls (Milestone 4's "Function parameters and calls"
+    # increment) - confirmed byte-for-byte against every 04_funcs
+    # .1.golden with a call: --
+    9:   ("COMMA", [N("type", decode_type)]),  # NOT the comma operator
+                                                # (that's SEQNC=97 above) -
+                                                # an OP_CALL argument-list
+                                                # separator, chained
+                                                # left-associatively for
+                                                # 2+ arguments (a single
+                                                # argument uses no COMMA at
+                                                # all; zero arguments uses
+                                                # NULLOP below instead)
+    100: ("CALL", [N("type", decode_type)]),   # tr1 (already emitted) is
+                                                # the callee - a NAME leaf
+                                                # for a direct call, or a
+                                                # STAR(TY_FUNC_INT) result
+                                                # for an indirect call
+                                                # through a function-
+                                                # pointer variable; tr2
+                                                # (already emitted) is the
+                                                # argument tree (NULLOP,
+                                                # a lone expression, or a
+                                                # COMMA chain)
+    218: ("NULLOP", []),                       # v7/cc/c04.c's
+                                                # treeout(NULL) shape - a
+                                                # zero-argument call's
+                                                # empty argument tree
 }
+
 
 # Every opcode name mutos_cc.h defines, for display purposes only when a
 # byte matches a number this script has no confirmed argument shape for
