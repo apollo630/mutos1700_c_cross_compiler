@@ -57,6 +57,19 @@ typedef struct {
     int maxauto;         /* most-negative autolen reached so far -
                            * v7/cc/c03.c's `maxauto`; SETSTK's
                            * argument is -maxauto (see c0_parser.c). */
+    int paramlen;        /* running total for parameter offsets -
+                           * starts at MCC_STARG (4) and grows
+                           * UPWARD by each parameter's size, unlike
+                           * autolen: a parameter's own offset is
+                           * taken BEFORE adding its size (the first
+                           * parameter lands at MCC_STARG itself),
+                           * the mirror image of autolen's "subtract
+                           * first, then take the offset" order -
+                           * confirmed against every 04_funcs
+                           * golden's ANAME sequence (offsets 4, 6,
+                           * 8, ... in declared order). See
+                           * src/mutos_cc/README.md's Milestone 4
+                           * "Function parameters and calls" section. */
 } SymTab;
 
 void symtab_init(SymTab *st);
@@ -71,6 +84,33 @@ void symtab_clear(SymTab *st);  /* frees all entries; safe to call
  * error in that case.
  */
 SymEntry *symtab_declare_auto(SymTab *st, const char *name, int type, int size);
+
+/*
+ * Declares a new parameter (also hclass SC_AUTO - see mutos_cc.h's
+ * MCC_STARG comment - but with a positive, upward-growing offset,
+ * assigned in the order this function is called) of the given
+ * type/size (in bytes). Same redeclaration behavior as
+ * symtab_declare_auto() above.
+ */
+SymEntry *symtab_declare_param(SymTab *st, const char *name, int type, int size);
+
+/*
+ * Declares a new STATIC local variable (hclass SC_STATIC - a "static
+ * int n;" inside a function body). Unlike an AUTO local, its
+ * `offset` field is NOT a bp-relative stack offset at all - it is
+ * the internal intermediate-code LABEL NUMBER of its own dedicated
+ * BSS block (v7/cc/c03.c's declist(): "dsym->hoffset = isn;" for the
+ * STATIC case), confirmed against 04_funcs/05_staticvar.1.golden's
+ * NAME(SC_STATIC, TY_INT, 4) referencing the same label number (4)
+ * its own SNAME/BSS block used. The caller is responsible for
+ * allocating that label number (from the same p->isn counter every
+ * other intermediate-code label comes from) and emitting the
+ * BSS/LABEL/SSPACE/PROG/SNAME sequence - this function only records
+ * the resulting (name -> label) binding, exactly mirroring
+ * symtab_declare_auto()/symtab_declare_param() above. Same
+ * redeclaration behavior as those two.
+ */
+SymEntry *symtab_declare_static(SymTab *st, const char *name, int type, int label);
 
 /* Returns NULL if `name` (truncated to MCC_NCPS chars) is not
  * currently declared. */

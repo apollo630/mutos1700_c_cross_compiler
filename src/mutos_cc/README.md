@@ -11,12 +11,14 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 20/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 27/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
-`07_ternary.c` and `08_castsize.c`, plus `02_long/01_addsub.c` and
-`02_muldiv.c`, plus all 7 of `03_ctrlflow`. See STATUS.md
+`07_ternary.c` and `08_castsize.c`, plus `02_long/01_addsub.c`,
+`02_muldiv.c` and `04_params.c`, plus all 7 of `03_ctrlflow`, plus 6 of 7
+of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
+`04_mutrec.c`, `05_staticvar.c` and `07_funcptr.c`. See STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -592,7 +594,9 @@ than the three confirmed ones, `sizeof` on an array or a general
 expression, any `long` operand outside a bare `NAME` or a directly-
 confirmed constant shape, a `char`/`long` pointer or array, a sparse
 (non-contiguous) `switch`, block-scoped declarations,
-function parameters, a third kind of statement, memory-to-memory
+the `register` storage-class hint actually changing codegen, a
+`long`-returning function, a function pointer with a non-empty
+parameter signature, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
 "not yet supported" diagnostic and a nonzero exit status, never
@@ -607,6 +611,118 @@ standard operator) even though the parser only consumes a subset
 today - this is real, immediately-testable code (not a placeholder),
 kept complete because extending grammar coverage should not require
 revisiting tokenization.
+
+### Function parameters, calls, local `static` variables, and function pointers (confirmed via `04_funcs`)
+
+**Parameters.** A K&R-style function definition -
+`name(a, b) int a, b; { ... }` - is now supported: the parenthesized
+name list is parsed first (bare identifiers only), then zero or more
+`TYPE declarator-list;` statements bind each name to a type, in
+*declared-parameter-list* order (not necessarily the order the type
+statements themselves appear in, though every confirmed golden's
+order matches both - see `c0_parser.c`'s `parse_param_decls()`). A
+parameter is `hclass SC_AUTO` - the exact same representation as a
+body local, just with a positive, upward-growing offset
+(`MCC_STARG=4, 6, 8, ...` - `c0_sym.c`'s `symtab_declare_param()`) -
+confirmed against `01_call.1.golden`'s `_a=4`/`_b=6` and
+`02_manyargs.1.golden`'s six parameters up to `_f=14`. A genuinely
+confirmed ordering quirk: a parameter's `ANAME` is emitted between
+`SETREG` and the function body's own `BRANCH`/`LABEL` pair - *before*
+any body-local's own `ANAME`, which still comes after that `LABEL` as
+always (see `c0_parser.c`'s `cfunc()`).
+
+**Calls.** `IDENT '(' args? ')'` in expression position (or a bare
+`IDENT '('` lookahead in `parse_primary()`) calls that function - the
+callee is `NAME(SC_EXTERN, TY_INT|FUNC=16, name)`, K&R's implicit
+"extern function returning int" rule: no prior declaration is
+required. Arguments are built as a left-associative chain of
+`COMMA`(`TY_INT`) nodes (wire opcode `9` - the lexer *token* value K&R
+reuses as a tree operator here, entirely distinct from the
+already-implemented comma-*operator*'s own `SEQNC`=97) - a single
+argument uses no `COMMA` at all, and zero arguments emits a lone
+`NULLOP` leaf (`v7/cc/c04.c`'s `treeout(NULL)` shape). Every argument
+is materialized immediately as parsed (never left foldable, unlike a
+parenthesized comma-list's own last item). A top-level function
+*prototype* (`int iseven();` - needed before `isodd()` calls
+`iseven()`, since K&R still wants *some* prior declaration
+syntactically) is parsed and entirely discarded at the wire level -
+`04_mutrec.1.golden` shows no extra output for it at all; every call
+site emits the same `NAME` leaf regardless.
+
+Codegen (`c1_gen.c`'s `gen_call()`): arguments are pushed
+right-to-left (`docs/MUTOS_C_ABI.md` sect. 1.1), caller-cleanup via
+`add sp,N` (`N` = 2 bytes per argument *word*, not per argument - a
+`long` argument occupies two, pushed low-word-first then high). An
+argument is pushed AS-IS whenever 8086's `PUSH` can take it directly
+(a register or any addressable memory operand - confirmed against
+`07_funcptr.s.golden`'s `push *-6.(bp)`, a plain local pushed with no
+preceding `mov` at all); only a genuine immediate needs `DI` first
+(`PUSH` has no immediate form). The call's result is always in `AX`
+(sect. 1.5); `OP_RFORCE` now skips its usual two-instruction "move
+into AX" when the value is *already* `AX` (a call result, or an
+`OP_TIMES`/`OP_DIVIDE` quotient - mirroring `v7/cc/c10.c`'s own
+`rcexpr()`/`movreg()` "already in the target register" skip). When an
+AX-resident call result instead becomes `TIMES`'s own operand
+(`03_recfact`'s `n * fact(n - 1)`), the existing "load left into AX"
+codegen now checks *both* operands for "already AX" and keeps
+whichever one is, regardless of source left/right position - producing
+a real, confirmed (not invented) `mov ax,ax` self-move.
+
+One incidental fix this pulled in: `OP_MINUS` by exactly 1 now gets
+the same `DEC` treatment `OP_PLUS` by 1 already had (`03_recfact`'s/
+`04_mutrec`'s `n - 1`) - previously left unconfirmed. And `(int)`
+(`OP_LTOI`) applied to a `long` *parameter* must stay a lazy memory
+reference (`VK_MEM_CVT`) rather than eagerly loading into a register
+the way it does as a plain assignment's rhs (`08_castsize`'s
+already-confirmed shape) - confirmed against `02_long/04_params.s.
+golden`'s `fd + (int) offset` -> `add di,*8.(bp)` (used directly as
+`PLUS`'s operand, no separate `mov`).
+
+**Local `static` variables.** `static int n;` inside a function body
+allocates a dedicated `.bss` block instead of stack space: `BSS`,
+`LABEL`(fresh), `SSPACE`(size), `PROG` opens it (`c0_parser.c`'s
+`parse_static_decl()`), and `SNAME`(name, that same label) declares it
+(`hclass SC_STATIC`, and - unlike an AUTO local - its "offset" *is*
+the label number, not a stack displacement - `c0_sym.c`'s
+`symtab_declare_static()`). Every later reference reuses that label
+number; `c1_gen.c` renders it as a bare `L<n>` operand (`mov di,L4`,
+`mov L4,di`) via a new `VK_STATIC` kind, confirmed against
+`05_staticvar.s.golden`'s `counter()` in full. Its value genuinely
+persists across calls for free, since nothing about it is
+stack-relative.
+
+**Function pointers.** A function-pointer declarator -
+`int (*fp)();` (local) or `int (*f)();` (parameter) - has type
+`TY_INT|FUNC|PTR = 72`, `v7/cc/c04.c`'s `incref(FUNC)` applied once
+more (`incref(t) = ((t & ~TYPE) << TYLEN) | (t & TYPE) | PTR`,
+`TYPE=7`/`TYLEN=2`/`PTR=8`; `incref(16) = 72` - confirmed against
+every `ANAME`/`NAME`/`AMPER`/`ASSIGN` touching `f`/`fp` in
+`07_funcptr.1.golden`). A bare function name used as a *value* (not
+called - `fp = square;`) needs `c0` to recognize `square` as a known
+function despite it not being a local - `c0_parser.c` now keeps a
+whole-file registry of every function name defined or prototyped so
+far (`register_func()`/`is_known_func()` - `main()`, the last function
+in the file, can see `square`/`cube` because they were defined
+earlier), and emits the same callee `NAME` a call would use, wrapped
+in `AMPER`(72). Codegen-wise this `AMPER` is *not* the array-decay
+one: a function's address is a link-time constant, so **no code is
+emitted at all** - `07_funcptr.s.golden`'s `fp = square;` goes
+straight to a memory-immediate `mov *-6.(bp),#_square`. An indirect
+call `(*f)(x)` dereferences `f` via `STAR`(`TY_INT|FUNC`=16) -
+likewise a pure type-level operation with no code of its own,
+leaving `f`'s own plain memory reference untouched for `CALL` to
+render as `call @*4.(bp)` (`@` = mutos_as's indirect-call marker,
+confirmed against `07_funcptr.s.golden` in full). Only a plain
+zero-argument-signature function pointer is supported - a pointer to
+a function taking parameters, an array/struct member of function-
+pointer type, and any multi-level derived type are explicit "not yet
+supported".
+
+`06_regclass.c`'s `register` storage-class hint is deliberately **not**
+attempted - real register-variable allocation (an actual CPU register
+persisting across statements, distinct from this file's existing
+DI/AX/etc. per-instruction working-register usage) is a substantial,
+separate feature; `register` isn't even parsed yet.
 
 ## `SETSTK` / local-frame handling
 
@@ -653,29 +769,31 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    descent statement dispatcher replaced the prior flat assign/
    return-only loop; see "Current scope" above for the full
    derivation.
-2. **`02_long` arithmetic, `05_arrptr`/`06_struct` groundwork**:
+2. **`02_long` arithmetic, function parameters/calls (`04_funcs`),
+   local `static` variables, and function pointers are now done.**
    `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem` runtime helper calls -
    see `docs/MUTOS_C_ABI.md` sect. 1.8, though the real confirmed calling
    shape turned out simpler than that section's own prose - see "Current
    scope" above), `long` `+`/`-`, an implicit `int`->`long` widening
-   conversion, and a `long`-vs-constant relational comparison are all
-   now done too (`long`
-   *locals*, casts, and constants already existed, from `08_castsize` -
-   see above). Still open in `02_long` itself: a `long`-returning
-   function's `DX:AX` return-value
-   convention plus `long` parameters (`03_retval.c`/`04_params.c` -
-   blocked on `04_funcs`, not on anything `long`-specific). Array subscripting and
-   multi-level pointers/multi-dimensional arrays (single-degree
-   pointers and single-dimension arrays already exist, from
-   `05_incdec` - see above), structs/
-   unions/enums - each adds real type-system work (sizes beyond a
-   flat "2 bytes", degree-of-reference, member layout) the current
+   conversion, and a `long`-vs-constant relational comparison were done
+   in an earlier session (`long` *locals*, casts, and constants already
+   existed, from `08_castsize` - see above); K&R-style parameters,
+   direct/indirect calls, local `static` variables, and function
+   pointers (`04_funcs` - see "Current scope" above for the full
+   derivation) are done this session, which also unblocked `02_long/
+   04_params.c` (mixed int/long parameters) as a side effect. Still open:
+   `02_long/03_retval.c` (a `long`-returning function's `DX:AX`
+   return-value convention - not blocked on anything `long`-specific
+   anymore, just not yet implemented) and `04_funcs/06_regclass.c` (the
+   `register` storage-class hint actually changing codegen - real
+   register-variable allocation, a substantial separate feature; parsing
+   `register` at all is not yet implemented).
+3. **`05_arrptr`/`06_struct`**: array subscripting and multi-level
+   pointers/multi-dimensional arrays (single-degree pointers and
+   single-dimension arrays already exist, from `05_incdec` - see above),
+   structs/unions/enums - each adds real type-system work (sizes beyond
+   a flat "2 bytes", degree-of-reference, member layout) the current
    `SymEntry`/`ExprVal` model doesn't fully have yet.
-3. **Function parameters and calls** (`04_funcs`): parameter offsets
-   (`bp+4, bp+6, ...` per `docs/MUTOS_C_ABI.md` sect. 1.3), the
-   right-to-left-push/caller-cleanup call sequence, and (for
-   `07_funcptr`) function-pointer types. Completing this also
-   completes `02_long` (`03_retval.c`/`04_params.c` - see above).
 4. **`09_abiprobe/frame*`**: pins down the real `chkstk` threshold
    once those goldens exist, unblocking `SETSTK`'s unconfirmed
    `(76,256]` gap.

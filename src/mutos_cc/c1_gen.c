@@ -59,7 +59,79 @@
  * labels OP_SWIT's handler below will collect for one 'switch'. */
 #define MCC_NCASES 32
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG, VK_LCON } ValKind;
+/* Matches c0_parser.c's own MCC_MAXPARAMS - the max arguments a
+ * single OP_CALL's argument list (see VK_ARGLIST below) will
+ * collect. */
+#define MCC_MAXCALLARGS 16
+
+/* "function returning int" - matches c0_parser.c's TY_FUNC_INT
+ * exactly (see its own comment there); only used here to validate an
+ * incoming NAME's type when its storage class is SC_EXTERN (a called
+ * function - see OP_NAME's handler below). */
+#define TY_FUNC_INT (TY_INT | 020)
+
+/* "pointer to function returning int" - matches c0_parser.c's
+ * TY_PTR_FUNC_INT exactly (see its own comment there: v7/cc's
+ * incref(TY_FUNC_INT) = 72). */
+#define TY_PTR_FUNC_INT 72
+
+typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
+               VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR } ValKind;
+/* VK_FUNC - a called function's own NAME, not yet an OP_CALL - a
+ * pure compile-time reference (the callee's symbol text, owned/
+ * malloc'd - see OP_NAME's SC_EXTERN case), never an operand of any
+ * real instruction. Only OP_CALL itself ever pops one. */
+/* VK_ARGLIST - an OP_CALL argument list under construction (see
+ * OP_COMMA's/OP_NULLOP's handlers below): a fixed-capacity,
+ * heap-allocated (owned) array of already-resolved argument Vals, in
+ * left-to-right (source) order. A call with exactly one argument
+ * never produces one of these (the lone argument's own Val is used
+ * directly - see gen_call()) - only zero arguments (OP_NULLOP) or
+ * two-or-more (chained OP_COMMA) do. */
+/* VK_MEM_CVT - a plain memory operand (rendered identically to
+ * VK_MEM - see render_operand()) produced by a TYPE CONVERSION
+ * (currently only OP_LTOI - see its handler below) rather than
+ * directly by a NAME reference, kept as a distinct kind purely so
+ * OP_ASSIGN's plain-type case can tell it apart from a genuine bare-
+ * NAME memory operand: this project's real "x = y;" direct mem-to-
+ * mem assignment shape is still unconfirmed by any golden (8086 MOV
+ * cannot take two memory operands, and no golden shows which
+ * intermediate register a real compiler would route it through), so
+ * OP_ASSIGN still gen_fatal()s on a bare VK_MEM rhs - but "i = (int)
+ * l;" (08_castsize.s.golden's "mov di,*-8.(bp) / mov *-6.(bp),di")
+ * confirms THIS specific case (a narrowing conversion's result used
+ * as an assignment's rhs) DOES go through DI first. Every other
+ * consumer (a binary operator's operand - confirmed against
+ * 02_long/04_params.s.golden's "fd + (int) offset" -> "add di,*8.
+ * (bp)", the memory operand used directly with no intervening move
+ * at all) treats VK_MEM_CVT exactly like VK_MEM, needing no special
+ * handling of its own. */
+/* VK_STATIC - a local STATIC variable's own dedicated-label memory
+ * reference (`offset` holds the internal LABEL number, not a
+ * bp-relative stack offset - see OP_NAME's SC_STATIC case below and
+ * c0_sym.h's symtab_declare_static() comment). Renders as a bare
+ * "L<n>" operand (render_operand()) - confirmed against
+ * 04_funcs/05_staticvar.s.golden's "mov di,L4"/"mov L4,di": a
+ * different SOURCE-TEXT shape from VK_MEM's "*N.(bp)" but otherwise
+ * usable identically (both are just an addressable memory operand -
+ * so unlike VK_MEM_CVT, no OP_ASSIGN special-casing is needed: an
+ * ordinary MOV between two real memory operands is still illegal
+ * either way, but that restriction is orthogonal to which of VK_MEM/
+ * VK_STATIC is involved and is not exercised by any golden for
+ * VK_STATIC specifically). */
+/* VK_FUNCADDR - "the address of a function", OP_AMPER applied to a
+ * VK_FUNC operand (a bare function name used as a value - see
+ * c0_parser.c's parse_primary() T_IDENT fallback). `reg` holds the
+ * function's own malloc'd symbol text, TAKEN OVER from the VK_FUNC
+ * it was built from (owned - freed by whichever consumer renders
+ * it; currently only OP_ASSIGN's plain-type case). Renders as
+ * "#<name>" (render_operand()) - a function's address is a
+ * compile-time (link-time-relocatable) constant, so unlike the
+ * array-decay AMPER case (a real bp-relative runtime address,
+ * needing an actual "lea"), NO code is emitted for this AMPER at
+ * all - confirmed against 07_funcptr.s.golden's "fp = square;" ->
+ * "mov *-6.(bp),#_square" (a single, direct memory-immediate MOV,
+ * with no preceding "lea" or "mov di,..." of any kind). */
 /* VK_IND - an indirect "(reg)" memory operand, the result of
  * dereferencing a pointer (OP_STAR) - confirmed against
  * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
@@ -108,11 +180,21 @@ typedef struct {
     const char *reg;
 } SimpleVal;
 
+/* Forward-declared (as just a pointer target) so Val below can hold
+ * an ArgList* - the full definition (which embeds a Val array, and
+ * so needs Val itself complete first) follows right after Val. */
+typedef struct ArgList ArgList;
+
 typedef struct {
     ValKind kind;
     long    imm;    /* VK_IMM; VK_LCON's low word */
     int     offset;  /* VK_MEM: bp-relative offset; VK_LCON's high word */
-    const char *reg;  /* VK_REG: a static string ("ax", "di", "dx") */
+    const char *reg;  /* VK_REG: a static string ("ax", "di", "dx");
+                        * VK_FUNC: the callee's own malloc'd symbol
+                        * text (owned - see OP_NAME's SC_EXTERN case) */
+    ArgList *arglist; /* VK_ARGLIST only - see its own typedef comment
+                        * above (owned - see ArgList's own comment
+                        * just below Val) */
     /* VK_COND: a deferred, not-yet-materialized relational result -
      * "cl <true_op> cr" (true_op is one of OP_LESS/OP_LESSEQ/
      * OP_GREAT/OP_GREATEQ/OP_EQUAL/OP_NEQUAL). Deferring instead of
@@ -132,6 +214,18 @@ typedef struct {
      * OP_LOGOR, OP_QUEST) gen_fatal()s on it rather than guessing a
      * shape no golden confirms. */
 } Val;
+
+/* VK_ARGLIST's owned backing store - see its ValKind comment above.
+ * Always heap-allocated (malloc'd once, at the first OP_COMMA or at
+ * OP_NULLOP for a call - see their handlers below) and freed by
+ * whichever OP_CALL consumes it (see gen_call()). Fixed-capacity
+ * (MCC_MAXCALLARGS), not grown dynamically - matches this codebase's
+ * other fixed-capacity buffers (e.g. GenState's own `deferred`,
+ * `cases`). */
+struct ArgList {
+    int n;
+    Val items[MCC_MAXCALLARGS];
+};
 
 typedef struct {
     int  regvar;              /* consumed from SETREG but not yet
@@ -190,6 +284,10 @@ static Val val_mem(int off) { Val r = {0}; r.kind = VK_MEM; r.offset = off; retu
 static Val val_reg(const char *reg) { Val r = {0}; r.kind = VK_REG; r.reg = reg; return r; }
 static Val val_ind(const char *reg) { Val r = {0}; r.kind = VK_IND; r.reg = reg; return r; }
 static Val val_long(void) { Val r = {0}; r.kind = VK_LONG; return r; }
+/* `name` is taken over (owned) by the returned Val - freed by
+ * whichever OP_CALL pops it (see gen_call()). */
+static Val val_func(char *name) { Val r = {0}; r.kind = VK_FUNC; r.reg = name; return r; }
+static Val val_static(int label) { Val r = {0}; r.kind = VK_STATIC; r.offset = label; return r; }
 
 /* Demotes an already-resolved (non-VK_COND) Val down to a SimpleVal,
  * for storage inside a VK_COND's cl/cr fields. */
@@ -248,12 +346,17 @@ static void render_operand(char *buf, size_t n, Val v)
             snprintf(buf, n, "#%ld.", v.imm);
         break;
     case VK_MEM: snprintf(buf, n, "*%d.(bp)", v.offset); break;
+    case VK_MEM_CVT: snprintf(buf, n, "*%d.(bp)", v.offset); break;
+    case VK_STATIC: snprintf(buf, n, "L%d", v.offset); break;
+    case VK_FUNCADDR: snprintf(buf, n, "#%s", v.reg); break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
     case VK_IND: snprintf(buf, n, "(%s)", v.reg); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
     case VK_LONG: snprintf(buf, n, "<unrendered-long-di:si>"); break;
     case VK_LCON: snprintf(buf, n, "<unmaterialized-long-const>"); break;
+    case VK_FUNC: snprintf(buf, n, "<unrendered-func-name>"); break;
+    case VK_ARGLIST: snprintf(buf, n, "<unrendered-arglist>"); break;
     }
 }
 
@@ -400,7 +503,7 @@ static void emit_cmp_and_branch(FILE *out, Val cond, int branch_op_code, int tar
     Val r = val_from_simple(cond.cr);
     char lbuf[32], rbuf[32];
     render_operand(lbuf, sizeof lbuf, l);
-    if (r.kind == VK_MEM) {
+    if (r.kind == VK_MEM || r.kind == VK_MEM_CVT) {
         load_into_di(out, r);
         snprintf(rbuf, sizeof rbuf, "di");
     } else if (r.kind == VK_IMM) {
@@ -738,6 +841,130 @@ static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
     return val_long();
 }
 
+/* Codegen for OP_CALL - confirmed byte-for-byte against every
+ * 04_funcs .1.golden/.s.golden pair with a direct call (01_call,
+ * 02_manyargs, 03_recfact, 04_mutrec), against 02_long/04_params.s.
+ * golden's "myseek(3, 90000L, 1)" (a 'long' constant argument - see
+ * below), and against 07_funcptr.s.golden's two indirect-call sites
+ * (see below). `callee` is either VK_FUNC (a direct call - see
+ * OP_NAME's SC_EXTERN handler) or VK_MEM (an INDIRECT call through a
+ * function-pointer variable's own memory location - see OP_STAR's
+ * TY_FUNC_INT case above, which deliberately leaves such an operand
+ * as a plain, still-unresolved VK_MEM rather than dereferencing it
+ * into a register): confirmed against 07_funcptr.s.golden's
+ * "return (*f)(x);" -> "call\t@*4.(bp)" (`f`'s own parameter slot,
+ * used directly - no preceding "mov"/"lea" of any kind) - the "@"
+ * prefix is mutos_as's indirect-call marker. `args` is the
+ * already-resolved argument-tree Val: VK_ARGLIST (built by
+ * OP_NULLOP/OP_COMMA below) for zero or 2+ arguments, or any other
+ * kind directly for exactly one argument (see parse_call()'s own
+ * comment in c0_parser.c for why a lone argument never goes through
+ * VK_ARGLIST).
+ *
+ * docs/MUTOS_C_ABI.md sect. 1.1: every argument is pushed
+ * right-to-left (the LAST-declared argument first), and the CALLER
+ * cleans up afterward via "add sp,N" (N = 2 bytes per argument WORD -
+ * not per argument: a 'long' argument occupies two words, so N tracks
+ * total words pushed, `nwords`, not `nargs` - see 02_long/04_params.
+ * s.golden's "add sp,*8." for 3 arguments/4 words). An ordinary
+ * (single-word) argument is pushed AS-IS whenever 8086's PUSH can
+ * take it directly (a register or any addressable memory operand -
+ * VK_MEM/VK_MEM_CVT/VK_STATIC/VK_IND/VK_REG alike): confirmed against
+ * 07_funcptr.s.golden's "apply(fp, 5)" -> "...push\t*-6.(bp)" (`fp`,
+ * a plain local, pushed directly with NO preceding "mov" at all) and
+ * "return (*f)(x);" -> "push\t*6.(bp)" (`x`, similarly direct) -
+ * genuinely different from every PRIOR confirmed call site, which
+ * happened to push only an immediate (needing DI first, since 8086's
+ * PUSH has no immediate form - "mov di,<val>" then "push di") or an
+ * already-DI value (03_recfact's "n - 1", where load_into_di()'s own
+ * no-op case already produced the identical bytes either way - so
+ * this is a strict generalization of the earlier "always go through
+ * DI" understanding, not a behavior change for any already-confirmed
+ * site). A 'long' CONSTANT argument (VK_LCON - materialize_long() is
+ * deliberately NOT called here, so this only covers the
+ * in-range-int-value sign-extension shape VK_LCON itself stores, not
+ * a genuinely 32-bit constant, which is not exercised by any golden)
+ * instead pushes its own two words directly, LOW word first then
+ * HIGH word (sect. 1.6: "pushing a long argument is exactly
+ * equivalent to ... push the low word first, then the high word") -
+ * confirmed against "90000L" (hi=1, lo=24464) rendering as "mov
+ * di,#24464./push di/mov di,*1./push di", i.e. two ordinary
+ * immediate-load-then-push pairs, low then high (an immediate still
+ * needs DI first, same as any other immediate). A 'long' value
+ * already materialized into DI:SI (VK_LONG) is not exercised by any
+ * golden and is left unsupported here rather than guessed. The
+ * call's own result is always left in AX (sect. 1.5) - pushed back as
+ * val_reg("ax") for whatever consumes the call expression next
+ * (OP_RFORCE's now-confirmed "already in ax, skip the move" case, or
+ * an enclosing operator like OP_TIMES, which renders it via the
+ * ordinary "mov ax,<operand>" path either way - see 03_recfact.s.
+ * golden's "mov ax,ax" self-move for the latter).
+ */
+static Val gen_call(FILE *out, Val callee, Val args)
+{
+    if (callee.kind != VK_FUNC && callee.kind != VK_MEM)
+        gen_fatal("this call-callee shape is not yet supported - see "
+                  "src/mutos_cc/README.md");
+
+    Val single[1];
+    Val *items;
+    int nargs;
+    if (args.kind == VK_ARGLIST) {
+        items = args.arglist->items;
+        nargs = args.arglist->n;
+    } else {
+        single[0] = args;
+        items = single;
+        nargs = 1;
+    }
+
+    int nwords = 0;
+    for (int i = nargs - 1; i >= 0; i--) {
+        if (items[i].kind == VK_LCON) {
+            char buf[32];
+            render_operand(buf, sizeof buf, val_imm(items[i].imm)); /* low */
+            fprintf(out, "mov\tdi,%s\n", buf);
+            fprintf(out, "push\tdi\n");
+            render_operand(buf, sizeof buf, val_imm(items[i].offset)); /* high */
+            fprintf(out, "mov\tdi,%s\n", buf);
+            fprintf(out, "push\tdi\n");
+            nwords += 2;
+            continue;
+        }
+        if (items[i].kind == VK_LONG)
+            gen_fatal("a 'long' argument already materialized into DI:SI "
+                      "is not yet supported as a call argument - see "
+                      "src/mutos_cc/README.md");
+        if (items[i].kind == VK_IMM) {
+            load_into_di(out, items[i]);
+            fprintf(out, "push\tdi\n");
+        } else {
+            char buf[32];
+            render_operand(buf, sizeof buf, items[i]);
+            fprintf(out, "push\t%s\n", buf);
+        }
+        nwords += 1;
+    }
+
+    if (callee.kind == VK_FUNC) {
+        fprintf(out, "call\t%s\n", callee.reg);
+        free((char *)callee.reg);
+    } else {
+        char buf[32];
+        render_operand(buf, sizeof buf, callee);
+        fprintf(out, "call\t@%s\n", buf);
+    }
+    if (args.kind == VK_ARGLIST)
+        free(args.arglist);
+
+    if (nwords > 0) {
+        char buf[32];
+        render_operand(buf, sizeof buf, val_imm(2L * nwords));
+        fprintf(out, "add\tsp,%s\n", buf);
+    }
+    return val_reg("ax");
+}
+
 /* One case's (label, value) pair, as collected by OP_SWIT's own
  * handler from its trailing table before handing off to
  * gen_switch_dispatch() below. */
@@ -896,17 +1123,93 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_BSS:
+            /* Opens a local STATIC variable's own dedicated BSS
+             * block - confirmed against 04_funcs/05_staticvar.s.
+             * golden's "L2:.bss\nL4:.blkb\t2.\n.text\n" (see OP_SSPACE/
+             * OP_PROG for the rest of that sequence). No arguments of
+             * its own on the wire - the LABEL and SSPACE that always
+             * immediately follow (see c0_parser.c's
+             * parse_static_decl()) carry the block's own label number
+             * and size. */
+            fprintf(out, ".bss\n");
+            break;
+
+        case OP_SSPACE: {
+            int size = c1_read_num(temp1, "temp1");
+            /* "reserve N bytes" - confirmed against 05_staticvar.s.
+             * golden's "L4:.blkb\t2.\n" (a plain int's 2-byte BSS
+             * slot); the trailing "." decimal-terminator matches this
+             * project's ordinary numeric-immediate convention (see
+             * render_operand()). */
+            fprintf(out, ".blkb\t%d.\n", size);
+            break;
+        }
+
+        case OP_SNAME: {
+            char *name = c1_read_sym(temp1, "temp1");
+            int label = c1_read_num(temp1, "temp1");
+            /* A local STATIC variable's declaration comment -
+             * confirmed against 05_staticvar.s.golden's "| _n=L4\n":
+             * unlike ANAME's "| name=offset." (a plain bp-relative
+             * number with a trailing period), this is "| name=L<n>"
+             * (the BSS block's own label, prefixed "L", no trailing
+             * period) - unsurprising, since a STATIC's own "offset"
+             * (see VK_STATIC's comment above) is a label number, not
+             * a stack displacement. */
+            fprintf(out, "| %s=L%d\n", name, label);
+            free(name);
+            break;
+        }
+
         case OP_NAME: {
             int hclass = c1_read_num(temp1, "temp1");
             int type   = c1_read_num(temp1, "temp1");
+            if (hclass == SC_EXTERN) {
+                /* A called function's own name - c0_outcode's 'S'
+                 * shape (a symbol name), not the numeric bp-relative
+                 * offset every SC_AUTO NAME uses - matches
+                 * v7/cc/c04.c's treeout() NAME case's own hclass==
+                 * EXTERN branch exactly. Confirmed against every
+                 * 04_funcs .1.golden's callee NAME (type is always
+                 * TY_FUNC_INT there - no other SC_EXTERN NAME shape
+                 * is exercised by this grammar scope yet, e.g. a
+                 * plain external variable reference). */
+                if (type != TY_FUNC_INT)
+                    gen_fatal("NAME with storage class SC_EXTERN and "
+                              "type %d not yet supported (only a called "
+                              "function's own TY_INT|FUNC type is "
+                              "covered so far)", type);
+                char *name = c1_read_sym(temp1, "temp1");
+                push_val(&g, val_func(name));
+                break;
+            }
+            if (hclass == SC_STATIC) {
+                /* A local STATIC variable's own reference - see
+                 * VK_STATIC's own comment above. `offset` here is
+                 * actually the label number (not read differently on
+                 * the wire - still a plain N field, exactly like an
+                 * AUTO's numeric offset; only its MEANING differs,
+                 * decided entirely by hclass). */
+                if (type != TY_INT && type != TY_PTR_INT &&
+                    type != TY_CHAR && type != TY_LONG)
+                    gen_fatal("NAME of type %d not yet supported (only "
+                              "TY_INT/TY_PTR_INT/TY_CHAR/TY_LONG are "
+                              "covered so far)", type);
+                int label = c1_read_num(temp1, "temp1");
+                push_val(&g, val_static(label));
+                break;
+            }
             if (hclass != SC_AUTO)
                 gen_fatal("NAME with storage class %d not yet supported "
-                          "(only AUTO locals are covered so far)", hclass);
+                          "(only AUTO locals, a local STATIC, and a "
+                          "called function's own SC_EXTERN name are "
+                          "covered so far)", hclass);
             if (type != TY_INT && type != TY_PTR_INT &&
-                type != TY_CHAR && type != TY_LONG)
+                type != TY_CHAR && type != TY_LONG && type != TY_PTR_FUNC_INT)
                 gen_fatal("NAME of type %d not yet supported (only "
-                          "TY_INT/TY_PTR_INT/TY_CHAR/TY_LONG are covered "
-                          "so far)", type);
+                          "TY_INT/TY_PTR_INT/TY_CHAR/TY_LONG/"
+                          "TY_PTR_FUNC_INT are covered so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             push_val(&g, val_mem(offset));
             break;
@@ -946,16 +1249,24 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_LTOI: {
-            /* "(int) l" - long-to-int truncation. Confirmed against
-             * 08_castsize.s.golden's "i = (int) l;": reads only the
-             * LOW word (base offset + 2, per the confirmed "high word
-             * at the lower address" convention - docs/MUTOS_C_ABI.md
-             * sect. 1.6) straight into DI, discarding the high word
-             * entirely - "mov di,*-8.(bp)" where l's own base offset
-             * is -10. Only a plain memory long (a bare NAME reference)
-             * is confirmed as LTOI's operand - not a long value still
-             * sitting in DI:SI (VK_LONG) from a preceding LCON/CTOL,
-             * which is not exercised by any golden. */
+            /* "(int) l" - long-to-int truncation: reads only the LOW
+             * word (base offset + 2, per the confirmed "high word at
+             * the lower address" convention - docs/MUTOS_C_ABI.md
+             * sect. 1.6), discarding the high word entirely. Pushed
+             * as VK_MEM_CVT (see its own ValKind comment above) - a
+             * plain memory reference, NOT eagerly loaded into a
+             * register - since the correct rendering depends on the
+             * consumer: confirmed against 08_castsize.s.golden's "i =
+             * (int) l;" ("mov di,*-8.(bp)" then "mov *-6.(bp),di" -
+             * OP_ASSIGN's own plain-type case does this materializing,
+             * not LTOI itself) and against 02_long/04_params.s.
+             * golden's "fd + (int) offset" ("add di,*8.(bp)" - used
+             * directly as OP_PLUS's memory operand, no separate move
+             * at all). Only a plain memory long (a bare NAME
+             * reference) is confirmed as LTOI's own operand - not a
+             * long value still sitting in DI:SI (VK_LONG) from a
+             * preceding LCON/CTOL, which is not exercised by any
+             * golden. */
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("LTOI to type %d not yet supported (only "
@@ -964,10 +1275,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (v.kind != VK_MEM)
                 gen_fatal("LTOI of a non-memory long operand is not yet "
                           "supported");
-            char buf[32];
-            render_operand(buf, sizeof buf, val_mem(v.offset + MCC_SZINT));
-            fprintf(out, "mov\tdi,%s\n", buf);
-            push_val(&g, val_reg("di"));
+            Val r = {0};
+            r.kind = VK_MEM_CVT;
+            r.offset = v.offset + MCC_SZINT;
+            push_val(&g, r);
             break;
         }
 
@@ -1137,15 +1448,17 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             Val r = materialize(out, &g, pop_val(&g));
             Val l = materialize(out, &g, pop_val(&g));
             load_into_di(out, l);
-            if (op == OP_PLUS && r.kind == VK_IMM && r.imm == 1) {
+            if (r.kind == VK_IMM && r.imm == 1 && op == OP_PLUS) {
                 /* "+ 1" specifically compiles to a plain INC, not
                  * "add di,*1." - confirmed against 07_ternary.s.golden's
-                 * "a = a + 1;" -> "inc\tdi" (never an "add"). Only
-                 * this exact PLUS-by-1 case is confirmed; MINUS is
-                 * left as a plain "sub" unconditionally (including
-                 * by 1) since no golden yet shows whether "a - 1"
-                 * gets the symmetric DEC treatment. */
+                 * "a = a + 1;" -> "inc\tdi" (never an "add"). */
                 fprintf(out, "inc\tdi\n");
+            } else if (r.kind == VK_IMM && r.imm == 1 && op == OP_MINUS) {
+                /* The symmetric "- 1" -> DEC case, now confirmed
+                 * against 04_funcs/03_recfact.s.golden's "n - 1" ->
+                 * "dec\tdi" (never a "sub") and 04_mutrec.s.golden's
+                 * identical "n - 1" in both isodd()/iseven(). */
+                fprintf(out, "dec\tdi\n");
             } else {
                 char rbuf[32];
                 render_operand(rbuf, sizeof rbuf, r);
@@ -1227,15 +1540,36 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_AMPER: {
-            /* Address-of - so far only reached via array-to-pointer
-             * decay ("p = a;", c0_parser.c's parse_primary()): the
-             * operand is always a plain bp-relative NAME, rendered as
-             * a real "lea" - confirmed against 05_incdec.s.golden's
-             * "lea\tdi,*-16.(bp)". */
+            /* Address-of. Two confirmed shapes, entirely different
+             * codegen: */
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_PTR_FUNC_INT) {
+                /* A bare function name used as a value ("fp =
+                 * square;" - c0_parser.c's parse_primary() T_IDENT
+                 * fallback): its operand is always VK_FUNC (an
+                 * OP_NAME with SC_EXTERN/TY_FUNC_INT just emitted it -
+                 * see OP_NAME's own handler above). Produces
+                 * VK_FUNCADDR, NOT a "lea" - see its own ValKind
+                 * comment above for why no code is emitted here at
+                 * all. */
+                Val v = pop_val(&g);
+                if (v.kind != VK_FUNC)
+                    gen_fatal("'&' on a non-function operand is not yet "
+                              "supported for a TY_PTR_FUNC_INT result");
+                Val r = {0};
+                r.kind = VK_FUNCADDR;
+                r.reg = v.reg; /* ownership transferred - see VK_FUNCADDR's comment */
+                push_val(&g, r);
+                break;
+            }
+            /* Array-to-pointer decay ("p = a;" - c0_parser.c's
+             * parse_primary()): the operand is always a plain
+             * bp-relative NAME, rendered as a real "lea" - confirmed
+             * against 05_incdec.s.golden's "lea\tdi,*-16.(bp)". */
             if (type != TY_PTR_INT)
                 gen_fatal("AMPER of type %d not yet supported (only "
-                          "TY_PTR_INT is covered so far)", type);
+                          "TY_PTR_INT and TY_PTR_FUNC_INT are covered "
+                          "so far)", type);
             Val v = pop_val(&g);
             if (v.kind != VK_MEM)
                 gen_fatal("'&' on a non-memory operand is not yet supported");
@@ -1269,17 +1603,39 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_STAR: {
-            /* Pointer dereference - loads the pointer value into DI
-             * (a no-op if it is already there, e.g. straight off a
-             * preceding INCAFT/INCBEF - see load_into_di()) and
+            /* Pointer dereference - two confirmed shapes: */
+            int type = c1_read_num(temp1, "temp1");
+            if (type == TY_FUNC_INT) {
+                /* Dereferencing a function-pointer VARIABLE as a call
+                 * callee ("(*f)(x)" - c0_parser.c's
+                 * parse_indirect_call()) - a pure TYPE-level
+                 * operation here: NO code is emitted, and the operand
+                 * (always VK_MEM - a plain parameter/local reference)
+                 * is left completely unchanged on the stack.
+                 * gen_call() is the actual consumer, rendering it as
+                 * an indirect "call @<mem>" - confirmed against
+                 * 07_funcptr.s.golden's "return (*f)(x);" -> "call
+                 * @*4.(bp)" with no preceding "mov"/"lea" of any kind
+                 * for `f` itself (contrast the ordinary TY_INT
+                 * dereference case below, which DOES eagerly load
+                 * into DI - a real runtime indirection, unlike this
+                 * purely-static "which function to call" case). */
+                if (g.valsp < 1 || g.valstack[g.valsp - 1].kind != VK_MEM)
+                    gen_fatal("'(*f)(...)' is only supported when `f` is "
+                              "a plain function-pointer variable - see "
+                              "src/mutos_cc/README.md");
+                break;
+            }
+            /* Ordinary pointer dereference - loads the pointer value
+             * into DI (a no-op if it is already there, e.g. straight
+             * off a preceding INCAFT/INCBEF - see load_into_di()) and
              * produces an indirect "(di)" operand. Only pointer-to-
              * int is supported, so the dereferenced type is always
              * TY_INT - confirmed against every STAR node in
              * 05_incdec.1.golden. */
-            int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("STAR of type %d not yet supported (only "
-                          "TY_INT is covered so far)", type);
+                          "TY_INT and TY_FUNC_INT are covered so far)", type);
             Val ptr = pop_val(&g);
             load_into_di(out, ptr);
             push_val(&g, val_ind("di"));
@@ -1478,6 +1834,69 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_COMMA: {
+            /* An OP_CALL argument-list separator (NOT the comma
+             * operator - that is the entirely distinct OP_SEQNC just
+             * above). Builds a VK_ARGLIST left-associatively, exactly
+             * mirroring how c0_parser.c's parse_call() built it -
+             * confirmed against 02_manyargs.1.golden's six-argument,
+             * five-COMMA chain. No code is emitted here - a call
+             * argument's own code (if any) was already emitted by
+             * whichever opcode produced its Val; OP_COMMA only
+             * relocates already-resolved Vals into the growing list. */
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("COMMA of type %d not yet supported", type);
+            Val rhs = pop_val(&g);
+            Val lhs = pop_val(&g);
+            Val out_v = {0};
+            out_v.kind = VK_ARGLIST;
+            if (lhs.kind == VK_ARGLIST) {
+                out_v.arglist = lhs.arglist;
+            } else {
+                out_v.arglist = malloc(sizeof *out_v.arglist);
+                if (!out_v.arglist)
+                    gen_fatal("out of memory building a call argument list");
+                out_v.arglist->n = 0;
+                out_v.arglist->items[out_v.arglist->n++] = lhs;
+            }
+            if (out_v.arglist->n >= MCC_MAXCALLARGS)
+                gen_fatal("too many call arguments (internal limit %d)",
+                          MCC_MAXCALLARGS);
+            out_v.arglist->items[out_v.arglist->n++] = rhs;
+            push_val(&g, out_v);
+            break;
+        }
+
+        case OP_NULLOP: {
+            /* A zero-argument OP_CALL's argument tree - v7/cc/c04.c's
+             * treeout(NULL) shape (outcode("B", NULLOP) for a null
+             * subtree). Pushes an empty VK_ARGLIST so gen_call() can
+             * treat "zero arguments" uniformly with "2+ arguments"
+             * (see its own comment) rather than needing a third,
+             * separate shape. */
+            Val v = {0};
+            v.kind = VK_ARGLIST;
+            v.arglist = malloc(sizeof *v.arglist);
+            if (!v.arglist)
+                gen_fatal("out of memory building a call argument list");
+            v.arglist->n = 0;
+            push_val(&g, v);
+            break;
+        }
+
+        case OP_CALL: {
+            int type = c1_read_num(temp1, "temp1");
+            if (type != TY_INT)
+                gen_fatal("a call returning type %d is not yet supported "
+                          "(only an int-returning function is covered so "
+                          "far)", type);
+            Val args = pop_val(&g);
+            Val callee = pop_val(&g);
+            push_val(&g, gen_call(out, callee, args));
+            break;
+        }
+
         case OP_TIMES: {
             int type = c1_read_num(temp1, "temp1");
             if (type == TY_LONG) {
@@ -1490,15 +1909,40 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("TIMES of type %d not yet supported", type);
             Val r = materialize(out, &g, pop_val(&g));
             Val l = materialize(out, &g, pop_val(&g));
-            if (r.kind == VK_IMM)
+            /* Which operand becomes the "mov ax,<X>" side and which
+             * becomes the IMUL operand: ordinarily the LEFT operand
+             * goes into AX and the RIGHT is IMUL'd (every previously-
+             * confirmed case, where neither operand starts out
+             * already living in a register). But when one operand is
+             * already sitting in AX - so far only an OP_CALL result
+             * (sect. 1.5's return-value register) - the real compiler
+             * evidently keeps it there instead of following source
+             * position: confirmed against 03_recfact.s.golden's
+             * "return n * fact(n - 1);" (source-LEFT is "n", source-
+             * RIGHT is the call) rendering as "mov ax,ax" (the
+             * call's own result, a redundant self-move, matching this
+             * project's no-peephole-optimization ethos exactly - see
+             * OP_TIMES's own "mov ax,ax" precedent elsewhere in this
+             * codebase) then "imul *4.(bp)" (n) - i.e. the AX-resident
+             * operand keeps AX and the OTHER operand is IMUL'd,
+             * regardless of which was source-left/-right. Neither
+             * operand is ever already in AX in this grammar scope
+             * except via a preceding OP_CALL, so this reduces to the
+             * original "left into ax" shape whenever it applies. */
+            Val ax_side = l, imul_side = r;
+            if (r.kind == VK_REG && strcmp(r.reg, "ax") == 0) {
+                ax_side = r;
+                imul_side = l;
+            }
+            if (imul_side.kind == VK_IMM)
                 gen_fatal("multiplying by an immediate is not yet "
                           "supported (8086 IMUL takes a reg/mem operand, "
                           "never an immediate directly - no golden "
                           "reference confirms the alternate sequence a "
                           "real compiler would need here)");
             char lbuf[32], rbuf[32];
-            render_operand(lbuf, sizeof lbuf, l);
-            render_operand(rbuf, sizeof rbuf, r);
+            render_operand(lbuf, sizeof lbuf, ax_side);
+            render_operand(rbuf, sizeof rbuf, imul_side);
             fprintf(out, "mov\tax,%s\nimul\t%s\n", lbuf, rbuf);
             push_val(&g, val_reg("ax"));
             break;
@@ -1751,21 +2195,33 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, rhs);
                 break;
             }
-            if (type != TY_INT && type != TY_PTR_INT && type != TY_CHAR)
+            if (type != TY_INT && type != TY_PTR_INT && type != TY_CHAR &&
+                type != TY_PTR_FUNC_INT)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
             Val rhs = materialize(out, &g, pop_val(&g));
             Val lhs = pop_val(&g);
-            if (lhs.kind != VK_MEM && lhs.kind != VK_IND)
+            if (lhs.kind != VK_MEM && lhs.kind != VK_IND && lhs.kind != VK_STATIC)
                 gen_fatal("assignment to a non-lvalue is not yet supported");
-            if (rhs.kind == VK_MEM)
+            if (rhs.kind == VK_MEM_CVT) {
+                /* A type-converted memory operand (currently only
+                 * OP_LTOI's result - see VK_MEM_CVT's own comment
+                 * above) - confirmed to go through DI first, unlike a
+                 * bare-NAME VK_MEM rhs (still unconfirmed, see just
+                 * below). */
+                load_into_di(out, rhs);
+                rhs = val_reg("di");
+            } else if (rhs.kind == VK_MEM) {
                 gen_fatal("direct memory-to-memory assignment (\"x = y;\") "
                           "is not yet supported - 8086 MOV cannot take two "
                           "memory operands, and no golden reference "
                           "confirms which intermediate register a real "
                           "compiler would route this through");
+            }
             char dbuf[32], sbuf[32];
             render_operand(dbuf, sizeof dbuf, lhs);
             render_operand(sbuf, sizeof sbuf, rhs);
+            if (rhs.kind == VK_FUNCADDR)
+                free((char *)rhs.reg);
             /* TY_CHAR uses "movb" instead of "mov" - confirmed against
              * 08_castsize.s.golden's "c = (char) i;" -> "movb
              * *-12.(bp),dx". */
@@ -1801,15 +2257,31 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("RFORCE to type %d not yet supported (only "
                           "int-returning functions are covered so far)", type);
             Val v = materialize(out, &g, pop_val(&g));
-            /* Matches the confirmed golden pattern exactly, for both
-             * an immediate (00_smoke's "return 42;") and a memory
-             * operand (01_intarith's "return c;"): load into DI
-             * first, then move DI into AX (sect. 1.5's return-value
-             * register) - kept as the same two-instruction shape
-             * rather than "optimized" to a direct "mov ax,<v>" since
-             * that would no longer match real hardware output. */
-            load_into_di(out, v);
-            fprintf(out, "mov\tax,di\n");
+            /* Matches the confirmed golden pattern exactly, for an
+             * immediate (00_smoke's "return 42;"), a memory operand
+             * (01_intarith's "return c;"), or anything else not
+             * already sitting in AX: load into DI first, then move
+             * DI into AX (sect. 1.5's return-value register) - kept
+             * as the same two-instruction shape rather than
+             * "optimized" to a direct "mov ax,<v>" since that would
+             * no longer match real hardware output. EXCEPT when the
+             * value is already sitting in AX (OP_TIMES/OP_DIVIDE's
+             * quotient, or an OP_CALL result - sect. 1.5's own
+             * return-value register, so a called function's result
+             * needs no extra move to become the CALLER's own return
+             * value either) - confirmed against 04_funcs/01_call.s.
+             * golden's "return add(3, 4);" (call/add-sp then
+             * straight to "jmp L6", no "mov" at all) and 03_recfact.
+             * s.golden's "return n * fact(n - 1);" (imul leaves the
+             * product in AX already, then straight to "jmp L3") -
+             * this mirrors v7/cc/c10.c's real RFORCE case exactly
+             * ("if((r=rcexpr(...))!=0) movreg(r,0,tree);" - rcexpr
+             * returns 0, skipping movreg entirely, precisely when
+             * the value is already in the target register). */
+            if (!(v.kind == VK_REG && strcmp(v.reg, "ax") == 0)) {
+                load_into_di(out, v);
+                fprintf(out, "mov\tax,di\n");
+            }
             break;
         }
 

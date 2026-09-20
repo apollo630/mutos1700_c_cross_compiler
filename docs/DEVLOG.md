@@ -535,7 +535,7 @@ correctly handles `#else` transitions in both directions. See
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler)
 
 **Status:** IN PROGRESS — `mutos_c0`/`mutos_c1` now exist in `src/mutos_cc/` and are
-verified byte-exact, end-to-end, for 20/62 of the full corpus (`00_smoke`'s 3 files
+verified byte-exact, end-to-end, for 20 of 62 of the full corpus (`00_smoke`'s 3 files
 plus all of `01_expr`: `01_intarith`/`02_bitwise`/`03_rellogic`/`04_shift`/`05_incdec`/`06_compasgn`/`07_ternary`/`08_castsize`, plus `02_long/01_addsub`/`02_muldiv`, plus all 7 of `03_ctrlflow`); see `STATUS.md` for the
 current, re-verified count and grammar/opcode scope. This section starts with the
 groundwork done ahead of any code: ABI/calling-convention research, the `c0`/`c1`
@@ -2330,11 +2330,292 @@ above, before the codegen was written) and the `CMP`-immediate fix above
 (found via the full-suite regression run after `03_ctrlflow`'s other six
 files already passed, not derived up front). Full-corpus regression
 (`tests/mutos_cc/run_goldens.sh`) confirms zero regressions elsewhere:
-20/62 byte-exact end-to-end (up from 12 at the start of this session), 0
+20 of 62 byte-exact end-to-end (up from 12 at the start of this session), 0
 genuine mismatches anywhere. `02_long/03_retval.c` and `04_params.c`
 were re-checked and confirmed to still fail with their same pre-existing
 diagnostics — both need function calls/parameters (`04_funcs` scope),
 not more control-flow or `long`-arithmetic work.
+
+### `04_funcs` (6 of 7 files) — function parameters, calls, local `static` variables, and function pointers
+
+**Scope this session:** `04_funcs/01_call.c`, `02_manyargs.c`,
+`03_recfact.c`, `04_mutrec.c`, `05_staticvar.c` and `07_funcptr.c`
+(`06_regclass.c` deliberately deferred — see its own note at the end of
+this section). `02_long/04_params.c` fell out for free once parameters
+were done, the same way `01_addsub` fell out of the `03_ctrlflow` session.
+Method: `dump_temp.py` was temporarily extended (in a scratch copy) with
+speculative `COMMA`/`CALL`/`MCALL` shapes, decoded against every
+`04_funcs/*.1.golden`, and the results checked for a byte count that
+exactly consumes the file and ends in a clean `EOFC` — the same
+confirmation method every prior session in this milestone used.
+
+**Parameter offsets and `ANAME` ordering (`01_call`, `02_manyargs`).**
+`v7/cc/c02.c`'s `funchead()` was read for the real algorithm shape: for
+each parameter, `pl` starts at `STARG` (v7's own value is also 4, so no
+MUTOS-specific delta here — unlike `STAUTO`), and each parameter's own
+offset is taken *before* `pl += rlength(param)`, the mirror image of an
+AUTO local's "subtract first, then take the offset" order. `funchead()`
+also structurally runs *before* `cfunc()`'s own `branch(sloc);
+label(sloc+1);` pair. Both were confirmed byte-for-byte:
+`01_call.1.golden` (`add(a, b)`, both `int`) decodes as `SYMDEF, PROG,
+EVEN, RLABEL, SAVE, SETREG(4), ANAME(_a,4), ANAME(_b,6), BRANCH(1),
+LABEL(2), ...` — `ANAME` for both parameters sits between `SETREG` and
+`BRANCH`, confirming the funchead-before-branch/label structural order;
+`02_manyargs.1.golden` (`sum6`, six `int` parameters) confirms the
+offset sequence continues linearly: `4, 6, 8, 10, 12, 14`. Implemented in
+`c0_sym.c`'s new `symtab_declare_param()` (a `paramlen` counter, mirror
+image of the existing `autolen`) and `c0_parser.c`'s new
+`parse_param_decls()`, called from `cfunc()` between `SETREG` and
+`branch_op(sloc)`.
+
+**Call callee and argument-list wire shape.** `v7/cc/c04.c`'s `treeout()`
+`CALL` case: `treeout(tr1, 1); treeout(tr2, 0); outcode("BN", CALL,
+tp->type);` — callee first, then the argument tree, then the `CALL` tag
+itself. The callee (`tr1`) is a `NAME` leaf: `01_call.1.golden` byte 132
+decodes as `NAME hclass=SC_EXTERN(12) type=TY_INT ptr×2(16)
+name="_add"` — `type=16` is `TY_INT | FUNC` (`v7/cc/c0.h`: `FUNC=020`
+octal = 16 decimal, `PTR=010` octal = 8 — the two `XTYPE` derived-type
+tags this project already used, `PTR` for `05_incdec`'s pointers, are
+now both directly confirmed distinct). The argument tree (`tr2`) for
+`01_call`'s `add(3, 4)` decodes as `CON(3), CON(4), COMMA(TY_INT)` —
+matching `v7/cc/c00.c`'s expression parser (`case COMMA: if (*op !=
+CALL) os = SEQNC;` — inside a call's argument list specifically, a bare
+comma token becomes a real `COMMA` tree node, `tnode(COMMA, INT, tr1,
+tr2)`, left-associatively chaining each additional argument onto the
+previous ones: `02_manyargs.1.golden`'s six-argument `sum6(1,2,3,4,5,6)`
+decodes as `CON(1), CON(2), COMMA, CON(3), COMMA, CON(4), COMMA, CON(5),
+COMMA, CON(6), COMMA` — a left-leaning `((((((1,2),3),4),5),6)` tree,
+exactly matching a postorder walk of that shape. A single argument
+(`03_recfact.1.golden`'s `fact(6)`) uses no `COMMA` at all — just
+`CON(6)` directly as `tr2`. Zero arguments (`05_staticvar.1.golden`'s
+`counter()`) uses a single `NULLOP`(218) leaf — `v7/cc/c04.c`'s
+`treeout()` top: `if ((tp = atp) == 0) { outcode("B", NULLOP); return;
+}` — the null-subtree shape, applied here since `tr2` is a null pointer
+for a no-argument call. Implemented in `c0_parser.c`'s new
+`parse_call()` (called from `parse_primary()`'s `T_IDENT` branch when
+`peek2_kind() == T_LPAREN`) and a shared `parse_call_args_and_emit()`
+tail (reused by the indirect-call path — see below). On the `c1` side:
+a new `VK_FUNC` kind (`OP_NAME`'s `SC_EXTERN` branch, reading a symbol
+via `c1_read_sym()` instead of a numeric offset) and a new `VK_ARGLIST`
+kind (a fixed-capacity, heap-owned array of resolved argument `Val`s,
+built by `OP_COMMA`'s handler — left `VK_ARGLIST` or plain, right always
+plain, matching the left-associative wire shape — and by `OP_NULLOP`,
+which pushes an empty one) feed a new `gen_call()`.
+
+**Push order, argument rendering, and caller cleanup.**
+`docs/MUTOS_C_ABI.md` sect. 1.1 (right-to-left push, caller cleanup via
+`add sp,N`) was already fully researched from real `libc.a`/`crt0.o`
+evidence before this session — this session's job was confirming
+`mutos_c1`'s actual rendering choices, not the ABI itself.
+`01_call.s.golden`'s `add(3, 4)` call renders as `mov di,*4./push
+di/mov di,*3./push di/call _add/add sp,*4.` — pushed in REVERSE
+declaration order (`4` then `3`), each via `mov di,<val>` then `push
+di`, confirming the ABI's right-to-left rule directly in generated
+code. `02_manyargs.s.golden`'s `sum6(1,2,3,4,5,6)` confirms this holds
+for all six (pushed `6,5,4,3,2,1`) and that cleanup is `add sp,*12.`
+(2×6 bytes). `07_funcptr.s.golden`'s `apply(fp, 5)` — args `fp` (a
+plain local) and `5` — pushes `5` via the usual `mov di,*5./push di`
+but `fp` via a DIRECT `push *-6.(bp)`, no `mov` at all: this is a
+genuinely different, more general rule than every earlier call site
+happened to exercise (which were all either immediates, needing `DI`
+first since 8086 `PUSH` has no immediate form, or an already-`DI`
+value from a preceding `MINUS`, where the pre-existing `load_into_di()`
+no-op check already produced identical bytes either way — so this
+generalization is a strict superset, not a behavior change, for every
+prior confirmed site). `gen_call()` now pushes an argument AS-IS
+(`render_operand()` directly) whenever it isn't `VK_IMM`, and routes
+only a genuine immediate through `DI` first. A `long` CONSTANT argument
+(`02_long/04_params.s.golden`'s `myseek(3, 90000L, 1)`) needs its own
+shape: `90000L` (`hi=1, lo=24464`) renders as `mov di,#24464./push
+di/mov di,*1./push di` — two ordinary immediate-load-then-push pairs,
+LOW word first then HIGH (`docs/MUTOS_C_ABI.md` sect. 1.6's "push the
+low word first" rule for a `long` argument, now directly confirmed in
+generated code rather than just derived from disassembly). This also
+exposed that `add sp,N` must track total WORDS pushed, not argument
+COUNT — `04_params`'s three arguments (`fd`, `offset`, `whence`) occupy
+four words, and the golden's `add sp,*8.` confirms it.
+
+**The call result register, and a new `RFORCE`/`TIMES` finding.**
+`docs/MUTOS_C_ABI.md` sect. 1.5 already established a call's result is
+always in `AX`. `01_call.s.golden`'s `return add(3, 4);` renders as
+`call _add/add sp,*4./jmp L6` — no `mov` of any kind between the call
+and the epilogue jump, even though the EXISTING (pre-this-session)
+`OP_RFORCE` handler unconditionally emitted `mov di,<v>` then `mov
+ax,di`. This is a real, previously-unconfirmed optimization:
+`v7/cc/c10.c`'s actual `RFORCE` case is `if ((r = rcexpr(tree, regtab,
+reg)) != 0) movreg(r, 0, tree);` — `rcexpr()` returns 0 (meaning
+"already in the target register") precisely when nothing needs
+moving, and `movreg()` is skipped entirely. No prior `04_funcs`-
+adjacent golden ever exercised a value already sitting in `AX` (every
+earlier confirmed construct routes through `DI`), so this optimization
+had never surfaced before. `03_recfact.s.golden`'s `return n *
+fact(n - 1);` confirms the SAME optimization applies to `OP_TIMES`'s
+own quotient-register convention, not just a call result: `...call
+_fact/add sp,*2./mov ax,ax/imul *4.(bp)/jmp L3` — the recursive call's
+result stays in `AX` (a literal, confirmed `mov ax,ax` self-move,
+consistent with this project's no-peephole-optimization ethos —
+`TIMES`'s own "load left operand into AX" codegen doesn't know or care
+that its operand happened to already be there), `n` becomes the `IMUL`
+operand, and `RFORCE` again emits nothing (the product is already in
+`AX` from `IMUL`). Since the call's own result was the SOURCE-RIGHT
+operand of `n * fact(n-1)` (source-left `n` is emitted first into the
+wire stream) but ends up as the one KEPT in `AX`, `TIMES`'s codegen
+was changed from "always load source-left into AX" to "keep whichever
+operand is already `AX`, if either is, else load the (still,
+source-)left one" — a strict generalization matching this one new case
+without touching any previously-confirmed byte sequence (since neither
+operand of any prior `TIMES` golden was ever already `AX`).
+`OP_RFORCE` itself was changed to skip its two-instruction move
+whenever the popped value is `VK_REG` with `reg=="ax"`.
+
+**A symmetric `MINUS`-by-1 finding.** `03_recfact.c`'s `fact(n - 1)`
+and `04_mutrec.c`'s `iseven(n - 1)`/`isodd(n - 1)` both compile the
+argument as a plain `dec di`, not `sub di,*1.` — confirmed via
+`03_recfact.s.golden`'s `mov di,*4.(bp)/dec di/push di`. A prior
+session's `07_ternary` entry had left this explicitly unconfirmed
+("`OP_MINUS` is deliberately left unchanged ... since no golden yet
+shows whether `x - 1` gets the symmetric `DEC` treatment" — see that
+section above); this session resolves it: yes, symmetrically with the
+already-confirmed `+1`→`INC` case.
+
+**`LTOI` on a `long` parameter must stay lazy.** `02_long/04_params.c`'s
+`myseek(fd, offset, whence) { return fd + (int) offset + whence; }`
+(`offset` a `long` parameter) surfaced a genuine context-dependent
+codegen difference. The EXISTING (pre-this-session) `OP_LTOI` handler,
+confirmed correct for `08_castsize`'s `"i = (int) l;"` (`mov
+di,*-8.(bp)` then, via `OP_ASSIGN`, `mov *-6.(bp),di`), always eagerly
+loaded the long's low word into `DI`. Naively reusing that for
+`04_params` produced `mov di,*8.(bp) / mov di,*4.(bp) / add di,di` —
+visibly wrong (both operands collapsed onto the same register) because
+`OP_PLUS`'s own codegen ALSO uses `DI` as its accumulator, and an
+eagerly-`DI`-resident `LTOI` result collides with it. The golden instead
+shows `mov di,*4.(bp) / add di,*8.(bp)` — `fd` (source-left) loaded
+into `DI` as usual, and the `LTOI`'d `offset` (source-right) used
+DIRECTLY as `PLUS`'s memory operand, no separate move at all. Fix: a
+new `VK_MEM_CVT` kind (rendered identically to `VK_MEM` everywhere
+except `OP_ASSIGN`) — `LTOI` now pushes a lazy `VK_MEM_CVT` at
+`(base_offset + MCC_SZINT)` instead of eagerly loading `DI`; `OP_ASSIGN`'s
+plain-type case explicitly materializes a `VK_MEM_CVT` rhs via `DI`
+(reproducing `08_castsize`'s confirmed two-instruction shape exactly)
+while STILL rejecting a bare `VK_MEM` rhs (genuine, still-unconfirmed
+direct `"x = y;"` memory-to-memory assignment) — the two cases are
+distinguishable only because `LTOI`'s result is a different `Val` kind
+from a plain `NAME`'s, even though both render as an identical
+`"*N.(bp)"` string.
+
+**Local `static` variables (`05_staticvar`).** `v7/cc/c03.c`'s
+`declist()`, STATIC case: `dsym->hoffset = isn; ...
+outcode("BBNBN", BSS, LABEL, isn++, SSPACE, rlength(dsym)); outcode("B",
+PROG);` then (shared with every storage class) `prste(dsym)`, whose
+STATIC branch (`v7/cc/c02.c`) is `outcode("BSN", SNAME, cs->name,
+cs->hoffset)`. Confirmed byte-for-byte against
+`05_staticvar.1.golden`'s `static int n;`: `BSS, LABEL(4), SSPACE(2),
+PROG, SNAME("_n", 4)` — note `hoffset` here is the SAME label number
+`isn` allocated for the `BSS` block, not a stack offset at all; every
+later reference to `n` reuses `NAME(SC_STATIC, TY_INT, 4)` (same golden,
+byte 59). `05_staticvar.s.golden` confirms the rendering: `L2:.bss\nL4:.
+blkb\t2.\n.text\n| _n=L4\n` for the declaration, then `mov di,L4` / `mov
+L4,di` wherever `n` is read/written — a bare `L<n>` operand, distinct
+source-text shape from `VK_MEM`'s `"*N.(bp)"` but otherwise usable
+identically (no `OP_ASSIGN` special-casing needed, unlike `VK_MEM_CVT`
+above — an ordinary `mov L4,di` between a label and a register is
+perfectly legal). Also confirmed in the same golden: a zero-argument
+call's `NULLOP` shape (see above) via `counter()`'s two call sites, and
+that `SETSTK`'s byte count only counts genuine AUTO locals — `main()`'s
+`a, b, c` (all AUTO) give `SETSTK 10` as expected, with `counter()`'s
+OWN static `n` contributing nothing to ITS `SETSTK 4` (no real AUTO
+locals at all). Implemented via a new `symtab_declare_static()`
+(`c0_sym.c`), `parse_static_decl()` (`c0_parser.c`, hooked into
+`parse_compound_stmt()`'s decl loop alongside the existing
+`int`/`char`/`long` cases), and a new `VK_STATIC` kind plus
+`OP_BSS`/`OP_SSPACE`/`OP_SNAME` handlers (`c1_gen.c`).
+
+**Function pointers (`07_funcptr`).** Three new pieces, all confirmed
+against `07_funcptr.1.golden`/`.s.golden` in full:
+
+1. *The derived type itself.* `v7/cc/c04.c`'s `incref(t) = ((t &
+   ~TYPE) << TYLEN) | (t & TYPE) | PTR` (`TYPE=07` octal=7,
+   `TYLEN=2`, `PTR=010` octal=8 — `v7/cc/c0.h`). Applied to
+   `TY_FUNC_INT` (16, "function returning int" — already confirmed as
+   a call's callee type this session): `incref(16) = ((16 & ~7) << 2)
+   | (16 & 7) | 8 = 64 | 0 | 8 = 72`. Every `ANAME`/`NAME`/`AMPER`/
+   `ASSIGN` touching `f` (a parameter) or `fp` (a local) in
+   `07_funcptr.1.golden` uses type `72` — confirmed. Declared as `'('
+   '*' IDENT ')' '(' ')'` — both a local-variable declarator
+   (`parse_decl()`'s new `T_LPAREN` branch) and a parameter declarator
+   (`parse_param_decls()`'s matching branch).
+2. *A bare function name as a value.* `fp = square;` (not a call —
+   no `(` follows) needs `c0` to recognize `square` as a function
+   despite it never being a local variable. Real K&R architecture uses
+   ONE persistent, whole-file symbol table (`v7`'s `hshtab`) where a
+   function's own definition creates a lasting `EXTERN`-class entry;
+   `c0_parser.c`'s per-function `Parser::syms` is reset every `cfunc()`
+   and can't model this, so a new, separate, whole-file
+   `Parser::funcnames[]` registry was added (`register_func()`,
+   called from `parse_extdef()` for a definition and
+   `parse_top_prototype()` for a forward declaration;
+   `is_known_func()`, consulted by `parse_primary()`'s `T_IDENT`
+   fallback only when the name is NOT a local). `07_funcptr.c`'s
+   `main()` (the LAST function in the file) can see `square`/`cube`
+   because they were defined earlier — confirmed by the golden's
+   `NAME(SC_EXTERN, TY_FUNC_INT, "_square")` then `AMPER(72)` for `fp
+   = square;`. Codegen-wise, this `AMPER` is NOT the already-confirmed
+   array-decay one (`05_incdec`'s `lea di,*-16.(bp)`, a genuine
+   runtime bp-relative address): a function's address is a link-time
+   constant, so `07_funcptr.s.golden` shows `mov *-6.(bp),#_square` —
+   a single memory-immediate `MOV`, no `lea`, no register at all. A
+   new `VK_FUNCADDR` kind (holding the callee's own name, taken over
+   from the `VK_FUNC` `AMPER` consumed) renders as `"#<name>"`
+   directly.
+3. *Indirect calls.* `apply(f, x) { return (*f)(x); }` — `f`
+   declared `int (*f)();`. `07_funcptr.1.golden` decodes the body as
+   `NAME(f, hclass=AUTO, type=72, offset=4), STAR(type=16),
+   NAME(x, offset=6), CALL(type=0)` — `STAR`'s type (16) is
+   `decref(72)` (the inverse of `incref` above: `v7/cc/c04.c`'s
+   `decref(t) = (t >> TYLEN) & ~TYPE | t & TYPE`; `decref(72) =
+   (72>>2) & ~7 | 72&7 = 18 & ~7 | 0 = 16` — confirmed). Critically,
+   `07_funcptr.s.golden`'s rendering is `push *6.(bp) / call @*4.(bp)`
+   — NO code at all corresponds to the `STAR` node itself: `f`'s own
+   memory reference (`*4.(bp)`) is used directly as the indirect
+   call's target, with a `@` prefix (mutos_as's indirect-call marker).
+   This is the SAME "pure type-level operation, no code emitted"
+   pattern as the `AMPER`-of-function case above, just for
+   dereference instead of address-of. `OP_STAR`'s `TY_FUNC_INT` case
+   now leaves its `VK_MEM` operand on the stack completely unchanged
+   (asserting it stays `VK_MEM`, since only a plain function-pointer
+   variable is supported as this grammar's dereference operand); a new
+   `parse_indirect_call()` (`c0_parser.c`, entered from
+   `parse_primary()`'s `T_LPAREN` branch when `peek2_kind() ==
+   T_STAR`) emits this `NAME`/`STAR` pair then reuses the same
+   `parse_call_args_and_emit()` tail `parse_call()` uses; `gen_call()`
+   (`c1_gen.c`) now branches on the callee `Val`'s kind — `VK_FUNC` (a
+   direct call) emits `call <name>` as before, `VK_MEM` (an indirect
+   call) emits `call @<mem>` instead.
+
+**`06_regclass.c` deliberately not attempted.** Its own comment states
+the point plainly: "A K&R compiler is free to ignore [`register`] ...
+but `mutos_c1` must at least parse and accept it." Its golden, however,
+shows the REAL compiler does NOT ignore it byte-for-byte: `SETREG`'s
+value drops from 4 to 3 (one register-variable slot consumed) and a new
+`RNAME`(216) opcode (the same "BSN" family as `ANAME`/`SNAME`, confirmed
+via `v7/cc/c02.c`'s `prste()`: `case REG: nkind = RNAME;`) declares `i`
+by a REGISTER NUMBER rather than a stack offset or a BSS label —
+meaning every later reference to `i` would need to compile to a direct
+register operand (no `*N.(bp)` load/store at all) for the rest of that
+function. This is genuine, novel register-allocation codegen — not
+covered by extending any existing `Val` kind the way `VK_STATIC`/
+`VK_MEM_CVT`/`VK_FUNCADDR` above were — and was explicitly left
+unattempted rather than guessed at, consistent with this project's
+"no silently-wrong output" rule: `parse_decl()`/`parse_param_decls()`
+still reject `register` (via their existing "only 'int'/'char'/'long'"
+error) exactly as before.
+
+**Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
+`make test`): 27/62 byte-exact end-to-end (up from 20 at the start of
+this session — 6 new `04_funcs` files plus `02_long/04_params` as a
+side effect), 0 genuine mismatches anywhere, confirmed via a full
+`make clean && make all && make test` from a clean checkout with zero
+compiler warnings under `-Wall -Wextra -Wpedantic`.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
