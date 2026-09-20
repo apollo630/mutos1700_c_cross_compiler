@@ -228,9 +228,49 @@ struct ArgList {
 };
 
 typedef struct {
-    int  regvar;              /* consumed from SETREG but not yet
-                                * acted on - no register-variable
-                                * allocation is implemented yet. */
+    int  regvar;              /* the most recently seen SETREG value -
+                                * consulted nowhere yet (OP_NAME's
+                                * SC_REG case maps a symbol's own
+                                * offset, not this, to a physical
+                                * register - see regvar_name() below);
+                                * kept for parity/future use. */
+    int  setreg_seen;         /* reset to 0 at each OP_SAVE (one per
+                                * function); set to 1 the first time
+                                * OP_SETREG is then seen. A function's
+                                * FIRST SETREG (funchead()'s own,
+                                * always MCC_INIT_REGVAR, unconditional)
+                                * renders no visible text; every
+                                * SUBSEQUENT one (only emitted by
+                                * c0_parser.c when regvar actually
+                                * changed - a 'register' local claimed,
+                                * or the end-of-function restore) DOES,
+                                * regardless of its value - confirmed
+                                * against 04_funcs/06_regclass.s.
+                                * golden's "|NREG 3" restore comment,
+                                * whose SETREG value (MCC_INIT_REGVAR=4)
+                                * is numerically identical to the
+                                * silent initial one, so only POSITION
+                                * (not value) distinguishes them - see
+                                * OP_SETREG's own handler below. */
+    int  di_reserved;         /* reset to 0 at each OP_SAVE; set to 1
+                                * once OP_RNAME claims DI for a
+                                * 'register'-class local (04_funcs/
+                                * 06_regclass.c) - stays 1 for the rest
+                                * of the function (its lifetime), since
+                                * this grammar scope never frees a
+                                * register mid-function. While set, DI
+                                * is off-limits as the generic "working
+                                * register" an otherwise-unresolved
+                                * value gets loaded into - SI is used
+                                * instead. Only OP_RFORCE's default
+                                * path is confirmed to need this so far
+                                * (06_regclass.s.golden's "return sum;"
+                                * -> "mov si,*-6.(bp) / mov ax,si", not
+                                * the usual DI-then-AX shape); every
+                                * other "go through DI" site is left
+                                * unchanged since none is exercised
+                                * with a live register variable by any
+                                * golden yet. */
     Val  valstack[VALSTACK_MAX];
     int  valsp;
     int  next_lab;             /* c1's own internal label counter for
@@ -288,6 +328,30 @@ static Val val_long(void) { Val r = {0}; r.kind = VK_LONG; return r; }
  * whichever OP_CALL pops it (see gen_call()). */
 static Val val_func(char *name) { Val r = {0}; r.kind = VK_FUNC; r.reg = name; return r; }
 static Val val_static(int label) { Val r = {0}; r.kind = VK_STATIC; r.offset = label; return r; }
+
+/* Maps a claimed register-variable's own slot number (c0_parser.c's
+ * try_claim_register()'s return value, the SAME number RNAME/a later
+ * SC_REG NAME both carry as their "offset") to its physical register
+ * name - confirmed only for slot 3 = "di" (04_funcs/06_regclass.
+ * s.golden's "| _i=di"); slot 2 = "si" is the structurally next slot
+ * this same algorithm hands out (see try_claim_register()'s own
+ * comment) but is not itself exercised by any golden, so it is
+ * included as a direct, low-risk extension of the confirmed mapping
+ * rather than a guess about codegen shape - any actual CODEGEN
+ * combining two live register variables at once remains unconfirmed
+ * and gen_fatal()s elsewhere (see OP_PLUS/OP_MINUS/OP_ASSIGN below). */
+static const char *regvar_name(int regnum)
+{
+    switch (regnum) {
+    case 3: return "di";
+    case 2: return "si";
+    default:
+        gen_fatal("register-variable slot %d has no confirmed physical "
+                  "register mapping (only slots 3/2 = di/si are covered "
+                  "so far)", regnum);
+    }
+    return NULL; /* unreached - gen_fatal() never returns */
+}
 
 /* Demotes an already-resolved (non-VK_COND) Val down to a SimpleVal,
  * for storage inside a VK_COND's cl/cr fields. */
@@ -719,6 +783,19 @@ static void load_into_di(FILE *out, Val v)
     fprintf(out, "mov\tdi,%s\n", buf);
 }
 
+/* Same as load_into_di() above, but for SI - the fallback "working
+ * register" for an otherwise-unresolved value while DI is reserved by
+ * a live 'register'-class local (GenState's own di_reserved - see its
+ * comment). */
+static void load_into_si(FILE *out, Val v)
+{
+    if (v.kind == VK_REG && strcmp(v.reg, "si") == 0)
+        return;
+    char buf[32];
+    render_operand(buf, sizeof buf, v);
+    fprintf(out, "mov\tsi,%s\n", buf);
+}
+
 /* Emits "mov\tcx,<v>\n" to load `v` into CX - the confirmed working
  * register for a *variable* shift count specifically (never DI,
  * which holds the value being shifted - see OP_LSHIFT/OP_RSHIFT
@@ -880,27 +957,26 @@ static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
  * no-op case already produced the identical bytes either way - so
  * this is a strict generalization of the earlier "always go through
  * DI" understanding, not a behavior change for any already-confirmed
- * site). A 'long' CONSTANT argument (VK_LCON - materialize_long() is
- * deliberately NOT called here, so this only covers the
- * in-range-int-value sign-extension shape VK_LCON itself stores, not
- * a genuinely 32-bit constant, which is not exercised by any golden)
- * instead pushes its own two words directly, LOW word first then
- * HIGH word (sect. 1.6: "pushing a long argument is exactly
- * equivalent to ... push the low word first, then the high word") -
- * confirmed against "90000L" (hi=1, lo=24464) rendering as "mov
- * di,#24464./push di/mov di,*1./push di", i.e. two ordinary
- * immediate-load-then-push pairs, low then high (an immediate still
- * needs DI first, same as any other immediate). A 'long' value
- * already materialized into DI:SI (VK_LONG) is not exercised by any
- * golden and is left unsupported here rather than guessed. The
+ * site). A 'long' CONSTANT argument (VK_LCON) has two confirmed
+ * shapes - see the "if (hi == ...)" branch in the loop below for the
+ * full derivation; either shape still pushes low-word-then-high-word
+ * overall (sect. 1.6: "pushing a long argument is exactly equivalent
+ * to ... push the low word first, then the high word"). A 'long'
+ * value already materialized into DI:SI (VK_LONG) is not exercised by
+ * any golden and is left unsupported here rather than guessed. The
  * call's own result is always left in AX (sect. 1.5) - pushed back as
  * val_reg("ax") for whatever consumes the call expression next
  * (OP_RFORCE's now-confirmed "already in ax, skip the move" case, or
  * an enclosing operator like OP_TIMES, which renders it via the
  * ordinary "mov ax,<operand>" path either way - see 03_recfact.s.
- * golden's "mov ax,ax" self-move for the latter).
+ * golden's "mov ax,ax" self-move for the latter) - UNLESS the callee
+ * itself is 'long'-returning (`is_long_ret`), in which case the
+ * result instead comes back in DX:AX and is moved into the
+ * DI(high):SI(low) convention every other long-value producer here
+ * uses, exactly like gen_long_binop_call()'s own lmul/ldiv/lrem calls
+ * (see below).
  */
-static Val gen_call(FILE *out, Val callee, Val args)
+static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
 {
     if (callee.kind != VK_FUNC && callee.kind != VK_MEM)
         gen_fatal("this call-callee shape is not yet supported - see "
@@ -921,13 +997,36 @@ static Val gen_call(FILE *out, Val callee, Val args)
     int nwords = 0;
     for (int i = nargs - 1; i >= 0; i--) {
         if (items[i].kind == VK_LCON) {
+            /* Two confirmed shapes - the SAME distinction
+             * materialize_long() itself makes: a genuinely 32-bit
+             * value (hi is NOT its low word's own sign-extension)
+             * direct-splits, low word then high word - confirmed
+             * against 02_long/04_params.s.golden's "myseek(3, 90000L,
+             * 1)" -> "mov di,#24464./push di/mov di,*1./push di". An
+             * int-range value that merely carries a 'long' suffix (hi
+             * IS its low word's sign-extension) instead uses the CWD
+             * sign-extension idiom, pushing AX(low) then DX(high) -
+             * confirmed against 02_long/03_retval.s.golden's
+             * "addlong(100000L, 5L)" -> the "5L" argument rendering
+             * as "mov ax,*5. / cwd / push ax / push dx", never the
+             * direct-split shape even though both take the same
+             * VK_LCON wire path. */
+            long lo = items[i].imm, hi = items[i].offset;
             char buf[32];
-            render_operand(buf, sizeof buf, val_imm(items[i].imm)); /* low */
-            fprintf(out, "mov\tdi,%s\n", buf);
-            fprintf(out, "push\tdi\n");
-            render_operand(buf, sizeof buf, val_imm(items[i].offset)); /* high */
-            fprintf(out, "mov\tdi,%s\n", buf);
-            fprintf(out, "push\tdi\n");
+            if (hi == (lo < 0 ? -1 : 0)) {
+                render_operand(buf, sizeof buf, val_imm(lo));
+                fprintf(out, "mov\tax,%s\n", buf);
+                fprintf(out, "cwd\n");
+                fprintf(out, "push\tax\n");
+                fprintf(out, "push\tdx\n");
+            } else {
+                render_operand(buf, sizeof buf, val_imm(lo));
+                fprintf(out, "mov\tdi,%s\n", buf);
+                fprintf(out, "push\tdi\n");
+                render_operand(buf, sizeof buf, val_imm(hi));
+                fprintf(out, "mov\tdi,%s\n", buf);
+                fprintf(out, "push\tdi\n");
+            }
             nwords += 2;
             continue;
         }
@@ -961,6 +1060,18 @@ static Val gen_call(FILE *out, Val callee, Val args)
         char buf[32];
         render_operand(buf, sizeof buf, val_imm(2L * nwords));
         fprintf(out, "add\tsp,%s\n", buf);
+    }
+    if (is_long_ret) {
+        /* A 'long'-returning callee's result comes back in DX:AX
+         * (sect. 1.5's ordinary long-return convention - same as
+         * gen_long_binop_call()'s own lmul/ldiv/lrem helper calls
+         * above), moved into the DI(high):SI(low) convention every
+         * other long-value producer here uses - confirmed against
+         * 02_long/03_retval.s.golden's "call _addlong / add sp,*8. /
+         * mov di,dx / mov si,ax". */
+        fprintf(out, "mov\tdi,dx\n");
+        fprintf(out, "mov\tsi,ax\n");
+        return val_long();
     }
     return val_reg("ax");
 }
@@ -1089,14 +1200,27 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * never derived from stream data. */
             fprintf(out, "push\tbp\nmov\tbp,sp\npush\tdi\npush\tsi\n"
                           "|NREG %d\n", MCC_NSAVEREG);
+            g.setreg_seen = 0; /* one SAVE per function - see
+                                 * setreg_seen's own comment. */
+            g.di_reserved = 0; /* ditto - see di_reserved's own comment. */
             break;
 
-        case OP_SETREG:
+        case OP_SETREG: {
             g.regvar = c1_read_num(temp1, "temp1");
-            /* No visible text - register-variable allocation is not
-             * implemented yet (no grammar coverage produces a
-             * non-default value here yet). */
+            /* A function's first SETREG (funchead()'s own,
+             * unconditional) renders nothing; every later one (only
+             * ever emitted by c0_parser.c when regvar actually
+             * changed) renders "|NREG n" - confirmed n = regvar-1
+             * against both 04_funcs/06_regclass.s.golden occurrences
+             * ("|NREG 2" for regvar=3 when 'i' claims a register,
+             * "|NREG 3" for the regvar=4 end-of-function restore) -
+             * see setreg_seen's own comment for why position, not
+             * value, is what distinguishes the two. */
+            if (g.setreg_seen)
+                fprintf(out, "|NREG %d\n", g.regvar - 1);
+            g.setreg_seen = 1;
             break;
+        }
 
         case OP_BRANCH: {
             int lab = c1_read_num(temp1, "temp1");
@@ -1119,6 +1243,23 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * "| _a=-6." lines (name already includes the leading
              * '_' - see c1_stream.h's c1_read_sym()). */
             fprintf(out, "| %s=%d.\n", name, offset);
+            free(name);
+            break;
+        }
+
+        case OP_RNAME: {
+            char *name = c1_read_sym(temp1, "temp1");
+            int regnum = c1_read_num(temp1, "temp1");
+            const char *rname = regvar_name(regnum);
+            if (strcmp(rname, "di") == 0)
+                g.di_reserved = 1; /* see di_reserved's own comment */
+            /* A 'register'-class local's declaration comment -
+             * confirmed against 04_funcs/06_regclass.s.golden's
+             * "| _i=di\n": unlike ANAME's "| name=offset." (a plain
+             * bp-relative number with a trailing period), this
+             * renders the actual physical register name, no trailing
+             * period - see regvar_name(). */
+            fprintf(out, "| %s=%s\n", name, rname);
             free(name);
             break;
         }
@@ -1170,16 +1311,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * shape (a symbol name), not the numeric bp-relative
                  * offset every SC_AUTO NAME uses - matches
                  * v7/cc/c04.c's treeout() NAME case's own hclass==
-                 * EXTERN branch exactly. Confirmed against every
-                 * 04_funcs .1.golden's callee NAME (type is always
-                 * TY_FUNC_INT there - no other SC_EXTERN NAME shape
-                 * is exercised by this grammar scope yet, e.g. a
-                 * plain external variable reference). */
-                if (type != TY_FUNC_INT)
+                 * EXTERN branch exactly. `type` is "function
+                 * returning X" (X's own type code | 020, the FUNC-
+                 * degree bit TY_FUNC_INT already uses for X=TY_INT) -
+                 * confirmed for TY_INT (every 04_funcs .1.golden) and,
+                 * since 02_long/03_retval.c, TY_LONG (type 22) too;
+                 * no other base return type is exercised by this
+                 * grammar scope yet. */
+                if (type != TY_FUNC_INT && type != (TY_LONG | 020))
                     gen_fatal("NAME with storage class SC_EXTERN and "
                               "type %d not yet supported (only a called "
-                              "function's own TY_INT|FUNC type is "
-                              "covered so far)", type);
+                              "function's own TY_INT|FUNC or TY_LONG|FUNC "
+                              "type is covered so far)", type);
                 char *name = c1_read_sym(temp1, "temp1");
                 push_val(&g, val_func(name));
                 break;
@@ -1200,11 +1343,29 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_static(label));
                 break;
             }
+            if (hclass == SC_REG) {
+                /* A 'register'-class local's own reference (04_funcs/
+                 * 06_regclass.c) - `offset` here is the register-
+                 * allocator's own slot number (RNAME's own comment),
+                 * not a stack offset; mapped straight to the physical
+                 * register it lives in, so every later use (a
+                 * comparison, an arithmetic operand, an ASSIGN target)
+                 * goes through the exact same VK_REG machinery
+                 * already used for an ordinary intermediate value
+                 * sitting in DI - see regvar_name()'s own comment. */
+                if (type != TY_INT)
+                    gen_fatal("a 'register'-class NAME of type %d is not "
+                              "yet supported (only TY_INT is covered so "
+                              "far)", type);
+                int regnum = c1_read_num(temp1, "temp1");
+                push_val(&g, val_reg(regvar_name(regnum)));
+                break;
+            }
             if (hclass != SC_AUTO)
                 gen_fatal("NAME with storage class %d not yet supported "
-                          "(only AUTO locals, a local STATIC, and a "
-                          "called function's own SC_EXTERN name are "
-                          "covered so far)", hclass);
+                          "(only AUTO locals, a local STATIC, a "
+                          "'register' local, and a called function's own "
+                          "SC_EXTERN name are covered so far)", hclass);
             if (type != TY_INT && type != TY_PTR_INT &&
                 type != TY_CHAR && type != TY_LONG && type != TY_PTR_FUNC_INT)
                 gen_fatal("NAME of type %d not yet supported (only "
@@ -1447,6 +1608,28 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           op == OP_PLUS ? "PLUS" : "MINUS", type);
             Val r = materialize(out, &g, pop_val(&g));
             Val l = materialize(out, &g, pop_val(&g));
+            if (r.kind == VK_REG && strcmp(r.reg, "di") == 0 &&
+                !(l.kind == VK_REG && strcmp(l.reg, "di") == 0)) {
+                /* The right operand already lives in DI (a
+                 * 'register'-class local - see OP_NAME's SC_REG
+                 * case) and the left doesn't - loading the left into
+                 * DI as usual (below) would clobber the right operand
+                 * before it's even used, so the left goes into SI
+                 * instead and the operation becomes "add/sub si,di" -
+                 * confirmed against 04_funcs/06_regclass.s.golden's
+                 * "sum = sum + i;" -> "mov si,*-6.(bp) / add si,di".
+                 * When the LEFT operand is instead the register
+                 * variable (e.g. "i + 1"), it already falls through
+                 * to the ordinary path below unchanged - load_into_di()
+                 * is a no-op for an operand already sitting in DI, so
+                 * no separate case is needed for that shape. */
+                char buf[32];
+                render_operand(buf, sizeof buf, l);
+                fprintf(out, "mov\tsi,%s\n", buf);
+                fprintf(out, "%s\tsi,di\n", op == OP_PLUS ? "add" : "sub");
+                push_val(&g, val_reg("si"));
+                break;
+            }
             load_into_di(out, l);
             if (r.kind == VK_IMM && r.imm == 1 && op == OP_PLUS) {
                 /* "+ 1" specifically compiles to a plain INC, not
@@ -1887,13 +2070,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_CALL: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
+            if (type != TY_INT && type != TY_LONG)
                 gen_fatal("a call returning type %d is not yet supported "
-                          "(only an int-returning function is covered so "
-                          "far)", type);
+                          "(only an int- or long-returning function is "
+                          "covered so far)", type);
             Val args = pop_val(&g);
             Val callee = pop_val(&g);
-            push_val(&g, gen_call(out, callee, args));
+            push_val(&g, gen_call(out, callee, args, type == TY_LONG));
             break;
         }
 
@@ -2200,7 +2383,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
             Val rhs = materialize(out, &g, pop_val(&g));
             Val lhs = pop_val(&g);
-            if (lhs.kind != VK_MEM && lhs.kind != VK_IND && lhs.kind != VK_STATIC)
+            if (lhs.kind != VK_MEM && lhs.kind != VK_IND &&
+                lhs.kind != VK_STATIC && lhs.kind != VK_REG)
                 gen_fatal("assignment to a non-lvalue is not yet supported");
             if (rhs.kind == VK_MEM_CVT) {
                 /* A type-converted memory operand (currently only
@@ -2216,6 +2400,21 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "memory operands, and no golden reference "
                           "confirms which intermediate register a real "
                           "compiler would route this through");
+            }
+            if (lhs.kind == VK_REG && rhs.kind == VK_REG &&
+                strcmp(lhs.reg, rhs.reg) == 0) {
+                /* Assigning a 'register'-class local's own just-
+                 * computed value right back into itself (e.g. "i = i
+                 * + 1;", where the "+1" already happened in place via
+                 * a plain "inc di" - see OP_PLUS's new VK_REG case
+                 * above) - there is nothing left to store, so this
+                 * emits NO instruction at all, confirmed against
+                 * 06_regclass.s.golden's "L6:inc\tdi\njmp\tL4" (no
+                 * "mov di,di" between them). Still pushes the value
+                 * back, same as every other ASSIGN case below, for
+                 * OP_EXPR to discard. */
+                push_val(&g, rhs);
+                break;
             }
             char dbuf[32], sbuf[32];
             render_operand(dbuf, sizeof dbuf, lhs);
@@ -2253,9 +2452,34 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_RFORCE: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG) {
+                /* A 'long'-returning function's "return <expr>;" -
+                 * the expression's materialized DI(high):SI(low)
+                 * value (see materialize_long()) is moved into
+                 * AX(low):DX(high), the ordinary 'long' return-value
+                 * convention (sect. 1.5 - the same registers gen_
+                 * call()'s own long-returning-callee case reads FROM)
+                 * - confirmed against 02_long/03_retval.s.golden's
+                 * "return a + b;" -> "mov ax,si / mov dx,di". Only a
+                 * value already resolvable to VK_LONG (a 'long'
+                 * arithmetic result, a materialized constant, ...) is
+                 * confirmed - anything else (e.g. an already-DX:AX
+                 * call result returned straight back out) is not
+                 * exercised by any golden. */
+                Val v = materialize_long(out, pop_val(&g));
+                if (v.kind != VK_LONG)
+                    gen_fatal("RFORCE to 'long' from a non-'long' value is "
+                              "not yet supported (no golden reference "
+                              "confirms the widening sequence a real "
+                              "compiler would need here)");
+                fprintf(out, "mov\tax,si\n");
+                fprintf(out, "mov\tdx,di\n");
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("RFORCE to type %d not yet supported (only "
-                          "int-returning functions are covered so far)", type);
+                          "int/long-returning functions are covered so "
+                          "far)", type);
             Val v = materialize(out, &g, pop_val(&g));
             /* Matches the confirmed golden pattern exactly, for an
              * immediate (00_smoke's "return 42;"), a memory operand
@@ -2279,8 +2503,19 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * returns 0, skipping movreg entirely, precisely when
              * the value is already in the target register). */
             if (!(v.kind == VK_REG && strcmp(v.reg, "ax") == 0)) {
-                load_into_di(out, v);
-                fprintf(out, "mov\tax,di\n");
+                if (g.di_reserved) {
+                    /* DI is reserved by a live 'register'-class local
+                     * for the rest of this function (see di_reserved's
+                     * own comment) - SI is used as the fallback
+                     * working register instead, confirmed against
+                     * 04_funcs/06_regclass.s.golden's "return sum;" ->
+                     * "mov si,*-6.(bp) / mov ax,si" (never DI). */
+                    load_into_si(out, v);
+                    fprintf(out, "mov\tax,si\n");
+                } else {
+                    load_into_di(out, v);
+                    fprintf(out, "mov\tax,di\n");
+                }
             }
             break;
         }

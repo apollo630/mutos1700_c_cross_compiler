@@ -105,3 +105,21 @@ SymEntry *symtab_declare_static(SymTab *st, const char *name, int type, int labe
     st->head = e;
     return e;
 }
+
+SymEntry *symtab_declare_reg(SymTab *st, const char *name, int type, int regnum)
+{
+    if (symtab_lookup(st, name))
+        return NULL;
+
+    SymEntry *e = malloc(sizeof *e);
+    truncated_name(e->name, name);
+    e->hclass = SC_REG;
+    e->type = type;
+    e->is_ptr = 0;
+    e->is_array = 0;
+    e->offset = regnum; /* NOT a stack offset - see c0_sym.h's comment */
+
+    e->next = st->head;
+    st->head = e;
+    return e;
+}

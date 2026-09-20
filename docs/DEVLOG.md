@@ -2611,11 +2611,182 @@ still reject `register` (via their existing "only 'int'/'char'/'long'"
 error) exactly as before.
 
 **Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
-`make test`): 27/62 byte-exact end-to-end (up from 20 at the start of
+`make test`): 27 of 62 byte-exact end-to-end (up from 20 at the start of
 this session — 6 new `04_funcs` files plus `02_long/04_params` as a
 side effect), 0 genuine mismatches anywhere, confirmed via a full
 `make clean && make all && make test` from a clean checkout with zero
 compiler warnings under `-Wall -Wextra -Wpedantic`.
+
+### `02_long/03_retval` and `04_funcs/06_regclass` — `long` return values and real register-variable allocation: byte-level derivation (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+The prior session's two deliberately-deferred items — see "`02_long/
+03_retval.c` and `04_params.c` were re-checked..." above and "`06_regclass.c`
+deliberately not attempted" just above this entry — are both implemented
+this session, closing out `02_long` (4/4) and `04_funcs` (7/7) completely.
+Both were derived the same way this whole milestone always has: `od -A d -t
+x1z` (extended with `dump_temp.py`, which needed a new opcode entry for
+`06_regclass`'s `RNAME` before it could decode past it) on the `.1.golden`,
+cross-checked against the matching `.s.golden` text and, where the real
+compiler's behavior turned out to genuinely differ from `v7/cc`'s own
+source, against `v7/cc/c0*.c` as an algorithmic reference only (Workflow
+Guideline 3 — never assumed byte-identical without a golden to confirm it).
+
+**`02_long/03_retval.c`: `long addlong(a, b) long a, b; { return a + b; }`,
+called from `main` (`r = addlong(100000L, 5L);`) and cast back to `int`.**
+
+- **A structural gap, not a `long`-specific one.** `parse_extdef()` could
+  only parse a TYPED top-level declaration (`'int'|'char'|'long' IDENT
+  '(' ...`) as `parse_top_prototype()`'s own narrow shape — an EMPTY
+  parameter list terminated by `';'`, no body at all (exactly `04_mutrec.
+  c`'s `"int iseven();"`). `long addlong(a, b) ...` has real parameters
+  and a body, so it simply fell through to `parse_top_prototype()`'s own
+  "must be a function prototype... a global variable declaration is not
+  yet supported" error. The fix unifies `parse_extdef()`/
+  `parse_top_prototype()` into one function: both forms share identical
+  parsing through the closing `')'` of the K&R parameter-NAME list (an
+  optional type keyword, IDENT, `'('`, optional bare identifiers,
+  `')'`), and only THEN does the next token decide - `';'` (only when an
+  explicit type was given and the parameter list was empty, preserving
+  `04_mutrec.c`'s exact behavior byte-for-byte) means a prototype,
+  anything else means `cfunc()` is entered with a real `ret_type`.
+- **Return-type propagation.** Every function name is now registered with
+  its own return type (`Parser.functypes[]`, parallel to the existing
+  `funcnames[]`, via `register_func()`/a new `lookup_func_type()` - TY_INT
+  for an as-yet-undeclared forward call, K&R's own implicit-int rule).
+  `cfunc()` stashes it in a new `p->cur_ret_type` for the duration of that
+  function, consulted by `do_return_stmt()` (`OP_RFORCE`'s type argument -
+  previously always hardcoded `TY_INT`) and by `cfunc()`'s own trailing
+  `OP_RETRN`. `parse_call()` looks the callee's type up and emits
+  `OP_CALL` with it (previously always `TY_INT` too), returning
+  `ev_dynamic_typed(ret_type)` so `r = addlong(...);`'s existing
+  int-to-`long`-widening check (`rhs.type != TY_LONG` → insert `OP_ITOL`)
+  correctly does NOT fire — the call's own result is already `long`-typed.
+- **A second wire-format delta found only by a `.1` byte diff, not
+  reasoned out in advance**: the callee's own `NAME` leaf's type argument
+  is `ret_type | 020` (`020` being the same FUNC-degree bit `TY_FUNC_INT`
+  already uses for `TY_INT`), not a hardcoded `TY_FUNC_INT` - confirmed via
+  `03_retval.1.golden`'s `_addlong` callee using type `22` (`TY_LONG(6) |
+  020(16)`), where the first implementation (matching every other
+  confirmed call site) still emitted `16`. `c1_gen.c`'s `OP_NAME`
+  `SC_EXTERN` handler was widened symmetrically (`type == TY_FUNC_INT ||
+  type == (TY_LONG | 020)`).
+- **Codegen (`c1_gen.c`)**: `OP_CALL`/`OP_RFORCE` gained `TY_LONG`
+  branches. A `long`-returning call's result comes back in `DX:AX` (sect.
+  1.5's ordinary convention) and is moved into the `DI(high):SI(low)`
+  convention every other `long`-value producer here uses - confirmed via
+  `"call _addlong / add sp,*8. / mov di,dx / mov si,ax"` (`gen_call()`
+  gained an `is_long_ret` parameter for this). `OP_RFORCE`'s `TY_LONG`
+  case does the reverse: `materialize_long()` then `"mov ax,si / mov
+  dx,di"` - confirmed via `"return a + b;"`'s exact rendering. `OP_RETRN`
+  itself needed NO change - its `"|RTYP n"` comment was already a generic
+  passthrough of whatever type value it's given, never hardcoded.
+- **A THIRD gap, again only found by a byte diff after the above was
+  already working**: `gen_call()`'s existing `VK_LCON` (a `long` constant
+  call argument) handling - confirmed in an earlier session against
+  `02_long/04_params.c`'s `"myseek(3, 90000L, 1)"` - always direct-split
+  the constant into two words. But `addlong`'s own `5L` argument (an
+  int-range value merely carrying an `L` suffix, not a genuinely 32-bit
+  one) instead renders as `"mov ax,*5. / cwd / push ax / push dx"` - the
+  SAME CWD sign-extension idiom `materialize_long()` already uses for an
+  assignment target, applied here for the first time to a call argument.
+  The prior session's implementation only had the direct-split shape
+  because no earlier golden's `long` constant argument happened to be
+  int-range - `90000L` (hi=1, lo=24464) IS genuinely 32-bit, so the two
+  shapes were indistinguishable until now. Fixed by giving `gen_call()`
+  the same `hi == (lo < 0 ? -1 : 0)` branch `materialize_long()` already
+  has. Both shapes still push low-word-then-high-word overall (sect. 1.6).
+
+**`04_funcs/06_regclass.c`: `register int i;` as a `for`-loop induction
+variable.** Contrary to the source file's own comment, the real compiler
+does not ignore `register` - `i` lives in `di` for the function's entire
+body, no stack slot at all.
+
+- **Allocation (`c0_parser.c`)**: a new `p->regvar` (v7/cc's own global of
+  the same name), reset to `MCC_INIT_REGVAR`(4) at the start of each
+  `cfunc()`. A new `try_claim_register()` mirrors `v7/cc/c03.c`'s
+  `goodreg()` exactly - `if (regvar < 3) return -1; return --regvar;` -
+  the SAME threshold check, just with MUTOS's smaller `MCC_INIT_REGVAR=4`
+  (2 claimable slots: `di`/`si`) standing in for v7's own larger PDP-11
+  register set. `register` on anything but a plain (non-pointer,
+  non-array) `int` declarator, or once `regvar<3`, silently falls back to
+  an ordinary `AUTO` local - exactly v7's own `goodreg()`-fails-so-
+  `skw=AUTO` fallback (not a guess - a direct algorithmic port), and
+  exactly what the source file's own comment describes as acceptable.
+- **Wire-format surprise**: `SETREG(newregvar)` is emitted IMMEDIATELY
+  BEFORE its own claimed variable's `RNAME(name, newregvar)` - confirmed
+  via `06_regclass.1.golden`'s exact byte order (`SETREG 3` then `RNAME
+  "_i" 3`, both preceding `ANAME "_sum" -6`). This is NOT what a literal
+  reading of `v7/cc/c02.c`'s `blockhead()` suggests (`declist(0)` - which
+  calls `prste()`, emitting each variable's own `ANAME`/`RNAME`/`SNAME`,
+  per declared name - runs to completion BEFORE `blockhead()`'s own
+  trailing `"if (r!=regvar) outcode(SETREG,regvar);"` check), so this is a
+  genuine, confirmed MUTOS implementation-order delta from what v7's
+  source structure would imply, not just a transcription of it.
+- **The end-of-function restore**: `cfunc()` now emits `SETREG
+  (MCC_INIT_REGVAR)` right before the final `LABEL`/`RETRN` if `p->regvar`
+  changed during the body - mirrors `v7/cc`'s `statement()` LBRACE-
+  block-exit restore (`"if (sreg!=regvar) outcode(SETREG,sreg);
+  regvar=sreg;"` - the function's own top-level compound statement is
+  itself exactly such a block) - confirmed via the golden's trailing
+  `"SETREG 4"`.
+- **`mutos_c1`'s `|NREG n` comment, previously always silent** (no
+  grammar coverage had ever produced a changing `regvar` before this
+  session): a function's FIRST `SETREG` renders nothing; every SUBSEQUENT
+  one renders `"|NREG %d\n"` with `n = regvar - 1` - confirmed against
+  BOTH the golden's `"|NREG 2"` (the claim, regvar=3) and its `"|NREG 3"`
+  (the restore, regvar=4) - the restore's raw value is numerically
+  IDENTICAL to the silent initial `SETREG`'s, so only POSITION (first-in-
+  function or not), never the value itself, can be what distinguishes the
+  two - confirmed by the restore case alone, which would have been
+  wrongly silent under a naive "skip when value == MCC_INIT_REGVAR" rule.
+- **Codegen (`c1_gen.c`)**: `OP_NAME`'s new `SC_REG` case pushes
+  `val_reg(<physical register>)` (a new `regvar_name()`: slot 3→`"di"`
+  confirmed, 2→`"si"` extrapolated from the same algorithm but not itself
+  golden-confirmed, anything else `gen_fatal`s). Because `di`/`si` are
+  already this codebase's generic "working registers" for any
+  intermediate value, most existing codegen worked completely unchanged
+  once fed a `VK_REG("di")` - comparisons, `CBRANCH`, `ASSIGN`'s rhs
+  materialization, all for free. Four genuinely new shapes did surface:
+  1. `i + 1` → plain `"inc di"` - the pre-existing `"+1"→INC` optimization
+     applies for free (`load_into_di()` is already a no-op for a value
+     already in `di`).
+  2. `sum = sum + i` → `"mov si,*-6.(bp) / add si,di"`, NOT the usual
+     `"mov di,<lhs> / add di,<rhs>"` - when the RIGHT operand is already
+     `di` (a live register variable), loading the LEFT operand into `di`
+     as usual would clobber it before it's read, so the left goes into
+     `si` instead.
+  3. `i = i + 1` → the `ASSIGN` emits NO instruction at all - `"inc di"`
+     has no trailing `"mov di,di"` - because the `+1` already wrote the
+     new value directly into `i`'s own storage; `OP_ASSIGN` now elides its
+     `mov` whenever lhs and rhs resolve to the identical register.
+  4. `return sum;` (an ordinary `AUTO` local, entirely unrelated to `i`)
+     → `"mov si,*-6.(bp) / mov ax,si"`, NOT the DI-then-AX shape every
+     other `RFORCE` in this corpus uses - the most far-reaching finding:
+     once a register variable occupies `di`, `di` becomes unavailable as
+     the GENERIC scratch register for the REST of the function, not just
+     at the register variable's own use sites. A new `GenState.
+     di_reserved` flag (set by `OP_RNAME` when it claims `di`, cleared at
+     each `OP_SAVE`) drives a new `load_into_si()` fallback, applied ONLY
+     to `OP_RFORCE`'s default path - the one site this golden confirms
+     needs it. Every other "go through DI" site (`OP_TIMES`'s `IMUL`,
+     etc.) is left unchanged, since none is exercised with a live
+     register variable by any golden yet - a live register variable
+     interacting with one of THOSE sites remains unconfirmed and would
+     currently render silently-plausible-looking but unverified output,
+     which is exactly the risk this project's "gen_fatal rather than
+     guess" rule exists to avoid; it is flagged here rather than patched
+     speculatively.
+- All of the above is deliberately scoped to the single confirmed shape
+  (one `int` register variable, physical register `di`) - a second live
+  register variable, a `register` value of any other eligible type, or
+  any codegen combining two simultaneously-live register variables at
+  once is left as an explicit `gen_fatal` rather than extrapolated.
+
+**Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
+`make test`): 29/62 byte-exact end-to-end (up from 27), 0 genuine
+mismatches anywhere, confirmed via a full `make clean && make all &&
+make test` from a clean checkout with zero compiler warnings under
+`-Wall -Wextra -Wpedantic`.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
