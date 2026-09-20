@@ -133,6 +133,23 @@ OPCODES = {
                                                  # LABEL NUMBER, not a
                                                  # bp-relative offset (see
                                                  # mutos_c1's own VK_STATIC)
+    216: ("RNAME", [S("name"), N("regvar")]),   # declares `name` as a
+                                                 # 'register'-class local -
+                                                 # same "BSN" shape as ANAME/
+                                                 # SNAME, but `regvar` is the
+                                                 # register-allocator's own
+                                                 # slot number (the SETREG
+                                                 # value in effect right
+                                                 # after this variable was
+                                                 # claimed - see
+                                                 # 04_funcs/06_regclass.
+                                                 # 1.golden), not a
+                                                 # bp-relative offset -
+                                                 # mutos_c1 maps it to a
+                                                 # physical register name
+                                                 # (di/si) for every later
+                                                 # NAME reference too (hclass
+                                                 # SC_REG=14).
 
     # -- expression-tree leaves/operators (treeout()) --
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name

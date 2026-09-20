@@ -11,14 +11,16 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 27/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 29/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
-`07_ternary.c` and `08_castsize.c`, plus `02_long/01_addsub.c`,
-`02_muldiv.c` and `04_params.c`, plus all 7 of `03_ctrlflow`, plus 6 of 7
+`07_ternary.c` and `08_castsize.c`, plus all 4 of `02_long`:
+`01_addsub.c`, `02_muldiv.c`, `03_retval.c` and `04_params.c`, plus all 7
+of `03_ctrlflow`, plus all 7
 of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
-`04_mutrec.c`, `05_staticvar.c` and `07_funcptr.c`. See STATUS.md
+`04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`. See
+STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
@@ -594,8 +596,8 @@ than the three confirmed ones, `sizeof` on an array or a general
 expression, any `long` operand outside a bare `NAME` or a directly-
 confirmed constant shape, a `char`/`long` pointer or array, a sparse
 (non-contiguous) `switch`, block-scoped declarations,
-the `register` storage-class hint actually changing codegen, a
-`long`-returning function, a function pointer with a non-empty
+a second simultaneously-live `register` variable (or one of a type
+other than plain `int`), a function pointer with a non-empty
 parameter signature, memory-to-memory
 assignment, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
@@ -718,11 +720,80 @@ a function taking parameters, an array/struct member of function-
 pointer type, and any multi-level derived type are explicit "not yet
 supported".
 
-`06_regclass.c`'s `register` storage-class hint is deliberately **not**
-attempted - real register-variable allocation (an actual CPU register
-persisting across statements, distinct from this file's existing
-DI/AX/etc. per-instruction working-register usage) is a substantial,
-separate feature; `register` isn't even parsed yet.
+**`long`-returning functions (confirmed via `02_long/03_retval`).** A
+function definition may now carry an explicit `'int'|'char'|'long'`
+return-type prefix (`long addlong(a, b) long a, b; { ... }`) - previously
+only an EMPTY-parameter-list, body-less top-level declaration
+(`int iseven();`) could follow a type keyword at all;
+`parse_extdef()`/`parse_top_prototype()` were unified into one function so
+a typed declaration with a real parameter list and body now flows into
+`cfunc()` like an implicit-`int` definition, just carrying its own
+`ret_type` (`04_mutrec.c`'s prototype-only path is unchanged, still
+requiring an explicit type, empty parens, and a trailing `;` with no
+body). Every function's return type is tracked in a new `functypes[]`
+array parallel to `funcnames[]` (`register_func()`/a new
+`lookup_func_type()`), driving `OP_CALL`'s type argument at each call
+site (previously always hardcoded `TY_INT`) and, via a new
+`p->cur_ret_type` set once per `cfunc()`, `OP_RFORCE`'s/`OP_RETRN`'s type
+argument too. A genuinely separate wire-format delta: the callee's own
+`NAME` leaf's type is `ret_type | 020` (the same FUNC-degree bit
+`TY_FUNC_INT` already uses for `TY_INT`), not always `TY_FUNC_INT` -
+confirmed against `03_retval.1.golden`'s `_addlong` callee using type 22
+(`TY_LONG|020`). Codegen (`c1_gen.c`): a `long`-returning call's result
+comes back in `DX:AX` and is moved into the `DI(high):SI(low)` convention
+(`gen_call()`'s new `is_long_ret` parameter); `OP_RFORCE`'s new `TY_LONG`
+case does the reverse move via `materialize_long()`. `OP_RETRN` itself
+needed no change - its `|RTYP n` rendering was already generic. One more
+gap this surfaced: `gen_call()`'s `VK_LCON` (a `long` constant call
+argument) needed the SAME two-shape split `materialize_long()` already
+has for an assignment target - a genuinely 32-bit value still
+direct-splits (`04_params.c`'s already-confirmed `90000L` shape), but an
+int-range value merely carrying an `L` suffix (`addlong`'s own `5L`
+argument) instead uses the CWD sign-extension idiom.
+
+**`06_regclass.c`'s `register` storage-class hint actually changing codegen
+(confirmed).** Contrary to the source file's own comment ("a K&R compiler
+is free to ignore it"), the real compiler does NOT ignore `register` - a
+`register int i;` local is allocated a real physical register (`di`) for
+the function's entire body, with no stack slot at all. `parse_decl()` now
+accepts a leading `'register'`; for a plain (non-pointer, non-array) `int`
+declarator, a new `try_claim_register()` mirrors `v7/cc/c03.c`'s
+`goodreg()` exactly (`if (regvar < 3) return -1; return --regvar;`), using
+a new `p->regvar` (reset to `MCC_INIT_REGVAR`=4 per function) - MUTOS has
+exactly 2 claimable "working" registers (`di`/`si`) vs. v7's larger PDP-11
+set, so slot 3→`di` (confirmed) and slot 2→`si` (the structurally next
+slot this same algorithm hands out, not itself golden-confirmed). A
+claimed variable is declared `hclass SC_REG` (`c0_sym.c`'s new
+`symtab_declare_reg()` - `offset` is the register slot number, not a stack
+offset) and emits `SETREG(newregvar)` *immediately before* its own new
+`RNAME`(216, "BSN"-shaped like `ANAME`/`SNAME`) opcode - confirmed against
+`06_regclass.1.golden`'s exact byte order. `register` on anything else
+(a pointer/array/`char`/`long` declarator, or once no slots remain)
+silently falls back to an ordinary `AUTO` local, exactly v7's own
+`goodreg()`-fails-so-`skw=AUTO` fallback. `cfunc()` emits a RESTORE
+`SETREG(MCC_INIT_REGVAR)` right before the final `LABEL`/`RETRN` if
+`p->regvar` changed during the body (mirrors `v7/cc`'s `statement()`
+LBRACE-block-exit restore). `c1_gen.c`'s `|NREG n` comment (previously
+always silent) now renders `n = regvar - 1` on every SETREG *after* a
+function's first (position, not value, is what distinguishes the two -
+the end-of-function restore's raw value is numerically identical to the
+silent initial one). `OP_NAME`'s new `SC_REG` case pushes
+`val_reg(<physical register>)` - since `di`/`si` are already this
+codebase's generic "working registers", most existing codegen worked
+unchanged; genuinely new shapes: `i + 1` → plain `inc di` (the existing
+`"+1"→INC` optimization applies for free); `sum = sum + i` loads the
+*other* operand into `si` instead of `di` when the right operand is
+already the live register variable (loading the left into `di` as usual
+would clobber it); `i = i + 1`'s `ASSIGN` emits no instruction at all when
+lhs and rhs resolve to the same register (the `+1` already wrote the new
+value in place); and, more far-reaching, `di` becomes unavailable as the
+GENERIC scratch register for the rest of the function once claimed - a new
+`GenState.di_reserved` flag drives a `load_into_si()` fallback in
+`OP_RFORCE`'s default path specifically (confirmed via `return sum;`
+rendering through `si`, not `di`) - every other "go through DI" site is
+left unchanged, since none is exercised with a live register variable by
+any golden yet. See `docs/DEVLOG.md`'s Milestone 4 section for the full
+byte-level derivation.
 
 ## `SETSTK` / local-frame handling
 
@@ -770,7 +841,9 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    return-only loop; see "Current scope" above for the full
    derivation.
 2. **`02_long` arithmetic, function parameters/calls (`04_funcs`),
-   local `static` variables, and function pointers are now done.**
+   local `static` variables, function pointers, `long`-returning
+   functions, and real `register`-variable allocation are now ALL done -
+   `02_long` (4/4) and `04_funcs` (7/7) are both fully covered.**
    `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem` runtime helper calls -
    see `docs/MUTOS_C_ABI.md` sect. 1.8, though the real confirmed calling
    shape turned out simpler than that section's own prose - see "Current
@@ -779,15 +852,12 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    in an earlier session (`long` *locals*, casts, and constants already
    existed, from `08_castsize` - see above); K&R-style parameters,
    direct/indirect calls, local `static` variables, and function
-   pointers (`04_funcs` - see "Current scope" above for the full
-   derivation) are done this session, which also unblocked `02_long/
-   04_params.c` (mixed int/long parameters) as a side effect. Still open:
-   `02_long/03_retval.c` (a `long`-returning function's `DX:AX`
-   return-value convention - not blocked on anything `long`-specific
-   anymore, just not yet implemented) and `04_funcs/06_regclass.c` (the
-   `register` storage-class hint actually changing codegen - real
-   register-variable allocation, a substantial separate feature; parsing
-   `register` at all is not yet implemented).
+   pointers (`04_funcs`) were done in a later session; `02_long/
+   03_retval.c` (a `long`-returning function's `DX:AX` return-value
+   convention) and `04_funcs/06_regclass.c` (real `register`-variable
+   allocation) are done this session - see "Current scope" above for
+   the full derivation of all of it, and `docs/DEVLOG.md`'s Milestone 4
+   section for the byte-level detail behind the last two.
 3. **`05_arrptr`/`06_struct`**: array subscripting and multi-level
    pointers/multi-dimensional arrays (single-degree pointers and
    single-dimension arrays already exist, from `05_incdec` - see above),

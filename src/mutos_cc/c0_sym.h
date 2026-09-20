@@ -112,6 +112,19 @@ SymEntry *symtab_declare_param(SymTab *st, const char *name, int type, int size)
  */
 SymEntry *symtab_declare_static(SymTab *st, const char *name, int type, int label);
 
+/*
+ * Declares a new 'register'-class local variable (hclass SC_REG - a
+ * "register int i;" inside a function body whose own register
+ * allocation succeeded - see c0_parser.c's try_claim_register()).
+ * Like symtab_declare_static() above, `offset` is NOT a bp-relative
+ * stack offset - it is the register-allocator's own slot number
+ * (v7/cc's `regvar`, right after this variable claimed it), which
+ * c1_gen.c maps to a physical register name (di/si) for every later
+ * reference too. Same redeclaration behavior as the other
+ * symtab_declare_*() functions above.
+ */
+SymEntry *symtab_declare_reg(SymTab *st, const char *name, int type, int regnum);
+
 /* Returns NULL if `name` (truncated to MCC_NCPS chars) is not
  * currently declared. */
 SymEntry *symtab_lookup(SymTab *st, const char *name);

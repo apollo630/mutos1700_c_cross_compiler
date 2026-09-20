@@ -219,7 +219,22 @@ typedef struct {
     int    ncases;
     char   funcnames[MCC_MAXFUNCS][LEX_IDENT_MAX]; /* see MCC_MAXFUNCS's
                                                       * own comment above. */
+    int    functypes[MCC_MAXFUNCS]; /* parallel to funcnames[] - each
+                      * function's own return type (TY_INT/TY_CHAR/
+                      * TY_LONG), as declared at its first prototype or
+                      * definition - see register_func()/
+                      * lookup_func_type(). */
     int    nfuncnames;
+    int    cur_ret_type; /* the CURRENT function's own declared return
+                      * type - set once per cfunc(), consulted by
+                      * do_return_stmt() (OP_RFORCE's type argument,
+                      * previously hardcoded TY_INT - see
+                      * 02_long/03_retval.c). */
+    int    regvar;  /* v7/cc's global `regvar`: how many more
+                      * 'register'-class local slots remain claimable
+                      * in the CURRENT function - reset to
+                      * MCC_INIT_REGVAR at the start of each cfunc().
+                      * See try_claim_register()/04_funcs/06_regclass.c. */
 } Parser;
 
 /* One pointer-to-int degree, matching mutos_cc.h's XTYPE bit layout
@@ -494,11 +509,14 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
  * error) if already registered - a function's own definition and an
  * earlier prototype for it both call this, and registering twice is
  * harmless. */
-static void register_func(Parser *p, const char *name)
+static void register_func(Parser *p, const char *name, int type)
 {
     for (int i = 0; i < p->nfuncnames; i++)
         if (strncmp(p->funcnames[i], name, LEX_IDENT_MAX) == 0)
-            return;
+            return; /* already registered - keep its original type;
+                      * no golden exercises a conflicting re-
+                      * declaration, matching v7's own "first mention
+                      * wins" behavior. */
     if (p->nfuncnames >= MCC_MAXFUNCS) {
         c0_error_at(p->cur.line,
             "too many distinct function names (internal limit %d)",
@@ -506,6 +524,7 @@ static void register_func(Parser *p, const char *name)
         return;
     }
     snprintf(p->funcnames[p->nfuncnames], LEX_IDENT_MAX, "%s", name);
+    p->functypes[p->nfuncnames] = type;
     p->nfuncnames++;
 }
 
@@ -515,6 +534,21 @@ static int is_known_func(Parser *p, const char *name)
         if (strncmp(p->funcnames[i], name, LEX_IDENT_MAX) == 0)
             return 1;
     return 0;
+}
+
+/* Returns a previously-register_func()'d function's own return type,
+ * or TY_INT (K&R's implicit-int default) for a name not yet seen -
+ * a forward call to a function defined later in the file, or a
+ * genuinely undeclared one. Consulted by parse_call() so a call to a
+ * 'long'-returning function (02_long/03_retval.c's "addlong") emits
+ * OP_CALL with the right type instead of the previous hardcoded
+ * TY_INT. */
+static int lookup_func_type(Parser *p, const char *name)
+{
+    for (int i = 0; i < p->nfuncnames; i++)
+        if (strncmp(p->funcnames[i], name, LEX_IDENT_MAX) == 0)
+            return p->functypes[i];
+    return TY_INT;
 }
 
 /*
@@ -529,7 +563,7 @@ static int is_known_func(Parser *p, const char *name)
  * from the first argument (if any) through the closing ')' and the
  * trailing CALL opcode itself.
  */
-static void parse_call_args_and_emit(Parser *p, FILE *t1)
+static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
 {
     if (p->cur.kind == T_RPAREN) {
         outcode(t1, "B", OP_NULLOP);
@@ -544,7 +578,7 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1)
         }
     }
     expect(p, T_RPAREN, "')'");
-    outcode(t1, "BN", OP_CALL, TY_INT);
+    outcode(t1, "BN", OP_CALL, ret_type);
 }
 
 static ExprVal parse_call(Parser *p, FILE *t1)
@@ -555,10 +589,19 @@ static ExprVal parse_call(Parser *p, FILE *t1)
     advance(p); /* consume IDENT */
     advance(p); /* consume '(' */
 
-    outcode(t1, "BNNS", OP_NAME, SC_EXTERN, TY_FUNC_INT, name);
+    int ret_type = lookup_func_type(p, name);
 
-    parse_call_args_and_emit(p, t1);
-    return ev_dynamic();
+    /* The callee's own NAME leaf carries "function returning
+     * ret_type" (TY_FUNC_INT's own '| 020' FUNC-degree bit, generalized
+     * to any base return type - not just TY_INT) - confirmed against
+     * 02_long/03_retval.1.golden's "_addlong" callee NAME using type
+     * 22 (TY_LONG(6) | 020(16)), vs. every other confirmed callee
+     * (always int-returning) using TY_FUNC_INT(=TY_INT|020=16) as
+     * before. */
+    outcode(t1, "BNNS", OP_NAME, SC_EXTERN, ret_type | 020, name);
+
+    parse_call_args_and_emit(p, t1, ret_type);
+    return ev_dynamic_typed(ret_type);
 }
 
 /*
@@ -611,7 +654,11 @@ static ExprVal parse_indirect_call(Parser *p, FILE *t1)
 
     if (!expect(p, T_LPAREN, "'('"))
         return ev_dynamic();
-    parse_call_args_and_emit(p, t1);
+    parse_call_args_and_emit(p, t1, TY_INT); /* only an int-returning
+                                               * function pointer is
+                                               * supported so far - see
+                                               * this function's own
+                                               * comment above. */
     return ev_dynamic();
 }
 
@@ -1309,9 +1356,44 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * slot size, even for a byte-sized value (see OP_ITOC's/OP_CTOL's
  * "movb" handling in c1_gen.c for how the 1-byte VALUE is actually
  * read/written within that 2-byte slot).
+ *
+ * An optional leading 'register' (04_funcs/06_regclass.c) is handled
+ * for the plain (non-pointer, non-array) 'int' declarator shape only
+ * - see try_claim_register()'s own comment for the allocation
+ * algorithm (mirrors v7/cc/c03.c's goodreg() exactly, just with
+ * MCC_INIT_REGVAR's smaller slot count) and c1_gen.c's OP_NAME/
+ * OP_RNAME handling for how a claimed register variable is rendered.
+ * 'register' on a pointer/array declarator, on a 'char'/'long'
+ * declarator, or once no more register slots remain, silently falls
+ * back to an ordinary AUTO local - exactly matching v7's own
+ * goodreg()-fails-so-skw=AUTO fallback, and 06_regclass.c's own
+ * comment ("a K&R compiler is free to ignore [register]").
  */
+static int try_claim_register(Parser *p)
+{
+    /* v7/cc/c03.c's goodreg(): fails once fewer than 3 slots remain
+     * (MUTOS has exactly 2 claimable "working" registers - di/si -
+     * unlike v7's own larger PDP-11 register set; see
+     * MCC_INIT_REGVAR's own comment in mutos_cc.h). regvar's own
+     * numbering IS the slot's identity, decremented once per
+     * successful claim and never reused within a function - see
+     * c1_gen.c's regvar-to-physical-register mapping (confirmed only
+     * for slot 3 = di, by 06_regclass.1.golden/.s.golden; slot 2 = si
+     * is the structurally next slot this same algorithm would hand
+     * out, extrapolated but not itself golden-confirmed). */
+    if (p->regvar < 3)
+        return -1;
+    return --p->regvar;
+}
+
 static void parse_decl(Parser *p, FILE *t1)
 {
+    int is_register = 0;
+    if (p->cur.kind == T_KW_REGISTER) {
+        is_register = 1;
+        advance(p); /* consume 'register' */
+    }
+
     int symtype, slotsize;
     if (p->cur.kind == T_KW_INT) {
         symtype = TY_INT;
@@ -1441,13 +1523,38 @@ static void parse_decl(Parser *p, FILE *t1)
         int size = is_array ? (int)(arraylen * MCC_SZINT) : MCC_SZINT;
         int decltype = is_ptr ? TY_PTR_INT : TY_INT;
 
-        SymEntry *sym = symtab_declare_auto(&p->syms, name, decltype, size);
-        if (!sym) {
-            c0_error_at(line, "'%s' redeclared", name);
+        /* 'register' is only attempted for a plain (non-array)
+         * declarator - see this function's own comment above; a
+         * pointer degree is left alone here too (goodreg() itself
+         * would accept it, but no golden exercises "register int
+         * *p;", so it takes the ordinary AUTO path rather than
+         * guessing the codegen a real register-resident pointer would
+         * need). */
+        int regnum = (is_register && !is_array && !is_ptr)
+                   ? try_claim_register(p) : -1;
+
+        if (regnum >= 0) {
+            SymEntry *sym = symtab_declare_reg(&p->syms, name, decltype, regnum);
+            if (!sym) {
+                c0_error_at(line, "'%s' redeclared", name);
+            } else {
+                /* Confirmed against 06_regclass.1.golden: the new
+                 * regvar value is announced via SETREG immediately
+                 * before THIS variable's own RNAME (not batched at
+                 * the end of all declarations) - see cfunc()'s own
+                 * comment for the matching end-of-function restore. */
+                outcode(t1, "BN", OP_SETREG, regnum);
+                outcode(t1, "BSN", OP_RNAME, sym->name, regnum);
+            }
         } else {
-            sym->is_ptr = is_ptr;
-            sym->is_array = is_array;
-            outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
+            SymEntry *sym = symtab_declare_auto(&p->syms, name, decltype, size);
+            if (!sym) {
+                c0_error_at(line, "'%s' redeclared", name);
+            } else {
+                sym->is_ptr = is_ptr;
+                sym->is_array = is_array;
+                outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
+            }
         }
 
         if (p->cur.kind == T_COMMA) {
@@ -1544,9 +1651,11 @@ static void parse_static_decl(Parser *p, FILE *t1)
  * just branches to the epilogue; "return <expr>;" additionally emits
  * the expression (constant-folded where possible, a real NAME/
  * operator tree otherwise - see the ExprVal comment above) wrapped
- * in RFORCE (convert to the function's return type - always TY_INT
- * in this scope) and EXPR (statement wrapper carrying the source
- * line), exactly matching the confirmed golden byte sequence.
+ * in RFORCE (convert to the function's own declared return type -
+ * p->cur_ret_type, set once per cfunc() - previously always
+ * hardcoded TY_INT before 02_long/03_retval.c's 'long'-returning
+ * function) and EXPR (statement wrapper carrying the source line),
+ * exactly matching the confirmed golden byte sequence.
  */
 static void do_return_stmt(Parser *p, FILE *t1, int retlab)
 {
@@ -1568,7 +1677,7 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, v);
 
-    outcode(t1, "BN", OP_RFORCE, TY_INT);
+    outcode(t1, "BN", OP_RFORCE, p->cur_ret_type);
     outcode(t1, "BN", OP_EXPR, stmt_line);
     branch_op(t1, retlab);
 }
@@ -2313,16 +2422,18 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
 
     /* Declarations must precede statements within a block, matching
      * K&R block structure - 'int'/'char'/'long' declarations (and
-     * 'static int'/'char'/'long' - see parse_static_decl() above) are
-     * recognized as such right now, so the loop condition doubles as
-     * "have we reached the first statement yet". A nested compound-
+     * 'static int'/'char'/'long' - see parse_static_decl() above, and
+     * 'register int'/'char'/'long' - see parse_decl()'s own comment)
+     * are recognized as such right now, so the loop condition doubles
+     * as "have we reached the first statement yet". A nested compound-
      * stmt (a loop/if body written as "{ ... }") re-enters here too;
      * none of the current corpus's nested blocks declare their own
      * locals, so this decl-loop simply finds none and falls straight
      * through - a block-scoped declaration is not yet supported (see
      * src/mutos_cc/README.md). */
     while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
-           p->cur.kind == T_KW_LONG || p->cur.kind == T_KW_STATIC) {
+           p->cur.kind == T_KW_LONG || p->cur.kind == T_KW_STATIC ||
+           p->cur.kind == T_KW_REGISTER) {
         if (p->cur.kind == T_KW_STATIC)
             parse_static_decl(p, t1);
         else
@@ -2489,22 +2600,33 @@ static void parse_param_decls(Parser *p, FILE *t1,
  * cfunc() - matches v7/cc/c02.c's cfunc() shape, with the MUTOS-
  * specific deltas documented in mutos_cc.h applied (extra EVEN,
  * STAUTO=-4, initial regvar=4, RETRN's extra type argument).
+ * `ret_type` is this function's own declared return type (TY_INT for
+ * every plain "name(...) { ... }" definition - K&R's implicit-int
+ * default - or whatever parse_extdef() parsed off an explicit
+ * 'int'/'char'/'long' prefix, e.g. 02_long/03_retval.c's "long
+ * addlong(...)").
  */
 static void cfunc(Parser *p, const char *name, FILE *t1,
-                   char param_names[][LEX_IDENT_MAX], int nparams)
+                   char param_names[][LEX_IDENT_MAX], int nparams,
+                   int ret_type)
 {
     int sloc = p->isn;
     p->isn += 2;
 
     outcode(t1, "BBBS", OP_PROG, OP_EVEN, OP_RLABEL, name);
 
-    int regvar = MCC_INIT_REGVAR; /* no register-class parameters/locals
-                                    * are supported yet, so this never
-                                    * changes before SETREG is emitted -
-                                    * see README.md. */
+    p->regvar = MCC_INIT_REGVAR; /* v7/cc's global `regvar` - how many
+                                   * more 'register'-class local slots
+                                   * remain claimable in this function;
+                                   * only decremented by
+                                   * try_claim_register(), called from
+                                   * parse_decl() while parsing the
+                                   * body's own local declarations
+                                   * below - see 04_funcs/06_regclass.c. */
+    p->cur_ret_type = ret_type;
 
     outcode(t1, "B", OP_SAVE);
-    outcode(t1, "BN", OP_SETREG, regvar);
+    outcode(t1, "BN", OP_SETREG, p->regvar);
 
     /* Parameter ANAMEs are emitted here - between SETREG and the
      * BRANCH/LABEL pair that brackets the body - NOT after LABEL
@@ -2532,7 +2654,19 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
 
     parse_compound_stmt(p, t1, retlab);
 
-    outcode(t1, "BNBN", OP_LABEL, retlab, OP_RETRN, TY_INT);
+    /* Matches v7/cc/statement()'s own LBRACE-block-exit restore
+     * ("if (sreg!=regvar) outcode(SETREG,sreg); regvar=sreg;") - the
+     * function's own top-level compound statement is itself exactly
+     * such a block. Only emitted if a 'register'-class local actually
+     * changed p->regvar - confirmed against 04_funcs/06_regclass.
+     * 1.golden's trailing "SETREG 4" right before this LABEL/RETRN
+     * pair (regvar restored from 3 back to MCC_INIT_REGVAR); every
+     * function with no register-class locals leaves p->regvar
+     * unchanged, so no golden without one shows this. */
+    if (p->regvar != MCC_INIT_REGVAR)
+        outcode(t1, "BN", OP_SETREG, MCC_INIT_REGVAR);
+
+    outcode(t1, "BNBN", OP_LABEL, retlab, OP_RETRN, ret_type);
 
     label_op(t1, sloc);
     outcode(t1, "BN", OP_SETSTK, -p->syms.maxauto);
@@ -2542,79 +2676,86 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
 }
 
 /*
- * top-level function prototype: ('int'|'char'|'long') IDENT '(' ')' ';'
+ * external definition:
+ *   (('int'|'char'|'long') IDENT '(' ')' ';')                  |
+ *   (('int'|'char'|'long')? IDENT '(' (IDENT (',' IDENT)*)? ')'
+ *      ('int'|'char'|'long' IDENT (',' IDENT)* ';')* '{' ... '}')
  *
- * A K&R forward declaration (04_mutrec.c's "int iseven();", needed
- * before "isodd" calls "iseven" so real K&R source has SOME
- * declaration preceding the use). Parsed and entirely discarded -
- * confirmed against 04_mutrec.1.golden, which contains no additional
- * wire output at all for this line: every call site emits the exact
- * same NAME(SC_EXTERN, TY_FUNC_INT, name) leaf regardless of whether
- * a prototype preceded it (see parse_call()), so this declaration
- * exists purely to accept the source syntax. A global VARIABLE
- * declaration ("int x;", no following '(') or a prototype with a
- * nonempty parameter list is not yet supported - neither is
- * exercised by any golden in this grammar scope.
+ * The first form is a K&R forward-declaration PROTOTYPE (04_mutrec.c's
+ * "int iseven();", needed before "isodd" calls "iseven" so real K&R
+ * source has SOME declaration preceding the use) - parsed and
+ * entirely discarded (register_func() only), confirmed against
+ * 04_mutrec.1.golden, which contains no additional wire output at all
+ * for this line: every call site emits the exact same NAME(SC_EXTERN,
+ * TY_FUNC_INT, name) leaf regardless of whether a prototype preceded
+ * it (see parse_call()). Only an EMPTY parameter list is supported
+ * for a prototype - not exercised by any golden otherwise.
+ *
+ * The second form is an actual function DEFINITION (a body follows) -
+ * an implicit-int K&R definition ("name(params) paramdecls { ... }",
+ * this grammar's original, only-supported shape) or, since
+ * 02_long/03_retval.c, one with an explicit return-type prefix
+ * ("long addlong(a, b) long a, b; { ... }" - confirmed byte-for-byte
+ * against its own goldens). Distinguishing the two forms needs no
+ * lookahead beyond ordinary one-token-at-a-time parsing: both start
+ * identically (an optional type keyword, IDENT, '(', an optional
+ * K&R-style bare-identifier parameter-NAME list, ')'), and only once
+ * that's all been consumed does the next token decide - ';' (only
+ * when an explicit type was given and the parameter list was empty,
+ * matching the ORIGINAL parse_top_prototype()'s own restriction)
+ * means a prototype, anything else (the param-type declarations
+ * and/or the body's own '{') means a definition, so cfunc() is
+ * entered having already fully parsed the K&R parameter-NAME list
+ * either way.
  */
-static void parse_top_prototype(Parser *p, FILE *t1)
-{
-    (void)t1;
-    advance(p); /* consume 'int'/'char'/'long' */
-    if (p->cur.kind != T_IDENT) {
-        c0_error_at(p->cur.line,
-            "expected an identifier in top-level declaration");
-        return;
-    }
-    char name[LEX_IDENT_MAX];
-    strncpy(name, p->cur.ident, sizeof name - 1);
-    name[sizeof name - 1] = '\0';
-    advance(p); /* consume IDENT */
-    if (p->cur.kind != T_LPAREN) {
-        c0_error_at(p->cur.line,
-            "a top-level declaration must be a function prototype "
-            "('name();') - a global variable declaration is not yet "
-            "supported - see src/mutos_cc/README.md");
-        while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
-            advance(p);
-        if (p->cur.kind == T_SEMI)
-            advance(p);
-        return;
-    }
-    advance(p); /* consume '(' */
-    if (p->cur.kind != T_RPAREN) {
-        c0_error_at(p->cur.line,
-            "a function prototype's parameter list must be empty "
-            "('()') so far - see src/mutos_cc/README.md");
-        while (p->cur.kind != T_RPAREN && p->cur.kind != T_EOF)
-            advance(p);
-    }
-    expect(p, T_RPAREN, "')'");
-    expect(p, T_SEMI, "';'");
-    register_func(p, name);
-}
-
 static void parse_extdef(Parser *p, FILE *t1)
 {
+    int ret_type = TY_INT;
+    int has_type = 0;
     if (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
         p->cur.kind == T_KW_LONG) {
-        parse_top_prototype(p, t1);
-        return;
+        ret_type = (p->cur.kind == T_KW_INT) ? TY_INT
+                 : (p->cur.kind == T_KW_CHAR) ? TY_CHAR : TY_LONG;
+        has_type = 1;
+        advance(p); /* consume 'int'/'char'/'long' */
     }
 
     if (p->cur.kind != T_IDENT) {
-        c0_error_at(p->cur.line,
-            "external definition syntax (expected a function name - "
-            "mutos_c0's current grammar coverage only handles `name() "
-            "{ ... }` function definitions - see src/mutos_cc/README.md)");
+        if (has_type)
+            c0_error_at(p->cur.line,
+                "expected an identifier in top-level declaration");
+        else
+            c0_error_at(p->cur.line,
+                "external definition syntax (expected a function name - "
+                "mutos_c0's current grammar coverage only handles `name() "
+                "{ ... }` function definitions - see src/mutos_cc/README.md)");
         advance(p);
         return;
     }
 
     Token name_tok = p->cur;
-    advance(p);
+    advance(p); /* consume IDENT */
 
-    if (!expect(p, T_LPAREN, "'('"))
+    if (p->cur.kind != T_LPAREN) {
+        if (has_type) {
+            /* Matches the original parse_top_prototype()'s own
+             * diagnostic exactly - a typed top-level declaration with
+             * no '(' at all (e.g. "int x;") is a global VARIABLE
+             * declaration, not yet supported. */
+            c0_error_at(p->cur.line,
+                "a top-level declaration must be a function prototype "
+                "('name();') - a global variable declaration is not yet "
+                "supported - see src/mutos_cc/README.md");
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+                advance(p);
+            if (p->cur.kind == T_SEMI)
+                advance(p);
+            return;
+        }
+        expect(p, T_LPAREN, "'('");
         return;
+    }
+    advance(p); /* consume '(' */
 
     /*
      * K&R-style parameter-NAME list (bare identifiers only - types
@@ -2647,9 +2788,17 @@ static void parse_extdef(Parser *p, FILE *t1)
     if (!expect(p, T_RPAREN, "')'"))
         return;
 
+    if (has_type && nparams == 0 && p->cur.kind == T_SEMI) {
+        /* "TYPE name();" - a prototype-only declaration, no body -
+         * see this function's own comment above. */
+        advance(p); /* consume ';' */
+        register_func(p, name_tok.ident, ret_type);
+        return;
+    }
+
     outcode(t1, "BS", OP_SYMDEF, name_tok.ident);
-    register_func(p, name_tok.ident);
-    cfunc(p, name_tok.ident, t1, param_names, nparams);
+    register_func(p, name_tok.ident, ret_type);
+    cfunc(p, name_tok.ident, t1, param_names, nparams, ret_type);
 }
 
 /* ------------------------------------------------------------------ */

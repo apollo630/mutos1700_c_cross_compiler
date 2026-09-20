@@ -226,21 +226,143 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 27/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 29/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
-`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus
-`02_long/01_addsub.c`, `02_muldiv.c` and `04_params.c`, plus all 7 of
+`06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
+`02_long`: `01_addsub.c`, `02_muldiv.c`, `03_retval.c` and `04_params.c`,
+plus all 7 of
 `03_ctrlflow`: `01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
-`05_breakcont.c`, `06_switch.c` and `07_goto.c`, plus 6 of 7 of
+`05_breakcont.c`, `06_switch.c` and `07_goto.c`, plus all 7 of
 `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`, `04_mutrec.c`,
-`05_staticvar.c` and `07_funcptr.c`. ABI/
+`05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `02_long/03_retval` + `04_funcs/06_regclass`)
+
+The two items the prior session's "Next up" left open — a `long`-returning
+function's `DX:AX` return-value convention, and real `register`-variable
+allocation — are both now implemented, closing out `02_long` (4/4) and
+`04_funcs` (7/7) completely.
+
+**`02_long/03_retval.c` (`long addlong(a, b) long a, b; { return a + b; }`,
+called from `main` and assigned to a `long`)**: `parse_extdef()`/
+`parse_top_prototype()` were unified into one function, since the existing
+grammar could only parse a TYPED top-level declaration as an empty-parens
+prototype (`"long addlong();"`), never as an actual definition with a body -
+`04_mutrec.c`'s `"int iseven();"` prototype-only path is unchanged (still
+requires an explicit type, an empty parameter list, and a trailing `';'`
+with no body), but anything else with an explicit type prefix now flows into
+`cfunc()` exactly like an implicit-`int` definition, just carrying its own
+`ret_type`. Each function's return type is now tracked in a new
+`functypes[]` array parallel to the existing `funcnames[]` (via
+`register_func()`/a new `lookup_func_type()`), consulted by `parse_call()`
+(so a call to a `long`-returning function emits `OP_CALL` with `TY_LONG`,
+not the previously-hardcoded `TY_INT`, and the callee's own `NAME` leaf's
+type is `ret_type | 020` — confirmed via `03_retval.1.golden`'s `_addlong`
+callee using type 22, i.e. `TY_LONG(6) | 020(16)`, not `TY_FUNC_INT`'s
+16) and by `do_return_stmt()`/`cfunc()` (a new `p->cur_ret_type`, set once
+per `cfunc()`, drives `OP_RFORCE`'s and `OP_RETRN`'s type argument instead
+of the previous hardcoded `TY_INT`). `c1_gen.c`: `OP_CALL`/`OP_RFORCE` gained
+`TY_LONG` branches — a `long`-returning call's result comes back in `DX:AX`
+and is moved into the `DI(high):SI(low)` convention every other `long`-value
+producer here uses (`gen_call()`'s new `is_long_ret` parameter), and
+`OP_RFORCE`'s `TY_LONG` case does the reverse move (`materialize_long()`
+then `mov ax,si` / `mov dx,di`) — confirmed against `"return a + b;"`'s
+`"mov ax,si\nmov dx,di"`. `OP_RETRN` itself needed no change at all — its
+`"|RTYP n"` rendering was already generic over `n`. One more real gap
+surfaced along the way: `gen_call()`'s `VK_LCON` (a `long` constant call
+argument) turned out to have the SAME two-shape split `materialize_long()`
+already established for an assignment target — a genuinely 32-bit value
+still direct-splits (`02_long/04_params.c`'s already-confirmed `90000L`
+shape), but an int-range value merely carrying an `L` suffix (`addlong`'s
+own `5L` argument) instead uses the CWD sign-extension idiom (`"mov ax,*5.
+/ cwd / push ax / push dx"`) — the prior session's implementation only had
+the direct-split shape, since no earlier golden's `long` constant argument
+happened to be int-range.
+
+**`04_funcs/06_regclass.c` (`register int i;` as a `for`-loop induction
+variable)**: contrary to the source file's own comment ("a K&R compiler is
+free to ignore [`register`]"), the real MUTOS 1700 compiler does NOT ignore
+it — `i` is allocated a real physical register (`di`) for the function's
+entire body, with no stack slot at all. Reverse-engineered byte-for-byte
+from `06_regclass.1.golden`/`.s.golden` (extending `dump_temp.py` with the
+previously-unconfirmed `RNAME`(216) opcode to decode the full stream):
+- **Allocation** (`c0_parser.c`): a new `p->regvar` (v7/cc's own global of
+  the same name), reset to `MCC_INIT_REGVAR`(4) at the start of each
+  `cfunc()`. `parse_decl()` now accepts a leading `'register'` keyword; for
+  a plain (non-pointer, non-array) `int` declarator, a new
+  `try_claim_register()` mirrors `v7/cc/c03.c`'s `goodreg()` exactly (fails
+  once `regvar < 3`, else returns `--regvar`) — MUTOS has exactly 2
+  claimable "working" registers (`di`/`si`) vs. v7's larger PDP-11 set, so
+  `MCC_INIT_REGVAR=4` yields 2 available slots (3→`di`, confirmed; 2→`si`,
+  the structurally next slot this same algorithm hands out but not itself
+  golden-confirmed). `register` on a pointer/array/`char`/`long` declarator,
+  or once no slots remain, silently falls back to an ordinary `AUTO` local -
+  the same `goodreg()`-fails-so-`skw=AUTO` fallback v7 itself uses, and
+  exactly what the source comment describes. A claimed variable gets a new
+  `symtab_declare_reg()` entry (`hclass=SC_REG`, `offset=`the register slot
+  number, not a stack offset) and emits `SETREG(newregvar)` **immediately
+  before** its own `RNAME(name, newregvar)` — confirmed via
+  `06_regclass.1.golden`'s exact `SETREG 3, RNAME("_i", 3)` order (SETREG
+  strictly precedes RNAME, not batched at the end of all declarations the
+  way `v7/cc/c02.c`'s `blockhead()` reads on paper). At the end of the
+  function's own top-level compound statement, `cfunc()` now emits a
+  RESTORE `SETREG(MCC_INIT_REGVAR)` if `p->regvar` changed — mirrors
+  `v7/cc`'s `statement()` LBRACE-block-exit restore — confirmed via the
+  golden's trailing `"SETREG 4"` right before `LABEL`/`RETRN`.
+- **`mutos_c1`'s `|NREG n` comment** (previously always silent — no grammar
+  coverage had ever produced a changing `regvar`): a function's FIRST
+  `SETREG` (the unconditional one from `cfunc()`) renders nothing; every
+  SUBSEQUENT one renders `"|NREG %d\n"` with `n = regvar - 1` — confirmed
+  against BOTH the golden's `"|NREG 2"` (regvar=3, `i` claimed) and its
+  `"|NREG 3"` (regvar=4, the end-of-function restore) — the restore's own
+  value is numerically identical to the silent initial `SETREG`, so only
+  POSITION (first-in-function vs. not), never value, distinguishes the two.
+  A new `RNAME` opcode handler renders `"| name=<reg>\n"` (the actual
+  register name, no trailing `"."` — unlike `ANAME`'s `"| name=offset.\n"`).
+- **Codegen (`c1_gen.c`)**: `OP_NAME`'s new `SC_REG` case pushes
+  `val_reg(<physical-register-name>)` (a new `regvar_name()` maps slot
+  3→`"di"`/2→`"si"`, `gen_fatal`-ing on anything else) — because DI/SI are
+  already this codebase's generic "working registers" for any intermediate
+  value, most existing codegen (comparisons, `CBRANCH`, `ASSIGN`'s rhs
+  materialization) worked completely unchanged once fed a `VK_REG("di")`.
+  Three genuinely new shapes did surface: (1) `i + 1`'s `"+1"`-specific
+  `INC` optimization applies for free (`load_into_di()` is already a no-op
+  for a value already in `di`); (2) `sum = sum + i` loads the OTHER operand
+  into `SI` instead of `DI` when the right operand is already `di` (loading
+  the left into `di` as usual would clobber the live register variable
+  before it's read) — confirmed via `"mov si,*-6.(bp) / add si,di"`; (3)
+  `i = i + 1`'s `ASSIGN` emits NO instruction at all when its lhs and rhs
+  resolve to the identical register (the `+1` already wrote the new value
+  in place) — confirmed via `"inc di"` having no trailing `"mov di,di"`.
+  A fourth, more far-reaching finding: once a `register`-class local
+  occupies `DI` for the rest of the function, `DI` becomes unavailable as
+  the GENERIC scratch register elsewhere too — confirmed via `"return
+  sum;"` (an ordinary `AUTO` local, unrelated to `i`) rendering as `"mov
+  si,*-6.(bp) / mov ax,si"`, not the usual DI-then-AX shape every other
+  `RFORCE` in this corpus uses. A new `GenState.di_reserved` flag (set by
+  `OP_RNAME` when it claims `di`, cleared at each `OP_SAVE`) drives a new
+  `load_into_si()` fallback in `OP_RFORCE`'s default path — the ONLY site
+  this golden confirms needs it; every other "go through DI" site
+  (`OP_TIMES`'s `IMUL`, etc.) is left unchanged since none is exercised
+  with a live register variable by any golden yet.
+- All of this is deliberately scoped to the single confirmed shape (one
+  `int` register variable, physical register `di`): a second live register
+  variable, a `register` value of any other type, or any codegen combining
+  two simultaneously-live register variables at once remains an explicit
+  `gen_fatal("...not yet supported")` rather than a guess.
+
+**Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
+`make test`): 29/62 byte-exact end-to-end (up from 27), 0 genuine
+mismatches anywhere, confirmed via a full `make clean && make all && make
+test` from a clean checkout with zero compiler warnings under `-Wall
+-Wextra -Wpedantic`.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `04_funcs`'s `01_call` + `02_manyargs` + `03_recfact` + `04_mutrec` + `05_staticvar` + `07_funcptr`, plus `02_long/04_params`)
 
@@ -1133,15 +1255,10 @@ section; headline findings:
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
-`03_ctrlflow` are fully covered, and `04_funcs` is now done except
-`06_regclass` (see below). `02_long/01_addsub.c`/`02_muldiv.c`/
-`04_params.c` are done too (`long` `+`/`-`/`*`/`/`/`%`, an `int`→`long`
-widening conversion, a `long`-vs-constant relational comparison, and mixed
-int/long function parameters); only `03_retval.c` (a `long`-returning
-function's `DX:AX` convention) remains in `02_long` itself. Next up:
-`06_regclass.c` (real register-variable allocation — a substantial,
-separate feature, deliberately not attempted alongside the rest of
-`04_funcs` this session), `02_long/03_retval.c`, then
+`02_long`, `03_ctrlflow` and `04_funcs` are now all fully covered (the
+prior session's two open items, `02_long/03_retval.c`'s `DX:AX` `long`
+return convention and `04_funcs/06_regclass.c`'s real register-variable
+allocation, are both done this session — see above). Next up:
 `05_arrptr`/`06_struct` (array subscripting, multi-level pointers,
 structs/unions/enums — each adds real type-system work the current
 `SymEntry`/`ExprVal` model doesn't fully have yet), the `09_abiprobe`
