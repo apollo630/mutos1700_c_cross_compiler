@@ -31,13 +31,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  33/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  34/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus all 4 of `02_long`: `01_addsub`/`02_muldiv`/`03_retval`/`04_params`,
   plus all 7 of
-  `03_ctrlflow`, plus all 7 of `04_funcs`, plus 4 of `05_arrptr`'s 7:
-  `01_arrbasic`/`03_ptrbasic`/`04_ptrarreq`/`06_ptrptr`) — see
+  `03_ctrlflow`, plus all 7 of `04_funcs`, plus 5 of `05_arrptr`'s 7:
+  `01_arrbasic`/`02_array2d`/`03_ptrbasic`/`04_ptrarreq`/`06_ptrptr`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -385,7 +385,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 33/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 34/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
@@ -439,9 +439,10 @@ scope and intent, not a snapshot of what's done.
   convention and `04_funcs/06_regclass.c`'s real register-variable
   allocation - were both finished in a later session; see `STATUS.md`/
   `docs/DEVLOG.md`'s Milestone 4 section for their own full derivation,
-  not repeated in the walkthrough above). `05_arrptr` is 4 of 7 done -
-  see the file list above and `STATUS.md`/`docs/DEVLOG.md` again for that
-  derivation.**
+  not repeated in the walkthrough above). `05_arrptr` is 5 of 7 done
+  (including `02_array2d`'s 2-D arrays, whose factored address arithmetic
+  follows v7/cc/c12.c's `distrib()`) - see the file list above and
+  `STATUS.md`/`docs/DEVLOG.md` again for that derivation.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -456,10 +457,10 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: `05_arrptr`'s remaining 3 files
-  (`02_array2d.c` - 2-dimensional arrays; `05_arrofptr.c`/`07_strlibc.c` -
-  string literals, needing an entirely new data-segment emission
-  subsystem that does not exist yet), then `06_struct`
+  dependency-ordered list: `05_arrptr`'s remaining 2 files
+  (`05_arrofptr.c`/`07_strlibc.c` - string literals, needing an entirely
+  new data-segment emission subsystem that does not exist yet), then
+  `06_struct`
   (structs/unions/enums), the remaining 81..127-byte `chkstk` gap (the
   `09_abiprobe` goldens narrowed the threshold to `(80,128]`), then the
   `mutos_cc` driver itself.

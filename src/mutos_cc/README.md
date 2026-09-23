@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 33/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 34/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -20,8 +20,8 @@ Workflow Guideline 3), not copied wholesale.
 of `03_ctrlflow`, plus all 7
 of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
 `04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus
-4 of `05_arrptr`'s 7: `01_arrbasic.c`, `03_ptrbasic.c`, `04_ptrarreq.c`
-and `06_ptrptr.c`. See
+5 of `05_arrptr`'s 7: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
+`04_ptrarreq.c` and `06_ptrptr.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -177,7 +177,7 @@ extdef            := IDENT '(' ')' compound-stmt
 compound-stmt     := '{' decl* stmt* '}'
 decl              := ('int' declarator (',' declarator)*
                       | ('char'|'long') IDENT (',' IDENT)*) ';'
-declarator        := '*' IDENT | IDENT ('[' ICON ']')?
+declarator        := '*'+ IDENT | IDENT ('[' ICON ']' ('[' ICON ']')?)?
 stmt              := assign-stmt | star-assign-stmt | return-stmt
 assign-stmt       := IDENT assign-op expr ';'
 assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
@@ -281,9 +281,12 @@ register" opcode shape only accepts `CL`. A *constant* shift count
 doesn't use an immediate-count opcode at all: plain 8086 has none (it's
 an 80186-only extension - `04_shift.c`'s own header comment says this
 compiler targets plain 8086 only), so the real compiler repeats the
-single-bit-shift form N times, confirmed against `04_shift.s.golden`'s
+single-bit-shift form, confirmed against `04_shift.s.golden`'s
 `"r >> 2"` (two `sar\tdi,*1` lines) and `"a << 1"` (one `sal\tdi,*1`
-line). This is still the minimum
+line) - but only up to a count of 2: from 3 up it loads the count into
+`CX` and shifts by `CL` (`"mov cx,*3."` / `"sar di,cl"` - confirmed later
+from the real non-optimized kernel sources, see the `02_array2d`
+section below). This is still the minimum
 needed to pick a legal 8086 instruction shape (e.g. `IMUL`/`IDIV`
 cannot take an immediate operand directly, and an immediate's `*`/`#`
 size-marker choice depends on whether it fits a signed byte) without
@@ -347,8 +350,10 @@ compiles to `"sal *-6.(bp),*1"`, never an `imul` - 8086 `IMUL` cannot
 take an immediate operand directly (the same restriction `OP_TIMES`'s
 own codegen already enforces), so the real compiler substitutes a
 shift for a power-of-two constant multiply; generalized to any
-power-of-two ≥ 2 via the same N-times-repeat reasoning `LSHIFT`/
-`RSHIFT` already established (only `*2` is itself golden-confirmed).
+power-of-two up to 4 via the same repeat reasoning `LSHIFT`/`RSHIFT`
+established (only `*2` is itself golden-confirmed; `*= 8` and up would
+need a count of 3 or more, whose real shape for a memory operand is
+unknown, so it is refused).
 `/=`/`%=` need an extra step neither `+=` nor `*=` do: since `IDIV`
 can't take an immediate either, the constant is loaded into `CX`
 first (`"mov cx,*4."` before `"idiv cx"`), and - because `IDIV`'s
@@ -822,8 +827,51 @@ so a compile-time-constant-index subscript can fold away entirely and a
 bare array-decayed call argument doesn't get clobbered by a later sibling
 argument under right-to-left pushing. Full byte-level derivation, including
 the dead ends ruled out along the way, in `docs/DEVLOG.md`'s Milestone 4
-section. `02_array2d.c` (2-D arrays) and `05_arrofptr.c`/`07_strlibc.c`
-(string literals) remain open - see "Next steps" below.
+section. `05_arrofptr.c`/`07_strlibc.c` (string literals) remain open -
+see "Next steps" below.
+
+**`05_arrptr/02_array2d.c` (2-D arrays) confirmed.** `int m[N][M]` locals
+(`SymEntry.dim2` = M; three or more dimensions are refused). `m[i][j]` is
+exactly two ordinary subscript steps, the row decayed again in between:
+
+```
+NAME(m, TY_INT) AMPER(8) <i> CON(M*2) ITOP(104) PLUS(8) STAR(0)
+                AMPER(8) <j> CON(2)   ITOP(8)   PLUS(8) STAR(0)
+```
+
+The outer `ITOP`'s 104 is "pointer to array of int"
+(`ty_ptr_of(ty_ary_of(TY_INT))`); it is the only node that keeps that type
+because v7/cc's `disarray()` → `setype()` retypes the STAR/PLUS/AMPER/NAME
+chain it walks (always the left operand) down to the element level but
+never visits the `ITOP` on `PLUS`'s right - see `emit_subscript_2d()`'s
+comment and `docs/DEVLOG.md`. `c1` cancels the row's `STAR`/`AMPER` pair
+(v7/cc/c12.c `optim()`'s first rule, `&*x → x`), keeps both scaled indices
+symbolic (`VK_SCALED`/`VK_ROWADDR`) and emits the address the way
+v7/cc/c12.c's `distrib()` factors `i*R + j*E` into `(i*(R/E) + j)*E`:
+
+```
+lea di,&m / mov si,i / sal si,*1 (x log2(R/E)) / add si,j / sal si,*1 / add di,si
+```
+
+confirmed by `02_array2d.s.golden` (R/E = 4) and `10_integ/05_matmul.
+s.golden` (R/E = 2), whose all-constant subscripts (`a[0][1] = 2;`) also
+fold to a single bp-relative operand exactly like 1-D `v[0]`. Refused as
+unconfirmed: a constant index next to a runtime one (`m[0][j]`,
+`m[i][2]`), an index that is not a plain variable, a row size that is
+not a power-of-two multiple (at least 2) of the element size, and a bare
+or half-subscripted 2-D array (`m`, `m[i]`). The same file confirmed two
+further `c1` shapes, `i * 10` → `mov ax,i / mov cx,*10. / imul cx`
+(a constant multiplier goes through CX; powers of two, 0 and 1 stay
+refused - V7 strength-reduces those) and an AX-resident value plus a
+memory operand added in place (`add ax,mem`, never moved to DI first -
+`05_matmul` shows the same with the product on the right). And the real
+compiler's constant-shift threshold, from the non-optimized kernel
+sources in `tests/mutos_as/kernel_nonopt/`: a register is shifted by
+repeating the single-bit form for a count of 1 or 2 only; from 3 up it is
+`mov cx,*N.` / `sal reg,cl` (see `MCC_SHIFT_REPEAT_MAX` in `c1_gen.c`) -
+previously `c1` repeated the single-bit shift N times for any N, silently
+wrong from 3 up. `<<=`/`>>=`/`*=` on a memory operand with a count above
+2 is now refused, since no golden shows its shape.
 
 ## `SETSTK` / local-frame handling
 
@@ -864,7 +912,8 @@ real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
 1. **All of `01_expr` and `03_ctrlflow` are now done.**
    `03_rellogic` (relational/logical `< <= > >= == != && || !`),
    `04_shift` (`<< >>`, both variable-count-via-`CL` and
-   constant-count-via-repeated-single-bit-shift), `05_incdec`
+   constant-count-via-repeated-single-bit-shift - for a count of up to 2;
+   from 3 up also via `CL`), `05_incdec`
    (`++`/`--`, pointer-scaled where applicable, plus the pointer/array
    groundwork it pulled in), `06_compasgn` (all ten
    compound-assignment operators, with a genuine `*=`-by-power-of-two
@@ -904,16 +953,12 @@ real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
    allocation) are done this session - see "Current scope" above for
    the full derivation of all of it, and `docs/DEVLOG.md`'s Milestone 4
    section for the byte-level detail behind the last two.
-3. **`05_arrptr`/`06_struct`**: single-dimension array subscripting,
+3. **`05_arrptr`/`06_struct`**: array subscripting (one or two dimensions),
    multi-level pointers, general `&`/`*`, and pointer/array-parameter
-   equivalence are now done (4 of 7 files - `01_arrbasic`/`03_ptrbasic`/
-   `04_ptrarreq`/`06_ptrptr` - see "Current scope" above and
+   equivalence are now done (5 of 7 files - `01_arrbasic`/`02_array2d`/
+   `03_ptrbasic`/`04_ptrarreq`/`06_ptrptr` - see "Current scope" above and
    `docs/DEVLOG.md`'s Milestone 4 section for the full derivation).
-   Remaining: `02_array2d.c` (2-dimensional arrays - the wire shape is
-   understood, but `c1`'s actual combined-register address computation
-   for `m[i][j]` is not yet written, and one node's type value (104) is
-   only empirically pinned, not fully re-derived - see DEVLOG), and
-   `05_arrofptr.c`/`07_strlibc.c` (string literals - need an entirely new
+   Remaining: `05_arrofptr.c`/`07_strlibc.c` (string literals - need an entirely new
    data-segment/string-constant emission subsystem, `v7/cc/c00.c`'s
    `putstr()` equivalent, that does not exist at all yet). Then
    `06_struct` (structs/unions/enums - member layout, sizes beyond a flat
@@ -980,7 +1025,10 @@ src/mutos_cc/dump_temp.py tests/mutos_cc/00_smoke/*.1.golden
 For each `B`-tagged opcode it prints the byte offset, the opcode's
 name, and every `N`/`S` argument that follows it, resolving `TY_*`/
 `SC_*` constants to their names (e.g. `type=TY_LONG(6)`,
-`hclass=SC_AUTO(11)`) rather than leaving them as bare numbers, and
+`hclass=SC_AUTO(11)`) rather than leaving them as bare numbers - a
+derived type as its full chain, outermost degree first, e.g.
+`type=PTR.ARRAY.TY_INT(104)` ("pointer to array of int") or
+`type=PTR.FUNC.TY_INT(72)` - and
 handling `OP_SWIT`'s variable-length case table and `OP_NAME`'s
 `SC_EXTERN`-vs-otherwise conditional shape (a symbol name vs. a
 numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. An

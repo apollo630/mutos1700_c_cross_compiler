@@ -41,13 +41,24 @@ typedef struct SymEntry {
                                    * a single pointer-to-int degree is
                                    * supported so far (see
                                    * src/mutos_cc/README.md). */
-    int  is_array;                /* 1 iff declared "int name[N]" -
-                                    * only a single-dimension array of
-                                    * int is supported so far; an
+    int  is_array;                /* 1 iff declared "int name[N]" or
+                                    * "int name[N][M]" (see dim2) -
+                                    * arrays of int only so far; an
                                     * array is not a modifiable lvalue
                                     * (no postfix/prefix ++/--, no
                                     * direct assignment target) in
                                     * this grammar scope. */
+    int  dim2;                    /* 0 for a scalar/pointer/1-D array;
+                                    * for a 2-D array "int name[N][M]"
+                                    * (is_array also set) the INNER
+                                    * dimension M - one row is then
+                                    * M * MCC_SZINT bytes, the scale
+                                    * factor of the outer subscript
+                                    * (05_arrptr/02_array2d.c - see
+                                    * c0_parser.c's emit_subscript()).
+                                    * Arrays of three or more
+                                    * dimensions are rejected by
+                                    * parse_decl(). */
     struct SymEntry *next;
 } SymEntry;
 

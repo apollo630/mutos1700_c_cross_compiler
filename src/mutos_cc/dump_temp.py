@@ -63,21 +63,31 @@ TY_BASE_NAMES = {
 }
 
 
+TY_DEGREE_NAMES = {1: "PTR", 2: "FUNC", 3: "ARRAY"}
+
+
 def decode_type(v):
-    """Renders a TYPE field: base type in the low 3 bits, pointer
-    degree-of-reference in the bits above (mutos_cc.h's XTYPE scheme -
-    e.g. TY_PTR_INT = TY_INT | 010 = 8). Note this bit layout is not
-    fully unambiguous on its own: TY_UNION (a flat value of 8) and
-    "int, pointer degree 1" decode identically here - mutos_c0 does not
-    emit TY_UNION today, so this always resolves the more useful way
-    for its actual output, but a hypothetical future union-typed value
-    would print as a pointer instead."""
-    base = v & 7
-    degree = v >> 3
-    name = TY_BASE_NAMES.get(base, "TY_?%d" % base)
-    if degree == 0:
-        return "%s" % name
-    return "%s ptr\u00d7%d" % (name, degree)
+    """Renders a TYPE field as its full derived-type chain, outermost
+    degree first, then the base type - e.g. "PTR.TY_INT" (8),
+    "FUNC.TY_INT" (16), "PTR.PTR.TY_INT" (40), "PTR.FUNC.TY_INT" (72),
+    "PTR.ARRAY.TY_INT" (104) - read like C's own English: "pointer to
+    array of int". This is v7/cc's incref() encoding (v7/cc/c0.h): the
+    base type in the low 3 bits (TYPE), then one 2-bit degree tag per
+    level (PTR=1, FUNC=2, ARRAY=3), the OUTERMOST in bits 3-4 (XTYPE)
+    and each further one 2 bits higher - see c0_parser.c's
+    ty_incref_tag()/ty_decref(). Note this bit layout is not fully
+    unambiguous on its own: TY_UNION (a flat value of 8) and "pointer
+    to int" decode identically here - mutos_c0 does not emit TY_UNION
+    today, so this always resolves the more useful way for its actual
+    output, but a hypothetical future union-typed value would print as
+    a pointer instead."""
+    name = TY_BASE_NAMES.get(v & 7, "TY_?%d" % (v & 7))
+    tags = []
+    t = (v & 0xFFFF) >> 3
+    while t:
+        tags.append(TY_DEGREE_NAMES.get(t & 3, "?"))
+        t >>= 2
+    return ".".join(tags + [name])
 
 
 SC_NAMES = {

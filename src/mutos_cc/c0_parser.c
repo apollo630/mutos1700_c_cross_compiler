@@ -36,7 +36,8 @@
  *   comma-item        := (IDENT '=' expr) | expr
  *
  * i.e. every declared local is 'int', 'int *' (one pointer degree),
- * 'int' '[' N ']' (one array dimension), 'char', or 'long' (the
+ * 'int' '[' N ']' or 'int' '[' N ']' '[' M ']' (one or two array
+ * dimensions - see emit_subscript_2d()), 'char', or 'long' (the
  * latter two: plain IDENT declarators only, no '*'/'[' forms), with
  * no initializer; every
  * statement is a single-variable assignment (with '=' or any of the
@@ -247,7 +248,7 @@ typedef struct {
 /* "function returning int" - v7/cc/c0.h's FUNC(020) derived-type tag,
  * used only for the NAME leaf that names a CALLED function (see
  * parse_call() below) - confirmed against every 04_funcs .1.golden's
- * "NAME hclass=SC_EXTERN type=TY_INT ptr\u00d72(16)" callee reference.
+ * "NAME hclass=SC_EXTERN type=FUNC.TY_INT(16)" callee reference.
  * Unlike TY_PTR_INT (a single degree-of-reference step, v7/cc's PTR
  * tag alone), this is one FUNC step - see v7/cc/c04.c's incref()
  * (mutos_c0 does not need a general incref() implementation, since
@@ -293,6 +294,11 @@ static int ty_incref_tag(int t, int tag)
 
 static int ty_ptr_of(int t) { return ty_incref_tag(t, 010 /* PTR */); }
 
+/* One ARRAY degree (v7/cc/c0.h's ARRAY=030) - only used to derive the
+ * "pointer to array of int" type (ty_ptr_of(ty_ary_of(TY_INT)) = 104)
+ * a 2-D subscript's outer OP_ITOP carries - see emit_subscript(). */
+static int ty_ary_of(int t) { return ty_incref_tag(t, 030 /* ARRAY */); }
+
 static int ty_decref(int t)
 {
     int base = t & TY_TYPE_MASK;
@@ -337,6 +343,15 @@ static int size_of_type(int t)
 
 static void advance(Parser *p)
 {
+    /* A T_STRING token's text is malloc'd by the lexer and owned by
+     * the token (c0_lex.h). No grammar production consumes one yet
+     * (string literals are still unsupported - see src/mutos_cc/
+     * README.md), so it is released here, as the token is discarded;
+     * a future consumer takes ownership by setting p->cur.sval to
+     * NULL before advancing. Without this every string literal
+     * leaked (found by an ASan run over the corpus). */
+    free(p->cur.sval);
+    p->cur.sval = NULL;
     p->prev_line = p->cur.line; /* the line of the token we're about
                                   * to move past - see the Parser
                                   * field's own comment (needed by
@@ -480,6 +495,70 @@ static void parse_statement(Parser *p, FILE *t1, int retlab);
 static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
 
 /*
+ * The 2-D case of emit_subscript() below: "m[i][j]" on a local
+ * declared "int m[N][M];" (SymEntry.dim2 = M). Called with the first
+ * '[' already consumed; consumes "idx1 ']' '[' idx2 ']'" and emits
+ * the full two-step address computation plus the final dereference.
+ * Confirmed byte-for-byte against 05_arrptr/02_array2d.1.golden (both
+ * indices runtime) and 10_integ/05_matmul.1.golden (both indices
+ * constant, e.g. "a[0][1] = 2;"):
+ *
+ *   NAME(auto, TY_INT, m)  AMPER(8)  <idx1>  CON(M*2)  ITOP(104)
+ *   PLUS(8)  STAR(0)  AMPER(8)  <idx2>  CON(2)  ITOP(8)  PLUS(8)  STAR(0)
+ *
+ * - i.e. exactly two ordinary 1-D subscript steps, the first one's
+ * result (a row, "int[M]") immediately decayed again by an AMPER.
+ * The one irregular-looking value, the first ITOP's type 104
+ * ("pointer to array of int" = ty_ptr_of(ty_ary_of(TY_INT))) while
+ * every AMPER/PLUS/STAR around it is flat TY_PTR_INT/TY_INT, is fully
+ * explained by v7/cc/c01.c: build() types the first step as a genuine
+ * pointer-to-row (AMPER/ITOP/PLUS all 104, STAR 24 = "array of
+ * int"), then disarray() - decaying that row for the second '[' -
+ * calls setype(), which retypes the node chain it walks (STAR -> PLUS
+ * -> AMPER -> NAME, always via tr1, the LEFT operand) down to the
+ * element level, but never visits PLUS's right operand, so the ITOP
+ * conversion node keeps its original 104. The same derivation
+ * predicts every further dimension's ITOP carries "pointer to the
+ * remaining sub-array", but no golden confirms a 3-D shape - see
+ * parse_decl()'s rejection of a third dimension.
+ *
+ * Only the fully-subscripted form is supported: a bare "m" or a
+ * half-subscripted "m[i]" (both decay to a pointer to a row, a type
+ * this grammar scope cannot carry further - see parse_primary()) is an
+ * explicit error.
+ */
+static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
+{
+    int rowptr = ty_ptr_of(ty_ary_of(TY_INT)); /* 104 */
+    outcode(t1, "BNNN", OP_NAME, sym->hclass, TY_INT, sym->offset);
+    outcode(t1, "BN", OP_AMPER, TY_PTR_INT);
+    ExprVal row = parse_expr(p, t1);
+    expect(p, T_RBRACK, "']'");
+    emit_materialize(t1, row);
+    outcode(t1, "BNN", OP_CON, TY_INT, sym->dim2 * MCC_SZINT);
+    outcode(t1, "BN", OP_ITOP, rowptr);
+    outcode(t1, "BN", OP_PLUS, TY_PTR_INT);
+    outcode(t1, "BN", OP_STAR, TY_INT);
+    if (p->cur.kind != T_LBRACK) {
+        c0_error_at(p->cur.line, "a partially-subscripted 2-D array "
+                                  "(\"m[i]\" used as a pointer to a row) is "
+                                  "not yet supported - see "
+                                  "src/mutos_cc/README.md");
+        return TY_INT;
+    }
+    advance(p); /* second '[' */
+    outcode(t1, "BN", OP_AMPER, TY_PTR_INT);
+    ExprVal col = parse_expr(p, t1);
+    expect(p, T_RBRACK, "']'");
+    emit_materialize(t1, col);
+    outcode(t1, "BNN", OP_CON, TY_INT, MCC_SZINT);
+    outcode(t1, "BN", OP_ITOP, TY_PTR_INT);
+    outcode(t1, "BN", OP_PLUS, TY_PTR_INT);
+    outcode(t1, "BN", OP_STAR, TY_INT);
+    return TY_INT;
+}
+
+/*
  * Emits the address computation and final dereference for exactly
  * one subscript step "sym[idx-expr]" - `sym` must be an array or a
  * plain pointer variable, and its own NAME node must NOT have been
@@ -493,13 +572,16 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
  * 05_arrptr/04_ptrarreq.1.golden ("*(a + i)", `a` a plain pointer
  * parameter: no AMPER at all, its NAME's own value IS the pointer -
  * this second shape is also reached directly by parse_deref() below
- * for the explicit-'*' spelling, not just via this function). Only a
- * single subscript dimension is supported - see README.md.
+ * for the explicit-'*' spelling, not just via this function). A 2-D
+ * array (SymEntry.dim2 > 0) is handed off to emit_subscript_2d()
+ * above, which consumes both subscripts.
  */
 static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
 {
     advance(p); /* '[' */
     int elemtype, ptrtype;
+    if (sym->is_array && sym->dim2 > 0)
+        return emit_subscript_2d(p, t1, sym);
     if (sym->is_array) {
         outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
         elemtype = sym->type;
@@ -833,6 +915,17 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
          * name - merged into one "BNNN" call here since the byte
          * output is identical either way. */
 
+        if (sym->is_array && sym->dim2 > 0) {
+            /* A bare 2-D array name decays to "pointer to a row"
+             * (v7/cc's disarray(): NAME retyped to "array of int",
+             * AMPER type 104) - a type nothing in this grammar scope
+             * can consume, and not confirmed by any golden. */
+            c0_error_at(p->cur.line, "a 2-D array used without both "
+                                      "subscripts is not yet supported - "
+                                      "see src/mutos_cc/README.md");
+            return ev_dynamic();
+        }
+
         if (sym->is_array) {
             /* Array-name-as-rvalue decay ("p = a;"): the NAME node
              * itself still uses the array's base element type/offset
@@ -972,6 +1065,19 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
             advance(p);
             return ev_const(0);
+        }
+        if (sym->is_array) {
+            /* "&a" on an array: v7/cc/c01.c's build() deliberately
+             * skips disarray() for AMPER, so the real tree is NAME
+             * typed as the ARRAY itself plus AMPER("pointer to array")
+             * - e.g. NAME(24)/AMPER(104) for "int a[N]" - not the
+             * NAME(sym->type)/AMPER(ty_ptr_of()) shape below. No golden
+             * confirms either, so refuse rather than emit the wrong
+             * type. */
+            c0_error_at(line, "'&' on an array is not yet supported - see "
+                               "src/mutos_cc/README.md");
+            advance(p);
+            return ev_dynamic();
         }
         advance(p);
         outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
@@ -1272,8 +1378,23 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         advance(p);
         ExprVal r = parse_add(p, t1);
         if (v.is_const && r.is_const) {
-            long res = (op == OP_LSHIFT) ? (v.value << r.value)
-                                          : (v.value >> r.value);
+            /* Folded on the host: the left shift goes through an
+             * unsigned intermediate (shifting a negative signed value
+             * is undefined behavior in C - found by a UBSan run on
+             * "(0 - 7) << 3"; the resulting bits are unchanged), and a
+             * count outside 0..15 - undefined in C and meaningless
+             * for a 16-bit int - is refused rather than folded to
+             * whatever the host happens to produce. */
+            if (r.value < 0 || r.value > 15) {
+                c0_error_at(p->cur.line, "shift count %ld out of range "
+                                          "in a constant expression",
+                            r.value);
+                v = ev_const(0);
+                continue;
+            }
+            long res = (op == OP_LSHIFT)
+                     ? (long)((unsigned long)v.value << r.value)
+                     : (v.value >> r.value);
             v = ev_const(trunc16(res));
             continue;
         }
@@ -1513,8 +1634,9 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * is declared with plain TY_INT (its base element type - see
  * parse_primary()'s array-decay handling), just with sym->is_array
  * set so later references know it isn't itself an assignable/
- * incrementable lvalue. Only these two single-degree forms are
- * supported - "int **pp;", multi-dimensional arrays are not yet -
+ * incrementable lvalue. Multi-level pointers ("int **pp;") and 2-D
+ * arrays ("int m[N][M];" - see the declarator loop's own comment)
+ * followed later; three or more array dimensions are not supported -
  * see src/mutos_cc/README.md.
  *
  * 'char'/'long' locals - confirmed against 08_castsize.1.golden/
@@ -1688,6 +1810,7 @@ static void parse_decl(Parser *p, FILE *t1)
 
         int is_array = 0;
         long arraylen = 0;
+        long dim2 = 0;
         if (!is_ptr && p->cur.kind == T_LBRACK) {
             advance(p);
             if (p->cur.kind != T_ICON) {
@@ -1698,9 +1821,52 @@ static void parse_decl(Parser *p, FILE *t1)
             }
             expect(p, T_RBRACK, "']'");
             is_array = 1;
+            /* A second '[' M ']' - a 2-D array "int m[N][M];"
+             * (05_arrptr/02_array2d.c): N*M ints in row-major order,
+             * one contiguous block, so its frame slot is simply
+             * N*M*MCC_SZINT bytes - confirmed against 02_array2d.
+             * 1.golden's "int m[3][4];" ANAME offset -28 (24 bytes
+             * below MCC_STAUTO) and 10_integ/05_matmul.1.golden's
+             * three "int a[2][2]"-style locals at -12/-20/-28. The
+             * inner dimension M is kept (SymEntry.dim2) as the row
+             * size emit_subscript() scales the outer index by. A
+             * third dimension is rejected rather than guessed: its
+             * wire shape follows from the same v7/cc derivation (see
+             * emit_subscript()'s comment), but mutos_c1's combined
+             * address arithmetic for it (v7/cc/c12.c's distrib()
+             * iterating over three scaled terms) is confirmed by no
+             * golden. */
+            if (p->cur.kind == T_LBRACK) {
+                advance(p);
+                if (p->cur.kind != T_ICON) {
+                    c0_error_at(p->cur.line, "expected an array size constant");
+                } else {
+                    dim2 = p->cur.ival;
+                    advance(p);
+                }
+                expect(p, T_RBRACK, "']'");
+                if (dim2 <= 0) {
+                    c0_error_at(line, "array dimension must be positive");
+                    dim2 = 1;
+                }
+                if (p->cur.kind == T_LBRACK) {
+                    c0_error_at(line, "arrays of three or more dimensions "
+                                       "are not yet supported - see "
+                                       "src/mutos_cc/README.md");
+                    while (p->cur.kind == T_LBRACK) {
+                        while (p->cur.kind != T_RBRACK &&
+                               p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+                            advance(p);
+                        if (p->cur.kind == T_RBRACK)
+                            advance(p);
+                    }
+                }
+            }
         }
 
-        int size = is_array ? (int)(arraylen * MCC_SZINT) : MCC_SZINT;
+        int size = is_array
+                 ? (int)(arraylen * (dim2 ? dim2 : 1) * MCC_SZINT)
+                 : MCC_SZINT;
         int decltype = TY_INT;
         for (int k = 0; k < ptr_degree; k++)
             decltype = ty_ptr_of(decltype);
@@ -1735,6 +1901,7 @@ static void parse_decl(Parser *p, FILE *t1)
             } else {
                 sym->is_ptr = is_ptr;
                 sym->is_array = is_array;
+                sym->dim2 = (int)dim2;
                 outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
             }
         }
@@ -3069,6 +3236,7 @@ static void parse_extdef(Parser *p, FILE *t1)
 int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
 {
     Parser p;
+    memset(&p, 0, sizeof p); /* p.cur.sval must start NULL - advance() frees it */
     lex_init(&p.lx, in, c0_diag_filename);
     p.isn = 1;
     p.have_la = 0;
@@ -3082,5 +3250,8 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     outcode(temp1, "B", OP_EOFC);
     outcode(temp2, "B", OP_EOFC);
 
+    free(p.cur.sval);
+    if (p.have_la)
+        free(p.la.sval);
     return c0_diag_nerrors != 0;
 }
