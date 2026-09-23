@@ -2375,8 +2375,10 @@ image of the existing `autolen`) and `c0_parser.c`'s new
 `CALL` case: `treeout(tr1, 1); treeout(tr2, 0); outcode("BN", CALL,
 tp->type);` — callee first, then the argument tree, then the `CALL` tag
 itself. The callee (`tr1`) is a `NAME` leaf: `01_call.1.golden` byte 132
-decodes as `NAME hclass=SC_EXTERN(12) type=TY_INT ptr×2(16)
-name="_add"` — `type=16` is `TY_INT | FUNC` (`v7/cc/c0.h`: `FUNC=020`
+decodes as `NAME hclass=SC_EXTERN(12) type=FUNC.TY_INT(16)
+name="_add"` (as `dump_temp.py` renders it today - it printed the
+misleading `TY_INT ptr×2(16)` until its type decoder learned the full
+derived-type chain in the `05_arrptr/02_array2d` session) — `type=16` is `TY_INT | FUNC` (`v7/cc/c0.h`: `FUNC=020`
 octal = 16 decimal, `PTR=010` octal = 8 — the two `XTYPE` derived-type
 tags this project already used, `PTR` for `05_incdec`'s pointers, are
 now both directly confirmed distinct). The argument tree (`tr2`) for
@@ -2975,6 +2977,9 @@ array size is never meaningful), marking it exactly like a plain
 all, unlike a real array local.
 
 **Not yet attempted: `05_arrptr/02_array2d.c` (2-dimensional arrays).**
+*(Done in a later session - see "`05_arrptr/02_array2d` - 2-D arrays,
+`distrib()`, and the real constant-shift threshold" below, which also
+derives the type-104 value this paragraph calls unexplained.)*
 The WIRE shape is understood from the golden, including one genuinely
 unexplained wrinkle: `m[i][j]`'s OUTER-dimension `OP_ITOP` node carries type
 **104**, not the plain `TY_PTR_INT(8)` every other `PLUS`/`STAR`/`AMPER` node
@@ -3011,7 +3016,7 @@ golden yet; `dump_temp.py`'s `OPCODES` table has no entries for them either
 message on first encounter). Genuinely unstarted, not just unfinished.
 
 **Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
-`make test`): 33/62 byte-exact end-to-end (up from 29), 0 genuine
+`make test`): 33 of 62 byte-exact end-to-end (up from 29), 0 genuine
 mismatches anywhere, confirmed via a full `make clean && make all &&
 make test` from a clean checkout with zero compiler warnings under
 `-Wall -Wextra -Wpedantic`.
@@ -3175,6 +3180,112 @@ would read better as per-opcode handler functions; the `AMPER`/`STAR`
 lookahead needs a seekable `temp1` (never a pipe) and does not check
 `ftell()`; `c1_read_sym()` does not check `malloc()`/`realloc()`.
 
+### `05_arrptr/02_array2d` — 2-D arrays, `distrib()`, and the real constant-shift threshold (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+**Starting point.** The previous session understood `m[i][j]`'s wire shape
+but not two things: why the outer `ITOP` carries type 104 while everything
+around it is flat, and how `c1` arrives at `"sal si,*1" x2 / "add si,j" /
+"sal si,*1"` instead of two independently scaled adds. Both turn out to be
+straight consequences of the real V7 compiler's source.
+
+**Type 104, derived.** `v7/cc/c01.c`'s `build()` handles `m[i]` as
+`*(m + i)`. For `int m[3][4]` (type `ARRAY.ARRAY.INT` = 0330 = 216),
+`disarray(m)` first retypes the NAME to `ARRAY.INT` (24) and wraps it in
+`AMPER` of type `incref(24)` = `PTR.ARRAY.INT` = 104; the `PLUS` then
+converts `i` via `convert(p2, t, ITP, plength(p1))` - an `ITOP` node of
+the pointer's type 104, with the row size (8) as its constant - and the
+`STAR` on top has type `decref(104)` = 24. So at this point AMPER, ITOP and
+PLUS are all 104. The second `[` then `disarray()`s that `STAR` (type 24,
+an array), which calls `setype(p, decref(24) = INT, p)`: `setype()` walks
+`p->tr1` only - STAR gets 0, then `t = incref(t)` = 8 for PLUS, PLUS gets 8,
+AMPER gets 8 and flips `t` back to 0, NAME gets 0, stop. The `ITOP` hangs
+off `PLUS->tr2` and is never visited, so it alone keeps 104 - exactly the
+golden's `NAME(0) AMPER(8) ... ITOP(104) PLUS(8) STAR(0) AMPER(8) ...`.
+The same derivation predicts that an N-D array's k-th `ITOP` carries
+"pointer to the remaining sub-array" (e.g. 872 for the outer step of an
+`int[2][3][4]`), but with no golden for three dimensions `c0` refuses them.
+`mutos_c0` now emits the 2-D shape via `emit_subscript_2d()`, byte-exact
+against `02_array2d` and also against `10_integ/05_matmul`'s `.1`/`.2`
+(whose `int a[2][2]` subscripts are all constant or all runtime).
+
+**The address arithmetic is `distrib()`.** After `optim()`'s very first
+rule (`if (tree->op==AMPER && tree->tr1->op==STAR) return tree->tr1->tr1`)
+removes the row's `&*`, the tree is `(&m + i*8) + j*2`. `acommute()`
+flattens the sum to `[&m, i*8, j*2]` and, for `PLUS`, calls `distrib()`:
+find a term `c1c2*x` that divides no other constant but is divided by at
+least one (`i*8`, divided by `j*2`'s 2), and rewrite the pair as
+`c1*(y + c2*x)` - here `(i*4 + j)*2`. The multiplications by powers of two
+become shifts, and the codegen is the ordinary one for `&m + <expr>`: `lea
+di` for the base, the index expression computed in SI, `add di,si` -
+exactly `02_array2d.s.golden`'s seven lines, and `05_matmul.s.golden`'s
+`i*4 + k*2 → (i*2 + k)*2` too. `distrib()`'s other branch (two EQUAL
+constants: `(*p2)->tr2 = (*p1)->tr1; (*p2)->op = PLUS`) would also swap the
+operand order (`(j + i)*2`), and a non-power-of-two quotient needs a real
+multiply, so `c1` refuses both (row size = element size, or `int m[N][3]`).
+
+**How a streaming `c1` does it.** `c1` never builds a tree, so the fusion is
+done with two symbolic value kinds instead: the row step's `OP_ITOP`
+(recognizable by its type 104) pushes `VK_SCALED{i, 8}` without emitting
+anything, the following pointer `OP_PLUS` turns base-in-DI plus that into
+`VK_ROWADDR{di, i, 8}`, `OP_STAR` peeks one opcode ahead and - if it is
+`OP_AMPER` - consumes it and leaves the stack alone (the `&*` cancel), the
+column step's `OP_ITOP` sees the `VK_ROWADDR` below it and pushes
+`VK_SCALED{j, 2}`, and the column `OP_PLUS` emits everything at once
+(`gen_subscript_2d()`). `pop_val()` refuses both kinds, so no other handler
+can accidentally render one; they are consumed only through `pop_any()` in
+the two places written for them. A constant row index takes the existing
+1-D fold path unchanged (`VK_MEM_DIRECT`, now flagged `rowbase` after the
+`&*` cancel), which is how `05_matmul`'s `a[0][1] = 2;` becomes a lone `mov
+*-10.(bp),*2.`. A constant index next to a runtime one is refused: V7's
+`acommute()` would fold the constant into the base (`&m + 8 + j*2` → `lea
+di,<m+8>`), plausible but not shown by any golden.
+
+**Two more shapes from the same golden.** `m[i][j] = i * 10 + j;` confirmed
+that a constant multiplier which is not a power of two is loaded into CX
+(`mov ax,i / mov cx,*10. / imul cx`) - the same "IMUL/IDIV take no
+immediate" workaround `06_compasgn`'s `/=` already showed for IDIV - and
+that the product is then added to in place (`add ax,j`), not moved to DI
+first as `c1`'s generic `PLUS` path did. `05_matmul.s.golden`'s `sum +
+a[i][k] * b[k][j]` → `imul cx / add ax,*-36.(bp)` shows the same with the
+AX value on the right, so the rule is keyed on where the value lives (AX),
+not on operand position - which is also how the real table-driven code
+generator sees it. `PLUS` only; `MINUS` with an AX operand is unconfirmed.
+
+**The constant-shift threshold, from real compiler output already in the
+repo.** `distrib()`'s shifts raised the question of how `c1` shifts by 3 or
+more (`int m[3][4]` needs `i*4` - two single-bit shifts - but `int
+m[3][8]` already needs `i*8`, a shift by 3). `tests/mutos_as/kernel_nonopt/*.s` is real, non-optimized
+MUTOS `c1` output, and it answers it: no run of three or more single-bit
+shifts exists anywhere in it, while `mov cx,*N.` followed by a shift `by cl`
+appears for N = 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 (e.g. `amx.s`: `mov
+di,*4.(bp) / and di,#255. / mov cx,*3. / sar di,cl`), and a run of exactly
+two single-bit shifts does occur (`amx.s`, matching `04_shift.s.golden`'s
+`r >> 2`). So a register is shifted by repetition for a count of 1 or 2 and
+through CL from 3 up. `c1`'s `OP_LSHIFT`/`OP_RSHIFT` repeated the single-bit
+form for any count - silently wrong from 3 up, a bug the corpus never
+exercised. It now uses `emit_const_shift()` (threshold
+`MCC_SHIFT_REPEAT_MAX` = 2). The kernel sources only show REGISTER
+destinations, so `<<=`/`>>=`/`*=` on a memory operand with a count of 3 or
+more are now refused rather than extrapolated. Lesson recorded below.
+
+**Sanitizer sweep.** ASan/UBSan builds over the corpus plus 6000 random
+programs found two pre-existing `mutos_c0` defects, both fixed: every
+`T_STRING` token's malloc'd text leaked (no production consumes one yet;
+`advance()` now frees `p->cur.sval`, and a future string-literal consumer
+takes ownership by nulling it), and `parse_shift()` folded `(0 - 7) << 3`
+with a left shift of a negative value (undefined behavior - now an unsigned
+intermediate, with a count outside 0..15 an explicit error).
+
+**Verification.** `make test` 34/62 byte-exact, 0 genuine mismatches; `c1`
+alone on all 62 golden pairs changed only the 4 expected files (38 of 62
+now match via `c1` alone); 3000 random scalar programs, old vs. new: `c0`
+wire output identical, every `c1` output change one of the two intended
+ones (AX-add, shift-by-CL), every new refusal a memory-operand shift;
+3000 random 2-D programs: all 259 accepted outputs assemble. `05_matmul` is
+now blocked only by its right-operand-first spill (`push di` ... `pop cx /
+imul cx`), the evaluation-order problem the register-occupancy guard
+already names.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -3319,6 +3430,13 @@ These apply to *every* milestone, not just the one where they were first learned
   artifacts but are precious, irreplaceable hardware-linked data. A blanket
   `find . -name "*.o" -delete` from the repo root will destroy them; scope any
   build-artifact cleanup to the specific `src/mutos_<tool>/` directory being built.
+- **Real compiler output already in the repo is evidence too.** The
+  `tests/mutos_as/kernel_nonopt/*.s` files are genuine non-optimized MUTOS `c1`
+  output, thousands of lines of it. Before extrapolating a codegen idiom from
+  one or two `tests/mutos_cc/` goldens, grep those files for it: that is how the
+  constant-shift threshold (repeat for 1-2, `mov cx,N` / shift by `cl` from 3 up)
+  was found, after `c1` had been silently wrong for counts of 3 or more since
+  `04_shift`.
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.

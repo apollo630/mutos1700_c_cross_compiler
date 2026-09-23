@@ -38,73 +38,48 @@ implements.
 .SH "CURRENT SCOPE"
 .B mutos_c1
 implements exactly the opcodes
-.BR mutos_c0 (1) 's
-current grammar scope can produce:
-.BR SYMDEF ,
-.BR PROG ,
-.BR EVEN ,
-.BR RLABEL ,
-.BR SAVE ,
-.BR SETREG ,
-.BR BRANCH ,
-.BR LABEL ,
-.BR ANAME ,
-.BR NAME ,
-.BR CON ,
-.BR PLUS ,
-.BR MINUS ,
-.BR TIMES ,
-.BR DIVIDE ,
-.BR MOD ,
-.BR ASSIGN ,
-.BR RFORCE ,
-.BR EXPR ,
-.BR RETRN ,
-.BR SETSTK ,
-and
-.BR EOFC .
-Every compiled function gets the fixed, unconditional MUTOS 1700 C
-calling-convention prologue/epilogue (see
-.I docs/MUTOS_C_ABI.md
-in the toolchain source tree): \c
-.BR "push\ bp" ,
-.BR "mov\ bp,sp" ,
-.BR "push\ di" ,
-.BR "push\ si" ,
-a body, and a tail jump to the shared
+.BR mutos_c0 (1)
+can currently produce; the list is kept at the top of
+.I src/mutos_cc/c1_gen.c
+and, with the byte-level evidence for every instruction shape, in
+.I src/mutos_cc/README.md
+in the toolchain source tree.
+.PP
+Every compiled function gets the fixed MUTOS 1700 C calling-convention
+prologue
+.RB ( "push bp" ,
+.BR "mov bp,sp" ,
+.BR "push di" ,
+.BR "push si" )
+and a tail jump to the shared
 .B cret
-epilogue routine. A local-variable frame
-.RI ( SETSTK
-value beyond the fixed 4-byte register-save area) of up to 76 bytes
-emits a plain
-.BR "sub sp,N" ;
-above 256 bytes it emits
+epilogue (see
+.IR docs/MUTOS_C_ABI.md ).
+A local-variable frame of up to 80 bytes beyond the register-save area
+is allocated with
+.BR "sub sp,N" ,
+one of 128 bytes or more with
 .BR "mov ax,N / call chkstk" ;
-the gap in between is left as an explicit "not yet supported"
-diagnostic rather than a guess, since the real compiler's exact
-.B "sub sp,N"
--versus-
-.B "call chkstk"
-threshold is only bounded, not pinned down exactly, by the evidence
-gathered so far (see
-.I docs/MUTOS_C_ABI.md
-sect. 1.9). Binary-operator code generation (\c
-.BR PLUS ", " MINUS ", " TIMES ", " DIVIDE ", " MOD )
-currently only covers a single level of constant/variable operands
-each (matching exactly what
-.BR mutos_c0 (1) 's
-grammar can produce); an immediate right-hand operand to
-.BR TIMES / DIVIDE / MOD
-(the 8086's single-operand
-.BR IMUL / IDIV
-takes a register or memory operand, never an immediate directly) and
-direct memory-to-memory
-.B ASSIGN
-are likewise explicit "not yet supported" cases.
+the real threshold lies somewhere in between, so 81 to 127 bytes is an
+explicit \(lqnot yet supported\(rq diagnostic rather than a guess.
+.PP
+There is no general register allocator: each operator uses the working
+register the real compiler's output confirms (DI for most integer
+arithmetic, AX/DX for multiply, divide and return values, SI as a
+secondary index register, DI and SI for
+.B register
+variables, CX for shift counts and constant multipliers or divisors). A constant shift count of 1 or
+2 is a repeated single-bit shift, a larger one is loaded into CX and
+shifted by CL. An expression whose evaluation would overwrite a
+register still holding a pending value \(en which the real compiler
+handles by spilling or reordering in ways not yet reverse-engineered
+\(en is refused by a built-in register-occupancy check, never emitted
+with a clobbered value.
+.PP
 Any
 .I temp1
-opcode outside the list above is reported, never silently
-misassembled.
+opcode or operand shape outside the confirmed scope is reported,
+never silently misassembled.
 .SH OPTIONS
 .TP
 .I temp1

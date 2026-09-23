@@ -39,48 +39,69 @@ wire format (reverse-engineered byte-for-byte from real MUTOS 1700
 hardware output) and the exact grammar this pass currently accepts.
 .SH "CURRENT SCOPE"
 .B mutos_c0
-does not yet implement the full K&R C grammar. As of this writing it
-accepts only:
-.PP
-.RS
-.nf
-translation-unit  := extdef*
-extdef            := IDENT '(' ')' compound-stmt
-compound-stmt     := '{' decl* stmt* '}'
-decl              := 'int' IDENT (',' IDENT)* ';'
-stmt              := assign-stmt | return-stmt
-assign-stmt       := IDENT '=' expr ';'
-return-stmt       := 'return' expr? ';'
-expr              := integer arithmetic ('+ \- * / % ~', unary \-/+,
-                      parens, variable references)
-.fi
-.RE
-.PP
-i.e. a function definition takes no parameters. Its body may declare
-any number of plain
-.B int
-locals (no initializers) before its statements, matching K&R's
-declarations-before-statements block structure; each statement is
-either a single-variable assignment or a
-.BR return .
-An expression stays an unmaterialized compile-time constant for as
-long as every operand feeding it is also constant \(en matching the
-real compiler's own per-operation front-end constant folding \(en and
-is emitted as a real variable-reference/operator tree the moment a
-variable is involved. Every function is
-implicitly
-.BR int -returning,
-matching K&R default-int semantics.
-.PP
-Anything outside this scope (a second kind of statement, a
-non-.BR int
-declaration, a compound/relational/logical/shift/assignment operator,
-a
-non-constant expression, function parameters, control flow, and so
-on) is rejected with a clear diagnostic and a non-zero exit status,
-never silently miscompiled. See
+does not yet implement the full K&R C grammar. The exact constructs it
+accepts, and the byte-level evidence behind each, are listed in
 .I src/mutos_cc/README.md
-for the current expansion plan.
+(\(lqCurrent scope\(rq); in outline:
+.IP \(bu 2
+function definitions with K&R-style parameter declarations
+.RB ( int ,
+pointer,
+.BR long ,
+array and function-pointer parameters);
+.IP \(bu 2
+local declarations without initializers:
+.BR int ,
+.BR char ,
+.BR long ,
+pointers to
+.BR int
+of any degree, one- and two-dimensional
+.B int
+arrays, function pointers
+.RB ( "int (*f)()" ),
+and
+.B static
+and
+.B register
+locals;
+.IP \(bu 2
+assignment statements (\(oq=\(cq and the ten compound-assignment
+operators, including subscripted and dereferenced targets),
+.BR if / else ,
+.BR while ,
+.BR do / while ,
+.BR for ,
+.BR switch / case / default ,
+.BR break ,
+.BR continue ,
+.BR goto /labels,
+and
+.BR return ;
+.IP \(bu 2
+expressions over those types: arithmetic, bitwise, shift, relational,
+logical and conditional operators, the comma operator, prefix and
+postfix
+.BR ++ / \-\- ,
+unary
+.B &
+and
+.BR * ,
+array subscripts, direct and indirect function calls, a narrow set of
+casts, and
+.B sizeof
+(folded at compile time).
+.PP
+A constant subexpression stays folded for as long as every operand
+feeding it is constant, matching the real compiler's own front-end
+constant folding. Not yet supported, among others: external
+(file-scope) variables, string literals, structures, unions,
+enumerations,
+.BR typedef ,
+floating point, and arrays of three or more dimensions.
+.PP
+Anything outside the supported scope is rejected with a clear
+diagnostic and a non-zero exit status, never silently miscompiled.
 .SH OUTPUT
 .I temp1
 receives the bulk of the intermediate code: a sequence of tagged
@@ -120,8 +141,7 @@ Accepted for command-line compatibility with the real MUTOS 1700
 .IR /lib/c0 's
 profiling-flag position (see
 .IR v7/cc/cc.c ).
-Not yet acted upon: the current grammar scope has no function bodies
-where profiling instrumentation would matter.
+Not yet acted upon.
 .SH DIAGNOSTICS
 Errors are printed to standard error as
 .RI \(dq file : line ": error: " message \(dq

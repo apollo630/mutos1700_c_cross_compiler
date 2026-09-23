@@ -74,6 +74,17 @@
 #define MCC_SUBSP_MAX  80
 #define MCC_CHKSTK_MIN 128
 
+/* A shift of a REGISTER by a compile-time-constant count: plain 8086
+ * has no shift-by-immediate opcode, so the real compiler repeats the
+ * single-bit form for a count of up to 2 (04_shift.s.golden's "r >> 2"
+ * -> two "sar\tdi,*1"; 02_array2d.s.golden's two "sal\tsi,*1"), and
+ * from 3 up loads the count into CX and shifts by CL instead - the
+ * real, non-optimized MUTOS c1 output in tests/mutos_as/kernel_nonopt/
+ * (amx.s's "mov\tcx,*3." / "sar\tdi,cl" for a ">> 3", likewise
+ * "*7." and "*11."; no run of three or more single-bit shifts exists
+ * anywhere in that corpus). See emit_const_shift(). */
+#define MCC_SHIFT_REPEAT_MAX 2
+
 /* Matches c0_parser.c's own MCC_NCASES - the max number of 'case'
  * labels OP_SWIT's handler below will collect for one 'switch'. */
 #define MCC_NCASES 32
@@ -101,8 +112,42 @@
  * touching `pp` uses type 40, NOT a naive "16"). */
 #define TY_PTR_PTR_INT 40
 
+/* "pointer to array of int" - v7/cc's incref(incref(INT, ARRAY), PTR)
+ * = 104 - the type of a 2-D subscript's OUTER (row-step) OP_ITOP only
+ * ("m[i][j]" - 05_arrptr/02_array2d.1.golden, 10_integ/05_matmul.
+ * 1.golden; see c0_parser.c's emit_subscript_2d() for why that one
+ * node keeps this richer type while every AMPER/PLUS/STAR around it is
+ * flat TY_PTR_INT/TY_INT). */
+#define TY_PTR_ARY_INT 104
+
 typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
-               VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR } ValKind;
+               VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR,
+               VK_SCALED, VK_ROWADDR } ValKind;
+/* VK_SCALED / VK_ROWADDR - the two unfinished stages of a 2-D
+ * subscript address "&m + i*R + j*E" (R = row size, E = element
+ * size), kept symbolic - NO code emitted - until both scaled terms are
+ * known, because the real compiler does not add them separately: it
+ * factors them, exactly as v7/cc/c12.c's distrib() does for any sum
+ * of constant multiples ("i*8 + j*2" -> "(i*4 + j)*2" - see OP_PLUS's
+ * 2-D case, confirmed against 05_arrptr/02_array2d.s.golden and
+ * 10_integ/05_matmul.s.golden).
+ *
+ * VK_SCALED is a runtime index times a constant scale, the result of
+ * an OP_ITOP that is part of a 2-D subscript: `cl` holds the index (a
+ * plain memory operand - VK_MEM or VK_STATIC; anything else is
+ * refused), `imm` the scale in bytes.
+ *
+ * VK_ROWADDR is "base + index*scale" for the row step: `reg` names
+ * the register holding the base address (always "di", from
+ * OP_AMPER's eager "lea"), `cl`/`imm` the row index and row size
+ * exactly as in VK_SCALED. It survives the row's own STAR/AMPER pair
+ * (cancelled - see OP_STAR) and is consumed by the column step's
+ * OP_PLUS.
+ *
+ * Neither is ever an operand of a real instruction; pop_val() refuses
+ * both, so only the handlers written for them (OP_ITOP/OP_PLUS via
+ * pop_any(), OP_STAR's cancellation, which does not pop at all) can
+ * see one. */
 /* VK_FUNC - a called function's own NAME, not yet an OP_CALL - a
  * pure compile-time reference (the callee's symbol text, owned/
  * malloc'd - see OP_NAME's SC_EXTERN case), never an operand of any
@@ -277,6 +322,12 @@ typedef struct {
      * note_writes()) when an instruction overwrote a register this
      * still-pending value lives in; pop_val() then refuses to hand it
      * to a consumer - see the "Register-occupancy guard" section. */
+    int       rowbase;   /* VK_MEM_DIRECT only: set when this address is
+     * a 2-D array ROW (the result of a row step whose STAR/AMPER pair
+     * OP_STAR cancelled), not a plain array/variable address - so a
+     * following runtime column index ("m[0][j]") can be refused
+     * explicitly instead of falling into the 1-D code path, whose
+     * instruction order no golden confirms for this shape. */
 } Val;
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
@@ -437,13 +488,27 @@ static void fatal_clobbered(void)
  * next). Refuses a value whose register was overwritten while it was
  * pending (see note_writes()) - emitting code from it would silently
  * read garbage. */
-static Val pop_val(GenState *g)
+static Val pop_any(GenState *g)
 {
     if (g->valsp <= 0)
         gen_fatal("expression stack underflow - malformed temp1 stream");
     Val v = g->valstack[--g->valsp];
     if (v.clobbered)
         fatal_clobbered();
+    return v;
+}
+
+/* pop_any(), for every consumer that has not been written to handle
+ * an unfinished 2-D subscript address (VK_SCALED/VK_ROWADDR - see
+ * their ValKind comment): refusing it here is what keeps one from
+ * ever being rendered as an instruction operand. */
+static Val pop_val(GenState *g)
+{
+    Val v = pop_any(g);
+    if (v.kind == VK_SCALED || v.kind == VK_ROWADDR)
+        gen_fatal("a 2-D array subscript used in a shape other than a "
+                  "complete \"m[i][j]\" element reference is not yet "
+                  "supported - see src/mutos_cc/README.md");
     return v;
 }
 
@@ -579,6 +644,8 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_LCON: snprintf(buf, n, "<unmaterialized-long-const>"); break;
     case VK_FUNC: snprintf(buf, n, "<unrendered-func-name>"); break;
     case VK_ARGLIST: snprintf(buf, n, "<unrendered-arglist>"); break;
+    case VK_SCALED: snprintf(buf, n, "<unmaterialized-scaled-index>"); break;
+    case VK_ROWADDR: snprintf(buf, n, "<unmaterialized-row-address>"); break;
     }
 }
 
@@ -814,6 +881,8 @@ static unsigned val_regs(const Val *v)
             m |= val_regs(&v->arglist->items[i]);
         return m;
     }
+    case VK_SCALED:  return simple_regs(v->cl);
+    case VK_ROWADDR: return reg_bit(v->reg) | simple_regs(v->cl);
     default:      return 0;
     }
 }
@@ -1415,6 +1484,78 @@ static void load_into_cx(GenState *g, Val v)
 
 /* Queues instruction `in` to be emitted later by flush_deferred() -
  * see DEFERRED_MAX's comment on GenState. */
+/* Shifts register `reg` by the constant `count` using `mnem`
+ * ("sal"/"sar") - the two confirmed shapes described at
+ * MCC_SHIFT_REPEAT_MAX's definition. Writes CX in the second shape
+ * (the register-occupancy guard sees it through the emission layer
+ * like any other write). */
+static void emit_const_shift(GenState *g, const char *mnem,
+                             const char *reg, long count)
+{
+    if (count < 0)
+        gen_fatal("negative shift count in constant expression");
+    if (count <= MCC_SHIFT_REPEAT_MAX) {
+        for (long i = 0; i < count; i++)
+            ins2(g, mnem, o_reg(reg), o_shift1());
+        return;
+    }
+    ins2(g, "mov", o_reg("cx"), o_imm(count));
+    ins2(g, mnem, o_reg(reg), o_reg("cl"));
+}
+
+/* log2 of `v` if it is an exact power of two >= 1, else -1. */
+static int exact_log2(long v)
+{
+    int n = 0;
+    if (v < 1)
+        return -1;
+    while ((v & 1) == 0) {
+        v >>= 1;
+        n++;
+    }
+    return v == 1 ? n : -1;
+}
+
+/* The column step of a complete 2-D subscript "m[i][j]": `row` is the
+ * pending VK_ROWADDR (base address in DI, row index i, row size R),
+ * `col` the pending VK_SCALED (column index j, element size E). The
+ * sum "&m + i*R + j*E" is emitted the way v7/cc/c12.c's distrib()
+ * rewrites it - "(i*(R/E) + j)*E", both multiplications shifts - in
+ * SI, then added to the base:
+ *
+ *     mov si,i / sal si,*1 (x log2(R/E)) / add si,j /
+ *     sal si,*1 (x log2(E)) / add di,si
+ *
+ * confirmed byte-for-byte against 05_arrptr/02_array2d.s.golden
+ * ("int m[3][4]": R/E = 4, E = 2) and 10_integ/05_matmul.s.golden
+ * ("int a[2][2]": R/E = 2). Only the factorable case distrib()
+ * itself handles by division is accepted: R a multiple of E with a
+ * power-of-two quotient of at least 2, and E a power of two. R == E
+ * (a one-column array) takes distrib()'s OTHER branch, which also
+ * swaps the operand order, and a non-power-of-two quotient needs a
+ * real multiply - neither is confirmed by any golden, so both are
+ * refused. Each shift follows emit_const_shift()'s confirmed repeat/
+ * CL rule. */
+static void gen_subscript_2d(GenState *g, Val row, Val col)
+{
+    long rs = row.imm, es = col.imm;
+    int eshift = exact_log2(es);
+    int qshift = (eshift >= 0 && es > 0 && rs % es == 0)
+               ? exact_log2(rs / es) : -1;
+    if (eshift < 0 || qshift < 1)
+        gen_fatal("a 2-D array whose row size (%ld bytes) is not a "
+                  "power-of-two multiple (at least 2) of its element "
+                  "size (%ld bytes) is not yet supported - see "
+                  "src/mutos_cc/README.md", rs, es);
+    if (strcmp(row.reg, "di") != 0)
+        gen_fatal("internal: 2-D subscript base expected in di");
+    ins2(g, "mov", o_reg("si"), o_val(val_from_simple(row.cl)));
+    emit_const_shift(g, "sal", "si", qshift);
+    ins2(g, "add", o_reg("si"), o_val(val_from_simple(col.cl)));
+    emit_const_shift(g, "sal", "si", eshift);
+    ins2(g, "add", o_reg("di"), o_reg("si"));
+}
+
 static void queue_deferred(GenState *g, Insn in)
 {
     if (g->ndeferred >= DEFERRED_MAX)
@@ -2170,8 +2311,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (op == OP_PLUS && type == TY_PTR_INT) {
                 /* Pointer + scaled-index arithmetic - a single
-                 * subscript step ("a[i]", "m[i][j]"'s own inner
-                 * step) or an explicit "*(a + i)" - confirmed against
+                 * 1-D subscript step ("a[i]"; a 2-D "m[i][j]" takes
+                 * the VK_SCALED/VK_ROWADDR path just below instead)
+                 * or an explicit "*(a + i)" - confirmed against
                  * 01_arrbasic.s.golden ("lea di,&a; ...; add di,si" -
                  * the base address, from a preceding OP_AMPER, stays
                  * in DI, and the scaled index, from a preceding
@@ -2188,8 +2330,36 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * text - a plain memory or immediate right-hand side
                  * is legal for ADD directly on the 8086, no separate
                  * load needed. */
-                Val r = pop_val(&g);
-                Val l = pop_val(&g);
+                Val r = pop_any(&g);
+                Val l = pop_any(&g);
+                /* The two steps of a 2-D subscript "m[i][j]" (see
+                 * VK_SCALED/VK_ROWADDR's comment): the row step
+                 * (base in DI + scaled row index) only records the
+                 * pending row address; the column step emits the whole
+                 * combined address computation at once. Any other
+                 * pairing involving either kind is an unconfirmed
+                 * shape. */
+                if (l.kind == VK_SCALED || l.kind == VK_ROWADDR ||
+                    r.kind == VK_SCALED || r.kind == VK_ROWADDR) {
+                    if (r.kind == VK_SCALED && l.kind == VK_REG &&
+                        strcmp(l.reg, "di") == 0) {
+                        Val ra = {0};
+                        ra.kind = VK_ROWADDR;
+                        ra.reg = "di";
+                        ra.cl = r.cl;
+                        ra.imm = r.imm;
+                        push_val(&g, ra);
+                        break;
+                    }
+                    if (r.kind == VK_SCALED && l.kind == VK_ROWADDR) {
+                        gen_subscript_2d(&g, l, r);
+                        push_val(&g, val_reg("di"));
+                        break;
+                    }
+                    gen_fatal("a 2-D array subscript mixing a constant and "
+                              "a runtime index is not yet supported - see "
+                              "src/mutos_cc/README.md");
+                }
                 /* A compile-time-constant-index subscript ("v[0] =
                  * 1;" - see VK_MEM_DIRECT's own comment): the base
                  * address (from OP_AMPER, deferred) combines with the
@@ -2354,6 +2524,33 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_reg(ind.reg));
                 break;
             }
+            if (op == OP_PLUS) {
+                /* One operand is already sitting in AX (a multiply's
+                 * product or a call's result) and the other is a plain
+                 * memory operand: the sum is formed in AX itself, in
+                 * place - never moved to DI first - whichever side of
+                 * the '+' the AX value was on. Confirmed against
+                 * 05_arrptr/02_array2d.s.golden's "i * 10 + j" ->
+                 * "imul\tcx" / "add\tax,*-32.(bp)" and 10_integ/
+                 * 05_matmul.s.golden's "sum + a[i][k] * b[k][j]" ->
+                 * "imul\tcx" / "add\tax,*-36.(bp)" (the product on
+                 * the RIGHT). The table-driven real code generator
+                 * only sees where the value lives, so this covers a
+                 * call result the same way. PLUS only - MINUS is not
+                 * commutative and no golden shows its AX shape; an
+                 * immediate or register other operand is left to the
+                 * paths below, unconfirmed either way. */
+                int l_ax = (l.kind == VK_REG && strcmp(l.reg, "ax") == 0);
+                int r_ax = (r.kind == VK_REG && strcmp(r.reg, "ax") == 0);
+                Val other = l_ax ? r : l;
+                if ((l_ax != r_ax) &&
+                    (other.kind == VK_MEM || other.kind == VK_MEM_CVT ||
+                     other.kind == VK_MEM_DIRECT || other.kind == VK_STATIC)) {
+                    ins2(&g, "add", o_reg("ax"), o_val(other));
+                    push_val(&g, val_reg("ax"));
+                    break;
+                }
+            }
             if (r.kind == VK_REG && strcmp(r.reg, "di") == 0 &&
                 !(l.kind == VK_REG && strcmp(l.reg, "di") == 0)) {
                 /* The right operand already lives in DI (a
@@ -2431,15 +2628,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * reference - and 04_shift.c's own header comment:
                  * this compiler targets plain 8086 only), so the
                  * real compiler repeats the single-bit-shift form
-                 * (opcode D1 /4 or /7, count implicitly 1) N times -
-                 * confirmed via 04_shift.s.golden's "r >> 2" emitting
-                 * two consecutive "sar\tdi,*1" lines, and "a << 1"
-                 * emitting exactly one "sal\tdi,*1". */
-                if (r.imm < 0)
-                    gen_fatal("negative shift count in constant "
-                              "expression");
-                for (long i = 0; i < r.imm; i++)
-                    ins2(&g, mnem, o_reg("di"), o_shift1());
+                 * (opcode D1 /4 or /7, count implicitly 1) for a
+                 * count of up to 2 - confirmed via 04_shift.s.golden's
+                 * "r >> 2" emitting two consecutive "sar\tdi,*1"
+                 * lines, and "a << 1" emitting exactly one "sal\tdi,
+                 * *1" - and from 3 up shifts by CL instead (see
+                 * emit_const_shift()/MCC_SHIFT_REPEAT_MAX). */
+                emit_const_shift(&g, mnem, "di", r.imm);
             } else {
                 /* Variable shift count: must be loaded into CL (the
                  * only register the 8086's "shift by CL" opcode
@@ -2547,16 +2742,59 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * multiply; confirmed against 05_incdec.s.golden's
              * "add\t*-18.(bp),*2." (never an "imul"). */
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_PTR_INT)
+            if (type != TY_PTR_INT && type != TY_PTR_ARY_INT)
                 gen_fatal("ITOP of type %d not yet supported (only "
-                          "TY_PTR_INT is covered so far)", type);
+                          "TY_PTR_INT and TY_PTR_ARY_INT are covered so "
+                          "far)", type);
             Val size = pop_val(&g);
             Val amt  = pop_val(&g);
             if (size.kind != VK_IMM)
                 gen_fatal("ITOP with a non-constant scale factor is "
                           "not yet supported");
             if (amt.kind == VK_IMM) {
+                /* Also a 2-D subscript's constant row or column index
+                 * ("a[0][1] = 2;" - 10_integ/05_matmul.s.golden's lone
+                 * "mov\t*-10.(bp),*2."): folds exactly like the 1-D
+                 * "v[0]" case, the row's STAR/AMPER pair in between
+                 * cancelling (see OP_STAR). */
                 push_val(&g, val_imm(amt.imm * size.imm));
+                break;
+            }
+            /* A runtime index inside a 2-D subscript "m[i][j]": the
+             * row step (this ITOP's own type is TY_PTR_ARY_INT) or the
+             * column step (the value below is the row step's pending
+             * VK_ROWADDR). Nothing is emitted yet - the scaled term
+             * stays symbolic (VK_SCALED) until OP_PLUS has both terms,
+             * see gen_subscript_2d(). Only a plain variable is
+             * accepted as either index, the only shape any golden
+             * confirms (a computed index would already occupy a
+             * register the combined arithmetic has to share), and a
+             * runtime index next to a constant one ("m[0][j]",
+             * "m[i][2]") is refused too: v7/cc's acommute() would
+             * fold the constant into the base address first, a shape
+             * no golden shows. */
+            const Val *below = g.valsp >= 1 ? &g.valstack[g.valsp - 1] : NULL;
+            int row_step = (type == TY_PTR_ARY_INT);
+            int col_step = (below && below->kind == VK_ROWADDR);
+            if (below && below->kind == VK_MEM_DIRECT &&
+                (row_step || below->rowbase))
+                gen_fatal("a 2-D array subscript mixing a constant and a "
+                          "runtime index is not yet supported - see "
+                          "src/mutos_cc/README.md");
+            if (row_step || col_step) {
+                if (amt.kind != VK_MEM && amt.kind != VK_STATIC)
+                    gen_fatal("a 2-D array subscript whose index is not a "
+                              "plain variable is not yet supported - see "
+                              "src/mutos_cc/README.md");
+                if (row_step && !(below && below->kind == VK_REG &&
+                                  strcmp(below->reg, "di") == 0))
+                    gen_fatal("internal: 2-D subscript row step without "
+                              "its base address in di");
+                Val sc = {0};
+                sc.kind = VK_SCALED;
+                sc.cl = simple_of(amt);
+                sc.imm = size.imm;
+                push_val(&g, sc);
                 break;
             }
             /* A non-constant index ("a[i]"/"*(a + i)" -
@@ -2601,6 +2839,43 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_STAR: {
             /* Pointer dereference - two confirmed shapes: */
             int type = c1_read_num(temp1, "temp1");
+            /* "&*x" is just "x" - v7/cc/c12.c optim()'s very first
+             * rule (AMPER whose operand is a STAR returns the STAR's
+             * own operand). mutos_c0 emits the pair in exactly one
+             * place: a 2-D subscript's row, dereferenced and then
+             * immediately decayed again for the column subscript
+             * (c0_parser.c's emit_subscript_2d()). Recognized here by
+             * one opcode of lookahead (the same save/restore-file-
+             * position technique as the peeks further below), the
+             * AMPER consumed, and the operand left on the stack
+             * untouched - confirmed by 02_array2d.s.golden/05_matmul.
+             * s.golden, whose element addresses show no trace of the
+             * row ever being loaded or stored. Only the two operand
+             * kinds a row step can produce are accepted: a pending
+             * runtime row address (VK_ROWADDR) or a fully constant one
+             * (VK_MEM_DIRECT, then marked as a row - see its rowbase
+             * field). */
+            {
+                long cancel_pos = ftell(temp1);
+                int cancel_next = c1_read_op(temp1, "temp1");
+                if (cancel_next == OP_AMPER) {
+                    int atype = c1_read_num(temp1, "temp1");
+                    if (atype != TY_PTR_INT || type != TY_INT)
+                        gen_fatal("'&*' with types %d/%d is not yet "
+                                  "supported", type, atype);
+                    if (g.valsp < 1)
+                        gen_fatal("expression stack underflow - "
+                                  "malformed temp1 stream");
+                    Val *top = &g.valstack[g.valsp - 1];
+                    if (top->kind == VK_MEM_DIRECT)
+                        top->rowbase = 1;
+                    else if (top->kind != VK_ROWADDR)
+                        gen_fatal("'&*' outside a 2-D array subscript is "
+                                  "not yet supported");
+                    break;
+                }
+                fseek(temp1, cancel_pos, SEEK_SET);
+            }
             if (type == TY_FUNC_INT) {
                 /* Dereferencing a function-pointer VARIABLE as a call
                  * callee ("(*f)(x)" - c0_parser.c's
@@ -3009,12 +3284,35 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 ax_side = r;
                 imul_side = l;
             }
-            if (imul_side.kind == VK_IMM)
-                gen_fatal("multiplying by an immediate is not yet "
-                          "supported (8086 IMUL takes a reg/mem operand, "
-                          "never an immediate directly - no golden "
-                          "reference confirms the alternate sequence a "
-                          "real compiler would need here)");
+            if (imul_side.kind == VK_IMM) {
+                /* A constant multiplier: 8086 IMUL has no immediate
+                 * form, so the constant is loaded into CX first and
+                 * multiplied from there - confirmed against 05_arrptr/
+                 * 02_array2d.s.golden's "i * 10" -> "mov\tax,*-30.
+                 * (bp)" / "mov\tcx,*10." / "imul\tcx". Only for a
+                 * multiplier that is not a power of two (and not 0):
+                 * v7/cc/c12.c's optim() turns a power-of-two TIMES
+                 * into a shift and acommute() drops a "* 1", shapes
+                 * no golden confirms for OP_TIMES itself (06_compasgn's
+                 * "a *= 2" -> "sal" is the compound-assignment
+                 * analogue only). */
+                if (imul_side.imm == 0 || exact_log2(imul_side.imm) >= 0)
+                    gen_fatal("multiplying by the constant %ld (zero or a "
+                              "power of two) is not yet supported - no "
+                              "golden reference confirms the strength-"
+                              "reduced shape a real compiler would emit",
+                              imul_side.imm);
+                if (ax_side.kind == VK_IMM)
+                    gen_fatal("multiplying two constants at run time is "
+                              "not expected (mutos_c0 folds them)");
+                if (!(ax_side.kind == VK_REG && strcmp(ax_side.reg, "ax") == 0))
+                    require_free(imul_side, RB_AX, "TIMES");
+                ins2(&g, "mov", o_reg("ax"), o_val(ax_side));
+                ins2(&g, "mov", o_reg("cx"), o_val(imul_side));
+                ins1(&g, "imul", o_reg("cx"));
+                push_val(&g, val_reg("ax"));
+                break;
+            }
             if (!(ax_side.kind == VK_REG && strcmp(ax_side.reg, "ax") == 0))
                 require_free(imul_side, RB_AX, "TIMES");
             ins2(&g, "mov", o_reg("ax"), o_val(ax_side));
@@ -3123,6 +3421,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "real compiler would need here)");
             if (rhs.imm < 0)
                 gen_fatal("negative shift count in constant expression");
+            if (rhs.imm > MCC_SHIFT_REPEAT_MAX)
+                gen_fatal("compound shift-assignment by a constant count "
+                          "above %d is not yet supported (real compiler "
+                          "output shifts a REGISTER by CL from a count of "
+                          "3 up - see MCC_SHIFT_REPEAT_MAX - but no golden "
+                          "confirms the shape for a memory operand)",
+                          MCC_SHIFT_REPEAT_MAX);
             for (long i = 0; i < rhs.imm; i++)
                 ins2(&g, aluop(op)->mnem, o_val(lhs), o_shift1());
             break;
@@ -3166,6 +3471,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "immediate directly, and no golden reference "
                           "confirms the general strength-reduction "
                           "sequence a real compiler would need here)");
+            if (shift > MCC_SHIFT_REPEAT_MAX)
+                gen_fatal("'*=' by a power of two above %d is not yet "
+                          "supported (its shift count exceeds %d - see "
+                          "MCC_SHIFT_REPEAT_MAX; no golden confirms the "
+                          "shift-by-CL shape for a memory operand)",
+                          1 << MCC_SHIFT_REPEAT_MAX, MCC_SHIFT_REPEAT_MAX);
             for (int i = 0; i < shift; i++)
                 ins2(&g, "sal", o_val(lhs), o_shift1());
             break;

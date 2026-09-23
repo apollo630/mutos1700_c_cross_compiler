@@ -53,6 +53,7 @@ SymEntry *symtab_declare_auto(SymTab *st, const char *name, int type, int size)
     e->type = type;
     e->is_ptr = 0;
     e->is_array = 0;
+    e->dim2 = 0;
 
     st->autolen -= size;
     e->offset = st->autolen;
@@ -75,6 +76,7 @@ SymEntry *symtab_declare_param(SymTab *st, const char *name, int type, int size)
     e->type = type;
     e->is_ptr = 0;
     e->is_array = 0;
+    e->dim2 = 0;
 
     /* Mirror image of symtab_declare_auto()'s offset order: a
      * parameter's own offset is its size's running total BEFORE
@@ -99,6 +101,7 @@ SymEntry *symtab_declare_static(SymTab *st, const char *name, int type, int labe
     e->type = type;
     e->is_ptr = 0;
     e->is_array = 0;
+    e->dim2 = 0;
     e->offset = label; /* NOT a stack offset - see c0_sym.h's comment */
 
     e->next = st->head;
@@ -117,6 +120,7 @@ SymEntry *symtab_declare_reg(SymTab *st, const char *name, int type, int regnum)
     e->type = type;
     e->is_ptr = 0;
     e->is_array = 0;
+    e->dim2 = 0;
     e->offset = regnum; /* NOT a stack offset - see c0_sym.h's comment */
 
     e->next = st->head;

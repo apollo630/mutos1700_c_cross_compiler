@@ -226,7 +226,7 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 33/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 34/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -235,11 +235,11 @@ plus all 7 of
 `03_ctrlflow`: `01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
 `05_breakcont.c`, `06_switch.c` and `07_goto.c`, plus all 7 of
 `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`, `04_mutrec.c`,
-`05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus 4 of `05_arrptr`'s
-7: `01_arrbasic.c`, `03_ptrbasic.c`, `04_ptrarreq.c` and `06_ptrptr.c`
-(single-dimension array subscripting, multi-level pointers, explicit `&`/`*`,
-and pointer/array-parameter equivalence - see this session's own section
-below; `02_array2d.c`, `05_arrofptr.c` and `07_strlibc.c` remain open, see
+`05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus 5 of `05_arrptr`'s
+7: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`, `04_ptrarreq.c` and
+`06_ptrptr.c` (one- and two-dimensional array subscripting, multi-level
+pointers, explicit `&`/`*`, and pointer/array-parameter equivalence - see
+the sections below; `05_arrofptr.c` and `07_strlibc.c` remain open, see
 "Next up"). ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
@@ -247,6 +247,88 @@ has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `05_arrptr/02_array2d` - 2-D arrays; constant-shift threshold fix)
+
+**2-D arrays (`int m[N][M]`), confirmed against `02_array2d.1/.2/.s.golden`
+and, for the front end, `10_integ/05_matmul.1/.2.golden`.** `mutos_c0`
+declares a 2-D local as one `N*M*2`-byte block (`SymEntry.dim2` = M) and
+emits `m[i][j]` as two ordinary subscript steps, the row re-decayed in
+between: `NAME AMPER(8) <i> CON(2M) ITOP(104) PLUS(8) STAR(0) AMPER(8) <j>
+CON(2) ITOP(8) PLUS(8) STAR(0)` - byte-identical to both goldens. The outer
+`ITOP`'s type 104 ("pointer to array of int"), recorded last session as only
+empirically pinned, is now derived: `v7/cc/c01.c`'s `disarray()` calls
+`setype()`, which retypes the node chain it walks (STAR → PLUS → AMPER →
+NAME, always via the left operand) down to the element level but never
+visits the `ITOP` on `PLUS`'s right, so that one node keeps the original
+pointer-to-row type. `mutos_c1` cancels the row's `STAR`/`AMPER` pair
+(`v7/cc/c12.c` `optim()`'s first rule, `&*x → x`), keeps both scaled
+indices symbolic (new `VK_SCALED`/`VK_ROWADDR` value kinds, which
+`pop_val()` refuses to hand to any other consumer) and emits the address
+the way `v7/cc/c12.c`'s `distrib()` factors `i*8 + j*2` into `(i*4 + j)*2`:
+`lea di,&m / mov si,i / sal si,*1 / sal si,*1 / add si,j / sal si,*1 / add
+di,si` - byte-identical to `02_array2d.s.golden` and to every runtime-index
+subscript in `05_matmul.s.golden` (row/element ratio 2 there); both
+goldens' all-constant subscripts (`a[0][1] = 2;`) fold to one bp-relative
+operand exactly like 1-D `v[0]`. Refused explicitly (no golden): three or
+more dimensions, a bare or half-subscripted 2-D array, `&` on any array
+(v7/cc would emit `NAME`(array type)/`AMPER`(pointer-to-array), not what
+`c0` emitted before), a constant index next to a runtime one, a
+non-plain-variable index, and a row size that is not a power-of-two
+multiple (≥ 2) of the element size.
+
+**Two further `c1` shapes confirmed by `02_array2d.s.golden`.** A constant,
+non-power-of-two multiplier: `i * 10` → `mov ax,i / mov cx,*10. / imul cx`
+(previously refused; 0, 1 and powers of two stay refused - `v7/cc`
+strength-reduces them to shapes no golden shows for `OP_TIMES`). An
+AX-resident value plus a memory operand: `add ax,mem` in place, never
+`mov di,ax` first (`05_matmul.s.golden` shows the same with the product as
+the right operand) - this changes the previously unconfirmed output for
+e.g. `f(a) + b` accordingly.
+
+**Bug fix - constant shift counts of 3 or more.** The real non-optimized
+compiler output in `tests/mutos_as/kernel_nonopt/*.s` never repeats a
+single-bit shift more than twice; a count of 3 or more is `mov cx,*N.` /
+`sar reg,cl` (e.g. `amx.s`: counts 3, 7 and 11), while 2 is two repeated
+shifts (`04_shift.s.golden`, and a run of two in `amx.s`). `c1` used to
+repeat `sal`/`sar` N times for any N - silently wrong from 3 up. Register
+shifts now follow the confirmed rule (`MCC_SHIFT_REPEAT_MAX` = 2 in
+`c1_gen.c`); `<<=`/`>>=` by more than 2 and `*=` by 8 or more on a memory
+operand, whose shape no golden shows, are now refused instead of
+extrapolated.
+
+**Also fixed (pre-existing, found by this session's ASan/UBSan sweep):**
+`mutos_c0` leaked every string-literal token's text (no grammar rule
+consumes one yet, so `advance()` now frees it), and folded `(0 - 7) << 3`
+through a left shift of a negative value (undefined behavior; now an
+unsigned intermediate, and a constant shift count outside 0..15 is an
+explicit error). `dump_temp.py` now renders a derived type as its full
+chain, outermost first - `PTR.ARRAY.TY_INT(104)`, `FUNC.TY_INT(16)`,
+`PTR.FUNC.TY_INT(72)` - instead of a misleading "`TY_INT ptr×13`".
+
+**Verification (this session):**
+
+- `make test`: **34/62** byte-exact end-to-end (up from 33 of 62), 0
+  genuine mismatches; `mutos_as`/`mutos_cpp` suites unchanged. Zero
+  warnings under `-Wall -Wextra -Wpedantic`.
+- `mutos_c1` run directly on all 62 golden `.1`/`.2` pairs, old vs. new
+  binary: 58 identical; 4 changed, all expected (`02_array2d` now matches
+  its `.s.golden`; `06_struct/03_starray`, `06_struct/05_nestst` and
+  `10_integ/05_matmul` still refused, with a different diagnostic). 38 of
+  the 62 now match their `.s.golden` via `c1` alone.
+- `10_integ/05_matmul`: `c0` byte-exact; `c1` stops only at `a[i][k] *
+  b[k][j]`, where the real compiler evaluates the RIGHT operand first and
+  pushes it (`push di` ... `pop cx` / `imul cx`) - the evaluation-order/
+  spill codegen the register-occupancy guard already refuses.
+- Differential testing, old vs. new `c0`+`c1`, on 3000 random scalar K&R
+  programs: `c0` wire output identical for all; of the programs both
+  accept, every `c1` output difference is one of the two intended changes
+  (141 AX-add, 100 shift-by-CL, 50 both); every new refusal is one of the
+  two memory-operand shift cases. 3000 random 2-D-array programs: every
+  accepted output assembles with `mutos_as`, sampled outputs checked by
+  hand; every refusal is one of the explicit diagnostics above.
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the full corpus plus both
+  3000-program random sets: clean.
 
 ### `mutos_c1`: verified this session (`c1_gen.c` emission-layer refactor, register-occupancy guard, `SETSTK` threshold)
 
@@ -285,7 +367,7 @@ Milestone 4 section) led to three changes, all confined to that one file - no
 
 **Verification (this session):**
 
-- `make test`: 33/62 byte-exact end-to-end, unchanged; 0 genuine
+- `make test`: 33 of 62 byte-exact end-to-end, unchanged; 0 genuine
   mismatches; `mutos_as`/`mutos_cpp` suites unchanged. Zero warnings under
   `-Wall -Wextra -Wpedantic`; clean under ASan/UBSan.
 - `mutos_c1` run directly on all 62 golden `.1`/`.2` pairs (bypassing
@@ -428,7 +510,9 @@ brackets is parsed and discarded, matching real K&R semantics), marking it
 K&R's own array-decays-to-pointer rule and confirmed by `sumarr(a, n)`'s own
 `*(a + i)` and `a[i]`-shaped subscript codegen.
 
-**Not yet supported, deliberately**: `05_arrptr/02_array2d.c` (multi-
+**Not yet supported, deliberately** *(since superseded for `02_array2d.c`,
+which is now done - see the `02_array2d` section above)*:
+`05_arrptr/02_array2d.c` (multi-
 dimensional arrays) - the wire shape for `m[i][j]` is understood (an outer
 `ITOP` node carries a distinctly different, empirically-confirmed type
 value - see `docs/DEVLOG.md` for the full derivation) but `c1`'s actual
@@ -444,7 +528,7 @@ exact argument shape has not been reverse-engineered from any golden. See
 `src/mutos_cc/README.md`'s "Next steps" for the dependency-ordered plan.
 
 **Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
-`make test`): 33/62 byte-exact end-to-end (up from 29), 0 genuine
+`make test`): 33 of 62 byte-exact end-to-end (up from 29), 0 genuine
 mismatches anywhere, confirmed via a full `make clean && make all && make
 test` from a clean checkout with zero compiler warnings under `-Wall
 -Wextra -Wpedantic`.
@@ -1466,23 +1550,24 @@ per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
 `02_long`, `03_ctrlflow` and `04_funcs` are now all fully covered (the
 prior session's two open items, `02_long/03_retval.c`'s `DX:AX` `long`
 return convention and `04_funcs/06_regclass.c`'s real register-variable
-allocation, are both done this session — see above). `05_arrptr` is now
-4/7 done this session (`01_arrbasic`/`03_ptrbasic`/`04_ptrarreq`/
-`06_ptrptr` — single-dimension array subscripting, multi-level pointers,
+allocation, are both done — see above). `05_arrptr` is now 5/7 done
+(`01_arrbasic`/`02_array2d`/`03_ptrbasic`/`04_ptrarreq`/`06_ptrptr` —
+one- and two-dimensional array subscripting, multi-level pointers,
 general `&`/`*`, pointer/array-parameter equivalence). Next up:
-`05_arrptr/02_array2d.c` (2-dimensional arrays — `c1`'s actual combined-
-register-pair addressing codegen for `m[i][j]` still needs to be written,
-not just its wire shape understood — see this session's own section and
-`docs/DEVLOG.md`), `05_arrptr/05_arrofptr.c` and `07_strlibc.c` (string-
+`05_arrptr/05_arrofptr.c` and `07_strlibc.c` (string-
 literal/data-segment emission — an entirely new subsystem, nothing exists
 for it yet), then `06_struct` (structs/unions/enums — real type-system work
 the current `SymEntry`/`ExprVal` model doesn't fully have yet), the
 remaining 81..127-byte `chkstk` gap (the `09_abiprobe` goldens themselves
 still need `char` arrays in `mutos_c0`/`mutos_c1`), and the `mutos_cc` driver
-itself. The register-occupancy guard's refusals (see this session's `c1_gen.c`
+itself. The register-occupancy guard's refusals (see the `c1_gen.c` review
 section above) mark where real spill/reordering codegen - and an SI-scratch
 generalization for functions with a `register` local - will be needed; each
-needs its own golden before it can be implemented.
+needs its own golden before it can be implemented. `10_integ/05_matmul`
+is the first corpus file that is blocked ONLY by such a shape (`c0` is
+already byte-exact for it): its golden shows `a[i][k] * b[k][j]` evaluating
+the right operand first and spilling it with `push di` ... `pop cx`, which
+this streaming `c1` cannot yet reproduce - see the `02_array2d` section above.
 See `src/mutos_cc/README.md`'s "Next steps" for the full, dependency-ordered
 plan.
 
