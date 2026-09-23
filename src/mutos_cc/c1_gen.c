@@ -75,7 +75,14 @@
  * incref(TY_FUNC_INT) = 72). */
 #define TY_PTR_FUNC_INT 72
 
-typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
+/* "pointer to pointer to int" - matches c0_parser.c's ty_ptr_of()
+ * applied to TY_PTR_INT (the same incref() chaining TY_PTR_FUNC_INT's
+ * own comment derives, generalized) - confirmed against
+ * 05_arrptr/06_ptrptr.1.golden's "int **pp;" (every NAME/AMPER/ASSIGN
+ * touching `pp` uses type 40, NOT a naive "16"). */
+#define TY_PTR_PTR_INT 40
+
+typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
                VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR } ValKind;
 /* VK_FUNC - a called function's own NAME, not yet an OP_CALL - a
  * pure compile-time reference (the callee's symbol text, owned/
@@ -137,6 +144,40 @@ typedef enum { VK_IMM, VK_MEM, VK_REG, VK_IND, VK_COND, VK_PAIR, VK_LONG, VK_LCO
  * 05_incdec.s.golden's "mov\t(di),*1." (the STAR-dereferenced
  * assignment target). `reg` holds the register name, same as
  * VK_REG. */
+/* VK_MEM_DIRECT - a pending or resolved compile-time-constant
+ * ADDRESS-OF a plain memory location, `offset` being that address's
+ * own bp-relative offset - the deferred/folded form of an OP_AMPER
+ * whose result is about to be combined with a purely compile-time-
+ * constant scaled index (a subscript with a literal-constant index,
+ * "v[0]" - see OP_AMPER's own peek and OP_PLUS's fold below), used
+ * so the "lea"+"add" pair a runtime index would need can be skipped
+ * entirely when everything folds to a single known offset - confirmed
+ * against 05_arrptr/04_ptrarreq.s.golden's "v[0] = 1;" -> a single
+ * "mov\t*-12.(bp),*1." (no lea/add at all, contrast 01_arrbasic.s.
+ * golden's "a[i] = ...", a genuinely runtime index, which does need
+ * the full "lea"+"mov si,...;sal;add" shape). OP_STAR reuses it
+ * completely unchanged (no "mov di,..." load at all - dereferencing
+ * a compile-time-known address is just that memory location itself),
+ * and OP_ASSIGN accepts it as an ordinary lvalue, rendered identically
+ * to plain VK_MEM. */
+/* VK_IND_PENDING - an indirect assignment target whose own address
+ * computation has already been PUSHED onto the real machine stack
+ * (not left in a register) because it is about to be followed by a
+ * non-trivial right-hand side that itself needs working registers -
+ * confirmed against 05_arrptr/01_arrbasic.s.golden's "a[i] = i * i;"
+ * and 05_arrptr/03_ptrbasic.s.golden's "*p = *p + 1;": both show the
+ * just-computed address pushed ("push\tdi"/"push\t*-10.(bp)") BEFORE
+ * the right-hand side's own code runs, then popped into BX
+ * ("pop\tbx") immediately before the final store ("mov\t(bx),..."),
+ * rather than the ordinary VK_IND shape's eager "mov (di),<rhs>" -
+ * confirmed by 05_incdec.s.golden's "*p = 20;"/"*p++ = 1;" (a bare
+ * constant right-hand side - no code of its own to collide with) NOT
+ * doing this. See OP_STAR's own comment for the exact trigger (a
+ * one-opcode-of-lookahead peek, via a save/restore of temp1's own
+ * file position - the wire bytes themselves are unaffected, so this
+ * is purely a c1-side code-shape decision). Carries no register (the
+ * value is on the hardware stack, not in one) - OP_ASSIGN is the
+ * only confirmed consumer, via a "pop\tbx" first. */
 /* VK_LONG - a MATERIALIZED 32-bit 'long' result already sitting in
  * registers: HIGH word in DI, LOW word in SI, matching
  * docs/MUTOS_C_ABI.md sect. 1.6's "high word at the lower address"
@@ -321,8 +362,10 @@ static Val pop_val(GenState *g)
 
 static Val val_imm(long v) { Val r = {0}; r.kind = VK_IMM; r.imm = v; return r; }
 static Val val_mem(int off) { Val r = {0}; r.kind = VK_MEM; r.offset = off; return r; }
+static Val val_mem_direct(int off) { Val r = {0}; r.kind = VK_MEM_DIRECT; r.offset = off; return r; }
 static Val val_reg(const char *reg) { Val r = {0}; r.kind = VK_REG; r.reg = reg; return r; }
 static Val val_ind(const char *reg) { Val r = {0}; r.kind = VK_IND; r.reg = reg; return r; }
+static Val val_ind_pending(void) { Val r = {0}; r.kind = VK_IND_PENDING; return r; }
 static Val val_long(void) { Val r = {0}; r.kind = VK_LONG; return r; }
 /* `name` is taken over (owned) by the returned Val - freed by
  * whichever OP_CALL pops it (see gen_call()). */
@@ -410,11 +453,13 @@ static void render_operand(char *buf, size_t n, Val v)
             snprintf(buf, n, "#%ld.", v.imm);
         break;
     case VK_MEM: snprintf(buf, n, "*%d.(bp)", v.offset); break;
+    case VK_MEM_DIRECT: snprintf(buf, n, "*%d.(bp)", v.offset); break;
     case VK_MEM_CVT: snprintf(buf, n, "*%d.(bp)", v.offset); break;
     case VK_STATIC: snprintf(buf, n, "L%d", v.offset); break;
     case VK_FUNCADDR: snprintf(buf, n, "#%s", v.reg); break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
     case VK_IND: snprintf(buf, n, "(%s)", v.reg); break;
+    case VK_IND_PENDING: snprintf(buf, n, "<unpopped-ind-pending>"); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
     case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
     case VK_LONG: snprintf(buf, n, "<unrendered-long-di:si>"); break;
@@ -1034,6 +1079,23 @@ static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
             gen_fatal("a 'long' argument already materialized into DI:SI "
                       "is not yet supported as a call argument - see "
                       "src/mutos_cc/README.md");
+        if (items[i].kind == VK_MEM_DIRECT) {
+            /* A deferred address-of argument ("sumarr(v, 4);" - `v`
+             * decaying to its address - see OP_AMPER's own comment
+             * for why this is deferred at all, specifically to reach
+             * this point rather than clobbering DI before its turn)
+             * - materialized right here, at its own push, via "lea" -
+             * confirmed against 04_ptrarreq.s.golden's "lea\tdi,
+             * *-12.(bp)" immediately followed by "push\tdi" (with the
+             * OTHER argument's own "mov di,*4."/"push di" already
+             * emitted first, since arguments push right-to-left). */
+            char buf[32];
+            render_operand(buf, sizeof buf, items[i]);
+            fprintf(out, "lea\tdi,%s\n", buf);
+            fprintf(out, "push\tdi\n");
+            nwords += 1;
+            continue;
+        }
         if (items[i].kind == VK_IMM) {
             load_into_di(out, items[i]);
             fprintf(out, "push\tdi\n");
@@ -1367,10 +1429,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "'register' local, and a called function's own "
                           "SC_EXTERN name are covered so far)", hclass);
             if (type != TY_INT && type != TY_PTR_INT &&
-                type != TY_CHAR && type != TY_LONG && type != TY_PTR_FUNC_INT)
+                type != TY_CHAR && type != TY_LONG && type != TY_PTR_FUNC_INT &&
+                type != TY_PTR_PTR_INT)
                 gen_fatal("NAME of type %d not yet supported (only "
                           "TY_INT/TY_PTR_INT/TY_CHAR/TY_LONG/"
-                          "TY_PTR_FUNC_INT are covered so far)", type);
+                          "TY_PTR_FUNC_INT/TY_PTR_PTR_INT are covered "
+                          "so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             push_val(&g, val_mem(offset));
             break;
@@ -1528,6 +1592,88 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_PLUS:
         case OP_MINUS: {
             int type = c1_read_num(temp1, "temp1");
+            if (op == OP_PLUS && type == TY_PTR_INT) {
+                /* Pointer + scaled-index arithmetic - a single
+                 * subscript step ("a[i]", "m[i][j]"'s own inner
+                 * step) or an explicit "*(a + i)" - confirmed against
+                 * 01_arrbasic.s.golden ("lea di,&a; ...; add di,si" -
+                 * the base address, from a preceding OP_AMPER, stays
+                 * in DI, and the scaled index, from a preceding
+                 * OP_ITOP, is added in from SI - see OP_ITOP's own
+                 * comment) and 04_ptrarreq.s.golden ("mov di,i; sal
+                 * di,*1; add di,*4.(bp)" - here the scaled index
+                 * itself ends up in DI, since the pointer operand is
+                 * a plain parameter with nothing to eagerly load, and
+                 * is added in directly as a memory operand). Either
+                 * operand may already be resident in a register (DI
+                 * from OP_AMPER, or DI/SI from OP_ITOP); whichever
+                 * one is stays as the destination, and the OTHER
+                 * operand is added in via its own rendered operand
+                 * text - a plain memory or immediate right-hand side
+                 * is legal for ADD directly on the 8086, no separate
+                 * load needed. */
+                Val r = pop_val(&g);
+                Val l = pop_val(&g);
+                /* A compile-time-constant-index subscript ("v[0] =
+                 * 1;" - see VK_MEM_DIRECT's own comment): the base
+                 * address (from OP_AMPER, deferred) combines with the
+                 * fully-folded scaled index (from OP_ITOP, always a
+                 * VK_IMM when both its own operands were constant)
+                 * into a single new bp-relative address, with NO
+                 * "lea"/"add" instruction at all - confirmed against
+                 * 04_ptrarreq.s.golden's "v[0] = 1;" -> a lone
+                 * "mov\t*-12.(bp),*1.". */
+                if (l.kind == VK_MEM_DIRECT && r.kind == VK_IMM) {
+                    push_val(&g, val_mem_direct(l.offset + (int)r.imm));
+                    break;
+                }
+                if (r.kind == VK_MEM_DIRECT && l.kind == VK_IMM) {
+                    push_val(&g, val_mem_direct(r.offset + (int)l.imm));
+                    break;
+                }
+                /* The index turned out NOT to be a compile-time
+                 * constant after all (a VK_MEM_DIRECT base paired
+                 * with a genuinely runtime-scaled index, from a
+                 * mixed subscript this grammar scope does not
+                 * exercise - AMPER's own one-opcode CON-peek already
+                 * rules this out for every confirmed construct, but
+                 * this materializes the deferred "lea" correctly
+                 * rather than silently mishandling it if it ever
+                 * does happen) - fall through to the ordinary
+                 * register-based path below with the address
+                 * finally committed to DI. */
+                if (l.kind == VK_MEM_DIRECT) {
+                    char lb[32];
+                    render_operand(lb, sizeof lb, l);
+                    fprintf(out, "lea\tdi,%s\n", lb);
+                    l = val_reg("di");
+                }
+                if (r.kind == VK_MEM_DIRECT) {
+                    char rb[32];
+                    render_operand(rb, sizeof rb, r);
+                    fprintf(out, "lea\tdi,%s\n", rb);
+                    r = val_reg("di");
+                }
+                const char *dst;
+                Val other;
+                if (l.kind == VK_REG && strcmp(l.reg, "di") == 0) {
+                    dst = "di"; other = r;
+                } else if (r.kind == VK_REG && strcmp(r.reg, "di") == 0) {
+                    dst = "di"; other = l;
+                } else if (l.kind == VK_REG) {
+                    dst = l.reg; other = r;
+                } else if (r.kind == VK_REG) {
+                    dst = r.reg; other = l;
+                } else {
+                    load_into_di(out, l);
+                    dst = "di"; other = r;
+                }
+                char obuf[32];
+                render_operand(obuf, sizeof obuf, other);
+                fprintf(out, "add\t%s,%s\n", dst, obuf);
+                push_val(&g, val_reg(dst));
+                break;
+            }
             if (type == TY_LONG) {
                 /* 32-bit add/subtract - textbook 8086 idiom (ADD/SUB
                  * the low words, then ADC/SBB the high words using
@@ -1608,6 +1754,42 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           op == OP_PLUS ? "PLUS" : "MINUS", type);
             Val r = materialize(out, &g, pop_val(&g));
             Val l = materialize(out, &g, pop_val(&g));
+            if (op == OP_PLUS && (r.kind == VK_IND || l.kind == VK_IND)) {
+                /* One operand is itself a dereferenced pointer
+                 * ("sum = sum + a[i];" - 05_arrptr/01_arrbasic.c, or
+                 * "s = s + *(a + i);" - 04_ptrarreq.c) - its lazy
+                 * "(reg)" form can't just be combined via a single
+                 * add (an immediately-following OP_STAR always
+                 * leaves the ADDRESS, not yet the value, in that
+                 * register - see OP_STAR's own comment), so it is
+                 * materialized in place first ("mov reg,(reg)" -
+                 * confirmed against 01_arrbasic.s.golden's "mov
+                 * di,(di)" and 04_ptrarreq.s.golden's identical
+                 * step), then the OTHER operand is added straight in
+                 * via its own rendered text - a plain memory or
+                 * immediate right-hand side is legal for ADD
+                 * directly, no separate load needed. Deliberately
+                 * separate from the register-CLASS-variable special
+                 * case just below (which also ends up with a VK_REG
+                 * "di" operand, but must NOT take this same "add
+                 * straight into di" shape - see that case's own
+                 * comment) - this branch always fires first, and
+                 * always `break`s, so the two never interact. PLUS
+                 * only (commutative) - not exercised, and not
+                 * generalized, for MINUS, where operand order would
+                 * matter and no golden confirms the shape. */
+                Val ind = (r.kind == VK_IND) ? r : l;
+                Val other = (r.kind == VK_IND) ? l : r;
+                fprintf(out, "mov\t%s,(%s)\n", ind.reg, ind.reg);
+                char obuf[32];
+                render_operand(obuf, sizeof obuf, other);
+                if (other.kind == VK_IMM && other.imm == 1)
+                    fprintf(out, "inc\t%s\n", ind.reg);
+                else
+                    fprintf(out, "add\t%s,%s\n", ind.reg, obuf);
+                push_val(&g, val_reg(ind.reg));
+                break;
+            }
             if (r.kind == VK_REG && strcmp(r.reg, "di") == 0 &&
                 !(l.kind == VK_REG && strcmp(l.reg, "di") == 0)) {
                 /* The right operand already lives in DI (a
@@ -1746,16 +1928,50 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             /* Array-to-pointer decay ("p = a;" - c0_parser.c's
-             * parse_primary()): the operand is always a plain
-             * bp-relative NAME, rendered as a real "lea" - confirmed
-             * against 05_incdec.s.golden's "lea\tdi,*-16.(bp)". */
-            if (type != TY_PTR_INT)
+             * parse_primary()) and general address-of a plain
+             * variable ("p = &x;"/"pp = &p;" - parse_unary()'s '&'
+             * case): the operand is always a plain bp-relative NAME,
+             * rendered as a real "lea" - confirmed against
+             * 05_incdec.s.golden's "lea\tdi,*-16.(bp)" and
+             * 06_ptrptr.s.golden's "lea\tdi,*-6.(bp)"/"lea\tdi,
+             * *-8.(bp)" (the latter for "pp = &p;", type 40 - an
+             * ordinary lea either way; only the wire TYPE argument
+             * differs by degree, never the codegen shape itself). */
+            if (type != TY_PTR_INT && type != TY_PTR_PTR_INT)
                 gen_fatal("AMPER of type %d not yet supported (only "
-                          "TY_PTR_INT and TY_PTR_FUNC_INT are covered "
-                          "so far)", type);
+                          "TY_PTR_INT, TY_PTR_PTR_INT and "
+                          "TY_PTR_FUNC_INT are covered so far)", type);
             Val v = pop_val(&g);
             if (v.kind != VK_MEM)
                 gen_fatal("'&' on a non-memory operand is not yet supported");
+            /* If the immediately following wire opcode is OP_NAME,
+             * this AMPER is the base of a subscript with a genuinely
+             * RUNTIME index ("a[i]" - emit_subscript()'s own
+             * NAME/AMPER/NAME/CON/ITOP/PLUS/STAR shape in
+             * c0_parser.c) - the "lea" is emitted right here, eagerly,
+             * matching 01_arrbasic.s.golden's own instruction order
+             * exactly ("lea\tdi,*-14.(bp)" BEFORE the index is loaded
+             * and scaled - contrast a deferred materialization, which
+             * would land it after, since OP_PLUS's own fold/
+             * materialize step only runs once the index side is
+             * already done). One opcode of lookahead, via the same
+             * save/restore-file-position technique OP_STAR's own
+             * VK_IND_PENDING peek uses - see its comment for why this
+             * is safe. For every other immediately-following opcode
+             * (OP_CON - a compile-time-constant index, "v[0] = 1;",
+             * or the start of some other construct entirely, e.g. a
+             * bare "p = &x;"/"pp = &p;" assignment or "sumarr(v, 4)"
+             * call argument), the "lea" is instead DEFERRED (as a
+             * VK_MEM_DIRECT - see its own comment) - see OP_PLUS,
+             * OP_ASSIGN and gen_call()'s own matching comments for
+             * why each of those needs this. */
+            long amper_savepos = ftell(temp1);
+            int amper_next = c1_read_op(temp1, "temp1");
+            fseek(temp1, amper_savepos, SEEK_SET);
+            if (amper_next != OP_NAME) {
+                push_val(&g, val_mem_direct(v.offset));
+                break;
+            }
             char buf[32];
             render_operand(buf, sizeof buf, v);
             fprintf(out, "lea\tdi,%s\n", buf);
@@ -1778,10 +1994,51 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "TY_PTR_INT is covered so far)", type);
             Val size = pop_val(&g);
             Val amt  = pop_val(&g);
-            if (size.kind != VK_IMM || amt.kind != VK_IMM)
-                gen_fatal("ITOP of a non-constant operand is not yet "
-                          "supported");
-            push_val(&g, val_imm(amt.imm * size.imm));
+            if (size.kind != VK_IMM)
+                gen_fatal("ITOP with a non-constant scale factor is "
+                          "not yet supported");
+            if (amt.kind == VK_IMM) {
+                push_val(&g, val_imm(amt.imm * size.imm));
+                break;
+            }
+            /* A non-constant index ("a[i]"/"*(a + i)" -
+             * 05_arrptr/01_arrbasic.c and 04_ptrarreq.c) - scaled via
+             * repeated left-shift, matching the *=2-style strength
+             * reduction already established for 06_compasgn (plain
+             * 8086 has no shift-by-immediate-count opcode - see
+             * OP_LSHIFT/RSHIFT's own comment); only a power-of-two
+             * size is supported, which every size this grammar scope
+             * produces (1/2/4 - char/int-or-pointer/long) is. The
+             * destination register is DI, UNLESS DI is already
+             * occupied by a value still needed afterward - a pointer
+             * address from a preceding OP_AMPER, still sitting on the
+             * value stack right below this ITOP's own two operands -
+             * in which case SI is used instead, to avoid clobbering
+             * it. Confirmed against 01_arrbasic.s.golden's "lea
+             * di,*-14.(bp)" (DI now occupied) / "mov si,*-16.(bp)" /
+             * "sal si,*1" vs. 04_ptrarreq.s.golden's "mov di,*-6.
+             * (bp)" / "sal di,*1" (DI free - the pointer operand `a`
+             * is a plain parameter added in later, straight from
+             * memory, by OP_PLUS below, never loaded into DI itself
+             * beforehand). */
+            int use_si = (g.valsp >= 1 &&
+                          ((g.valstack[g.valsp - 1].kind == VK_REG &&
+                            strcmp(g.valstack[g.valsp - 1].reg, "di") == 0) ||
+                           g.valstack[g.valsp - 1].kind == VK_MEM_DIRECT));
+            const char *reg = use_si ? "si" : "di";
+            if (use_si)
+                load_into_si(out, amt);
+            else
+                load_into_di(out, amt);
+            long sz = size.imm;
+            if (sz != 1 && sz != 2 && sz != 4)
+                gen_fatal("ITOP scaling by a non-power-of-two size "
+                          "(%ld) is not yet supported", sz);
+            char onebuf[32];
+            render_bare_imm(onebuf, sizeof onebuf, 1);
+            for (long s = sz; s > 1; s /= 2)
+                fprintf(out, "sal\t%s,%s\n", reg, onebuf);
+            push_val(&g, val_reg(reg));
             break;
         }
 
@@ -1811,15 +2068,96 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             /* Ordinary pointer dereference - loads the pointer value
              * into DI (a no-op if it is already there, e.g. straight
-             * off a preceding INCAFT/INCBEF - see load_into_di()) and
-             * produces an indirect "(di)" operand. Only pointer-to-
-             * int is supported, so the dereferenced type is always
-             * TY_INT - confirmed against every STAR node in
-             * 05_incdec.1.golden. */
-            if (type != TY_INT)
+             * off a preceding INCAFT/INCBEF, a preceding OP_AMPER/
+             * OP_PLUS pointer-arithmetic result, or - for a chained
+             * "**pp" - the PRIOR OP_STAR's own VK_IND result, whose
+             * "(di)" text load_into_di() renders and reloads exactly
+             * like any other operand - see load_into_di()) and
+             * produces an indirect "(di)" operand. The dereferenced
+             * type is TY_INT for a plain "int *"/array element
+             * (confirmed against every STAR node in 05_incdec.1.
+             * golden and 05_arrptr/01_arrbasic.1.golden), or
+             * TY_PTR_INT for the FIRST of a chained pair of STARs on
+             * a pointer-to-pointer ("**pp" - confirmed against
+             * 06_ptrptr.1.golden: the first STAR is type 8, the
+             * second - dereferencing what the first produced - is
+             * type 0). */
+            if (type != TY_INT && type != TY_PTR_INT)
                 gen_fatal("STAR of type %d not yet supported (only "
-                          "TY_INT and TY_FUNC_INT are covered so far)", type);
+                          "TY_INT, TY_PTR_INT and TY_FUNC_INT are "
+                          "covered so far)", type);
             Val ptr = pop_val(&g);
+            if (ptr.kind == VK_MEM_DIRECT) {
+                /* Dereferencing a compile-time-fully-known address
+                 * ("v[0]" - see VK_MEM_DIRECT's own comment) is just
+                 * that memory location itself - no load, no
+                 * indirection, not even the deferred-address-spill
+                 * logic below (nothing was ever computed into a
+                 * register in the first place, so there is nothing
+                 * to protect from the right-hand side's own
+                 * register use). */
+                push_val(&g, ptr);
+                break;
+            }
+            /* An indirect-assignment TARGET whose right-hand side is
+             * about to need working registers of its own ("a[i] = i
+             * * i;", "*p = *p + 1;" - see VK_IND_PENDING's own
+             * comment) must not leave its address sitting in DI
+             * across that computation - its ORIGINAL operand (`ptr`
+             * above - already a plain memory operand or an address
+             * already resident in some register, never yet loaded
+             * into DI for this purpose) is pushed to the real machine
+             * stack directly instead, popped back only once the
+             * right-hand side is fully evaluated - confirmed against
+             * 03_ptrbasic.s.golden's "*p = *p + 1;": "push\t*-10.
+             * (bp)" (the plain pointer VARIABLE's own memory operand,
+             * pushed WITHOUT first loading it into DI at all - unlike
+             * 01_arrbasic.s.golden's "a[i] = i * i;", where `ptr` is
+             * already "di" from the preceding OP_PLUS, so this is
+             * simply "push\tdi"). Recognizing when this is needed
+             * takes one opcode of lookahead beyond what this dispatch
+             * loop otherwise uses: peek (save/restore temp1's own
+             * file position - c1_read_op()/c1_read_num() are plain
+             * getc() calls, so this is an ordinary seekable FILE*,
+             * and the wire bytes read this way are read AGAIN
+             * normally afterward, so this changes no other opcode's
+             * behavior) whether the immediately following wire is
+             * exactly CON then ASSIGN (a bare constant right-hand
+             * side with nothing else - "*p = 20;"/"*p++ = 1;" -
+             * confirmed by 05_incdec.s.golden to NOT push). Only
+             * attempted for a FINAL (TY_INT) dereference - not the
+             * first of a chained "**pp" (TY_PTR_INT - an intermediate
+             * step that is always immediately re-dereferenced, never
+             * itself an assignment target) - and only when nothing
+             * else is currently pending on the value stack (g.valsp
+             * == 0 right here, i.e. this STAR is the outermost/first
+             * construct of its statement - the shape every star-
+             * assign-stmt/subscript-assign lvalue tree has - never
+             * for a STAR buried inside a larger expression, e.g. the
+             * rhs "*p" of "*p = *p + 1;", which reaches here with
+             * something already pending below and so skips this
+             * entirely, falling through to the ordinary VK_IND
+             * shape). */
+            if (type == TY_INT && g.valsp == 0) {
+                long savepos = ftell(temp1);
+                int op1 = c1_read_op(temp1, "temp1");
+                int trivial = 0;
+                if (op1 == OP_CON) {
+                    (void)c1_read_num(temp1, "temp1"); /* CON's type */
+                    (void)c1_read_num(temp1, "temp1"); /* CON's value */
+                    int op2 = c1_read_op(temp1, "temp1");
+                    if (op2 == OP_ASSIGN)
+                        trivial = 1;
+                }
+                fseek(temp1, savepos, SEEK_SET);
+                if (!trivial) {
+                    char pbuf[32];
+                    render_operand(pbuf, sizeof pbuf, ptr);
+                    fprintf(out, "push\t%s\n", pbuf);
+                    push_val(&g, val_ind_pending());
+                    break;
+                }
+            }
             load_into_di(out, ptr);
             push_val(&g, val_ind("di"));
             break;
@@ -2379,13 +2717,51 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             if (type != TY_INT && type != TY_PTR_INT && type != TY_CHAR &&
-                type != TY_PTR_FUNC_INT)
+                type != TY_PTR_FUNC_INT && type != TY_PTR_PTR_INT)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
             Val rhs = materialize(out, &g, pop_val(&g));
+            if (rhs.kind == VK_MEM_DIRECT) {
+                /* A deferred address-of, finally materialized here -
+                 * "p = &x;"/"p = a;"/"pp = &p;" (see OP_AMPER's own
+                 * comment for why this is deferred at all) - confirmed
+                 * against 05_incdec.s.golden's "lea\tdi,*-16.(bp)" and
+                 * 06_ptrptr.s.golden's two "lea"s. */
+                char rb[32];
+                render_operand(rb, sizeof rb, rhs);
+                fprintf(out, "lea\tdi,%s\n", rb);
+                rhs = val_reg("di");
+            }
             Val lhs = pop_val(&g);
-            if (lhs.kind != VK_MEM && lhs.kind != VK_IND &&
-                lhs.kind != VK_STATIC && lhs.kind != VK_REG)
+            if (lhs.kind == VK_IND_PENDING) {
+                /* The lvalue's own address was pushed to the real
+                 * machine stack earlier (see OP_STAR's own comment
+                 * on VK_IND_PENDING) while the right-hand side above
+                 * used the registers instead - retrieved now, via BX
+                 * (never DI/SI, both of which may still hold live
+                 * pieces of the just-computed rhs) - confirmed
+                 * against 01_arrbasic.s.golden's "pop\tbx" / "mov\t
+                 * (bx),ax" and 03_ptrbasic.s.golden's "pop\tbx" /
+                 * "mov\t(bx),di". */
+                fprintf(out, "pop\tbx\n");
+                lhs = val_ind("bx");
+            }
+            if (lhs.kind != VK_MEM && lhs.kind != VK_MEM_DIRECT &&
+                lhs.kind != VK_IND && lhs.kind != VK_STATIC &&
+                lhs.kind != VK_REG)
                 gen_fatal("assignment to a non-lvalue is not yet supported");
+            if (rhs.kind == VK_IND && (lhs.kind == VK_MEM || lhs.kind == VK_MEM_DIRECT)) {
+                /* The rhs is itself a dereferenced pointer ("y =
+                 * *p;" - 05_arrptr/03_ptrbasic.c) and the lhs is a
+                 * plain memory operand - 8086 MOV cannot take two
+                 * memory operands ("*-8.(bp)" and "(di)" both are),
+                 * so the rhs must be materialized into a real
+                 * register first - confirmed against 03_ptrbasic.
+                 * s.golden's "y = *p;": "mov di,*-10.(bp)" (the STAR
+                 * itself, loading the pointer) / "mov di,(di)" (THIS
+                 * step) / "mov *-8.(bp),di". */
+                fprintf(out, "mov\t%s,(%s)\n", rhs.reg, rhs.reg);
+                rhs = val_reg(rhs.reg);
+            }
             if (rhs.kind == VK_MEM_CVT) {
                 /* A type-converted memory operand (currently only
                  * OP_LTOI's result - see VK_MEM_CVT's own comment
