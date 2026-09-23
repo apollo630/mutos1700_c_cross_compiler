@@ -433,9 +433,15 @@ scope and intent, not a snapshot of what's done.
   `docs/DEVLOG.md`, including a real, previously-unconfirmed compiler
   optimization this surfaced (a call's/multiply's result, when already
   sitting in the return register `AX`, is never redundantly re-moved).
-  **`01_expr` and `03_ctrlflow` are now fully covered, and `04_funcs` is
-  done except `06_regclass.c` (real register-variable allocation - a
-  substantial separate feature, deliberately not attempted).**
+  **`01_expr`, `02_long`, `03_ctrlflow` and `04_funcs` are now all fully
+  covered (the two items still open when the detailed walkthrough above
+  was first written - `02_long/03_retval.c`'s `DX:AX` return-value
+  convention and `04_funcs/06_regclass.c`'s real register-variable
+  allocation - were both finished in a later session; see `STATUS.md`/
+  `docs/DEVLOG.md`'s Milestone 4 section for their own full derivation,
+  not repeated in the walkthrough above). `05_arrptr` is 4 of 7 done -
+  see the file list above and `STATUS.md`/`docs/DEVLOG.md` again for that
+  derivation.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -448,13 +454,14 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope").
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category. `06_regclass.c` (register variables) and
-  `02_long/03_retval.c` (a `long`-returning function's `DX:AX` convention)
-  remain in their categories — see
+  category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list (full arrays-and-pointers (subscripting,
-  multi-level)/structs,
-  the `chkstk` threshold, then the `mutos_cc` driver itself).
+  dependency-ordered list: `05_arrptr`'s remaining 3 files
+  (`02_array2d.c` - 2-dimensional arrays; `05_arrofptr.c`/`07_strlibc.c` -
+  string literals, needing an entirely new data-segment emission
+  subsystem that does not exist yet), then `06_struct`
+  (structs/unions/enums), the `chkstk` threshold, then the `mutos_cc`
+  driver itself.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.
