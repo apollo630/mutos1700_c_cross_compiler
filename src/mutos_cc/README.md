@@ -102,11 +102,9 @@ c;` plus assignments and `+ - * / %`):
   bytes beyond the fixed 4-byte register-save area, rendered as
   `"sub\tsp,*6."` - confirmed byte-for-byte, and consistent with
   `docs/MUTOS_C_ABI.md` sect. 1.9's bound (largest real `libc.a`
-  example using plain `sub sp,N`: `N=76`). The symmetric `> 256`
-  case (`"mov ax,N / call chkstk"`) is implemented from that same
-  document but not yet confirmed against a golden of its own; the
-  unconfirmed `(76,256]` gap remains an explicit "not yet supported"
-  rather than a guess - see `tests/mutos_cc/09_abiprobe/`.
+  example using plain `sub sp,N`: `N=76`). The `09_abiprobe` goldens
+  have since confirmed both shapes and narrowed the `chkstk` threshold
+  to `(80,128]` - see the `SETSTK` paragraph further below.
 - **Per-operator instruction shapes** (`c1_gen.c`, confirmed against
   `01_intarith.s.golden`): `+`/`-` both load the left operand into
   `DI` then `add`/`sub` the right operand in place (`DI` is evidently
@@ -837,13 +835,29 @@ additional instruction - confirmed via `tests/mutos_cc/00_smoke/
 76 bytes emits a plain `"sub sp,*N."` - confirmed against
 `01_intarith.s.golden`'s `extra = 6` case, and consistent with
 `docs/MUTOS_C_ABI.md` sect. 1.9's real-hardware bound (largest
-`libc.a` example using plain `sub sp,N`: `N=76`). `extra > 256` emits
-`"mov ax,*N. / call chkstk"` per that same document, though this
-branch is not yet confirmed against a golden of its own. The
-unconfirmed `(76,256]` gap in between is an explicit "not yet
-supported" rather than a guess - `tests/mutos_cc/09_abiprobe/
-frame080.c` … `frame300.c` exist specifically to pin this down once
-analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
+`libc.a` example using plain `sub sp,N`: `N=76`). The `09_abiprobe`
+goldens pin both shapes down: up to `extra = 80` emits a plain `"sub
+sp,N"` (`02_frame080.s.golden`: `"sub\tsp,*80."`), and from `extra =
+128` up `"mov ax,N / call chkstk"` (`03_frame128` … `07_frame300`, e.g.
+`"mov\tax,#300."`) - `N` rendered as an ordinary immediate either way,
+so the `chkstk` form always takes the `#` marker. The real threshold is
+therefore in `(80,128]`; `extra` of 81..127 bytes is an explicit "not yet
+supported" rather than a guess (see `docs/DEVLOG.md`'s Milestone 4 "Open
+item").
+
+**Register-occupancy guard.** `c1` has no register allocator: each
+operator loads into its golden-confirmed working register (`DI`, `AX`,
+`CX`, `DX`, ...). Every emitted instruction's register effects are looked
+up in `c1_gen.c`'s `INSN_FX` table, and a still-pending value (on the
+value stack, or popped by a handler but not yet used) whose register an
+instruction would overwrite makes `c1` stop with an explicit "not yet
+supported" diagnostic - so shapes like `f(a) + a * b`, `v[a + 1]` or
+`if (a + b < c)`, which need a spill or a different evaluation order, are
+refused rather than silently miscompiled. The same guard keeps a
+`register` local's register (`DI`/`SI`) from being used as scratch, except
+while computing that variable's own new value. No golden yet confirms the
+real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
+"`c1_gen.c` review" section.
 
 ## Next steps (roughly in dependency order)
 
@@ -905,9 +919,10 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    `06_struct` (structs/unions/enums - member layout, sizes beyond a flat
    "2 bytes") - real type-system work the current `SymEntry`/`ExprVal`
    model doesn't fully have yet, untouched so far.
-4. **`09_abiprobe/frame*`**: pins down the real `chkstk` threshold
-   once those goldens exist, unblocking `SETSTK`'s unconfirmed
-   `(76,256]` gap.
+4. **`09_abiprobe/frame*`**: their goldens have narrowed the real
+   `chkstk` threshold to `(80,128]` (implemented - see above); the files
+   themselves still need `char` arrays in `mutos_c0`/`mutos_c1`, and the
+   81..127-byte gap stays "not yet supported" until a golden lands in it.
 5. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
@@ -933,7 +948,11 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
 - `c1_stream.h`/`c1_stream.c` - the `temp1`/`temp2` stream reader
   (byte-level inverse of `c0_outcode.c`).
 - `c1_gen.h`/`c1_gen.c` - code generator (current opcode scope
-  above), including its `Val`/value-stack operand-kind tracking.
+  above), including its `Val`/value-stack operand-kind tracking, the
+  emission layer every line of assembly text goes through (typed `Opnd`
+  operands, `ins0()`/`ins1()`/`ins2()`, `put_label()`/`put_line()`, the
+  `RELOPS`/`ALUOPS` tables and `SEQ_*` fixed idioms), and the
+  register-occupancy guard (see above).
 - `c1_main.c` - CLI entry point (`mutos_c1 temp1 temp2 output.s`).
 
 ## Testing

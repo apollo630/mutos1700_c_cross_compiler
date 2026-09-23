@@ -661,16 +661,19 @@ bits) to identify call targets by name.
 
 ### Open item
 
-The exact `chkstk` size threshold (bounded to `(76, 256]` bytes above) is not pinned
-down further by the current corpus; if a real object file with a local frame in that
+The exact `chkstk` size threshold (bounded to between 76 and 256 bytes by `libc.a`
+above) is not pinned down further by the `libc.a` corpus; if a real object file with a local frame in that
 range surfaces later (e.g. from generating more goldens off the kernel source tree
 per Milestone 2's `conf/Makefile` mechanism, or from a userland `.c` file not yet in
 this checkout), re-check it against this bracket. **Update:** `tests/mutos_cc/
 09_abiprobe/frame080.c` … `frame300.c` now exists specifically to resolve this —
 six otherwise-identical files with local buffers of 80/128/176/224/256/300 bytes,
 bisecting the gap. Once compiled on real hardware, whichever ones emit `call
-chkstk` vs. a plain `sub sp,N` pin the real cutoff down for the first time; update
-this entry once those goldens come back.
+chkstk` vs. a plain `sub sp,N` pin the real cutoff down for the first time.
+**Resolved (2026-09-23)**: the goldens are in - `02_frame080` uses `sub sp,*80.`,
+all of `03_frame128` … `07_frame300` use `mov ax,#N.` / `call chkstk`, so the
+real threshold is in `(80,128]`; see "`c1_gen.c` review" below for the details
+and what `mutos_c1` now does with it.
 
 ### `c0`/`c1` process split: decision and rationale
 
@@ -1097,7 +1100,7 @@ nonzero case**, not just the `extra==0` case from `00_smoke`:
 as `"L1:sub\tsp,*6.\njmp\tL2"` — confirmed byte-for-byte, and `extra=6`
 sits comfortably under `docs/MUTOS_C_ABI.md` sect. 1.9's confirmed
 real-hardware bound (largest plain `sub sp,N` seen in `libc.a`: `N=76`),
-so no ambiguity with the unconfirmed `(76,256]` `chkstk` gap applies here.
+so no ambiguity with the (then still unconfirmed) `chkstk` gap applies here.
 
 ### Bitwise operators and the `*`/`#` immediate marker: byte-level derivation (`01_expr/02_bitwise` — `mutos_c0`/`mutos_c1` extended and verified this session)
 
@@ -3012,6 +3015,165 @@ message on first encounter). Genuinely unstarted, not just unfinished.
 mismatches anywhere, confirmed via a full `make clean && make all &&
 make test` from a clean checkout with zero compiler warnings under
 `-Wall -Wextra -Wpedantic`.
+
+### `c1_gen.c` review: emission layer, register-occupancy guard, and the `09_abiprobe` `SETSTK` threshold (`mutos_c1` changed and verified this session)
+
+A code review of `src/mutos_cc/c1_gen.c` (Milestone 4 grammar work paused for
+it) produced one refactor and two classes of bug fix, all confined to that one
+file: no `mutos_c0` change, no wire-format change, `dump_temp.py` unaffected.
+
+**1. Emission layer (pure refactor).** Assembly text used to be written by 146
+scattered `fprintf(out, "mnem\t%s,%s\n", ...)` calls, most preceded by a
+`char buf[32]; render_operand(buf, sizeof buf, v);` dance, so `mutos_as`'s
+line syntax (tab after the mnemonic, comma between operands, the deliberate
+no-newline `L<n>:` label glue) was restated at every site. Now:
+
+- `Opnd` is a small fixed-size value type holding one rendered operand,
+  built inline by typed constructors: `o_reg()`, `o_sym()`, `o_ind()`
+  (`"(di)"`), `o_lab()`, `o_val()` (any `Val`, via `render_operand()`),
+  `o_imm()`, `o_mem()`, `o_cmpimm()`, `o_shift1()`, `o_indirect()` (`"@"`),
+  and the checked `o_fmt()` escape hatch (never truncates silently).
+- `Insn` (mnemonic + 0-2 `Opnd`s) is rendered only by `put_insn()`;
+  `ins0()`/`ins1()`/`ins2()` wrap it, `put_label()` emits the no-newline
+  label, `put_line()` (printf-format-checked) emits `|`-comments. Nothing
+  else in the file writes to the output stream.
+- Tables where they genuinely fit: `RELOPS` (relational opcode → branch
+  mnemonic + inverse), `ALUOPS` (opcode → diagnostic name, 16-bit mnemonic,
+  `long` high-word partner `adc`/`sbb`), and the confirmed fixed idioms as
+  `const Insn` sequences (`SEQ_PROLOGUE`, `SEQ_DXAX_TO_DISI`,
+  `SEQ_DISI_TO_AXDX`, `SEQ_PUSH_AXDX`) - in the spirit of `v7/cc/table.s`'s
+  code templates, without its tree matcher (see "Decision" below).
+- The postfix-`++`/`--` deferred queue stores structured `Insn`s instead of
+  pre-formatted text; `GenState` carries the output stream, so every helper
+  takes `GenState *` instead of `FILE *`.
+- The confirmed quirks stay explicit and visible: `"pop cx"` (literal space)
+  is a zero-operand "mnemonic", the switch table's hex `#/<n>` and `shl ax,#1`
+  are literal `o_fmt()` operands.
+
+A typed builder was chosen over a template mini-language with custom
+`%`-directives (`"lea\tdi,%o\n"`) because the latter loses the compiler's
+format/argument type checking.
+
+**2. Register-occupancy guard (bug fix).** The value stack records WHERE each
+pending value lives (`VK_REG "di"`, `VK_IND "(di)"`, `VK_LONG` = DI:SI, ...),
+but no code checked whether an instruction was about to overwrite a register
+still holding one. Found by constructing probe programs from the review, then
+by differential fuzzing (below); every one of these compiled silently to wrong
+code before this change:
+
+| Source | Old `mutos_c1` output (excerpt) | What went wrong |
+|---|---|---|
+| `b = f(a) + a * b;` | `call _f` … `mov ax,a / imul b / mov di,ax / add di,ax` | `imul` overwrote `f()`'s result in AX |
+| `v[a + 1] = 5;` | `lea di,v / mov di,a / inc di / …` | array base in DI overwritten by the index |
+| `if (a + b < c)` | `mov di,a / add di,b / mov di,c / cmp di,di` | loading CMP's rhs into DI destroyed its lhs |
+| `b = f(a) + g(a, b);` | `call _f` … `call _g` … `mov di,ax / add di,ax` | the second call overwrote the first result |
+| `b = g(a + b, 5);` | `mov di,a / add di,b / mov di,*5. / push di / push di` | pushing arg 2 destroyed arg 1 |
+| `b = a / (b % c);` | `… idiv c` (remainder in DX) `mov ax,a / cwd / idiv dx` | `cwd` overwrote the divisor in DX |
+| `b = a - *p;` | `mov di,p / mov di,a / sub di,(di)` | pointer in DI overwritten |
+| `b = (a < b) + (c < a);` | both 0/1 results materialized into DI | first result lost |
+| `a = i + 1;` (`register int i`) | `inc di / mov a,di` | the register variable itself modified |
+
+Root cause: `mutos_c1` has no register allocator (by design so far - each
+operator loads into its golden-confirmed working register) and no collision
+check. Fix, in two parts:
+
+- **Automatic, in the emission layer.** `INSN_FX` lists every emitted
+  mnemonic's register effects (explicit destination operand and/or implicit
+  registers: `cwd` → DX, `imul`/`idiv` → AX|DX, `call` → AX|BX|CX|DX - DI/SI
+  are callee-saved per `docs/MUTOS_C_ABI.md` sect. 1.2). A mnemonic missing
+  from the table is itself a `gen_fatal()`, so the table cannot silently rot.
+  `put_insn()` passes the written-register mask to `note_writes()`, which
+  marks every value still on the value stack that lives in one of those
+  registers as `clobbered`. `pop_val()` refuses to hand a clobbered value to
+  a consumer; `discard_val()` (comma-operator left operand, a statement's
+  leftover value at `EXPR`) and `pop_lvalue()` (a register lvalue is a
+  location, not a value) do not. Binary operators now materialize both
+  operands in place on the stack (`pop_operands()` - same emission order as
+  before) so the first operand stays visible while the second's comparison
+  code runs.
+- **Explicit, where a handler holds popped operands.** `require_free()` at each
+  site that writes a register before reading an operand it already popped:
+  comparisons, `+`/`-`/`&`/`|`/`^`/shifts, `*`, `/`/`%`, pointer `+`, call
+  arguments still waiting to be pushed, `?:`, `&&`/`||`, and `ASSIGN`.
+
+For a `register` local (`GenState.reserved`), overwriting its register is
+allowed only while computing that same variable's new value - the statement's
+assignment target at the bottom of the value stack is that register (as in
+`06_regclass.s.golden`'s `i = i + 1;` → `inc di`) - and the variable may not be
+read again until that assignment completes (`regvar_dirty`). `ASSIGN`'s own
+store into it is exempt.
+
+Every collision is now an explicit "not yet supported" diagnostic, never a
+spill or reordering: no golden yet shows what the real compiler emits for any
+of these shapes, and inventing one would violate this project's verification
+rule. The one golden with a `register` local shows the real compiler moving
+its scratch work to SI (`mov si,sum / add si,di`), which is also why refusing
+DI-as-scratch while DI is reserved costs no matchable golden. Generalizing
+that SI-scratch rule, and real spill/reorder shapes, are future work that each
+need a golden first.
+
+**3. `SETSTK` threshold (bug fix).** The `09_abiprobe` goldens (frames of
+80/128/176/224/256/300 bytes beyond the 4-byte register-save area) show:
+
+- 80 bytes: `L1:sub\tsp,*80.`
+- 128, 176, 224, 256, 300 bytes: `L1:mov\tax,#N.` / `call\tchkstk`
+
+So the threshold is in `(80,128]`, and the `chkstk` form's immediate follows
+the ordinary `render_operand()` rule - `#`, since every such N is above 127.
+The old code refused 77..256 bytes and, above 256, emitted `mov ax,*N.` -
+the wrong size marker, silently. It now uses `o_imm()` for both shapes
+(`MCC_SUBSP_MAX` = 80, `MCC_CHKSTK_MIN` = 128) and refuses only 81..127. The
+`09_abiprobe` files themselves still stop earlier (`char` arrays are not yet
+supported), so this was verified with hand-assembled `temp1` streams carrying
+each golden's own `SETSTK` value: all six now reproduce their golden's frame
+epilogue byte-for-byte (before: five refused, one wrong).
+
+**Verification methodology (reusable for any behavior-preserving `c1`
+change).** The 33 end-to-end goldens exercise `c1` only through `c0`, so
+four additional safety nets were used:
+
+1. *`c1` on the golden intermediate files directly.* Feeding every
+   `*.1.golden`/`*.2.golden` pair to `mutos_c1` (bypassing `mutos_c0`) and
+   comparing `.s`, stderr and exit status against the pre-change binary
+   covers the partial runs of the 29 files `c0` cannot parse yet too.
+   37 of the 62 match their `.s.golden` through `c1` alone
+   (`06_struct/01_stbasic`, `08_enum`, `09_typedef` and `07_scope/02_shadow`
+   are blocked only by `c0`) - worth wiring into `run_goldens.sh` as its own
+   stage.
+2. *Coverage.* `gcov` showed the golden corpus executing 148 of the 151
+   output-writing lines; random programs reached one more, and the other two
+   (pointer-`PLUS` fallbacks no C source reaches) got hand-assembled
+   `temp1` streams.
+3. *Differential fuzzing.* A generator of random programs within
+   `mutos_c0`'s grammar; each one accepted by `c0` is run through the old and
+   new `c1`. For the refactor alone: 0 differences over 2060 accepted
+   programs (551 compiled completely, ~425k lines of `.s`). For the guard:
+   426 identical, 1634 refused, 0 unexpected - a difference is accepted only
+   if the new binary stops with a guard diagnostic AND its partial `.s` is an
+   exact byte-prefix of the old output (nothing before the detection point
+   changed); a manual sample of refusals were all genuine clobbers. The
+   `SETSTK` fix was isolated the same way (only frame lines differ).
+4. *Sanitizers.* An ASan/UBSan build produced no reports on any of the
+   above.
+
+**Decision: no `table.s`-style tree matcher (yet).** The review considered
+porting `v7/cc`'s table-driven matcher. Not now: `c1`'s decisions are
+dominated by golden-confirmed special cases (operand-kind-dependent shapes,
+one-opcode lookahead peeks, the AX-resident `imul` swap, DI-vs-SI choice
+with a `register` local) that a pattern table expresses poorly. But several
+confirmed quirks - `pop cx` with a space, the self-move `mov ax,ax`, the burned
+switch label, the hex `#/` literal - look like artifacts of a real
+template-driven MUTOS `c1`, so revisit this once `06_struct`/`08_float`
+coverage multiplies the special cases.
+
+**Other review findings, not changed here:** type constants duplicated
+between `c0_parser.c` and `c1_gen.c` (`TY_PTR_INT`, `TY_PTR_PTR_INT`,
+`TY_PTR_FUNC_INT`, `MCC_SZINT`, ...) belong in `mutos_cc.h`; `Val` overloads
+fields by kind (`reg` holds an owned symbol for `VK_FUNC`/`VK_FUNCADDR`,
+`offset` a label or a `long`'s high word); the ~1,800-line dispatch `switch`
+would read better as per-opcode handler functions; the `AMPER`/`STAR`
+lookahead needs a seekable `temp1` (never a pipe) and does not check
+`ftell()`; `c1_read_sym()` does not check `malloc()`/`realloc()`.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
