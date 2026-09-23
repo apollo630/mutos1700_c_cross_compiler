@@ -14,7 +14,7 @@ this repo (see CLAUDE.md's Session-Start Protocol / Workflow Guideline 6):
      `MUTOS1700_Assembler_as.pdf`) - a likely stale/typo reference.
   4. "Facts" restated in more than one file that have drifted out of sync
      with each other (corpus pass count, STAUTO, NCPS, DIRSIZ, the chkstk
-     (76,256] bound - see FACT_CHECKS below). New facts can be added there
+     threshold's (a,b] bound - see FACT_CHECKS below). New facts can be added there
      as one line each; the check needs no "expected value" to maintain,
      only that every occurrence of a fact agrees with every other one.
   5. A "Last updated: YYYY-MM-DD" line that doesn't match the file's actual

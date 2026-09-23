@@ -460,8 +460,9 @@ scope and intent, not a snapshot of what's done.
   (`02_array2d.c` - 2-dimensional arrays; `05_arrofptr.c`/`07_strlibc.c` -
   string literals, needing an entirely new data-segment emission
   subsystem that does not exist yet), then `06_struct`
-  (structs/unions/enums), the `chkstk` threshold, then the `mutos_cc`
-  driver itself.
+  (structs/unions/enums), the remaining 81..127-byte `chkstk` gap (the
+  `09_abiprobe` goldens narrowed the threshold to `(80,128]`), then the
+  `mutos_cc` driver itself.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

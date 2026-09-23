@@ -346,6 +346,15 @@ that range but not pinned down further by this corpus. A conservative,
 easy-to-justify choice for `mutos_c1` would be a round threshold inside that gap
 (e.g. 128 bytes) pending a real example that narrows it further.
 
+**Update (2026-09-23) — narrowed by real compiler output.** The
+`tests/mutos_cc/09_abiprobe/` goldens (six functions differing only in local
+frame size, compiled by the real MUTOS 1700 `cc`) show a frame of 80 bytes
+allocated with `sub sp,*80.` and frames of 128, 176, 224, 256 and 300 bytes
+with `mov ax,#N.` / `call chkstk`. The real threshold is therefore in
+`(80,128]` bytes; sizes 81–127 remain unobserved. `framesize` is written as an
+ordinary immediate (`#` marker for values above 127 — see `man/mutos_as.1`),
+exactly like the `*N.` of the `sub sp,N` form.
+
 ### 1.10 What is *not* part of this convention
 
 Not every function-shaped `.o`/routine encountered is compiler output. A
@@ -612,14 +621,11 @@ it; the note says so where that's the case.
       pop bp / ret`) (§1.2). Implemented and verified (`c1_gen.c`'s
       `RETRN` handler).
 - [~] Large frames: `mov ax,framesize / call chkstk` instead of inline `sub sp,N`
-      above some threshold in `(76, 256]` bytes, exact cutoff not yet pinned down
-      (§1.9) — **partially implemented**: the `<=76`-bytes plain
-      `sub sp,N` case is implemented and verified (`01_intarith`'s
-      `extra=6`); the `>256`-bytes `call chkstk` case is implemented from
-      this document but not yet confirmed against a golden of its own; the
-      unconfirmed `(76,256]` gap is an explicit "not yet supported" rather
-      than a guess (`tests/mutos_cc/09_abiprobe/frame080.c` … `frame300.c`
-      exist to pin it down once analyzed).
+      above a threshold in `(80,128]` bytes (§1.9) — **implemented and verified
+      for every confirmed size**: plain `sub sp,N` up to 80 bytes (`01_intarith`'s
+      `extra=6`, `09_abiprobe/02_frame080`'s 80), `mov ax,#N. / call chkstk` from
+      128 bytes up (`09_abiprobe/03_frame128` … `07_frame300`); the unconfirmed
+      81..127-byte gap is an explicit "not yet supported" rather than a guess.
 - [ ] Long multiply/divide/modulo: emit calls to `almul`/`aldiv`/`alrem` using their
       *own* extended, pointer-first calling convention (§1.8) — not the general ABI.
       **Not yet implemented**: no `long` support yet.

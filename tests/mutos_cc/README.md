@@ -98,15 +98,17 @@ mapping from short name to intent.
 
 ### `09_abiprobe` — resolving a documented open question
 
-`docs/DEVLOG.md`'s Milestone 4 section has an explicit **open item**: the
-real `chkstk` stack-probe threshold is only bounded to `(76, 256]` bytes by
-the existing `libc.a` corpus (largest plain `sub sp,N` seen: `N=76`;
+`docs/DEVLOG.md`'s Milestone 4 section had an explicit **open item**: the
+real `chkstk` stack-probe threshold was only bounded to between 76 and 256
+bytes by the existing `libc.a` corpus (largest plain `sub sp,N` seen: `N=76`;
 smallest `call chkstk` seen: `N=256` — nothing in between has been
 observed). `frame080.c` through `frame300.c` are six otherwise-identical
 files whose *only* difference is a local buffer of 80/128/176/224/256/300
 bytes. Compiling all six on real hardware and checking which ones emit
 `call chkstk` instead of a plain `sub sp,N` pins the real cutoff down for
-the first time.
+the first time. **Result**: `02_frame080` uses `sub sp,*80.`, the other five
+use `call chkstk`, so the threshold is in `(80,128]` bytes (see
+`docs/MUTOS_C_ABI.md` sect. 1.9).
 
 ## Workflow
 

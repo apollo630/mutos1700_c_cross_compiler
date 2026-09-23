@@ -3,13 +3,22 @@
  *
  * Current opcode coverage (matches mutos_c0's current grammar
  * coverage - see c0_parser.c and src/mutos_cc/README.md): SYMDEF,
- * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, NAME, CON,
- * PLUS, MINUS, TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT,
- * RSHIFT, LESS, LESSEQ, GREAT, GREATEQ, EQUAL, NEQUAL, LOGAND, LOGOR,
- * EXCLA, AMPER, ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, ASPLUS,
- * ASMINUS, ASTIMES, ASDIV, ASMOD, ASLSH, ASRSH, ASSAND, ASOR, ASXOR,
- * COLON, QUEST, SEQNC, LCON, LTOI, ITOC, CTOL, ASSIGN, RFORCE, EXPR,
+ * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, RNAME, BSS,
+ * SSPACE, SNAME, NAME, CON, LCON, LTOI, ITOC, CTOL, ITOL, PLUS, MINUS,
+ * TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT, RSHIFT, AMPER,
+ * ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, LESS, LESSEQ, GREAT,
+ * GREATEQ, EQUAL, NEQUAL, CBRANCH, LOGAND, LOGOR, EXCLA, COLON, QUEST,
+ * SEQNC, COMMA, NULLOP, CALL, ASPLUS, ASMINUS, ASTIMES, ASDIV, ASMOD,
+ * ASLSH, ASRSH, ASSAND, ASOR, ASXOR, ASSIGN, RFORCE, EXPR, SWIT,
  * RETRN, SETSTK, EOFC.
+ *
+ * Structure: the per-opcode dispatch loop (c1_generate()) and its
+ * codegen helpers decide WHAT to emit; every byte of assembly text
+ * goes through the small emission layer (put_insn() and friends - see
+ * its section below), which alone knows mutos_as's source-line syntax
+ * and also runs the register-occupancy guard (note_writes()) that
+ * turns a register collision into an explicit "not yet supported"
+ * instead of silently wrong code.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -54,6 +63,16 @@
 #define MCC_SZINT 2
 
 #define DEFERRED_MAX 4
+
+/* OP_SETSTK's two confirmed local-frame allocation shapes (docs/
+ * MUTOS_C_ABI.md sect. 1.9): the largest frame (bytes beyond the SAVE
+ * prologue's own register-save area) confirmed to use a plain "sub
+ * sp,N" - 09_abiprobe/02_frame080.s.golden, N=80 - and the smallest
+ * confirmed to use "mov ax,N / call chkstk" instead - 09_abiprobe/
+ * 03_frame128.s.golden, N=128. The real threshold lies somewhere in
+ * (80,128]; sizes 81..127 stay an explicit "not yet supported". */
+#define MCC_SUBSP_MAX  80
+#define MCC_CHKSTK_MIN 128
 
 /* Matches c0_parser.c's own MCC_NCASES - the max number of 'case'
  * labels OP_SWIT's handler below will collect for one 'switch'. */
@@ -254,6 +273,10 @@ typedef struct {
      * "if (c > 0L)"); every other consumer (materialize(), OP_LOGAND/
      * OP_LOGOR, OP_QUEST) gen_fatal()s on it rather than guessing a
      * shape no golden confirms. */
+    int       clobbered; /* set by the register-occupancy guard (see
+     * note_writes()) when an instruction overwrote a register this
+     * still-pending value lives in; pop_val() then refuses to hand it
+     * to a consumer - see the "Register-occupancy guard" section. */
 } Val;
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
@@ -268,7 +291,45 @@ struct ArgList {
     Val items[MCC_MAXCALLARGS];
 };
 
+/* One rendered assembly operand ("di", "*-6.(bp)", "#240.", "L7",
+ * "(bx)", "@*4.(bp)", ...) - a small fixed-size VALUE type, so an
+ * operand can be built inline as a function argument (see the o_*()
+ * constructors and the emission layer further below) with no
+ * caller-side scratch buffer. OPND_MAX comfortably exceeds the longest
+ * text any operand kind renders to (a symbol name is at most MCC_NCPS
+ * characters plus a marker); o_fmt() gen_fatal()s rather than
+ * silently truncating if that ever stops being true. */
+#define OPND_MAX 48
+typedef struct { char s[OPND_MAX]; } Opnd;
+
+/* One assembly instruction or operand-taking pseudo-op: `mnem` plus
+ * 0, 1 or 2 operands, rendered by put_insn() - the ONE place that
+ * knows mutos_as's "mnem<TAB>a,b<NL>" line syntax. Used both for
+ * immediate emission (ins0()/ins1()/ins2()), for the const fixed-
+ * idiom tables (SEQ_* below - v7/cc table.s-style code templates),
+ * and as the storage type of GenState's deferred postfix-++/-- queue
+ * (a structured instruction, not pre-formatted text). */
 typedef struct {
+    const char *mnem;
+    int         nops;   /* 0, 1 or 2 */
+    Opnd        a, b;
+} Insn;
+
+/* One bit per 8086 general register the register-occupancy guard
+ * tracks (see note_writes()); SP/BP/segment registers never hold an
+ * expression value, so they have no bit. */
+enum {
+    RB_AX = 1u << 0,
+    RB_BX = 1u << 1,
+    RB_CX = 1u << 2,
+    RB_DX = 1u << 3,
+    RB_SI = 1u << 4,
+    RB_DI = 1u << 5
+};
+
+typedef struct {
+    FILE *out;                /* the .s output stream - see the emission
+                                * layer (put_insn() and friends) */
     int  regvar;              /* the most recently seen SETREG value -
                                 * consulted nowhere yet (OP_NAME's
                                 * SC_REG case maps a symbol's own
@@ -293,25 +354,34 @@ typedef struct {
                                 * silent initial one, so only POSITION
                                 * (not value) distinguishes them - see
                                 * OP_SETREG's own handler below. */
-    int  di_reserved;         /* reset to 0 at each OP_SAVE; set to 1
-                                * once OP_RNAME claims DI for a
-                                * 'register'-class local (04_funcs/
-                                * 06_regclass.c) - stays 1 for the rest
-                                * of the function (its lifetime), since
+    unsigned reserved;        /* RB_* mask of registers currently owned
+                                * by a 'register'-class local: reset at
+                                * each OP_SAVE, a bit set once OP_RNAME
+                                * claims that register (04_funcs/
+                                * 06_regclass.c) - kept for the rest of
+                                * the function (its lifetime), since
                                 * this grammar scope never frees a
-                                * register mid-function. While set, DI
-                                * is off-limits as the generic "working
-                                * register" an otherwise-unresolved
-                                * value gets loaded into - SI is used
-                                * instead. Only OP_RFORCE's default
-                                * path is confirmed to need this so far
-                                * (06_regclass.s.golden's "return sum;"
-                                * -> "mov si,*-6.(bp) / mov ax,si", not
-                                * the usual DI-then-AX shape); every
-                                * other "go through DI" site is left
-                                * unchanged since none is exercised
-                                * with a live register variable by any
-                                * golden yet. */
+                                * register mid-function. While DI is
+                                * reserved it is off-limits as the
+                                * generic "working register" - SI is
+                                * used instead where that is confirmed
+                                * (OP_RFORCE's default path: 06_regclass.
+                                * s.golden's "return sum;" -> "mov si,
+                                * *-6.(bp) / mov ax,si", not the usual
+                                * DI-then-AX shape); every other write
+                                * to a reserved register is caught by
+                                * note_writes() (explicit "not yet
+                                * supported") unless it computes that
+                                * variable's own new value. */
+    unsigned regvar_dirty;    /* RB_* mask of reserved registers
+                                * overwritten, mid-statement, while
+                                * computing their own variable's new
+                                * value (note_writes()'s exemption) -
+                                * cleared by that variable's OP_ASSIGN;
+                                * a read of the variable (OP_NAME
+                                * SC_REG) while its bit is set would see
+                                * a half-computed value, so it is
+                                * refused. */
     Val  valstack[VALSTACK_MAX];
     int  valsp;
     int  next_lab;             /* c1's own internal label counter for
@@ -323,7 +393,7 @@ typedef struct {
                                  * "L10000"); the threshold headroom
                                  * below temp1's own label space is
                                  * otherwise unconfirmed/arbitrary. */
-    char deferred[DEFERRED_MAX][72]; /* postfix ++/-- fixups (INCAFT/
+    Insn deferred[DEFERRED_MAX];     /* postfix ++/-- fixups (INCAFT/
                                  * DECAFT) queued at the operator's
                                  * own position, flushed at the next
                                  * OP_EXPR - see gen_incdec()'s and
@@ -353,11 +423,54 @@ static void push_val(GenState *g, Val v)
     g->valstack[g->valsp++] = v;
 }
 
+static void fatal_clobbered(void)
+{
+    gen_fatal("an intermediate value was overwritten in its register "
+              "before being used (e.g. by a call, a multiply/divide or "
+              "another subexpression evaluated in between) - this "
+              "expression shape needs register spilling/reordering that "
+              "no golden reference confirms yet, so it is not yet "
+              "supported rather than miscompiled - see docs/DEVLOG.md");
+}
+
+/* Pops a value that is about to be USED (read by the code emitted
+ * next). Refuses a value whose register was overwritten while it was
+ * pending (see note_writes()) - emitting code from it would silently
+ * read garbage. */
 static Val pop_val(GenState *g)
 {
     if (g->valsp <= 0)
         gen_fatal("expression stack underflow - malformed temp1 stream");
-    return g->valstack[--g->valsp];
+    Val v = g->valstack[--g->valsp];
+    if (v.clobbered)
+        fatal_clobbered();
+    return v;
+}
+
+/* Pops a value whose CONTENT is dropped unread (the comma operator's
+ * left operand, a statement's leftover value at OP_EXPR) - a
+ * clobbered register there is harmless. */
+static void discard_val(GenState *g)
+{
+    if (g->valsp <= 0)
+        gen_fatal("expression stack underflow - malformed temp1 stream");
+    g->valsp--;
+}
+
+/* Pops an assignment TARGET. A register lvalue (a 'register' local)
+ * names a location, not a value, so its register having been
+ * overwritten while computing the right-hand side is expected (e.g.
+ * "i = i + 1;" -> "inc di"); every other lvalue kind is checked like
+ * pop_val() (an indirect "(di)" target whose address register was
+ * overwritten would store through a garbage address). */
+static Val pop_lvalue(GenState *g)
+{
+    if (g->valsp > 0 && g->valstack[g->valsp - 1].kind == VK_REG) {
+        Val v = g->valstack[--g->valsp];
+        v.clobbered = 0;
+        return v;
+    }
+    return pop_val(g);
 }
 
 static Val val_imm(long v) { Val r = {0}; r.kind = VK_IMM; r.imm = v; return r; }
@@ -469,47 +582,6 @@ static void render_operand(char *buf, size_t n, Val v)
     }
 }
 
-/* Materializes a VK_LCON (OP_LCON's deferred raw (hi,lo) pair - see
- * its ValKind comment above) into a real VK_LONG sitting in DI:SI -
- * pass-through for anything already resolved (VK_LONG from OP_CTOL
- * or a runtime-helper call, in particular). The two shapes are the
- * same ones OP_LCON itself used to emit eagerly, now emitted lazily
- * at the point of actual use: an int-range value whose high word is
- * just its low word's sign-extension (e.g. 37L) uses the CWD idiom;
- * a genuinely 32-bit value (e.g. 123456L, or 70000) direct-splits
- * into SI/DI - confirmed against 02_long/02_muldiv.s.golden and
- * 08_castsize.s.golden respectively (both still byte-identical under
- * this lazier scheme, since OP_ASSIGN's long-target case - the only
- * confirmed consumer needing a real materialized value - was already
- * always the very next opcode after LCON in every one of those
- * cases, with nothing in between to observe the difference). */
-static Val materialize_long(FILE *out, Val v)
-{
-    if (v.kind != VK_LCON)
-        return v;
-    long lo = v.imm, hi = v.offset;
-    if (hi == (lo < 0 ? -1 : 0)) {
-        char buf[32];
-        render_operand(buf, sizeof buf, val_imm(lo));
-        fprintf(out, "mov\tax,%s\n", buf);
-        fprintf(out, "cwd\n");
-        fprintf(out, "mov\tdi,dx\n");
-        fprintf(out, "mov\tsi,ax\n");
-    } else {
-        char lobuf[32], hibuf[32];
-        render_operand(lobuf, sizeof lobuf, val_imm(lo));
-        render_operand(hibuf, sizeof hibuf, val_imm(hi));
-        fprintf(out, "mov\tsi,%s\n", lobuf);
-        fprintf(out, "mov\tdi,%s\n", hibuf);
-    }
-    return val_long();
-}
-
-static void load_into_di(FILE *out, Val v); /* forward decl - defined
-                                               * below, needed by
-                                               * emit_cmp_and_branch()
-                                               * above its own definition */
-
 /* SAL/SAR's immediate shift-count operand omits the trailing "."
  * decimal-terminator that render_operand() uses everywhere else -
  * confirmed via 04_shift.s.golden's "sar\tdi,*1" (no period) vs.
@@ -556,24 +628,477 @@ static void render_cmp_imm(char *buf, size_t n, long v)
 }
 
 /* -------------------------------------------------------------- */
+/* Assembly emission layer.
+ *
+ * Every byte of assembly text mutos_c1 writes goes through the few
+ * functions below - nothing else in this file calls fprintf()/fputs()
+ * on the output stream. mutos_as's source-line syntax is therefore
+ * decided in exactly one place:
+ *   - an instruction/pseudo-op is "mnem", "mnem<TAB>a" or
+ *     "mnem<TAB>a,b", newline-terminated (put_insn());
+ *   - a label is "L<n>:" with NO trailing newline, so whatever is
+ *     emitted next glues onto the same source line ("L4:cmp\t...") -
+ *     the convention every golden uses (put_label());
+ *   - "|"-comments and other free-form lines ("| _a=-6.", "|NREG 3")
+ *     are printf-formatted and newline-terminated (put_line()).
+ * Call sites read like the assembly they produce, e.g.
+ *     ins2(g, "lea", o_reg("di"), o_val(v));   -> "lea\tdi,*-16.(bp)"
+ *     ins2(g, "mov", o_reg(r), o_ind(r));       -> "mov\tdi,(di)"
+ * and the confirmed fixed multi-instruction idioms are const Insn
+ * tables (SEQ_*), emitted with put_seq(). This layer only centralizes
+ * the TEXT - every codegen decision (which register, which shape)
+ * stays exactly where it was, so it changes no emitted byte. */
+
+#if defined(__GNUC__) || defined(__clang__)
+#define PRINTF_LIKE(fmt_idx, arg_idx) \
+    __attribute__((format(printf, fmt_idx, arg_idx)))
+#else
+#define PRINTF_LIKE(fmt_idx, arg_idx)
+#endif
+
+/* printf-style operand constructor - the general escape hatch for an
+ * operand whose text is not one of the kinds below (e.g. switch's
+ * "@L<n>(bx)" or its hex "#/<n>" literal). Never truncates silently. */
+static Opnd o_fmt(const char *fmt, ...) PRINTF_LIKE(1, 2);
+static Opnd o_fmt(const char *fmt, ...)
+{
+    Opnd o;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(o.s, sizeof o.s, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof o.s)
+        gen_fatal("internal: operand text longer than %d characters",
+                  OPND_MAX - 1);
+    return o;
+}
+
+/* A register ("di"), by its mutos_as name. */
+static Opnd o_reg(const char *reg) { return o_fmt("%s", reg); }
+/* A symbol or runtime-helper name ("_main", "lmul", "cret"). */
+static Opnd o_sym(const char *name) { return o_fmt("%s", name); }
+/* Register-indirect memory operand: "(di)". */
+static Opnd o_ind(const char *reg) { return o_fmt("(%s)", reg); }
+/* A label reference: "L7". */
+static Opnd o_lab(int lab) { return o_fmt("L%d", lab); }
+/* Any resolved Val, via render_operand(). */
+static Opnd o_val(Val v)
+{
+    Opnd o;
+    render_operand(o.s, sizeof o.s, v);
+    return o;
+}
+/* An ordinary immediate ("*5.", "#240.") - render_operand()'s rule. */
+static Opnd o_imm(long v) { return o_val(val_imm(v)); }
+/* A bp-relative memory operand ("*-6.(bp)"). */
+static Opnd o_mem(int offset) { return o_val(val_mem(offset)); }
+/* CMP's own immediate shape - see render_cmp_imm(). */
+static Opnd o_cmpimm(long v)
+{
+    Opnd o;
+    render_cmp_imm(o.s, sizeof o.s, v);
+    return o;
+}
+/* The single-bit shift count "*1" - see render_bare_imm(). */
+static Opnd o_shift1(void)
+{
+    Opnd o;
+    render_bare_imm(o.s, sizeof o.s, 1);
+    return o;
+}
+/* mutos_as's "@" indirect-operand marker, e.g. "call\t@*4.(bp)". */
+static Opnd o_indirect(Opnd x) { return o_fmt("@%s", x.s); }
+
+static Insn insn0(const char *mnem)
+{
+    Insn i = {0};
+    i.mnem = mnem;
+    return i;
+}
+static Insn insn1(const char *mnem, Opnd a)
+{
+    Insn i = insn0(mnem);
+    i.nops = 1;
+    i.a = a;
+    return i;
+}
+static Insn insn2(const char *mnem, Opnd a, Opnd b)
+{
+    Insn i = insn1(mnem, a);
+    i.nops = 2;
+    i.b = b;
+    return i;
+}
+
+/* -------------------------------------------------------------- */
+/* Register-occupancy guard.
+ *
+ * This code generator keeps every pending intermediate value on the
+ * value stack, tagged with WHERE it lives (VK_REG "di", VK_IND "(di)",
+ * VK_LONG = DI:SI, ...), but it does not allocate registers: each
+ * operator loads into its own confirmed working register (DI, AX, CX,
+ * DX, ...) regardless of what already lives there. Nothing used to
+ * check for a collision, so e.g. "f(a) + a * b" silently lost f()'s
+ * result (IMUL overwrote AX), "v[a + 1]" lost the array base in DI,
+ * and "if (a + b < c)" compared DI with itself. The guard makes every
+ * such collision an explicit "not yet supported" instead - no golden
+ * yet confirms the spill/reordering a real compiler would emit, so
+ * inventing one would violate this project's verification rule.
+ *
+ * Mechanism: put_insn() looks every instruction up in INSN_FX (which
+ * registers it writes - its register destination operand and/or
+ * implicit ones like CWD -> DX, CALL -> AX/BX/CX/DX), and
+ * note_writes() then
+ *   1. marks every value still ON the value stack that lives in a
+ *      written register as clobbered; pop_val() refuses to hand a
+ *      clobbered value to a consumer (a value that is only discarded -
+ *      discard_val() - is harmless), and
+ *   2. refuses a write to a register owned by a 'register' local
+ *      (GenState.reserved), unless the statement being compiled is
+ *      that variable's own assignment (see note_writes()).
+ * Operands a handler has already popped but not yet consumed are not
+ * on the stack, so handlers that write a register before reading such
+ * an operand call require_free() explicitly first. */
+
+static unsigned reg_bit(const char *reg)
+{
+    static const struct { const char *name; unsigned bit; } regs[] = {
+        { "ax", RB_AX }, { "al", RB_AX }, { "bx", RB_BX },
+        { "cx", RB_CX }, { "cl", RB_CX }, { "dx", RB_DX }, { "dl", RB_DX },
+        { "si", RB_SI }, { "di", RB_DI },
+    };
+    if (!reg)
+        return 0;
+    for (size_t i = 0; i < sizeof regs / sizeof regs[0]; i++)
+        if (strcmp(regs[i].name, reg) == 0)
+            return regs[i].bit;
+    return 0; /* sp, bp, cs, a memory operand's text, ... */
+}
+
+static const char *reg_name(unsigned bit)
+{
+    switch (bit) {
+    case RB_AX: return "ax";
+    case RB_BX: return "bx";
+    case RB_CX: return "cx";
+    case RB_DX: return "dx";
+    case RB_SI: return "si";
+    default:    return "di";
+    }
+}
+
+/* Registers a (simple) operand's value depends on. Only VK_REG/VK_IND
+ * keep a register name in `reg` (VK_FUNC/VK_FUNCADDR keep a symbol
+ * there, which is not a register). */
+static unsigned simple_regs(SimpleVal s)
+{
+    switch (s.kind) {
+    case VK_REG:
+    case VK_IND:  return reg_bit(s.reg);
+    case VK_LONG: return RB_DI | RB_SI;
+    default:      return 0;
+    }
+}
+
+static unsigned val_regs(const Val *v)
+{
+    switch (v->kind) {
+    case VK_REG:
+    case VK_IND:  return reg_bit(v->reg);
+    case VK_LONG: return RB_DI | RB_SI;
+    case VK_COND:
+    case VK_PAIR: return simple_regs(v->cl) | simple_regs(v->cr);
+    case VK_ARGLIST: {
+        unsigned m = 0;
+        for (int i = 0; i < v->arglist->n; i++)
+            m |= val_regs(&v->arglist->items[i]);
+        return m;
+    }
+    default:      return 0;
+    }
+}
+
+/* Register effects of every mnemonic mutos_c1 emits. `dst` says which
+ * explicit operands are written when they name a register (1 = the
+ * first, 2 = both - XCHG); `implicit` lists fixed registers written
+ * regardless of operands. A mnemonic missing from this table is a
+ * gen_fatal() (see insn_writes()), so the table cannot silently fall
+ * out of date as new instruction shapes are added. */
+typedef struct {
+    const char *mnem;
+    unsigned    implicit;
+    int         dst;
+} InsnFx;
+
+static const InsnFx INSN_FX[] = {
+    { "mov",  0, 1 }, { "movb", 0, 1 }, { "lea", 0, 1 },
+    { "add",  0, 1 }, { "sub",  0, 1 }, { "adc", 0, 1 }, { "sbb", 0, 1 },
+    { "and",  0, 1 }, { "or",   0, 1 }, { "xor", 0, 1 }, { "not", 0, 1 },
+    { "sal",  0, 1 }, { "sar",  0, 1 }, { "shl", 0, 1 },
+    { "inc",  0, 1 }, { "dec",  0, 1 }, { "pop", 0, 1 },
+    { "pop cx", RB_CX, 0 },        /* the literal-space quirk - OP_PLUS */
+    { "xchg", 0, 2 },
+    { "cbw",  RB_AX, 0 },
+    { "cwd",  RB_DX, 0 },
+    { "imul", RB_AX | RB_DX, 0 },  /* one-operand forms: DX:AX result */
+    { "idiv", RB_AX | RB_DX, 0 },
+    /* A call clobbers the caller-saved registers; DI/SI are callee-
+     * saved (every function's SAVE prologue pushes them - docs/
+     * MUTOS_C_ABI.md sect. 1.2), which is what lets a 'register'
+     * local live in DI across calls. */
+    { "call", RB_AX | RB_BX | RB_CX | RB_DX, 0 },
+    { "push", 0, 0 }, { "cmp", 0, 0 }, { "jmp", 0, 0 }, { "seg", 0, 0 },
+    { "blt",  0, 0 }, { "ble", 0, 0 }, { "bgt", 0, 0 }, { "bge", 0, 0 },
+    { "beq",  0, 0 }, { "bne", 0, 0 }, { "blos", 0, 0 }, { "bhi", 0, 0 },
+    { ".globl", 0, 0 }, { ".text", 0, 0 }, { ".even", 0, 0 },
+    { ".bss",   0, 0 }, { ".data", 0, 0 }, { ".blkb", 0, 0 },
+};
+
+static unsigned insn_writes(const Insn *in)
+{
+    for (size_t i = 0; i < sizeof INSN_FX / sizeof INSN_FX[0]; i++) {
+        const InsnFx *fx = &INSN_FX[i];
+        if (strcmp(fx->mnem, in->mnem) != 0)
+            continue;
+        unsigned m = fx->implicit;
+        if (fx->dst >= 1 && in->nops >= 1)
+            m |= reg_bit(in->a.s);
+        if (fx->dst >= 2 && in->nops >= 2)
+            m |= reg_bit(in->b.s);
+        return m;
+    }
+    gen_fatal("internal: mnemonic '%s' has no INSN_FX register-effect "
+              "entry", in->mnem);
+    return 0; /* unreached */
+}
+
+/* The guard itself - see this section's header. `regvar_store` is set
+ * only for OP_ASSIGN's own store into a 'register' local. */
+static void note_writes(GenState *g, unsigned mask, int regvar_store)
+{
+    if (!mask)
+        return;
+    for (int i = 0; i < g->valsp; i++)
+        if (val_regs(&g->valstack[i]) & mask)
+            g->valstack[i].clobbered = 1;
+
+    unsigned hit = mask & g->reserved;
+    if (!hit || regvar_store)
+        return;
+    /* Overwriting a 'register' local's register is only legitimate
+     * while computing that same variable's new value: the statement's
+     * assignment target - pushed first, so at the bottom of the value
+     * stack - is the variable itself (e.g. 04_funcs/06_regclass.s.
+     * golden's "i = i + 1;" -> "inc di"). The variable must then not
+     * be READ again before that assignment completes (regvar_dirty). */
+    const Val *bottom = g->valsp > 0 ? &g->valstack[0] : NULL;
+    if (bottom && bottom->kind == VK_REG && (reg_bit(bottom->reg) & hit) == hit) {
+        g->regvar_dirty |= hit;
+        return;
+    }
+    gen_fatal("this statement would overwrite the 'register' variable held "
+              "in %s while it is still live - not yet supported (no golden "
+              "reference confirms which other register a real compiler "
+              "uses here) - see docs/DEVLOG.md",
+              reg_name(hit & (~hit + 1u)));
+}
+
+/* For a handler that has already popped `pending` and is about to
+ * write `regs` before reading it - see this section's header. */
+static void require_free(Val pending, unsigned regs, const char *ctx)
+{
+    unsigned hit = val_regs(&pending) & regs;
+    if (hit)
+        gen_fatal("%s: an operand held in %s would be overwritten before it "
+                  "is used - not yet supported (no golden reference confirms "
+                  "the spill/reordering a real compiler would emit) - see "
+                  "docs/DEVLOG.md", ctx, reg_name(hit & (~hit + 1u)));
+}
+
+/* THE instruction-line formatter - see this section's header. */
+static void put_insn_ex(GenState *g, const Insn *in, int regvar_store)
+{
+    note_writes(g, insn_writes(in), regvar_store);
+    switch (in->nops) {
+    case 0:  fprintf(g->out, "%s\n", in->mnem); break;
+    case 1:  fprintf(g->out, "%s\t%s\n", in->mnem, in->a.s); break;
+    default: fprintf(g->out, "%s\t%s,%s\n", in->mnem, in->a.s, in->b.s); break;
+    }
+}
+static void put_insn(GenState *g, const Insn *in)
+{
+    put_insn_ex(g, in, 0);
+}
+static void ins0(GenState *g, const char *mnem)
+{
+    Insn i = insn0(mnem);
+    put_insn(g, &i);
+}
+static void ins1(GenState *g, const char *mnem, Opnd a)
+{
+    Insn i = insn1(mnem, a);
+    put_insn(g, &i);
+}
+static void ins2(GenState *g, const char *mnem, Opnd a, Opnd b)
+{
+    Insn i = insn2(mnem, a, b);
+    put_insn(g, &i);
+}
+/* OP_ASSIGN's store into a 'register' local - the one write to a
+ * reserved register that needs no exemption (see note_writes()). */
+static void ins2_regvar_store(GenState *g, const char *mnem, Opnd a, Opnd b)
+{
+    Insn i = insn2(mnem, a, b);
+    put_insn_ex(g, &i, 1);
+}
+/* Emits a NULL-mnem-terminated const Insn table. */
+static void put_seq(GenState *g, const Insn *seq)
+{
+    for (; seq->mnem; seq++)
+        put_insn(g, seq);
+}
+/* "L<n>:" - deliberately NO newline (see this section's header). */
+static void put_label(GenState *g, int lab)
+{
+    fprintf(g->out, "L%d:", lab);
+}
+/* A free-form, newline-terminated line: "|"-comments ("| _a=-6.",
+ * "|NREG 3", "|RTYP 0"), a label definition ("_main:"), or a jump-
+ * table word ("L5"). */
+static void put_line(GenState *g, const char *fmt, ...) PRINTF_LIKE(2, 3);
+static void put_line(GenState *g, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g->out, fmt, ap);
+    va_end(ap);
+    fputc('\n', g->out);
+}
+
+/* -------------------------------------------------------------- */
+/* Fixed instruction idioms - each confirmed byte-for-byte against the
+ * goldens cited at its point of use below. Operand text is literal
+ * here because none of these sequences has a variable part. */
+
+/* The unconditional function prologue (OP_SAVE - docs/MUTOS_C_ABI.md
+ * sect. 1.2), followed there by its own "|NREG" comment. */
+static const Insn SEQ_PROLOGUE[] = {
+    { "push", 1, {"bp"}, {""} },
+    { "mov",  2, {"bp"}, {"sp"} },
+    { "push", 1, {"di"}, {""} },
+    { "push", 1, {"si"}, {""} },
+    { NULL,   0, {""},   {""} }
+};
+
+/* A 32-bit result in DX(high):AX(low) - a runtime helper's or a long-
+ * returning callee's return registers (sect. 1.5), or CWD's own output -
+ * moved into the DI(high):SI(low) convention every 'long' value
+ * producer in this file hands to its consumer (see VK_LONG). */
+static const Insn SEQ_DXAX_TO_DISI[] = {
+    { "mov", 2, {"di"}, {"dx"} },
+    { "mov", 2, {"si"}, {"ax"} },
+    { NULL,  0, {""},   {""} }
+};
+
+/* The reverse, for a 'long'-returning function's own "return" (OP_
+ * RFORCE's TY_LONG case): DI(high):SI(low) -> AX(low):DX(high). */
+static const Insn SEQ_DISI_TO_AXDX[] = {
+    { "mov", 2, {"ax"}, {"si"} },
+    { "mov", 2, {"dx"}, {"di"} },
+    { NULL,  0, {""},   {""} }
+};
+
+/* A CWD-widened 'long' pushed as two words, low (AX) then high (DX) -
+ * sect. 1.6's argument order (a 'long' call argument, or the in-range
+ * 'long'-constant operand of a 'long' +/-). */
+static const Insn SEQ_PUSH_AXDX[] = {
+    { "push", 1, {"ax"}, {""} },
+    { "push", 1, {"dx"}, {""} },
+    { NULL,   0, {""},   {""} }
+};
+
+/* "mov ax,<src> / cwd" - sign-extends a 16-bit value into DX:AX, the
+ * shared first half of every CWD-widening idiom in this file (followed
+ * by SEQ_DXAX_TO_DISI or SEQ_PUSH_AXDX at the call site). */
+static void emit_cwd_from(GenState *g, Opnd src)
+{
+    ins2(g, "mov", o_reg("ax"), src);
+    ins0(g, "cwd");
+}
+
+/* Materializes a VK_LCON (OP_LCON's deferred raw (hi,lo) pair - see
+ * its ValKind comment above) into a real VK_LONG sitting in DI:SI -
+ * pass-through for anything already resolved (VK_LONG from OP_CTOL
+ * or a runtime-helper call, in particular). The two shapes are the
+ * same ones OP_LCON itself used to emit eagerly, now emitted lazily
+ * at the point of actual use: an int-range value whose high word is
+ * just its low word's sign-extension (e.g. 37L) uses the CWD idiom;
+ * a genuinely 32-bit value (e.g. 123456L, or 70000) direct-splits
+ * into SI/DI - confirmed against 02_long/02_muldiv.s.golden and
+ * 08_castsize.s.golden respectively (both still byte-identical under
+ * this lazier scheme, since OP_ASSIGN's long-target case - the only
+ * confirmed consumer needing a real materialized value - was already
+ * always the very next opcode after LCON in every one of those
+ * cases, with nothing in between to observe the difference). */
+static Val materialize_long(GenState *g, Val v)
+{
+    if (v.kind != VK_LCON)
+        return v;
+    long lo = v.imm, hi = v.offset;
+    if (hi == (lo < 0 ? -1 : 0)) {
+        emit_cwd_from(g, o_imm(lo));
+        put_seq(g, SEQ_DXAX_TO_DISI);
+    } else {
+        ins2(g, "mov", o_reg("si"), o_imm(lo));
+        ins2(g, "mov", o_reg("di"), o_imm(hi));
+    }
+    return val_long();
+}
+
+static void load_into_di(GenState *g, Val v); /* forward decl - defined
+                                               * below, needed by
+                                               * emit_cmp_and_branch()
+                                               * above its own definition */
+
+/* -------------------------------------------------------------- */
 /* Relational/logical codegen - see the VK_COND field comment above
  * for the deferred-materialization design this implements. All of
  * it is reverse-engineered byte-for-byte against
  * tests/mutos_cc/01_expr/03_rellogic.s.golden. */
 
+/* One row per relational/equality opcode: the branch-if-true
+ * mnemonic (confirmed against 03_rellogic.s.golden) and the opcode of
+ * the NEGATED relation (see cond_invert() below). */
+typedef struct {
+    int         op;
+    const char *branch;
+    int         inverse;
+} RelOp;
+
+static const RelOp RELOPS[] = {
+    { OP_LESS,    "blt", OP_GREATEQ },
+    { OP_LESSEQ,  "ble", OP_GREAT   },
+    { OP_GREAT,   "bgt", OP_LESSEQ  },
+    { OP_GREATEQ, "bge", OP_LESS    },
+    { OP_EQUAL,   "beq", OP_NEQUAL  },
+    { OP_NEQUAL,  "bne", OP_EQUAL   },
+};
+
+/* NULL if `op` is not a relational/equality opcode. */
+static const RelOp *find_relop(int op)
+{
+    for (size_t i = 0; i < sizeof RELOPS / sizeof RELOPS[0]; i++)
+        if (RELOPS[i].op == op)
+            return &RELOPS[i];
+    return NULL;
+}
+
 static const char *cond_true_mnem(int op)
 {
-    switch (op) {
-    case OP_LESS:    return "blt";
-    case OP_LESSEQ:  return "ble";
-    case OP_GREAT:   return "bgt";
-    case OP_GREATEQ: return "bge";
-    case OP_EQUAL:   return "beq";
-    case OP_NEQUAL:  return "bne";
-    default:
+    const RelOp *r = find_relop(op);
+    if (!r)
         gen_fatal("internal: unknown relational op %d", op);
-        return NULL;
-    }
+    return r->branch;
 }
 
 /* The branch-condition-code negation used to short-circuit the
@@ -584,17 +1109,10 @@ static const char *cond_true_mnem(int op)
  * operand, vs. plain "blt" when it appears standalone. */
 static int cond_invert(int op)
 {
-    switch (op) {
-    case OP_LESS:    return OP_GREATEQ;
-    case OP_GREATEQ: return OP_LESS;
-    case OP_LESSEQ:  return OP_GREAT;
-    case OP_GREAT:   return OP_LESSEQ;
-    case OP_EQUAL:   return OP_NEQUAL;
-    case OP_NEQUAL:  return OP_EQUAL;
-    default:
+    const RelOp *r = find_relop(op);
+    if (!r)
         gen_fatal("internal: unknown relational op %d for inversion", op);
-        return -1;
-    }
+    return r->inverse;
 }
 
 /* Emits "cmp\t<cl>,<cr-or-di>\n" followed by a branch to L<target>
@@ -606,22 +1124,22 @@ static int cond_invert(int op)
  * operands); an immediate right-hand side is rendered directly via
  * render_cmp_imm(), matching 03_rellogic's "cmp *-6.(bp),di" (memory
  * rhs) vs. "cmp *-6.(bp),*0" (immediate rhs) shapes exactly. */
-static void emit_cmp_and_branch(FILE *out, Val cond, int branch_op_code, int target_lab)
+static void emit_cmp_and_branch(GenState *g, Val cond, int branch_op_code, int target_lab)
 {
     Val l = val_from_simple(cond.cl);
     Val r = val_from_simple(cond.cr);
-    char lbuf[32], rbuf[32];
-    render_operand(lbuf, sizeof lbuf, l);
+    Opnd rhs;
     if (r.kind == VK_MEM || r.kind == VK_MEM_CVT) {
-        load_into_di(out, r);
-        snprintf(rbuf, sizeof rbuf, "di");
+        require_free(l, RB_DI, "comparison");
+        load_into_di(g, r);
+        rhs = o_reg("di");
     } else if (r.kind == VK_IMM) {
-        render_cmp_imm(rbuf, sizeof rbuf, r.imm);
+        rhs = o_cmpimm(r.imm);
     } else {
-        render_operand(rbuf, sizeof rbuf, r);
+        rhs = o_val(r);
     }
-    fprintf(out, "cmp\t%s,%s\n", lbuf, rbuf);
-    fprintf(out, "%s\tL%d\n", cond_true_mnem(branch_op_code), target_lab);
+    ins2(g, "cmp", o_val(l), rhs);
+    ins1(g, cond_true_mnem(branch_op_code), o_lab(target_lab));
 }
 
 /* Codegen for a 'long' relational comparison consumed by OP_CBRANCH -
@@ -642,7 +1160,7 @@ static void emit_cmp_and_branch(FILE *out, Val cond, int branch_op_code, int tar
  * non-constant right operand, cond_sense==1 (a "branch if true" site)
  * - is an explicit "not yet supported" rather than a guess, per this
  * project's verification rule. */
-static void gen_long_cmp(FILE *out, GenState *g, int op, SimpleVal l,
+static void gen_long_cmp(GenState *g, int op, SimpleVal l,
                           SimpleVal r, int cond_sense, int target_lab)
 {
     if (op != OP_GREAT || l.kind != VK_MEM || r.kind != VK_LCON ||
@@ -652,15 +1170,14 @@ static void gen_long_cmp(FILE *out, GenState *g, int op, SimpleVal l,
                   "'for' condition is confirmed - see docs/DEVLOG.md)");
 
     int true_lab = g->next_lab++;
-    char hibuf[32], lobuf[32];
-    render_operand(hibuf, sizeof hibuf, val_mem(l.offset));
-    render_operand(lobuf, sizeof lobuf, val_mem(l.offset + MCC_SZINT));
-    fprintf(out, "cmp\t%s,*0\n", hibuf);
-    fprintf(out, "blt\tL%d\n", target_lab);
-    fprintf(out, "bgt\tL%d\n", true_lab);
-    fprintf(out, "cmp\t%s,*0.\n", lobuf);
-    fprintf(out, "blos\tL%d\n", target_lab);
-    fprintf(out, "L%d:", true_lab);
+    /* High word: CMP's own "*0" shape (render_cmp_imm()); low word: the
+     * ordinary "*0." immediate - exactly as 01_addsub.s.golden has it. */
+    ins2(g, "cmp", o_mem(l.offset), o_cmpimm(0));
+    ins1(g, "blt", o_lab(target_lab));
+    ins1(g, "bgt", o_lab(true_lab));
+    ins2(g, "cmp", o_mem(l.offset + MCC_SZINT), o_imm(0));
+    ins1(g, "blos", o_lab(target_lab));
+    put_label(g, true_lab);
 }
 
 /* Materializes a single deferred comparison into a real 0/1 value in
@@ -670,15 +1187,16 @@ static void gen_long_cmp(FILE *out, GenState *g, int op, SimpleVal l,
  * trailing newline, matching OP_LABEL's style, so whatever the
  * caller emits next glues onto the same source line - confirmed
  * against "L10001:mov\t*-10.(bp),di" in the golden). */
-static void materialize_cond(FILE *out, GenState *g, Val cond)
+static void materialize_cond(GenState *g, Val cond)
 {
     int ltrue = g->next_lab++;
     int lend  = g->next_lab++;
-    emit_cmp_and_branch(out, cond, cond.true_op, ltrue);
-    fprintf(out, "mov\tdi,*0.\n");
-    fprintf(out, "jmp\tL%d\n", lend);
-    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
-    fprintf(out, "L%d:", lend);
+    emit_cmp_and_branch(g, cond, cond.true_op, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(0));
+    ins1(g, "jmp", o_lab(lend));
+    put_label(g, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(1));
+    put_label(g, lend);
 }
 
 /* No-op for anything already resolved; materializes a deferred
@@ -687,12 +1205,40 @@ static void materialize_cond(FILE *out, GenState *g, Val cond)
  * defensively by every other binary/unary operator below, in case a
  * future grammar extension ever feeds a comparison's result into
  * arithmetic). */
-static Val materialize(FILE *out, GenState *g, Val v)
+static Val materialize(GenState *g, Val v)
 {
     if (v.kind != VK_COND)
         return v;
-    materialize_cond(out, g, v);
+    materialize_cond(g, v);
     return val_reg("di");
+}
+
+/* materialize(), applied to a value WHILE it stays on the value
+ * stack - see pop_operands(). */
+static void materialize_slot(GenState *g, int idx)
+{
+    if (g->valstack[idx].kind != VK_COND)
+        return;
+    if (g->valstack[idx].clobbered)
+        fatal_clobbered();
+    Val m = materialize(g, g->valstack[idx]);
+    g->valstack[idx] = m;
+}
+
+/* Pops a binary operator's two operands (right on top), materializing
+ * each first - right, then left: the same emission order as popping
+ * and materializing them one at a time, but done IN PLACE, so while
+ * the left operand's comparison writes DI the already-materialized
+ * right operand is still on the stack where note_writes() can see it
+ * (e.g. "(a < b) + (c < d)", whose two 0/1 results both land in DI). */
+static void pop_operands(GenState *g, Val *l, Val *r)
+{
+    if (g->valsp < 2)
+        gen_fatal("expression stack underflow - malformed temp1 stream");
+    materialize_slot(g, g->valsp - 1);
+    materialize_slot(g, g->valsp - 2);
+    *r = pop_val(g);
+    *l = pop_val(g);
 }
 
 /* Wraps a non-VK_COND value as an implicit "!= 0" truth test -
@@ -702,6 +1248,14 @@ static Val materialize(FILE *out, GenState *g, Val v)
  * comparisons, but the natural, zero-risk generalization of "any
  * nonzero value is true"). Never emits code - purely a description
  * of a comparison to be emitted later by whoever consumes it. */
+/* The registers emit_cmp_and_branch() itself writes for `cond`: DI,
+ * when its right-hand side has to be loaded there first (8086 CMP
+ * cannot take two memory operands). */
+static unsigned cmp_writes(Val cond)
+{
+    return (cond.cr.kind == VK_MEM || cond.cr.kind == VK_MEM_CVT) ? RB_DI : 0;
+}
+
 static Val as_cond(Val v)
 {
     if (v.kind == VK_COND)
@@ -727,19 +1281,22 @@ static Val as_cond(Val v)
  * which label each mnemonic branches to, not from textual order in
  * the .s output - the false label is referenced, hence printed,
  * before it is themselves allocated-lowest). */
-static Val gen_logand(FILE *out, GenState *g, Val l, Val r)
+static Val gen_logand(GenState *g, Val l, Val r)
 {
     Val cl = as_cond(l);
     Val cr = as_cond(r);
     int ltrue  = g->next_lab++;
     int lfalse = g->next_lab++;
     int lend   = g->next_lab++;
-    emit_cmp_and_branch(out, cl, cond_invert(cl.true_op), lfalse);
-    emit_cmp_and_branch(out, cr, cr.true_op, ltrue);
-    fprintf(out, "L%d:mov\tdi,*0.\n", lfalse);
-    fprintf(out, "jmp\tL%d\n", lend);
-    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
-    fprintf(out, "L%d:", lend);
+    require_free(cr, cmp_writes(cl), "'&&'");
+    emit_cmp_and_branch(g, cl, cond_invert(cl.true_op), lfalse);
+    emit_cmp_and_branch(g, cr, cr.true_op, ltrue);
+    put_label(g, lfalse);
+    ins2(g, "mov", o_reg("di"), o_imm(0));
+    ins1(g, "jmp", o_lab(lend));
+    put_label(g, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(1));
+    put_label(g, lend);
     return val_reg("di");
 }
 
@@ -754,18 +1311,20 @@ static Val gen_logand(FILE *out, GenState *g, Val l, Val r)
  *   Ltrue: di=1
  *   Lend:
  * matching the golden's L10015(true)/L10016(end) exactly. */
-static Val gen_logor(FILE *out, GenState *g, Val l, Val r)
+static Val gen_logor(GenState *g, Val l, Val r)
 {
     Val cl = as_cond(l);
     Val cr = as_cond(r);
     int ltrue = g->next_lab++;
     int lend  = g->next_lab++;
-    emit_cmp_and_branch(out, cl, cl.true_op, ltrue);
-    emit_cmp_and_branch(out, cr, cr.true_op, ltrue);
-    fprintf(out, "mov\tdi,*0.\n");
-    fprintf(out, "jmp\tL%d\n", lend);
-    fprintf(out, "L%d:mov\tdi,*1.\n", ltrue);
-    fprintf(out, "L%d:", lend);
+    require_free(cr, cmp_writes(cl), "'||'");
+    emit_cmp_and_branch(g, cl, cl.true_op, ltrue);
+    emit_cmp_and_branch(g, cr, cr.true_op, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(0));
+    ins1(g, "jmp", o_lab(lend));
+    put_label(g, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(1));
+    put_label(g, lend);
     return val_reg("di");
 }
 
@@ -799,17 +1358,21 @@ static Val gen_logor(FILE *out, GenState *g, Val l, Val r)
  * right-hand-side load already put in DI) - confirmed by the golden
  * itself re-doing "mov di,*-8.(bp)" at the false label rather than
  * omitting it. */
-static Val gen_quest(FILE *out, GenState *g, Val cond, Val pair)
+static Val gen_quest(GenState *g, Val cond, Val pair)
 {
     Val c = as_cond(cond);
     int lfalse = g->next_lab++;
     int lend   = g->next_lab++;
-    emit_cmp_and_branch(out, c, cond_invert(c.true_op), lfalse);
-    load_into_di(out, val_from_simple(pair.cl));
-    fprintf(out, "jmp\tL%d\n", lend);
-    fprintf(out, "L%d:", lfalse);
-    load_into_di(out, val_from_simple(pair.cr));
-    fprintf(out, "L%d:", lend);
+    /* Both branch values were computed BEFORE the comparison, so it
+     * must not overwrite either; the two branch loads below are on
+     * mutually exclusive paths and cannot collide with each other. */
+    require_free(pair, cmp_writes(c), "'?:'");
+    emit_cmp_and_branch(g, c, cond_invert(c.true_op), lfalse);
+    load_into_di(g, val_from_simple(pair.cl));
+    ins1(g, "jmp", o_lab(lend));
+    put_label(g, lfalse);
+    load_into_di(g, val_from_simple(pair.cr));
+    put_label(g, lend);
     return val_reg("di");
 }
 
@@ -819,26 +1382,22 @@ static Val gen_quest(FILE *out, GenState *g, Val cond, Val pair)
  * nothing to do (not itself exercised by any current golden, but a
  * direct, low-risk consequence of the same confirmed pattern: never
  * emit a no-op "mov di,di"). */
-static void load_into_di(FILE *out, Val v)
+static void load_into_di(GenState *g, Val v)
 {
     if (v.kind == VK_REG && strcmp(v.reg, "di") == 0)
         return;
-    char buf[32];
-    render_operand(buf, sizeof buf, v);
-    fprintf(out, "mov\tdi,%s\n", buf);
+    ins2(g, "mov", o_reg("di"), o_val(v));
 }
 
 /* Same as load_into_di() above, but for SI - the fallback "working
  * register" for an otherwise-unresolved value while DI is reserved by
- * a live 'register'-class local (GenState's own di_reserved - see its
+ * a live 'register'-class local (GenState's own reserved mask - see its
  * comment). */
-static void load_into_si(FILE *out, Val v)
+static void load_into_si(GenState *g, Val v)
 {
     if (v.kind == VK_REG && strcmp(v.reg, "si") == 0)
         return;
-    char buf[32];
-    render_operand(buf, sizeof buf, v);
-    fprintf(out, "mov\tsi,%s\n", buf);
+    ins2(g, "mov", o_reg("si"), o_val(v));
 }
 
 /* Emits "mov\tcx,<v>\n" to load `v` into CX - the confirmed working
@@ -847,31 +1406,27 @@ static void load_into_si(FILE *out, Val v)
  * below), skipping the no-op "mov cx,cx" case exactly like
  * load_into_di() above. Confirmed via 04_shift.s.golden's
  * "mov\tcx,*-8.(bp)" immediately before "sal\tdi,cl". */
-static void load_into_cx(FILE *out, Val v)
+static void load_into_cx(GenState *g, Val v)
 {
     if (v.kind == VK_REG && strcmp(v.reg, "cx") == 0)
         return;
-    char buf[32];
-    render_operand(buf, sizeof buf, v);
-    fprintf(out, "mov\tcx,%s\n", buf);
+    ins2(g, "mov", o_reg("cx"), o_val(v));
 }
 
-/* Queues `text` (a complete, newline-terminated instruction line) to
- * be emitted later by flush_deferred() - see DEFERRED_MAX's comment
- * on GenState. */
-static void queue_deferred(GenState *g, const char *text)
+/* Queues instruction `in` to be emitted later by flush_deferred() -
+ * see DEFERRED_MAX's comment on GenState. */
+static void queue_deferred(GenState *g, Insn in)
 {
     if (g->ndeferred >= DEFERRED_MAX)
         gen_fatal("too many deferred postfix ++/-- fixups in one "
                   "statement (internal limit %d)", DEFERRED_MAX);
-    snprintf(g->deferred[g->ndeferred], sizeof g->deferred[0], "%s", text);
-    g->ndeferred++;
+    g->deferred[g->ndeferred++] = in;
 }
 
-static void flush_deferred(FILE *out, GenState *g)
+static void flush_deferred(GenState *g)
 {
     for (int i = 0; i < g->ndeferred; i++)
-        fputs(g->deferred[i], out);
+        put_insn(g, &g->deferred[i]);
     g->ndeferred = 0;
 }
 
@@ -887,7 +1442,7 @@ static void flush_deferred(FILE *out, GenState *g)
  * immediately, then loads the NEW value into DI; AFT loads the OLD
  * value into DI first, then defers the fixup instruction (see
  * queue_deferred() above) until the enclosing statement's OP_EXPR. */
-static Val gen_incdec(FILE *out, GenState *g, int op, Val lv, Val amt)
+static Val gen_incdec(GenState *g, int op, Val lv, Val amt)
 {
     if (lv.kind != VK_MEM)
         gen_fatal("'++'/'--' on a non-memory lvalue is not yet supported");
@@ -896,24 +1451,16 @@ static Val gen_incdec(FILE *out, GenState *g, int op, Val lv, Val amt)
                   "constant");
 
     int is_incr = (op == OP_INCBEF || op == OP_INCAFT);
-    char lbuf[32];
-    render_operand(lbuf, sizeof lbuf, lv);
-    char instr[72];
-    if (amt.imm == 1) {
-        snprintf(instr, sizeof instr, "%s\t%s\n", is_incr ? "inc" : "dec", lbuf);
-    } else {
-        char abuf[32];
-        render_operand(abuf, sizeof abuf, val_imm(amt.imm));
-        snprintf(instr, sizeof instr, "%s\t%s,%s\n", is_incr ? "add" : "sub",
-                 lbuf, abuf);
-    }
+    Insn fixup = (amt.imm == 1)
+        ? insn1(is_incr ? "inc" : "dec", o_val(lv))
+        : insn2(is_incr ? "add" : "sub", o_val(lv), o_imm(amt.imm));
 
     if (op == OP_INCBEF || op == OP_DECBEF) {
-        fputs(instr, out);
-        load_into_di(out, lv);
+        put_insn(g, &fixup);
+        load_into_di(g, lv);
     } else {
-        load_into_di(out, lv);
-        queue_deferred(g, instr);
+        load_into_di(g, lv);
+        queue_deferred(g, fixup);
     }
     return val_reg("di");
 }
@@ -938,28 +1485,21 @@ static Val gen_incdec(FILE *out, GenState *g, int op, Val lv, Val amt)
  * DI:SI (VK_LONG) from a preceding long op, which this one golden
  * (each operand used exactly once, straight from its own local) does
  * not exercise. */
-static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
+static Val gen_long_binop_call(GenState *g, Val l, Val r, const char *helper)
 {
     if (l.kind != VK_MEM || r.kind != VK_MEM)
         gen_fatal("'long' %s with a non-memory operand is not yet "
                   "supported", helper);
-    char buf[32];
-    render_operand(buf, sizeof buf, val_mem(r.offset + MCC_SZINT));
-    fprintf(out, "mov\tdi,%s\n", buf);
-    fprintf(out, "push\tdi\n");
-    render_operand(buf, sizeof buf, val_mem(r.offset));
-    fprintf(out, "mov\tdi,%s\n", buf);
-    fprintf(out, "push\tdi\n");
-    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
-    fprintf(out, "mov\tdi,%s\n", buf);
-    fprintf(out, "push\tdi\n");
-    render_operand(buf, sizeof buf, val_mem(l.offset));
-    fprintf(out, "mov\tdi,%s\n", buf);
-    fprintf(out, "push\tdi\n");
-    fprintf(out, "call\t%s\n", helper);
-    fprintf(out, "add\tsp,*8.\n");
-    fprintf(out, "mov\tdi,dx\n");
-    fprintf(out, "mov\tsi,ax\n");
+    /* Push order r_low, r_high, l_low, l_high - see above. */
+    const int words[4] = { r.offset + MCC_SZINT, r.offset,
+                           l.offset + MCC_SZINT, l.offset };
+    for (int i = 0; i < 4; i++) {
+        ins2(g, "mov", o_reg("di"), o_mem(words[i]));
+        ins1(g, "push", o_reg("di"));
+    }
+    ins1(g, "call", o_sym(helper));
+    ins2(g, "add", o_reg("sp"), o_imm(8));
+    put_seq(g, SEQ_DXAX_TO_DISI);
     return val_long();
 }
 
@@ -1021,7 +1561,7 @@ static Val gen_long_binop_call(FILE *out, Val l, Val r, const char *helper)
  * uses, exactly like gen_long_binop_call()'s own lmul/ldiv/lrem calls
  * (see below).
  */
-static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
+static Val gen_call(GenState *g, Val callee, Val args, int is_long_ret)
 {
     if (callee.kind != VK_FUNC && callee.kind != VK_MEM)
         gen_fatal("this call-callee shape is not yet supported - see "
@@ -1041,6 +1581,18 @@ static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
 
     int nwords = 0;
     for (int i = nargs - 1; i >= 0; i--) {
+        /* Arguments are pushed right to left, so items[0..i-1] are
+         * still waiting in wherever they were computed - none of them
+         * may live in a register this argument's own push sequence
+         * (below) writes first. */
+        unsigned w = 0;
+        if (items[i].kind == VK_LCON)
+            w = (items[i].offset == (items[i].imm < 0 ? -1 : 0))
+                ? (RB_AX | RB_DX) : RB_DI;
+        else if (items[i].kind == VK_IMM || items[i].kind == VK_MEM_DIRECT)
+            w = RB_DI;
+        for (int j = 0; j < i; j++)
+            require_free(items[j], w, "call argument");
         if (items[i].kind == VK_LCON) {
             /* Two confirmed shapes - the SAME distinction
              * materialize_long() itself makes: a genuinely 32-bit
@@ -1057,20 +1609,14 @@ static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
              * direct-split shape even though both take the same
              * VK_LCON wire path. */
             long lo = items[i].imm, hi = items[i].offset;
-            char buf[32];
             if (hi == (lo < 0 ? -1 : 0)) {
-                render_operand(buf, sizeof buf, val_imm(lo));
-                fprintf(out, "mov\tax,%s\n", buf);
-                fprintf(out, "cwd\n");
-                fprintf(out, "push\tax\n");
-                fprintf(out, "push\tdx\n");
+                emit_cwd_from(g, o_imm(lo));
+                put_seq(g, SEQ_PUSH_AXDX);
             } else {
-                render_operand(buf, sizeof buf, val_imm(lo));
-                fprintf(out, "mov\tdi,%s\n", buf);
-                fprintf(out, "push\tdi\n");
-                render_operand(buf, sizeof buf, val_imm(hi));
-                fprintf(out, "mov\tdi,%s\n", buf);
-                fprintf(out, "push\tdi\n");
+                ins2(g, "mov", o_reg("di"), o_imm(lo));
+                ins1(g, "push", o_reg("di"));
+                ins2(g, "mov", o_reg("di"), o_imm(hi));
+                ins1(g, "push", o_reg("di"));
             }
             nwords += 2;
             continue;
@@ -1089,40 +1635,31 @@ static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
              * *-12.(bp)" immediately followed by "push\tdi" (with the
              * OTHER argument's own "mov di,*4."/"push di" already
              * emitted first, since arguments push right-to-left). */
-            char buf[32];
-            render_operand(buf, sizeof buf, items[i]);
-            fprintf(out, "lea\tdi,%s\n", buf);
-            fprintf(out, "push\tdi\n");
+            ins2(g, "lea", o_reg("di"), o_val(items[i]));
+            ins1(g, "push", o_reg("di"));
             nwords += 1;
             continue;
         }
         if (items[i].kind == VK_IMM) {
-            load_into_di(out, items[i]);
-            fprintf(out, "push\tdi\n");
+            load_into_di(g, items[i]);
+            ins1(g, "push", o_reg("di"));
         } else {
-            char buf[32];
-            render_operand(buf, sizeof buf, items[i]);
-            fprintf(out, "push\t%s\n", buf);
+            ins1(g, "push", o_val(items[i]));
         }
         nwords += 1;
     }
 
     if (callee.kind == VK_FUNC) {
-        fprintf(out, "call\t%s\n", callee.reg);
+        ins1(g, "call", o_sym(callee.reg));
         free((char *)callee.reg);
     } else {
-        char buf[32];
-        render_operand(buf, sizeof buf, callee);
-        fprintf(out, "call\t@%s\n", buf);
+        ins1(g, "call", o_indirect(o_val(callee)));
     }
     if (args.kind == VK_ARGLIST)
         free(args.arglist);
 
-    if (nwords > 0) {
-        char buf[32];
-        render_operand(buf, sizeof buf, val_imm(2L * nwords));
-        fprintf(out, "add\tsp,%s\n", buf);
-    }
+    if (nwords > 0)
+        ins2(g, "add", o_reg("sp"), o_imm(2L * nwords));
     if (is_long_ret) {
         /* A 'long'-returning callee's result comes back in DX:AX
          * (sect. 1.5's ordinary long-return convention - same as
@@ -1131,8 +1668,7 @@ static Val gen_call(FILE *out, Val callee, Val args, int is_long_ret)
          * other long-value producer here uses - confirmed against
          * 02_long/03_retval.s.golden's "call _addlong / add sp,*8. /
          * mov di,dx / mov si,ax". */
-        fprintf(out, "mov\tdi,dx\n");
-        fprintf(out, "mov\tsi,ax\n");
+        put_seq(g, SEQ_DXAX_TO_DISI);
         return val_long();
     }
     return val_reg("ax");
@@ -1174,7 +1710,7 @@ typedef struct { int lab; int val; } CaseSwitchEntry;
  * L10000, even though it is the only internal label this file uses)
  * - the reason isn't derivable from this one example, so it's
  * reproduced as an observed constant rather than explained. */
-static void gen_switch_dispatch(FILE *out, GenState *g, int deflab,
+static void gen_switch_dispatch(GenState *g, int deflab,
                                  CaseSwitchEntry *cases, int ncases)
 {
     if (ncases == 0)
@@ -1200,21 +1736,63 @@ static void gen_switch_dispatch(FILE *out, GenState *g, int deflab,
     long min = cases[0].val;
     long range = cases[ncases - 1].val - min;
 
-    char buf[32];
-    fprintf(out, "sub\tax,#/%lX\n", (unsigned long)((uint16_t)min));
-    render_operand(buf, sizeof buf, val_imm(range));
-    fprintf(out, "cmp\tax,%s\n", buf);
-    fprintf(out, "bhi\tL%d\n", deflab);
-    fprintf(out, "shl\tax,#1\n");
-    fprintf(out, "xchg\tbx,ax\n");
-    fprintf(out, "seg\tcs\n");
+    ins2(g, "sub", o_reg("ax"), o_fmt("#/%lX", (unsigned long)((uint16_t)min)));
+    ins2(g, "cmp", o_reg("ax"), o_imm(range));
+    ins1(g, "bhi", o_lab(deflab));
+    ins2(g, "shl", o_reg("ax"), o_fmt("#1")); /* '#', no '.' - as confirmed */
+    ins2(g, "xchg", o_reg("bx"), o_reg("ax"));
+    ins1(g, "seg", o_reg("cs"));
     (void)g->next_lab++; /* confirmed-but-unexplained burned label -
                            * see the derivation comment above. */
     int table_lab = g->next_lab++;
-    fprintf(out, "jmp\t@L%d(bx)\n", table_lab);
-    fprintf(out, "L%d:", table_lab);
+    ins1(g, "jmp", o_indirect(o_fmt("L%d(bx)", table_lab)));
+    put_label(g, table_lab);
     for (int i = 0; i < ncases; i++)
-        fprintf(out, "L%d\n", cases[i].lab);
+        put_line(g, "L%d", cases[i].lab); /* one table word per line */
+}
+
+/* Per-opcode table for the arithmetic/bitwise/shift operators and
+ * their compound-assignment forms: the wire opcode's name (as used in
+ * "not yet supported" diagnostics), the 8086 mnemonic implementing the
+ * 16-bit operation (NULL where it is not a single instruction), and -
+ * for PLUS/MINUS only - the high-word partner a 32-bit 'long' add/
+ * subtract chains the carry/borrow into (see OP_PLUS's TY_LONG case).
+ * Indexed directly by opcode (every opcode fits in one byte - see
+ * c1_read_op()); aluop() gen_fatal()s on an opcode with no entry. */
+typedef struct {
+    const char *name;
+    const char *mnem;
+    const char *mnem_hi;
+} AluOp;
+
+static const AluOp ALUOPS[256] = {
+    [OP_PLUS]    = { "PLUS",    "add", "adc" },
+    [OP_MINUS]   = { "MINUS",   "sub", "sbb" },
+    [OP_AND]     = { "AND",     "and", NULL  },
+    [OP_OR]      = { "OR",      "or",  NULL  },
+    [OP_EXOR]    = { "EXOR",    "xor", NULL  },
+    [OP_LSHIFT]  = { "LSHIFT",  "sal", NULL  },
+    [OP_RSHIFT]  = { "RSHIFT",  "sar", NULL  },
+    [OP_DIVIDE]  = { "DIVIDE",  NULL,  NULL  },
+    [OP_MOD]     = { "MOD",     NULL,  NULL  },
+    [OP_LOGAND]  = { "LOGAND",  NULL,  NULL  },
+    [OP_LOGOR]   = { "LOGOR",   NULL,  NULL  },
+    [OP_ASPLUS]  = { "ASPLUS",  "add", NULL  },
+    [OP_ASMINUS] = { "ASMINUS", "sub", NULL  },
+    [OP_ASSAND]  = { "ASSAND",  "and", NULL  },
+    [OP_ASOR]    = { "ASOR",    "or",  NULL  },
+    [OP_ASXOR]   = { "ASXOR",   "xor", NULL  },
+    [OP_ASLSH]   = { "ASLSH",   "sal", NULL  },
+    [OP_ASRSH]   = { "ASRSH",   "sar", NULL  },
+    [OP_ASDIV]   = { "ASDIV",   NULL,  NULL  },
+    [OP_ASMOD]   = { "ASMOD",   NULL,  NULL  },
+};
+
+static const AluOp *aluop(int op)
+{
+    if (op < 0 || op > 255 || ALUOPS[op].name == NULL)
+        gen_fatal("internal: no ALU-op table entry for opcode %d", op);
+    return &ALUOPS[op];
 }
 
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
@@ -1224,6 +1802,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                   * see src/mutos_cc/README.md. */
 
     GenState g = {0};
+    g.out = out;
     g.next_lab = 10000; /* see GenState's next_lab field comment */
 
     for (;;) {
@@ -1235,22 +1814,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_SYMDEF: {
             char *name = c1_read_sym(temp1, "temp1");
-            fprintf(out, ".globl\t%s\n", name);
+            ins1(&g, ".globl", o_sym(name));
             free(name);
             break;
         }
 
         case OP_PROG:
-            fprintf(out, ".text\n");
+            ins0(&g, ".text");
             break;
 
         case OP_EVEN:
-            fprintf(out, ".even\n");
+            ins0(&g, ".even");
             break;
 
         case OP_RLABEL: {
             char *name = c1_read_sym(temp1, "temp1");
-            fprintf(out, "%s:\n", name);
+            put_line(&g, "%s:", name);
             free(name);
             break;
         }
@@ -1260,11 +1839,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * sect. 1.2: every compiled function saves bp/di/si
              * regardless of actual usage, so "|NREG 3" is a constant,
              * never derived from stream data. */
-            fprintf(out, "push\tbp\nmov\tbp,sp\npush\tdi\npush\tsi\n"
-                          "|NREG %d\n", MCC_NSAVEREG);
+            put_seq(&g, SEQ_PROLOGUE);
+            put_line(&g, "|NREG %d", MCC_NSAVEREG);
             g.setreg_seen = 0; /* one SAVE per function - see
                                  * setreg_seen's own comment. */
-            g.di_reserved = 0; /* ditto - see di_reserved's own comment. */
+            g.reserved = 0;     /* ditto - see reserved's own comment. */
+            g.regvar_dirty = 0;
             break;
 
         case OP_SETREG: {
@@ -1279,22 +1859,21 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * see setreg_seen's own comment for why position, not
              * value, is what distinguishes the two. */
             if (g.setreg_seen)
-                fprintf(out, "|NREG %d\n", g.regvar - 1);
+                put_line(&g, "|NREG %d", g.regvar - 1);
             g.setreg_seen = 1;
             break;
         }
 
         case OP_BRANCH: {
             int lab = c1_read_num(temp1, "temp1");
-            fprintf(out, "jmp\tL%d\n", lab);
+            ins1(&g, "jmp", o_lab(lab));
             break;
         }
 
         case OP_LABEL: {
             int lab = c1_read_num(temp1, "temp1");
-            /* Deliberately NO trailing newline - see file header
-             * comment. */
-            fprintf(out, "L%d:", lab);
+            /* Deliberately NO trailing newline - see put_label(). */
+            put_label(&g, lab);
             break;
         }
 
@@ -1304,7 +1883,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* Confirmed exactly against 01_intarith.s.golden's
              * "| _a=-6." lines (name already includes the leading
              * '_' - see c1_stream.h's c1_read_sym()). */
-            fprintf(out, "| %s=%d.\n", name, offset);
+            put_line(&g, "| %s=%d.", name, offset);
             free(name);
             break;
         }
@@ -1313,15 +1892,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             char *name = c1_read_sym(temp1, "temp1");
             int regnum = c1_read_num(temp1, "temp1");
             const char *rname = regvar_name(regnum);
-            if (strcmp(rname, "di") == 0)
-                g.di_reserved = 1; /* see di_reserved's own comment */
+            g.reserved |= reg_bit(rname); /* see reserved's own comment */
             /* A 'register'-class local's declaration comment -
              * confirmed against 04_funcs/06_regclass.s.golden's
              * "| _i=di\n": unlike ANAME's "| name=offset." (a plain
              * bp-relative number with a trailing period), this
              * renders the actual physical register name, no trailing
              * period - see regvar_name(). */
-            fprintf(out, "| %s=%s\n", name, rname);
+            put_line(&g, "| %s=%s", name, rname);
             free(name);
             break;
         }
@@ -1335,7 +1913,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * immediately follow (see c0_parser.c's
              * parse_static_decl()) carry the block's own label number
              * and size. */
-            fprintf(out, ".bss\n");
+            ins0(&g, ".bss");
             break;
 
         case OP_SSPACE: {
@@ -1345,7 +1923,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * slot); the trailing "." decimal-terminator matches this
              * project's ordinary numeric-immediate convention (see
              * render_operand()). */
-            fprintf(out, ".blkb\t%d.\n", size);
+            ins1(&g, ".blkb", o_fmt("%d.", size));
             break;
         }
 
@@ -1360,7 +1938,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * period) - unsurprising, since a STATIC's own "offset"
              * (see VK_STATIC's comment above) is a label number, not
              * a stack displacement. */
-            fprintf(out, "| %s=L%d\n", name, label);
+            put_line(&g, "| %s=L%d", name, label);
             free(name);
             break;
         }
@@ -1420,7 +1998,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "yet supported (only TY_INT is covered so "
                               "far)", type);
                 int regnum = c1_read_num(temp1, "temp1");
-                push_val(&g, val_reg(regvar_name(regnum)));
+                const char *rname = regvar_name(regnum);
+                if (g.regvar_dirty & reg_bit(rname))
+                    gen_fatal("the 'register' variable held in %s is read "
+                              "after being overwritten earlier in the same "
+                              "statement (while computing its own new "
+                              "value) - not yet supported - see "
+                              "docs/DEVLOG.md", rname);
+                push_val(&g, val_reg(rname));
                 break;
             }
             if (hclass != SC_AUTO)
@@ -1524,10 +2109,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_CHAR)
                 gen_fatal("ITOC to type %d not yet supported (only "
                           "TY_CHAR is covered so far)", type);
-            Val v = materialize(out, &g, pop_val(&g));
-            char buf[32];
-            render_operand(buf, sizeof buf, v);
-            fprintf(out, "mov\tdx,%s\n", buf);
+            Val v = materialize(&g, pop_val(&g));
+            ins2(&g, "mov", o_reg("dx"), o_val(v));
             push_val(&g, val_reg("dx"));
             break;
         }
@@ -1552,13 +2135,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (v.kind != VK_MEM)
                 gen_fatal("CTOL of a non-memory char operand is not yet "
                           "supported");
-            char buf[32];
-            render_operand(buf, sizeof buf, v);
-            fprintf(out, "movb\tax,%s\n", buf);
-            fprintf(out, "cbw\n");
-            fprintf(out, "cwd\n");
-            fprintf(out, "mov\tdi,dx\n");
-            fprintf(out, "mov\tsi,ax\n");
+            ins2(&g, "movb", o_reg("ax"), o_val(v));
+            ins0(&g, "cbw");
+            ins0(&g, "cwd");
+            put_seq(&g, SEQ_DXAX_TO_DISI);
             push_val(&g, val_long());
             break;
         }
@@ -1578,13 +2158,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_LONG)
                 gen_fatal("ITOL to type %d not yet supported (only "
                           "TY_LONG is covered so far)", type);
-            Val v = materialize(out, &g, pop_val(&g));
-            char buf[32];
-            render_operand(buf, sizeof buf, v);
-            fprintf(out, "mov\tax,%s\n", buf);
-            fprintf(out, "cwd\n");
-            fprintf(out, "mov\tdi,dx\n");
-            fprintf(out, "mov\tsi,ax\n");
+            Val v = materialize(&g, pop_val(&g));
+            emit_cwd_from(&g, o_val(v));
+            put_seq(&g, SEQ_DXAX_TO_DISI);
             push_val(&g, val_long());
             break;
         }
@@ -1643,15 +2219,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * register-based path below with the address
                  * finally committed to DI. */
                 if (l.kind == VK_MEM_DIRECT) {
-                    char lb[32];
-                    render_operand(lb, sizeof lb, l);
-                    fprintf(out, "lea\tdi,%s\n", lb);
+                    require_free(r, RB_DI, "pointer PLUS");
+                    ins2(&g, "lea", o_reg("di"), o_val(l));
                     l = val_reg("di");
                 }
                 if (r.kind == VK_MEM_DIRECT) {
-                    char rb[32];
-                    render_operand(rb, sizeof rb, r);
-                    fprintf(out, "lea\tdi,%s\n", rb);
+                    require_free(l, RB_DI, "pointer PLUS");
+                    ins2(&g, "lea", o_reg("di"), o_val(r));
                     r = val_reg("di");
                 }
                 const char *dst;
@@ -1665,12 +2239,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 } else if (r.kind == VK_REG) {
                     dst = r.reg; other = l;
                 } else {
-                    load_into_di(out, l);
+                    require_free(r, RB_DI, "pointer PLUS");
+                    load_into_di(&g, l);
                     dst = "di"; other = r;
                 }
-                char obuf[32];
-                render_operand(obuf, sizeof obuf, other);
-                fprintf(out, "add\t%s,%s\n", dst, obuf);
+                ins2(&g, "add", o_reg(dst), o_val(other));
                 push_val(&g, val_reg(dst));
                 break;
             }
@@ -1715,32 +2288,24 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     gen_fatal("'long' %s with a non-memory left operand "
                               "is not yet supported",
                               op == OP_PLUS ? "addition" : "subtraction");
-                char buf[32];
+                const AluOp *a = aluop(op);
                 if (r.kind == VK_MEM) {
-                    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
-                    fprintf(out, "mov\tsi,%s\n", buf);
-                    render_operand(buf, sizeof buf, val_mem(l.offset));
-                    fprintf(out, "mov\tdi,%s\n", buf);
-                    render_operand(buf, sizeof buf, val_mem(r.offset + MCC_SZINT));
-                    fprintf(out, "%s\tsi,%s\n", op == OP_PLUS ? "add" : "sub", buf);
-                    render_operand(buf, sizeof buf, val_mem(r.offset));
-                    fprintf(out, "%s\tdi,%s\n", op == OP_PLUS ? "adc" : "sbb", buf);
+                    ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+                    ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
+                    ins2(&g, a->mnem, o_reg("si"), o_mem(r.offset + MCC_SZINT));
+                    ins2(&g, a->mnem_hi, o_reg("di"), o_mem(r.offset));
                 } else if (r.kind == VK_LCON && r.offset == (r.imm < 0 ? -1 : 0)) {
-                    render_operand(buf, sizeof buf, val_imm(r.imm));
-                    fprintf(out, "mov\tax,%s\n", buf);
-                    fprintf(out, "cwd\n");
-                    fprintf(out, "push\tax\n");
-                    fprintf(out, "push\tdx\n");
-                    render_operand(buf, sizeof buf, val_mem(l.offset + MCC_SZINT));
-                    fprintf(out, "mov\tsi,%s\n", buf);
-                    render_operand(buf, sizeof buf, val_mem(l.offset));
-                    fprintf(out, "mov\tdi,%s\n", buf);
-                    fprintf(out, "pop\tbx\n");
-                    fprintf(out, "pop cx\n"); /* confirmed literal
-                                               * space, not a tab -
-                                               * see comment above. */
-                    fprintf(out, "%s\tsi,cx\n", op == OP_PLUS ? "add" : "sub");
-                    fprintf(out, "%s\tdi,bx\n", op == OP_PLUS ? "adc" : "sbb");
+                    emit_cwd_from(&g, o_imm(r.imm));
+                    put_seq(&g, SEQ_PUSH_AXDX);
+                    ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+                    ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
+                    ins1(&g, "pop", o_reg("bx"));
+                    ins0(&g, "pop cx"); /* confirmed literal space, not a
+                                          * tab - see comment above - so
+                                          * emitted as one operand-less
+                                          * "mnemonic" on purpose. */
+                    ins2(&g, a->mnem, o_reg("si"), o_reg("cx"));
+                    ins2(&g, a->mnem_hi, o_reg("di"), o_reg("bx"));
                 } else {
                     gen_fatal("'long' %s with this right-operand shape "
                               "is not yet supported",
@@ -1750,10 +2315,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_PLUS ? "PLUS" : "MINUS", type);
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val l, r;
+            pop_operands(&g, &l, &r);
             if (op == OP_PLUS && (r.kind == VK_IND || l.kind == VK_IND)) {
                 /* One operand is itself a dereferenced pointer
                  * ("sum = sum + a[i];" - 05_arrptr/01_arrbasic.c, or
@@ -1780,13 +2345,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * matter and no golden confirms the shape. */
                 Val ind = (r.kind == VK_IND) ? r : l;
                 Val other = (r.kind == VK_IND) ? l : r;
-                fprintf(out, "mov\t%s,(%s)\n", ind.reg, ind.reg);
-                char obuf[32];
-                render_operand(obuf, sizeof obuf, other);
+                require_free(other, reg_bit(ind.reg), "PLUS");
+                ins2(&g, "mov", o_reg(ind.reg), o_ind(ind.reg));
                 if (other.kind == VK_IMM && other.imm == 1)
-                    fprintf(out, "inc\t%s\n", ind.reg);
+                    ins1(&g, "inc", o_reg(ind.reg));
                 else
-                    fprintf(out, "add\t%s,%s\n", ind.reg, obuf);
+                    ins2(&g, "add", o_reg(ind.reg), o_val(other));
                 push_val(&g, val_reg(ind.reg));
                 break;
             }
@@ -1805,29 +2369,27 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * to the ordinary path below unchanged - load_into_di()
                  * is a no-op for an operand already sitting in DI, so
                  * no separate case is needed for that shape. */
-                char buf[32];
-                render_operand(buf, sizeof buf, l);
-                fprintf(out, "mov\tsi,%s\n", buf);
-                fprintf(out, "%s\tsi,di\n", op == OP_PLUS ? "add" : "sub");
+                ins2(&g, "mov", o_reg("si"), o_val(l));
+                ins2(&g, aluop(op)->mnem, o_reg("si"), o_reg("di"));
                 push_val(&g, val_reg("si"));
                 break;
             }
-            load_into_di(out, l);
+            if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
+                require_free(r, RB_DI, aluop(op)->name);
+            load_into_di(&g, l);
             if (r.kind == VK_IMM && r.imm == 1 && op == OP_PLUS) {
                 /* "+ 1" specifically compiles to a plain INC, not
                  * "add di,*1." - confirmed against 07_ternary.s.golden's
                  * "a = a + 1;" -> "inc\tdi" (never an "add"). */
-                fprintf(out, "inc\tdi\n");
+                ins1(&g, "inc", o_reg("di"));
             } else if (r.kind == VK_IMM && r.imm == 1 && op == OP_MINUS) {
                 /* The symmetric "- 1" -> DEC case, now confirmed
                  * against 04_funcs/03_recfact.s.golden's "n - 1" ->
                  * "dec\tdi" (never a "sub") and 04_mutrec.s.golden's
                  * identical "n - 1" in both isodd()/iseven(). */
-                fprintf(out, "dec\tdi\n");
+                ins1(&g, "dec", o_reg("di"));
             } else {
-                char rbuf[32];
-                render_operand(rbuf, sizeof rbuf, r);
-                fprintf(out, "%s\tdi,%s\n", op == OP_PLUS ? "add" : "sub", rbuf);
+                ins2(&g, aluop(op)->mnem, o_reg("di"), o_val(r));
             }
             push_val(&g, val_reg("di"));
             break;
@@ -1838,16 +2400,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_EXOR: {
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_AND ? "AND" : op == OP_OR ? "OR" : "EXOR",
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
-            load_into_di(out, l);
-            char rbuf[32];
-            render_operand(rbuf, sizeof rbuf, r);
-            const char *mnem = op == OP_AND ? "and" : op == OP_OR ? "or" : "xor";
-            fprintf(out, "%s\tdi,%s\n", mnem, rbuf);
+            Val l, r;
+            pop_operands(&g, &l, &r);
+            if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
+                require_free(r, RB_DI, aluop(op)->name);
+            load_into_di(&g, l);
+            ins2(&g, aluop(op)->mnem, o_reg("di"), o_val(r));
             push_val(&g, val_reg("di"));
             break;
         }
@@ -1856,12 +2416,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_RSHIFT: {
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_LSHIFT ? "LSHIFT" : "RSHIFT", type);
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
-            load_into_di(out, l);
-            const char *mnem = op == OP_LSHIFT ? "sal" : "sar";
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val l, r;
+            pop_operands(&g, &l, &r);
+            if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
+                require_free(r, RB_DI, aluop(op)->name);
+            load_into_di(&g, l);
+            const char *mnem = aluop(op)->mnem;
             if (r.kind == VK_IMM) {
                 /* Constant shift count: plain 8086 has no
                  * shift-by-immediate-count opcode (that's an
@@ -1876,18 +2438,16 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 if (r.imm < 0)
                     gen_fatal("negative shift count in constant "
                               "expression");
-                char cbuf[32];
-                render_bare_imm(cbuf, sizeof cbuf, 1);
                 for (long i = 0; i < r.imm; i++)
-                    fprintf(out, "%s\tdi,%s\n", mnem, cbuf);
+                    ins2(&g, mnem, o_reg("di"), o_shift1());
             } else {
                 /* Variable shift count: must be loaded into CL (the
                  * only register the 8086's "shift by CL" opcode
                  * shape accepts) - confirmed via 04_shift.s.golden's
                  * "mov\tcx,*-8.(bp)" immediately before
                  * "sal\tdi,cl". */
-                load_into_cx(out, r);
-                fprintf(out, "%s\tdi,cl\n", mnem);
+                load_into_cx(&g, r);
+                ins2(&g, mnem, o_reg("di"), o_reg("cl"));
             }
             push_val(&g, val_reg("di"));
             break;
@@ -1897,9 +2457,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("COMPL of type %d not yet supported", type);
-            Val v = materialize(out, &g, pop_val(&g));
-            load_into_di(out, v);
-            fprintf(out, "not\tdi\n");
+            Val v = materialize(&g, pop_val(&g));
+            load_into_di(&g, v);
+            ins1(&g, "not", o_reg("di"));
             push_val(&g, val_reg("di"));
             break;
         }
@@ -1972,9 +2532,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_mem_direct(v.offset));
                 break;
             }
-            char buf[32];
-            render_operand(buf, sizeof buf, v);
-            fprintf(out, "lea\tdi,%s\n", buf);
+            ins2(&g, "lea", o_reg("di"), o_val(v));
             push_val(&g, val_reg("di"));
             break;
         }
@@ -2027,17 +2585,15 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                            g.valstack[g.valsp - 1].kind == VK_MEM_DIRECT));
             const char *reg = use_si ? "si" : "di";
             if (use_si)
-                load_into_si(out, amt);
+                load_into_si(&g, amt);
             else
-                load_into_di(out, amt);
+                load_into_di(&g, amt);
             long sz = size.imm;
             if (sz != 1 && sz != 2 && sz != 4)
                 gen_fatal("ITOP scaling by a non-power-of-two size "
                           "(%ld) is not yet supported", sz);
-            char onebuf[32];
-            render_bare_imm(onebuf, sizeof onebuf, 1);
             for (long s = sz; s > 1; s /= 2)
-                fprintf(out, "sal\t%s,%s\n", reg, onebuf);
+                ins2(&g, "sal", o_reg(reg), o_shift1());
             push_val(&g, val_reg(reg));
             break;
         }
@@ -2151,14 +2707,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 }
                 fseek(temp1, savepos, SEEK_SET);
                 if (!trivial) {
-                    char pbuf[32];
-                    render_operand(pbuf, sizeof pbuf, ptr);
-                    fprintf(out, "push\t%s\n", pbuf);
+                    ins1(&g, "push", o_val(ptr));
                     push_val(&g, val_ind_pending());
                     break;
                 }
             }
-            load_into_di(out, ptr);
+            load_into_di(&g, ptr);
             push_val(&g, val_ind("di"));
             break;
         }
@@ -2174,7 +2728,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           type);
             Val amt = pop_val(&g);
             Val lv  = pop_val(&g);
-            push_val(&g, gen_incdec(out, &g, op, lv, amt));
+            push_val(&g, gen_incdec(&g, op, lv, amt));
             break;
         }
 
@@ -2197,8 +2751,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * cover the (unconfirmed by any golden) chained-relational
              * edge case "a < b < c", where a nested comparison could
              * otherwise flow in here as an operand. */
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
+            Val l, r;
+            pop_operands(&g, &l, &r);
             Val c = {0};
             c.kind = VK_COND;
             c.true_op = op;
@@ -2250,11 +2804,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             Val v = pop_val(&g);
             Val c = as_cond(v);
             if (c.cond_is_long) {
-                gen_long_cmp(out, &g, c.true_op, c.cl, c.cr, cond_sense, lbl);
+                gen_long_cmp(&g, c.true_op, c.cl, c.cr, cond_sense, lbl);
                 break;
             }
             int branch_op_code = cond_sense ? c.true_op : cond_invert(c.true_op);
-            emit_cmp_and_branch(out, c, branch_op_code, lbl);
+            emit_cmp_and_branch(&g, c, branch_op_code, lbl);
             break;
         }
 
@@ -2262,12 +2816,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_LOGOR: {
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_LOGAND ? "LOGAND" : "LOGOR", type);
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
             Val r = pop_val(&g);
             Val l = pop_val(&g);
-            Val result = (op == OP_LOGAND) ? gen_logand(out, &g, l, r)
-                                            : gen_logor(out, &g, l, r);
+            Val result = (op == OP_LOGAND) ? gen_logand(&g, l, r)
+                                            : gen_logor(&g, l, r);
             push_val(&g, result);
             break;
         }
@@ -2327,7 +2881,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             Val cond = pop_val(&g);
             if (pair.kind != VK_PAIR)
                 gen_fatal("internal: QUEST without a preceding COLON pair");
-            push_val(&g, gen_quest(out, &g, cond, pair));
+            push_val(&g, gen_quest(&g, cond, pair));
             break;
         }
 
@@ -2350,7 +2904,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT)
                 gen_fatal("SEQNC of type %d not yet supported", type);
             Val rhs = pop_val(&g);
-            (void)pop_val(&g); /* lhs - discarded, never materialized */
+            discard_val(&g); /* lhs - discarded, never materialized */
             push_val(&g, rhs);
             break;
         }
@@ -2414,7 +2968,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "covered so far)", type);
             Val args = pop_val(&g);
             Val callee = pop_val(&g);
-            push_val(&g, gen_call(out, callee, args, type == TY_LONG));
+            push_val(&g, gen_call(&g, callee, args, type == TY_LONG));
             break;
         }
 
@@ -2423,13 +2977,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type == TY_LONG) {
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
-                push_val(&g, gen_long_binop_call(out, l, r, "lmul"));
+                push_val(&g, gen_long_binop_call(&g, l, r, "lmul"));
                 break;
             }
             if (type != TY_INT)
                 gen_fatal("TIMES of type %d not yet supported", type);
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
+            Val l, r;
+            pop_operands(&g, &l, &r);
             /* Which operand becomes the "mov ax,<X>" side and which
              * becomes the IMUL operand: ordinarily the LEFT operand
              * goes into AX and the RIGHT is IMUL'd (every previously-
@@ -2461,10 +3015,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "never an immediate directly - no golden "
                           "reference confirms the alternate sequence a "
                           "real compiler would need here)");
-            char lbuf[32], rbuf[32];
-            render_operand(lbuf, sizeof lbuf, ax_side);
-            render_operand(rbuf, sizeof rbuf, imul_side);
-            fprintf(out, "mov\tax,%s\nimul\t%s\n", lbuf, rbuf);
+            if (!(ax_side.kind == VK_REG && strcmp(ax_side.reg, "ax") == 0))
+                require_free(imul_side, RB_AX, "TIMES");
+            ins2(&g, "mov", o_reg("ax"), o_val(ax_side));
+            ins1(&g, "imul", o_val(imul_side));
             push_val(&g, val_reg("ax"));
             break;
         }
@@ -2484,24 +3038,23 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
                 const char *helper = (op == OP_DIVIDE) ? "ldiv" : "lrem";
-                push_val(&g, gen_long_binop_call(out, l, r, helper));
+                push_val(&g, gen_long_binop_call(&g, l, r, helper));
                 break;
             }
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_DIVIDE ? "DIVIDE" : "MOD", type);
-            Val r = materialize(out, &g, pop_val(&g));
-            Val l = materialize(out, &g, pop_val(&g));
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val l, r;
+            pop_operands(&g, &l, &r);
             if (r.kind == VK_IMM)
                 gen_fatal("dividing by an immediate is not yet supported "
                           "(8086 IDIV takes a reg/mem operand, never an "
                           "immediate directly - no golden reference "
                           "confirms the alternate sequence a real "
                           "compiler would need here)");
-            char lbuf[32], rbuf[32];
-            render_operand(lbuf, sizeof lbuf, l);
-            render_operand(rbuf, sizeof rbuf, r);
-            fprintf(out, "mov\tax,%s\ncwd\nidiv\t%s\n", lbuf, rbuf);
+            require_free(r, RB_AX | RB_DX, aluop(op)->name);
+            emit_cwd_from(&g, o_val(l));
+            ins1(&g, "idiv", o_val(r));
             /* Quotient in AX, remainder in DX - confirmed via
              * 01_intarith.s.golden's "c = a / b;" (takes ax) vs.
              * "c = a %% b;" (takes dx) immediately after the same
@@ -2523,13 +3076,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * node following these in temp1, so the memory-operand
              * write has to be this node's own job. */
             int type = c1_read_num(temp1, "temp1");
-            const char *name = op == OP_ASPLUS ? "ASPLUS" :
-                                op == OP_ASMINUS ? "ASMINUS" :
-                                op == OP_ASSAND ? "ASSAND" :
-                                op == OP_ASOR ? "ASOR" : "ASXOR";
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported", name, type);
-            Val rhs = materialize(out, &g, pop_val(&g));
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val rhs = materialize(&g, pop_val(&g));
             Val lhs = pop_val(&g);
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
@@ -2539,14 +3089,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "right-hand side is not yet supported (no "
                           "golden reference confirms the register-operand "
                           "sequence a real compiler would need here)");
-            const char *mnem = op == OP_ASPLUS ? "add" :
-                                op == OP_ASMINUS ? "sub" :
-                                op == OP_ASSAND ? "and" :
-                                op == OP_ASOR ? "or" : "xor";
-            char lbuf[32], rbuf[32];
-            render_operand(lbuf, sizeof lbuf, lhs);
-            render_operand(rbuf, sizeof rbuf, rhs);
-            fprintf(out, "%s\t%s,%s\n", mnem, lbuf, rbuf);
+            ins2(&g, aluop(op)->mnem, o_val(lhs), o_val(rhs));
             break;
         }
 
@@ -2566,9 +3109,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * DI. */
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_ASLSH ? "ASLSH" : "ASRSH", type);
-            Val rhs = materialize(out, &g, pop_val(&g));
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val rhs = materialize(&g, pop_val(&g));
             Val lhs = pop_val(&g);
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
@@ -2580,12 +3123,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "real compiler would need here)");
             if (rhs.imm < 0)
                 gen_fatal("negative shift count in constant expression");
-            char lbuf[32], cbuf[32];
-            render_operand(lbuf, sizeof lbuf, lhs);
-            render_bare_imm(cbuf, sizeof cbuf, 1);
-            const char *mnem = op == OP_ASLSH ? "sal" : "sar";
             for (long i = 0; i < rhs.imm; i++)
-                fprintf(out, "%s\t%s,%s\n", mnem, lbuf, cbuf);
+                ins2(&g, aluop(op)->mnem, o_val(lhs), o_shift1());
             break;
         }
 
@@ -2608,7 +3147,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("ASTIMES of type %d not yet supported", type);
-            Val rhs = materialize(out, &g, pop_val(&g));
+            Val rhs = materialize(&g, pop_val(&g));
             Val lhs = pop_val(&g);
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
@@ -2627,11 +3166,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "immediate directly, and no golden reference "
                           "confirms the general strength-reduction "
                           "sequence a real compiler would need here)");
-            char lbuf[32], cbuf[32];
-            render_operand(lbuf, sizeof lbuf, lhs);
-            render_bare_imm(cbuf, sizeof cbuf, 1);
             for (int i = 0; i < shift; i++)
-                fprintf(out, "sal\t%s,%s\n", lbuf, cbuf);
+                ins2(&g, "sal", o_val(lhs), o_shift1());
             break;
         }
 
@@ -2654,9 +3190,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * AX/DX, never directly in memory. */
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported",
-                          op == OP_ASDIV ? "ASDIV" : "ASMOD", type);
-            Val rhs = materialize(out, &g, pop_val(&g));
+                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
+                          type);
+            Val rhs = materialize(&g, pop_val(&g));
             Val lhs = pop_val(&g);
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
@@ -2667,12 +3203,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "supported (no golden reference confirms the "
                           "register-operand sequence a real compiler "
                           "would need here)");
-            char lbuf[32], rbuf[32];
-            render_operand(lbuf, sizeof lbuf, lhs);
-            render_operand(rbuf, sizeof rbuf, rhs);
-            fprintf(out, "mov\tax,%s\ncwd\nmov\tcx,%s\nidiv\tcx\n",
-                    lbuf, rbuf);
-            fprintf(out, "mov\t%s,%s\n", lbuf, op == OP_ASDIV ? "ax" : "dx");
+            emit_cwd_from(&g, o_val(lhs));
+            ins2(&g, "mov", o_reg("cx"), o_val(rhs));
+            ins1(&g, "idiv", o_reg("cx"));
+            ins2(&g, "mov", o_val(lhs), o_reg(op == OP_ASDIV ? "ax" : "dx"));
             break;
         }
 
@@ -2694,7 +3228,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 if (lhs.kind != VK_MEM)
                     gen_fatal("assignment to a non-memory 'long' lvalue "
                               "is not yet supported");
-                rhs = materialize_long(out, rhs); /* VK_LCON -> VK_LONG,
+                rhs = materialize_long(&g, rhs); /* VK_LCON -> VK_LONG,
                                                     * a no-op for
                                                     * anything already
                                                     * VK_LONG (OP_CTOL,
@@ -2708,30 +3242,25 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "lvalue is not yet supported (no golden "
                               "reference confirms the widening sequence "
                               "a real compiler would need here)");
-                char lobuf[32], hibuf[32];
-                render_operand(lobuf, sizeof lobuf, val_mem(lhs.offset + MCC_SZINT));
-                render_operand(hibuf, sizeof hibuf, val_mem(lhs.offset));
-                fprintf(out, "mov\t%s,si\n", lobuf);
-                fprintf(out, "mov\t%s,di\n", hibuf);
+                ins2(&g, "mov", o_mem(lhs.offset + MCC_SZINT), o_reg("si"));
+                ins2(&g, "mov", o_mem(lhs.offset), o_reg("di"));
                 push_val(&g, rhs);
                 break;
             }
             if (type != TY_INT && type != TY_PTR_INT && type != TY_CHAR &&
                 type != TY_PTR_FUNC_INT && type != TY_PTR_PTR_INT)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
-            Val rhs = materialize(out, &g, pop_val(&g));
+            Val rhs = materialize(&g, pop_val(&g));
             if (rhs.kind == VK_MEM_DIRECT) {
                 /* A deferred address-of, finally materialized here -
                  * "p = &x;"/"p = a;"/"pp = &p;" (see OP_AMPER's own
                  * comment for why this is deferred at all) - confirmed
                  * against 05_incdec.s.golden's "lea\tdi,*-16.(bp)" and
                  * 06_ptrptr.s.golden's two "lea"s. */
-                char rb[32];
-                render_operand(rb, sizeof rb, rhs);
-                fprintf(out, "lea\tdi,%s\n", rb);
+                ins2(&g, "lea", o_reg("di"), o_val(rhs));
                 rhs = val_reg("di");
             }
-            Val lhs = pop_val(&g);
+            Val lhs = pop_lvalue(&g);
             if (lhs.kind == VK_IND_PENDING) {
                 /* The lvalue's own address was pushed to the real
                  * machine stack earlier (see OP_STAR's own comment
@@ -2742,7 +3271,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * against 01_arrbasic.s.golden's "pop\tbx" / "mov\t
                  * (bx),ax" and 03_ptrbasic.s.golden's "pop\tbx" /
                  * "mov\t(bx),di". */
-                fprintf(out, "pop\tbx\n");
+                require_free(rhs, RB_BX, "ASSIGN");
+                ins1(&g, "pop", o_reg("bx"));
                 lhs = val_ind("bx");
             }
             if (lhs.kind != VK_MEM && lhs.kind != VK_MEM_DIRECT &&
@@ -2759,7 +3289,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * s.golden's "y = *p;": "mov di,*-10.(bp)" (the STAR
                  * itself, loading the pointer) / "mov di,(di)" (THIS
                  * step) / "mov *-8.(bp),di". */
-                fprintf(out, "mov\t%s,(%s)\n", rhs.reg, rhs.reg);
+                require_free(lhs, reg_bit(rhs.reg), "ASSIGN");
+                ins2(&g, "mov", o_reg(rhs.reg), o_ind(rhs.reg));
                 rhs = val_reg(rhs.reg);
             }
             if (rhs.kind == VK_MEM_CVT) {
@@ -2768,7 +3299,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * above) - confirmed to go through DI first, unlike a
                  * bare-NAME VK_MEM rhs (still unconfirmed, see just
                  * below). */
-                load_into_di(out, rhs);
+                require_free(lhs, RB_DI, "ASSIGN");
+                load_into_di(&g, rhs);
                 rhs = val_reg("di");
             } else if (rhs.kind == VK_MEM) {
                 gen_fatal("direct memory-to-memory assignment (\"x = y;\") "
@@ -2789,19 +3321,24 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * "mov di,di" between them). Still pushes the value
                  * back, same as every other ASSIGN case below, for
                  * OP_EXPR to discard. */
+                g.regvar_dirty &= ~reg_bit(lhs.reg); /* assigned: valid again */
                 push_val(&g, rhs);
                 break;
             }
-            char dbuf[32], sbuf[32];
-            render_operand(dbuf, sizeof dbuf, lhs);
-            render_operand(sbuf, sizeof sbuf, rhs);
-            if (rhs.kind == VK_FUNCADDR)
-                free((char *)rhs.reg);
             /* TY_CHAR uses "movb" instead of "mov" - confirmed against
              * 08_castsize.s.golden's "c = (char) i;" -> "movb
              * *-12.(bp),dx". */
-            fprintf(out, "%s\t%s,%s\n", type == TY_CHAR ? "movb" : "mov",
-                    dbuf, sbuf);
+            if (lhs.kind == VK_REG) {
+                /* A store INTO a 'register' local - the one write to a
+                 * reserved register note_writes() must not refuse. */
+                ins2_regvar_store(&g, type == TY_CHAR ? "movb" : "mov",
+                                  o_val(lhs), o_val(rhs));
+                g.regvar_dirty &= ~reg_bit(lhs.reg); /* assigned: valid again */
+            } else {
+                ins2(&g, type == TY_CHAR ? "movb" : "mov", o_val(lhs), o_val(rhs));
+            }
+            if (rhs.kind == VK_FUNCADDR)
+                free((char *)rhs.reg); /* only after it was rendered */
             /* Pushes the assigned value back - confirmed necessary
              * (not just harmless) by 07_ternary's embedded
              * assignments inside a parenthesized comma-list ("(a = a
@@ -2842,21 +3379,20 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * confirmed - anything else (e.g. an already-DX:AX
                  * call result returned straight back out) is not
                  * exercised by any golden. */
-                Val v = materialize_long(out, pop_val(&g));
+                Val v = materialize_long(&g, pop_val(&g));
                 if (v.kind != VK_LONG)
                     gen_fatal("RFORCE to 'long' from a non-'long' value is "
                               "not yet supported (no golden reference "
                               "confirms the widening sequence a real "
                               "compiler would need here)");
-                fprintf(out, "mov\tax,si\n");
-                fprintf(out, "mov\tdx,di\n");
+                put_seq(&g, SEQ_DISI_TO_AXDX);
                 break;
             }
             if (type != TY_INT)
                 gen_fatal("RFORCE to type %d not yet supported (only "
                           "int/long-returning functions are covered so "
                           "far)", type);
-            Val v = materialize(out, &g, pop_val(&g));
+            Val v = materialize(&g, pop_val(&g));
             /* Matches the confirmed golden pattern exactly, for an
              * immediate (00_smoke's "return 42;"), a memory operand
              * (01_intarith's "return c;"), or anything else not
@@ -2879,18 +3415,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * returns 0, skipping movreg entirely, precisely when
              * the value is already in the target register). */
             if (!(v.kind == VK_REG && strcmp(v.reg, "ax") == 0)) {
-                if (g.di_reserved) {
+                if (g.reserved & RB_DI) {
                     /* DI is reserved by a live 'register'-class local
-                     * for the rest of this function (see di_reserved's
+                     * for the rest of this function (see reserved's
                      * own comment) - SI is used as the fallback
                      * working register instead, confirmed against
                      * 04_funcs/06_regclass.s.golden's "return sum;" ->
                      * "mov si,*-6.(bp) / mov ax,si" (never DI). */
-                    load_into_si(out, v);
-                    fprintf(out, "mov\tax,si\n");
+                    load_into_si(&g, v);
+                    ins2(&g, "mov", o_reg("ax"), o_reg("si"));
                 } else {
-                    load_into_di(out, v);
-                    fprintf(out, "mov\tax,di\n");
+                    load_into_di(&g, v);
+                    ins2(&g, "mov", o_reg("ax"), o_reg("di"));
                 }
             }
             break;
@@ -2921,11 +3457,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "malformed temp1 stream or a c1_gen.c bug",
                           g.valsp);
             if (g.valsp == 1)
-                pop_val(&g);
+                discard_val(&g);
             /* Flush any postfix ++/-- fixup queued by gen_incdec()
              * during this statement - see DEFERRED_MAX's comment on
              * GenState. */
-            flush_deferred(out, &g);
+            flush_deferred(&g);
             break;
         }
 
@@ -2952,13 +3488,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 cases[ncases].val = val;
                 ncases++;
             }
-            gen_switch_dispatch(out, &g, deflab, cases, ncases);
+            gen_switch_dispatch(&g, deflab, cases, ncases);
             break;
         }
 
         case OP_RETRN: {
             int type = c1_read_num(temp1, "temp1");
-            fprintf(out, "|RTYP %d\njmp\tcret\n", type);
+            put_line(&g, "|RTYP %d", type);
+            ins1(&g, "jmp", o_sym("cret"));
             break;
         }
 
@@ -2976,36 +3513,45 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (extra == 0) {
                 /* Nothing to emit - matches every 00_smoke golden's
                  * "L1:jmp\tL2" with no "sub sp" in between. */
-            } else if (extra <= 76) {
-                /* Confirmed against docs/MUTOS_C_ABI.md sect. 1.9 and
-                 * 01_intarith.s.golden's "L1:sub\tsp,*6.\njmp\tL2":
-                 * the largest real-hardware example using a plain
-                 * "sub sp,N" (not "call chkstk") has N=76. */
-                fprintf(out, "sub\tsp,*%d.\n", extra);
-            } else if (extra > 256) {
-                /* Confirmed lower bound for "call chkstk" (see
-                 * docs/MUTOS_C_ABI.md sect. 1.9): the smallest real
-                 * example using it has N=256. */
-                fprintf(out, "mov\tax,*%d.\ncall\tchkstk\n", extra);
+            } else if (extra <= MCC_SUBSP_MAX) {
+                /* A plain "sub sp,N" - confirmed against 01_intarith.
+                 * s.golden's "L1:sub\tsp,*6.\njmp\tL2" and, as the
+                 * largest confirmed size, 09_abiprobe/02_frame080.s.
+                 * golden's "L1:sub\tsp,*80." (see MCC_SUBSP_MAX). N is
+                 * an ordinary immediate (render_operand()'s rule). */
+                ins2(&g, "sub", o_reg("sp"), o_imm(extra));
+            } else if (extra >= MCC_CHKSTK_MIN) {
+                /* "mov ax,N / call chkstk" - confirmed against every
+                 * 09_abiprobe/03..07 golden (N = 128/176/224/256/300),
+                 * e.g. 07_frame300.s.golden's "L1:mov\tax,#300.":
+                 * N is an ordinary immediate, so every N here (all >=
+                 * 128, too big for a signed byte) takes the word-sized
+                 * '#' marker. (Before these goldens existed this path
+                 * hard-coded '*' - an unverified guess, now corrected -
+                 * and was reachable only above 256 bytes.) */
+                ins2(&g, "mov", o_reg("ax"), o_imm(extra));
+                ins1(&g, "call", o_sym("chkstk"));
             } else {
                 gen_fatal("local-frame size %d bytes falls in the "
-                          "unconfirmed (76,256] gap between a plain "
-                          "\"sub sp,N\" and \"call chkstk\" (see "
+                          "unconfirmed %d..%d-byte gap between the largest "
+                          "confirmed plain \"sub sp,N\" and the smallest "
+                          "confirmed \"call chkstk\" (see "
                           "docs/MUTOS_C_ABI.md sect. 1.9 and "
                           "tests/mutos_cc/09_abiprobe/) - not yet "
-                          "supported rather than guessing", extra);
+                          "supported rather than guessing", extra,
+                          MCC_SUBSP_MAX + 1, MCC_CHKSTK_MIN - 1);
             }
             break;
         }
 
         default:
-            gen_fatal("unsupported temp1 opcode %d (0x%02x) - mutos_c1's "
-                      "current coverage is limited to the 00_smoke/"
-                      "01_intarith subset; see src/mutos_cc/README.md",
+            gen_fatal("unsupported temp1 opcode %d (0x%02x) - not yet "
+                      "covered by mutos_c1; see src/mutos_cc/README.md "
+                      "for its current opcode coverage",
                       op, op);
         }
     }
 
-    fprintf(out, ".data\n");
+    ins0(&g, ".data");
     return 0;
 }

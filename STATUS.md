@@ -248,6 +248,65 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c1`: verified this session (`c1_gen.c` emission-layer refactor, register-occupancy guard, `SETSTK` threshold)
+
+A code review of `src/mutos_cc/c1_gen.c` (full write-up in `docs/DEVLOG.md`'s
+Milestone 4 section) led to three changes, all confined to that one file - no
+`mutos_c0` change and no wire-format change, so `dump_temp.py` is unaffected:
+
+1. **Emission layer (refactor, no output change).** Every line of assembly
+   text now goes through one small layer: typed operands (`o_reg()`,
+   `o_val()`, `o_imm()`, `o_lab()`, `o_ind()`, ...), `ins0()`/`ins1()`/
+   `ins2()` for instructions, `put_label()` for the no-newline `L<n>:`
+   convention, `put_line()` for `|`-comments - replacing 146 scattered
+   `fprintf()` calls and their scratch buffers. Where a table fits, it is
+   one: relational branch mnemonics/inversions (`RELOPS`), opcode →
+   mnemonic/diagnostic name (`ALUOPS`), and the confirmed fixed idioms as
+   `const Insn` sequences (`SEQ_PROLOGUE`, `SEQ_DXAX_TO_DISI`, ...).
+2. **Register-occupancy guard (bug fix).** `c1` tracks where every pending
+   value lives but never checked whether a register it was about to
+   overwrite still held one. That silently miscompiled, among others,
+   `f(a) + a * b` (the `imul` overwrote `f()`'s result in `AX`),
+   `v[a + 1] = 5;` (the array base in `DI` was overwritten before use),
+   `if (a + b < c)` (compiled to `cmp di,di`), `f(a) + g(b)`,
+   `g(a + b, 5)`, `a / (b % c)`, `a - *p`, `(a < b) + (c < d)`, and any
+   use of `DI` as scratch while a `register` local lived there. A central
+   check in the emission layer (an `INSN_FX` table of each mnemonic's
+   register effects, plus explicit checks where a handler holds a popped
+   operand) now turns every such collision into an explicit "not yet
+   supported" diagnostic. It does not invent spill code - no golden yet
+   confirms the real compiler's shape for these.
+3. **`SETSTK` threshold (bug fix).** The `09_abiprobe` goldens pin both
+   frame-allocation shapes: 80 bytes → `sub sp,*80.`; 128/176/224/256/300
+   bytes → `mov ax,#N.` / `call chkstk`. The threshold is therefore in
+   `(80,128]`. `c1` previously refused 77..256 and, above 256, emitted
+   `mov ax,*N.` (wrong size marker - silently wrong); it now emits both
+   confirmed shapes byte-exactly, and refuses only 81..127.
+
+**Verification (this session):**
+
+- `make test`: 33/62 byte-exact end-to-end, unchanged; 0 genuine
+  mismatches; `mutos_as`/`mutos_cpp` suites unchanged. Zero warnings under
+  `-Wall -Wextra -Wpedantic`; clean under ASan/UBSan.
+- `mutos_c1` run directly on all 62 golden `.1`/`.2` pairs (bypassing
+  `mutos_c0`): output and exit status byte-identical to the pre-change
+  binary for all 62 (37 of the 62 match their `.s.golden` via `c1` alone -
+  `06_struct/01_stbasic`, `08_enum`, `09_typedef` and `07_scope/02_shadow`
+  are blocked only by `mutos_c0`). The only stderr change is the
+  unsupported-opcode message's wording (it no longer claims coverage is
+  "limited to 00_smoke/01_intarith").
+- Differential testing against the pre-change binary over 3000 random
+  K&R programs (2060 accepted by `mutos_c0`): the refactor alone changed
+  no byte of output, stderr or exit status; with the guard, 426 are
+  identical and 1634 are now refused, 0 unexpected - each refusal checked
+  to be the guard's own diagnostic with the new output an exact byte-prefix
+  of the old one, and a manual sample of refused cases confirmed genuine
+  register clobbers in the old output. Hand-assembled `temp1` streams
+  covered the two pointer-`PLUS` fallback paths no C source reaches, and
+  the `SETSTK` value of every `09_abiprobe` golden (all six now match
+  their `.s.golden` frame epilogue; before, five were refused and one was
+  wrong).
+
 ### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, 4/7 of `05_arrptr`)
 
 `05_arrptr` is the first category needing real type-system work beyond a
@@ -713,12 +772,13 @@ offsets in `docs/DEVLOG.md`'s Milestone 4 section:
    declarator loop exactly, using MUTOS's own `STAUTO=-4` as the starting
    subtrahend (delta #1) — confirmed via `a`/`b`/`c` landing at `-6`/`-8`/
    `-10`.
-6. The `SETSTK`-vs-`.s` local-frame threshold is now implemented for real
-   (not just bounded): `extra <= 76` bytes emits a plain `"sub sp,*N."`
-   (confirmed via `01_intarith`'s `extra=6` case), `extra > 256` emits
-   `"mov ax,*N. / call chkstk"` (per `docs/MUTOS_C_ABI.md` sect. 1.9, not
-   yet confirmed against its own golden), and the unconfirmed `(76,256]`
-   gap remains an explicit "not yet supported" rather than a guess.
+6. The `SETSTK`-vs-`.s` local-frame threshold was implemented in that
+   session as a plain `"sub sp,*N."` up to 76 bytes (confirmed via
+   `01_intarith`'s `extra=6` case) and `"mov ax,*N. / call chkstk"` above
+   256 bytes (unconfirmed at the time), with the sizes in between refused.
+   **Superseded** - the `09_abiprobe` goldens have since pinned both
+   shapes down (the `chkstk` form's immediate turned out to take the `#`
+   marker); see the `c1_gen.c` emission-layer section above.
 7. `mutos_as`'s `*`/`#` immediate-operand size markers (byte- vs.
    word-sized) are a real, confirmed source-text convention: `*value.`
    when the value fits a signed byte (`-128..127`), `#value.` otherwise —
@@ -1297,8 +1357,9 @@ return convention; `long` values confirmed to use PDP-11 middle-endian word orde
 (high word at the lower address) everywhere — locals, by-reference operands, and
 by-value parameters alike; a separate, internal-only extended-prologue ABI used
 solely by the compiler's own `almul`/`aldiv`/`alrem` long-arithmetic runtime helpers;
-a `chkstk` stack-overflow guard for large local frames (threshold empirically
-bounded to `(76, 256]` bytes, not pinned down further); and the real `crt0` →
+a `chkstk` stack-overflow guard for large local frames (threshold then only
+bounded to between 76 and 256 bytes by `libc.a`; since narrowed by the
+`09_abiprobe` goldens - see the Milestone 4 section above); and the real `crt0` →
 `_main` → `exit()` → `_cleanup()` cleanup chain (crt0 calls `exit()`, which flushes
 stdio via a `_cleanup()` hook, before the raw `_exit()` syscall — confirmed via both
 halves' disassembly). This is prep/documentation only — no `mutos_c1` code exists
@@ -1416,7 +1477,12 @@ not just its wire shape understood — see this session's own section and
 literal/data-segment emission — an entirely new subsystem, nothing exists
 for it yet), then `06_struct` (structs/unions/enums — real type-system work
 the current `SymEntry`/`ExprVal` model doesn't fully have yet), the
-`09_abiprobe` `chkstk`-threshold goldens, and the `mutos_cc` driver itself.
+remaining 81..127-byte `chkstk` gap (the `09_abiprobe` goldens themselves
+still need `char` arrays in `mutos_c0`/`mutos_c1`), and the `mutos_cc` driver
+itself. The register-occupancy guard's refusals (see this session's `c1_gen.c`
+section above) mark where real spill/reordering codegen - and an SI-scratch
+generalization for functions with a `register` local - will be needed; each
+needs its own golden before it can be implemented.
 See `src/mutos_cc/README.md`'s "Next steps" for the full, dependency-ordered
 plan.
 
