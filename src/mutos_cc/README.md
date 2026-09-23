@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 29/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 33/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -19,7 +19,9 @@ Workflow Guideline 3), not copied wholesale.
 `01_addsub.c`, `02_muldiv.c`, `03_retval.c` and `04_params.c`, plus all 7
 of `03_ctrlflow`, plus all 7
 of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
-`04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`. See
+`04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus
+4 of `05_arrptr`'s 7: `01_arrbasic.c`, `03_ptrbasic.c`, `04_ptrarreq.c`
+and `06_ptrptr.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -795,6 +797,36 @@ left unchanged, since none is exercised with a live register variable by
 any golden yet. See `docs/DEVLOG.md`'s Milestone 4 section for the full
 byte-level derivation.
 
+**`05_arrptr` (4 of 7 files: `01_arrbasic`, `03_ptrbasic`, `04_ptrarreq`,
+`06_ptrptr`) confirmed - single-dimension array subscripting, multi-level
+pointers, general `&`/`*`, and pointer/array-parameter equivalence.** The
+first category needing real pointer-degree arithmetic instead of a flat
+`TY_PTR_INT` constant: `c0_parser.c` gained `ty_incref_tag()`/`ty_ptr_of()`/
+`ty_decref()`, transcribing v7/cc's own `incref()`/`decref()` formula
+(`new_type = ((t & ~7) << 2) | (t & 7) | tag`) - confirmed via `int **pp;`
+using type 40, not a naive "16" (see `docs/DEVLOG.md`). `a[i]` compiles to
+`*(&a + i*sizeof(elem))`, reusing `05_incdec.c`'s `AMPER`/`ITOP`/`PLUS`/
+`STAR` shapes via a new `emit_subscript()`; `*(a + i)` reaches the identical
+tail through a new pointer-arithmetic case in `parse_add()`. `parse_unary()`
+gained real `'&'`/`'*'` as general (not just `"*p = ...;"`-statement-
+special-cased) operators, recursing for a chain of leading `'*'`s
+(`**pp`). The interesting new work was almost entirely in `c1`: scaling a
+*non-constant* subscript index by a constant size (previously `OP_ITOP`
+only folded two compile-time constants), a dereferenced value feeding
+further arithmetic needing force-materialization first (`"mov di,(di)"`,
+since `ADD` can't take two memory operands), and two real surprises -
+an indirect-assignment target whose right-hand side needs its own working
+registers gets its address PUSHED to the hardware stack rather than left in
+a register (`VK_IND_PENDING`, using one-to-few opcodes of real lookahead via
+`ftell`/`fseek` on `temp1` - the first time `c1_gen.c` has ever needed
+this), and `OP_AMPER`'s array-decay is deferred by default (`VK_MEM_DIRECT`)
+so a compile-time-constant-index subscript can fold away entirely and a
+bare array-decayed call argument doesn't get clobbered by a later sibling
+argument under right-to-left pushing. Full byte-level derivation, including
+the dead ends ruled out along the way, in `docs/DEVLOG.md`'s Milestone 4
+section. `02_array2d.c` (2-D arrays) and `05_arrofptr.c`/`07_strlibc.c`
+(string literals) remain open - see "Next steps" below.
+
 ## `SETSTK` / local-frame handling
 
 `c1_gen.c`'s `SETSTK` handler computes `extra = value - 4` (4 = the
@@ -858,12 +890,21 @@ analyzed (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
    allocation) are done this session - see "Current scope" above for
    the full derivation of all of it, and `docs/DEVLOG.md`'s Milestone 4
    section for the byte-level detail behind the last two.
-3. **`05_arrptr`/`06_struct`**: array subscripting and multi-level
-   pointers/multi-dimensional arrays (single-degree pointers and
-   single-dimension arrays already exist, from `05_incdec` - see above),
-   structs/unions/enums - each adds real type-system work (sizes beyond
-   a flat "2 bytes", degree-of-reference, member layout) the current
-   `SymEntry`/`ExprVal` model doesn't fully have yet.
+3. **`05_arrptr`/`06_struct`**: single-dimension array subscripting,
+   multi-level pointers, general `&`/`*`, and pointer/array-parameter
+   equivalence are now done (4 of 7 files - `01_arrbasic`/`03_ptrbasic`/
+   `04_ptrarreq`/`06_ptrptr` - see "Current scope" above and
+   `docs/DEVLOG.md`'s Milestone 4 section for the full derivation).
+   Remaining: `02_array2d.c` (2-dimensional arrays - the wire shape is
+   understood, but `c1`'s actual combined-register address computation
+   for `m[i][j]` is not yet written, and one node's type value (104) is
+   only empirically pinned, not fully re-derived - see DEVLOG), and
+   `05_arrofptr.c`/`07_strlibc.c` (string literals - need an entirely new
+   data-segment/string-constant emission subsystem, `v7/cc/c00.c`'s
+   `putstr()` equivalent, that does not exist at all yet). Then
+   `06_struct` (structs/unions/enums - member layout, sizes beyond a flat
+   "2 bytes") - real type-system work the current `SymEntry`/`ExprVal`
+   model doesn't fully have yet, untouched so far.
 4. **`09_abiprobe/frame*`**: pins down the real `chkstk` threshold
    once those goldens exist, unblocking `SETSTK`'s unconfirmed
    `(76,256]` gap.

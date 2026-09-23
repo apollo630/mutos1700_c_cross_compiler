@@ -31,12 +31,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  29/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  33/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus all 4 of `02_long`: `01_addsub`/`02_muldiv`/`03_retval`/`04_params`,
   plus all 7 of
-  `03_ctrlflow`, plus all 7 of `04_funcs`) — see
+  `03_ctrlflow`, plus all 7 of `04_funcs`, plus 4 of `05_arrptr`'s 7:
+  `01_arrbasic`/`03_ptrbasic`/`04_ptrarreq`/`06_ptrptr`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -384,7 +385,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 29/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 33/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`

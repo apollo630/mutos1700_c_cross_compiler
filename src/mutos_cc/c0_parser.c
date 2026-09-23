@@ -267,6 +267,39 @@ typedef struct {
  * other multi-level derived type is exercised). */
 #define TY_PTR_FUNC_INT 72
 
+/* General degree-of-reference chaining, matching v7/cc/c04.c's own
+ * incref()/decref() exactly (TYPE=7 the base-type mask, TYLEN=2,
+ * PTR=010=8 - see TY_PTR_FUNC_INT's comment above for the derivation
+ * this generalizes): incref_tag(t, PTR) adds one more pointer degree
+ * on top of whatever `t` already has - confirmed against
+ * 05_arrptr/06_ptrptr.1.golden's "int **pp": incref_tag(TY_PTR_INT,
+ * PTR) = 40, NOT a naive "16" (TY_PTR_INT + one more degree is NOT
+ * TY_PTR_INT*2) - `pp`'s own NAME/AMPER/ASSIGN nodes all use type 40.
+ * ty_decref() is its exact inverse (strips exactly one degree,
+ * confirmed by round-tripping ty_decref(40)==TY_PTR_INT via the same
+ * golden's "**pp = 6;": the first STAR's own type is TY_PTR_INT(8),
+ * the second's is TY_INT(0)). Only the PTR tag is ever chained by
+ * mutos_c0 today (ARRAY/FUNC are only ever a single fixed degree -
+ * see TY_PTR_FUNC_INT/TY_FUNC_INT above); a general ty_ptr_of() atop
+ * ty_incref_tag() covers every pointer-degree case this grammar scope
+ * exercises (05_arrptr's 03_ptrbasic/04_ptrarreq/06_ptrptr). */
+#define TY_TYPE_MASK  7    /* v7/cc's TYPE - the base-type field */
+#define TY_XTYPE_MASK 030  /* v7/cc's XTYPE - the outermost degree tag */
+
+static int ty_incref_tag(int t, int tag)
+{
+    return (((t & ~TY_TYPE_MASK) << 2) | (t & TY_TYPE_MASK) | tag);
+}
+
+static int ty_ptr_of(int t) { return ty_incref_tag(t, 010 /* PTR */); }
+
+static int ty_decref(int t)
+{
+    int base = t & TY_TYPE_MASK;
+    int cleared = t & ~TY_TYPE_MASK & ~TY_XTYPE_MASK;
+    return base | (cleared >> 2);
+}
+
 /* Maximum K&R-style parameters a single function definition can
  * declare - sized generously; 04_funcs/02_manyargs.c's six-parameter
  * sum6() is the largest confirmed case in the current corpus. */
@@ -285,6 +318,22 @@ typedef struct {
  * sizes sizeof() reports, not necessarily the allocation size. */
 #define MCC_SZCHAR 1
 #define MCC_SZLONG 4
+
+/* The VALUE size (not the padded stack-slot size - see MCC_SZCHAR's
+ * own comment) of a scalar or pointer type - the scale factor array
+ * subscripting/pointer arithmetic steps a pointer by. Every pointer
+ * degree is word-sized regardless of what it points to (matches
+ * MCC_SZINT, same as a plain int - see sizeof's own already-
+ * established "a pointer is word-sized" rule above). Only int/char/
+ * long/pointer element types are exercised by any current golden. */
+static int size_of_type(int t)
+{
+    if (t == TY_CHAR)
+        return MCC_SZCHAR;
+    if (t == TY_LONG)
+        return MCC_SZLONG;
+    return MCC_SZINT;
+}
 
 static void advance(Parser *p)
 {
@@ -429,6 +478,47 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 static ExprVal parse_expr(Parser *p, FILE *t1);
 static void parse_statement(Parser *p, FILE *t1, int retlab);
 static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
+
+/*
+ * Emits the address computation and final dereference for exactly
+ * one subscript step "sym[idx-expr]" - `sym` must be an array or a
+ * plain pointer variable, and its own NAME node must NOT have been
+ * emitted yet (this function emits it). Assumes p->cur.kind ==
+ * T_LBRACK on entry and consumes '[' idx-expr ']'.
+ *
+ * Two shapes, matching K&R's array-vs-pointer subscript semantics
+ * exactly - confirmed against 05_arrptr/01_arrbasic.1.golden ("a[i]",
+ * `a` an array: NAME/AMPER decay first, same as a bare array-as-
+ * rvalue - see parse_primary()'s existing is_array case above) and
+ * 05_arrptr/04_ptrarreq.1.golden ("*(a + i)", `a` a plain pointer
+ * parameter: no AMPER at all, its NAME's own value IS the pointer -
+ * this second shape is also reached directly by parse_deref() below
+ * for the explicit-'*' spelling, not just via this function). Only a
+ * single subscript dimension is supported - see README.md.
+ */
+static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
+{
+    advance(p); /* '[' */
+    int elemtype, ptrtype;
+    if (sym->is_array) {
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        elemtype = sym->type;
+        ptrtype = ty_ptr_of(elemtype);
+        outcode(t1, "BN", OP_AMPER, ptrtype);
+    } else {
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        ptrtype = sym->type;
+        elemtype = ty_decref(ptrtype);
+    }
+    ExprVal idx = parse_expr(p, t1);
+    expect(p, T_RBRACK, "']'");
+    emit_materialize(t1, idx);
+    outcode(t1, "BNN", OP_CON, TY_INT, size_of_type(elemtype));
+    outcode(t1, "BN", OP_ITOP, ptrtype);
+    outcode(t1, "BN", OP_PLUS, ptrtype);
+    outcode(t1, "BN", OP_STAR, elemtype);
+    return elemtype;
+}
 
 /*
  * comma-item := (IDENT '=' expr) | expr
@@ -728,6 +818,15 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             return ev_const(0);
         }
         advance(p);
+
+        if (p->cur.kind == T_LBRACK && (sym->is_array || sym->is_ptr)) {
+            /* Array/pointer subscript used as an rvalue ("sum = sum +
+             * a[i];") - see emit_subscript()'s own comment for the
+             * two confirmed shapes. */
+            int elemtype = emit_subscript(p, t1, sym);
+            return ev_dynamic_typed(elemtype);
+        }
+
         /* treeout()'s NAME case: outcode("BNN", NAME, hclass, type)
          * then, since hclass is always SC_AUTO (never SC_EXTERN) in
          * this scope, outcode("N", hoffset) rather than a symbol
@@ -849,6 +948,63 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
 
 static ExprVal parse_unary(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_AMP) {
+        /* '&' IDENT - address-of, only a plain variable name so far
+         * (matches 05_arrptr/03_ptrbasic.c's "&x"/"&y" and
+         * 06_ptrptr.c's "&p" - every confirmed AMPER operand in this
+         * grammar scope). Reuses exactly the same NAME+AMPER shape
+         * array-decay already established (parse_primary's is_array
+         * case below), generalized via ty_ptr_of() to any base
+         * type/degree - confirmed against 06_ptrptr.1.golden's
+         * "pp = &p;" (AMPER of an already-pointer-typed operand,
+         * giving one more degree, type 40 - see ty_ptr_of()'s own
+         * comment above). */
+        int line = p->cur.line;
+        advance(p);
+        if (p->cur.kind != T_IDENT) {
+            c0_error_at(line, "'&' is only supported on a plain "
+                               "variable name so far - see "
+                               "src/mutos_cc/README.md");
+            return ev_dynamic();
+        }
+        SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+        if (!sym) {
+            c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
+            advance(p);
+            return ev_const(0);
+        }
+        advance(p);
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        int rt = ty_ptr_of(sym->type);
+        outcode(t1, "BN", OP_AMPER, rt);
+        return ev_dynamic_typed(rt);
+    }
+    if (p->cur.kind == T_STAR) {
+        /* '*' unary-expr - general pointer dereference used as an
+         * RVALUE (as opposed to parse_star_assign_stmt()'s
+         * statement-level lvalue form) - "y = *p;" (03_ptrbasic.c)
+         * and "*(a + i)" (04_ptrarreq.c, via parse_add()'s own
+         * pointer-arithmetic case handling the '+' inside the
+         * parens - see its comment). Recurses through parse_unary()
+         * itself for the operand, so a chain of leading '*'s
+         * ("**pp") decrefs one degree at a time, same as
+         * parse_star_assign_stmt()'s own multi-star lvalue loop -
+         * confirmed against 06_ptrptr.1.golden's "**pp = 6;" (two
+         * chained STAR nodes, TY_PTR_INT(8) then TY_INT(0)). */
+        int line = p->cur.line;
+        advance(p);
+        ExprVal v = parse_unary(p, t1);
+        emit_materialize(t1, v);
+        if (v.type == TY_INT || v.type == TY_CHAR || v.type == TY_LONG) {
+            c0_error_at(line, "'*' on a non-pointer operand is not "
+                               "yet supported - see "
+                               "src/mutos_cc/README.md");
+            return ev_dynamic();
+        }
+        int elemtype = ty_decref(v.type);
+        outcode(t1, "BN", OP_STAR, elemtype);
+        return ev_dynamic_typed(elemtype);
+    }
     if (p->cur.kind == T_KW_SIZEOF) {
         /* sizeof '(' ('int'|'char'|'long'|IDENT) ')' - confirmed
          * against 08_castsize.1.golden: every sizeof(...) folds
@@ -1052,6 +1208,23 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             ExprVal r = parse_mul(p, t1);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value + r.value));
+                continue;
+            }
+            if (!v.is_const && v.type != TY_INT && v.type != TY_CHAR &&
+                v.type != TY_LONG) {
+                /* pointer + int - array/pointer subscript arithmetic
+                 * ("*(a + i)" - 05_arrptr/04_ptrarreq.c's confirmed
+                 * K&R array/pointer-equivalence idiom; `v` (the
+                 * pointer) is already emitted (a NAME, from
+                 * parse_mul()/parse_primary()) - only `r` (the int
+                 * offset) still needs the CON/ITOP scaling step,
+                 * matching emit_subscript()'s own tail exactly. */
+                emit_materialize(t1, r);
+                int elemtype = ty_decref(v.type);
+                outcode(t1, "BNN", OP_CON, TY_INT, size_of_type(elemtype));
+                outcode(t1, "BN", OP_ITOP, v.type);
+                outcode(t1, "BN", OP_PLUS, v.type);
+                v = ev_dynamic_typed(v.type);
                 continue;
             }
             emit_materialize(t1, v);
@@ -1490,11 +1663,18 @@ static void parse_decl(Parser *p, FILE *t1)
             break;
         }
 
-        int is_ptr = 0;
-        if (p->cur.kind == T_STAR) {
-            is_ptr = 1;
+        /* One or more leading '*'s - "int *p;"/"int **pp;" (a
+         * pointer-to-pointer local, degree 2 - 05_arrptr/06_ptrptr.c;
+         * a single '*' is the original, already-confirmed degree-1
+         * case, unchanged). ty_ptr_of() chained `ptr_degree` times
+         * matches 06_ptrptr.1.golden's "int **pp;" exactly: type 40,
+         * NOT a naive "16" - see ty_ptr_of()'s own comment above. */
+        int ptr_degree = 0;
+        while (p->cur.kind == T_STAR) {
+            ptr_degree++;
             advance(p);
         }
+        int is_ptr = (ptr_degree > 0);
 
         if (p->cur.kind != T_IDENT) {
             c0_error_at(p->cur.line, "expected an identifier in declaration");
@@ -1521,7 +1701,9 @@ static void parse_decl(Parser *p, FILE *t1)
         }
 
         int size = is_array ? (int)(arraylen * MCC_SZINT) : MCC_SZINT;
-        int decltype = is_ptr ? TY_PTR_INT : TY_INT;
+        int decltype = TY_INT;
+        for (int k = 0; k < ptr_degree; k++)
+            decltype = ty_ptr_of(decltype);
 
         /* 'register' is only attempted for a plain (non-array)
          * declarator - see this function's own comment above; a
@@ -1709,6 +1891,36 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     SymEntry *sym = symtab_lookup(&p->syms, name);
     advance(p); /* consume IDENT */
 
+    /* "IDENT[expr] = ..." - an array/pointer subscript used as the
+     * assignment target ("a[i] = i * i;" - 05_arrptr/01_arrbasic.c).
+     * Consumes the full "[expr]" now (before the assignment
+     * operator), emitting the same AMPER/ITOP/PLUS/STAR chain
+     * emit_subscript() emits for the rvalue case - confirmed
+     * byte-for-byte identical shape either way. `subtype` (>= 0) then
+     * replaces `sym`'s own type as this statement's ASSIGN type
+     * argument, and signals below that sym's plain NAME must NOT be
+     * emitted again (the subscript already emitted the full lvalue
+     * tree, ending in a STAR). */
+    int subtype = -1;
+    if (p->cur.kind == T_LBRACK) {
+        if (!sym) {
+            c0_error_at(line, "'%s' undeclared", name);
+        } else if (!sym->is_array && !sym->is_ptr) {
+            c0_error_at(line, "'[' applied to a non-array/non-pointer "
+                               "variable is not supported");
+            sym = NULL;
+        }
+        if (sym)
+            subtype = emit_subscript(p, t1, sym);
+        else {
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
+                advance(p);
+            if (p->cur.kind == T_SEMI)
+                advance(p);
+            return;
+        }
+    }
+
     int optag;
     switch (p->cur.kind) {
     case T_ASSIGN:    optag = OP_ASSIGN;  break;
@@ -1734,11 +1946,15 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     }
     advance(p); /* consume the assignment operator */
 
-    if (!sym) {
-        c0_error_at(line, "'%s' undeclared", name);
-    } else {
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+    if (subtype < 0) {
+        if (!sym) {
+            c0_error_at(line, "'%s' undeclared", name);
+        } else {
+            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        }
     }
+    /* else: the "IDENT[expr]" subscript above already emitted the
+     * full lvalue tree - nothing more to emit here. */
 
     ExprVal rhs = parse_expr(p, t1);
     expect(p, T_SEMI, "';'");
@@ -1753,7 +1969,8 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
      * wraps the CON in OP_ITOL(TY_LONG) before ASSIGN. Only applies
      * to plain '=' - the ten compound-assignment operators are not
      * confirmed for a 'long' lvalue by any golden. */
-    if (optag == OP_ASSIGN && sym && sym->type == TY_LONG && rhs.type != TY_LONG)
+    if (optag == OP_ASSIGN && subtype < 0 && sym && sym->type == TY_LONG &&
+        rhs.type != TY_LONG)
         outcode(t1, "BN", OP_ITOL, TY_LONG);
 
     /* The operator's type argument is the LVALUE's type (TY_INT for
@@ -1761,36 +1978,55 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
      * confirmed against 05_incdec.1.golden byte 242-243; the ten
      * compound-assignment operators reuse the same convention, though
      * only the TY_INT case is itself golden-confirmed for them - see
-     * 06_compasgn.1.golden). Falls back to TY_INT for the
-     * already-reported undeclared-name case above. */
-    outcode(t1, "BN", optag, sym ? sym->type : TY_INT);
+     * 06_compasgn.1.golden). For a subscripted target, it is instead
+     * the subscript's own ELEMENT type (emit_subscript()'s return
+     * value) - confirmed against 01_arrbasic.1.golden's "a[i] = i *
+     * i;" (ASSIGN(TY_INT), matching the array's int element type,
+     * not the pointer type the AMPER/PLUS/STAR chain computed the
+     * address with). Falls back to TY_INT for the already-reported
+     * undeclared-name case above. */
+    int assign_type = (subtype >= 0) ? subtype : (sym ? sym->type : TY_INT);
+    outcode(t1, "BN", optag, assign_type);
     outcode(t1, "BN", OP_EXPR, line);
 }
 
 /*
- * star-assign-stmt := '*' ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
+ * star-assign-stmt := '*'+ ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
  *
- * Handles "*p++ = 1;" / "*++p = 2;" - an assignment through a
- * dereferenced pointer, optionally combined with a single prefix OR
- * postfix '++'/'--' on the pointer itself (not both - real C
- * wouldn't parse "*++p++" as this shape either). Only a plain pointer
- * variable is supported as the operand so far (not a general pointer
- * expression) - see src/mutos_cc/README.md. Confirmed byte-for-byte
- * against 05_incdec.1.golden/.s.golden's two "*p<op> = <rhs>;"
- * statements: the pointer sub-expression's tree (NAME, plus the
- * INCBEF/INCAFT/DECBEF/DECAFT scaling shape from emit_incdec() when
- * an operator is present) is emitted exactly like the expression-
- * level postfix/prefix cases above, followed by STAR (dereference,
- * always TY_INT - only pointer-to-int is supported), then the usual
- * rhs/ASSIGN/EXPR shape.
+ * Handles "*p++ = 1;" / "*++p = 2;" (05_arrptr/01_expr/05_incdec.c) -
+ * an assignment through a dereferenced pointer, optionally combined
+ * with a single prefix OR postfix '++'/'--' on the pointer itself
+ * (not both - real C wouldn't parse "*++p++" as this shape either) -
+ * and "**pp = 6;" (05_arrptr/06_ptrptr.c) - a CHAIN of two or more
+ * leading '*'s on a plain pointer-to-pointer(-to-...) variable, with
+ * no incdec support beyond a single '*' (not exercised by any
+ * golden). Only a plain pointer variable is supported as the operand
+ * so far (not a general pointer expression) - see
+ * src/mutos_cc/README.md.
+ *
+ * The pointer sub-expression's tree (NAME, plus the INCBEF/INCAFT/
+ * DECBEF/DECAFT scaling shape from emit_incdec() when an operator is
+ * present - only ever paired with exactly one '*') is emitted exactly
+ * like the expression-level postfix/prefix cases above, followed by
+ * one STAR per leading '*', each one's own type computed via
+ * ty_decref() from whatever the previous step left (TY_INT for a
+ * single plain pointer - matches the original hardcoded value
+ * byte-for-byte - or TY_PTR_INT then TY_INT for a pointer-to-pointer,
+ * confirmed against 06_ptrptr.1.golden), then the usual rhs/ASSIGN/
+ * EXPR shape, ASSIGN's own type argument being whatever the LAST
+ * STAR left.
  */
 static void parse_star_assign_stmt(Parser *p, FILE *t1)
 {
     int line = p->cur.line;
-    advance(p); /* consume '*' */
+    int nstars = 0;
+    while (p->cur.kind == T_STAR) {
+        nstars++;
+        advance(p);
+    }
 
     int optag = 0;
-    if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
+    if (nstars == 1 && (p->cur.kind == T_INCR || p->cur.kind == T_DECR)) {
         optag = (p->cur.kind == T_INCR) ? OP_INCBEF : OP_DECBEF;
         advance(p);
     }
@@ -1799,7 +2035,7 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
         c0_error_at(p->cur.line,
             "'*<expr> = ...' is only supported for a plain pointer "
             "variable, optionally with a leading/trailing '++'/'--' "
-            "- see src/mutos_cc/README.md");
+            "on a single '*' - see src/mutos_cc/README.md");
         while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
             advance(p);
         if (p->cur.kind == T_SEMI)
@@ -1817,17 +2053,23 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     }
     advance(p); /* consume IDENT */
 
-    if (!optag && (p->cur.kind == T_INCR || p->cur.kind == T_DECR)) {
+    if (!optag && nstars == 1 &&
+        (p->cur.kind == T_INCR || p->cur.kind == T_DECR)) {
         optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
         advance(p);
     }
 
+    int curtype = TY_INT;
     if (sym) {
         outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        curtype = sym->type;
         if (optag)
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
+        for (int i = 0; i < nstars; i++) {
+            curtype = ty_decref(curtype);
+            outcode(t1, "BN", OP_STAR, curtype);
+        }
     }
-    outcode(t1, "BN", OP_STAR, TY_INT);
 
     if (!expect(p, T_ASSIGN, "'='")) {
         while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
@@ -1841,7 +2083,7 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
-    outcode(t1, "BN", OP_ASSIGN, TY_INT);
+    outcode(t1, "BN", OP_ASSIGN, curtype);
     outcode(t1, "BN", OP_EXPR, line);
 }
 
@@ -2564,6 +2806,27 @@ static void parse_param_decls(Parser *p, FILE *t1,
                 pdeclared[idx] = 1;
             }
             advance(p); /* consume IDENT */
+
+            if (symtype == TY_INT && !is_ptr && p->cur.kind == T_LBRACK) {
+                /* "int a[];" - an array parameter, K&R's array-decays-
+                 * to-pointer rule (05_arrptr/04_ptrarreq.c's
+                 * "sumarr(a, n) int a[]; int n; { ... }") - a
+                 * parameter declared this way is, for every purpose
+                 * this grammar scope needs, indistinguishable from a
+                 * plain "int *a" parameter (same type, same lack of
+                 * an AMPER-decay step when subscripted or used in
+                 * pointer arithmetic - see emit_subscript()'s own
+                 * is_ptr branch). Any size between the brackets is
+                 * accepted and ignored, matching real K&R semantics
+                 * (a parameter's array size is not meaningful). */
+                advance(p); /* '[' */
+                if (p->cur.kind == T_ICON)
+                    advance(p);
+                expect(p, T_RBRACK, "']'");
+                if (idx >= 0)
+                    pptr[idx] = 1;
+            }
+
             if (p->cur.kind == T_COMMA) {
                 advance(p);
                 continue;

@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-20.
+Last updated: 2026-09-22.
 
 ---
 
@@ -226,7 +226,7 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 29/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 33/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -235,13 +235,160 @@ plus all 7 of
 `03_ctrlflow`: `01_ifelse.c`, `02_while.c`, `03_dowhile.c`, `04_for.c`,
 `05_breakcont.c`, `06_switch.c` and `07_goto.c`, plus all 7 of
 `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`, `04_mutrec.c`,
-`05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`. ABI/
+`05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus 4 of `05_arrptr`'s
+7: `01_arrbasic.c`, `03_ptrbasic.c`, `04_ptrarreq.c` and `06_ptrptr.c`
+(single-dimension array subscripting, multi-level pointers, explicit `&`/`*`,
+and pointer/array-parameter equivalence - see this session's own section
+below; `02_array2d.c`, `05_arrofptr.c` and `07_strlibc.c` remain open, see
+"Next up"). ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, 4/7 of `05_arrptr`)
+
+`05_arrptr` is the first category needing real type-system work beyond a
+flat "2 bytes, maybe a single pointer degree" model (see the prior
+session's own "Next up" below) - single-dimension array subscripting,
+multi-level pointers, explicit `&`/`*` as general (not just statement-
+special-cased) unary operators, and pointer/array-parameter equivalence are
+now confirmed; 2-dimensional arrays and string literals (`05_arrofptr.c`/
+`07_strlibc.c`) are not - see "Next up".
+
+**General pointer-degree chaining, not a flat `TY_INT|010`.** `c0_parser.c`
+gained `ty_incref_tag()`/`ty_ptr_of()`/`ty_decref()`, transcribing
+`v7/cc/c04.c`'s own `incref()`/`decref()` formula exactly (`TYPE=7`, the
+base-type mask; `TYLEN=2`; `PTR=010`): `new_type = ((t & ~7) << 2) |
+(t & 7) | tag`. This is NOT "add 8 per pointer level" (the assumption
+`TY_PTR_FUNC_INT=72`'s own hardcoded derivation already hinted at, but
+which nothing before this session needed to generalize): confirmed via
+`06_ptrptr.1.golden`'s `int **pp;` - every `NAME`/`AMPER`/`ASSIGN` touching
+`pp` uses type **40**, not a naive "16" (`TY_PTR_INT + 8`). `pp = &p;`
+(`AMPER` of an already-pointer-typed operand) and `**pp = 6;` (two chained
+`STAR`s, decreffing 40→8→0) both confirmed byte-for-byte with this formula
+and no other change to the wire format.
+
+**Single-dimension array subscripting (`a[i]`), confirmed against
+`01_arrbasic.1.golden`/`.s.golden`.** `a[i]` compiles to exactly
+`*(&a + i*sizeof(elem))`, reusing the array-decay `AMPER` and pointer-
+scaling `ITOP`/`PLUS` shapes `05_incdec.c` already established - a new
+`emit_subscript()` in `c0_parser.c` emits this for both an array
+(`AMPER`-decayed first) and a plain pointer variable/parameter (used
+directly, no decay - see `04_ptrarreq.c` below), reached from
+`parse_primary()` (rvalue subscript) and a new subscript branch in
+`parse_assign_stmt()` (lvalue target). The real, non-obvious part was
+`c1`'s codegen for scaling a **non-constant** index by a constant size -
+previously `OP_ITOP` only ever folded two compile-time constants (the
+literal "1" in `++`/`--`). Confirmed shape: the index is loaded into DI
+(`mov di,i` / `sal di,*1` for a size-2 element - repeated-shift strength
+reduction, the same style `06_compasgn`'s `*=2` already established) -
+UNLESS DI is already holding a live base address from a preceding `AMPER`
+(a real array, not a bare pointer parameter), in which case SI is used
+instead (`mov si,i`/`sal si,*1`) so the two can be combined afterward
+(`add di,si`) without clobbering. Which register ends up as the final
+combined address is decided the same way in `OP_PLUS`'s new pointer-
+arithmetic case: whichever operand is already resident in a register (DI
+preferred) becomes the destination, the other is added in via its own
+rendered operand text directly (a plain memory or immediate right-hand side
+is legal for `ADD` on the 8086, no extra load needed) - confirmed against
+both `01_arrbasic.s.golden`'s `"lea di,&a" / "add di,si"` (base in DI) and
+`04_ptrarreq.s.golden`'s `"mov di,i;sal di,*1" / "add di,*4.(bp)"` (index
+in DI, the pointer parameter added straight from memory, never loaded into
+a register at all).
+
+**A dereferenced value consumed by further arithmetic must be
+force-materialized, not left lazy - confirmed against `01_arrbasic.s.
+golden`'s `"sum = sum + a[i];"` and `04_ptrarreq.s.golden`'s `"s = s +
+*(a + i);"`.** `OP_STAR`'s result (a lazy `"(di)"` operand, `VK_IND`) is
+fine left un-materialized when it becomes an `ASSIGN`'s own lhs (the
+existing, already-confirmed shape), but when it instead feeds a further
+`OP_PLUS`, it must be resolved first via `"mov di,(di)"` (in place, same
+register) before the other operand is added in - otherwise the final `ADD`
+would need two memory operands, which the 8086 cannot do. New logic in the
+plain-`TY_INT` `OP_PLUS`/`OP_MINUS` case (`PLUS` only - commutative, so
+either operand order works; not generalized to `MINUS`, unconfirmed by any
+golden) handles this before the pre-existing register-class-variable
+special case, which a naively-materialized `VK_IND` would otherwise
+wrongly trigger.
+
+**General `&`/`*` as ordinary unary operators (not just the
+statement-level `"*p = ...;"` special case), confirmed against
+`03_ptrbasic.1.golden`/`.s.golden`.** `parse_unary()` gained real `'&'`
+(address-of a plain variable - reuses the array-decay `NAME`+`AMPER` shape,
+generalized via `ty_ptr_of()`) and `'*'` (dereference, recursing through
+`parse_unary()` itself so a chain of leading `'*'`s decrefs one degree at a
+time - `parse_star_assign_stmt()`'s own lvalue form was generalized the
+same way, from a single hardcoded `TY_INT` `STAR` to a loop of `ty_decref()`
+steps, for `**pp = 6;`). `parse_add()` gained a pointer-plus-int case
+(pointer left operand, int right - the CON/`ITOP` scaling tail
+`emit_subscript()` already established) so `*(a + i)` - a parenthesized
+general expression, not just a bare identifier - resolves its operand's
+type correctly.
+
+**A genuinely surprising `c1` discovery: an indirect-assignment target
+whose right-hand side needs its own working registers gets its address
+PUSHED (real hardware stack) rather than left resident in a register -
+confirmed against both `01_arrbasic.s.golden`'s `"a[i] = i * i;"` (`push
+di` / ... / `pop bx` / `mov (bx),ax`) and `03_ptrbasic.s.golden`'s
+`"*p = *p + 1;"` (`push *-10.(bp)` - the plain pointer's own memory
+operand, pushed WITHOUT first loading into any register - `mov di,ptr`
+happens as part of the right-hand side's own `*p`, moments later).** A
+bare-constant right-hand side (`"*p = 20;"`) does NOT push, confirmed by
+`05_incdec.s.golden` (unchanged, still passing). The discriminator: whether
+the wire immediately following the completed address (this `OP_STAR`'s own
+position in the stream) is exactly `CON` then `ASSIGN` (nothing else) -
+checked via one-to-few opcodes of lookahead, implemented as a save/restore
+of `temp1`'s own file position (`ftell`/`fseek` around ordinary
+`c1_read_op()`/`c1_read_num()` calls - a plain seekable `FILE*`, so this
+changes no other opcode's behavior; ADDING this lookahead capability to
+`c1_gen.c`, which had none before this session, is itself new - see
+`docs/DEVLOG.md`). A parallel discovery for `OP_AMPER`: an array's address-
+of is deferred (a new `VK_MEM_DIRECT`) rather than eagerly emitting `"lea"`
+whenever the immediately-following opcode is NOT `NAME` - covering two
+distinct needs: (1) a compile-time-constant-index subscript (`"v[0] = 1;"`)
+folds the WHOLE address into a single already-known bp-relative offset at
+`OP_PLUS`, with no `lea`/`add` of any kind (`"mov *-12.(bp),*1."` alone -
+confirmed against `04_ptrarreq.s.golden`), and (2) a bare array-decayed call
+argument (`"sumarr(v, 4);"`) must not commit to DI until `gen_call()`
+actually pushes it (right-to-left), since eagerly computing it first would
+let a later sibling argument's own code clobber DI before `v`'s turn -
+confirmed against the same golden's `"mov di,*4.;push di" / "lea di,
+*-12.(bp);push di"` ordering. `OP_ASSIGN` materializes a still-deferred
+`VK_MEM_DIRECT` rhs the same way for a bare `"p = &x;"`/`"pp = &p;"`
+(unaffected in output - confirmed unchanged against `05_incdec.s.golden`
+and `06_ptrptr.s.golden`, both still passing).
+
+**Array-parameter decay (`"int a[];"`), confirmed against
+`04_ptrarreq.1.golden`/`.s.golden`.** `parse_param_decls()` now accepts a
+trailing `'[' ... ']'` on an `int` parameter (any size between the
+brackets is parsed and discarded, matching real K&R semantics), marking it
+`pptr` - identical in every respect to a plain `"int *a"` parameter, matching
+K&R's own array-decays-to-pointer rule and confirmed by `sumarr(a, n)`'s own
+`*(a + i)` and `a[i]`-shaped subscript codegen.
+
+**Not yet supported, deliberately**: `05_arrptr/02_array2d.c` (multi-
+dimensional arrays) - the wire shape for `m[i][j]` is understood (an outer
+`ITOP` node carries a distinctly different, empirically-confirmed type
+value - see `docs/DEVLOG.md` for the full derivation) but `c1`'s actual
+codegen combines both dimensions' scaling into a single register-pair
+computation (`si = i*4 + j; si = si*2; di = &m + si`) rather than two
+independent scaled adds, which needs dedicated pattern-recognition codegen
+not yet written. `05_arrptr/05_arrofptr.c` and `07_strlibc.c` (string
+literals, arrays of `"char *"`) need an entirely new data-segment/string-
+constant emission subsystem (`v7/cc/c00.c`'s `putstr()` equivalent) that
+does not exist at all yet - `mutos_cc.h`'s already-transcribed
+`OP_BDATA`/`OP_WDATA`/`OP_DATA` pseudo-ops are presumably involved but their
+exact argument shape has not been reverse-engineered from any golden. See
+`src/mutos_cc/README.md`'s "Next steps" for the dependency-ordered plan.
+
+**Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
+`make test`): 33/62 byte-exact end-to-end (up from 29), 0 genuine
+mismatches anywhere, confirmed via a full `make clean && make all && make
+test` from a clean checkout with zero compiler warnings under `-Wall
+-Wextra -Wpedantic`.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, `02_long/03_retval` + `04_funcs/06_regclass`)
 
@@ -359,7 +506,7 @@ previously-unconfirmed `RNAME`(216) opcode to decode the full stream):
   `gen_fatal("...not yet supported")` rather than a guess.
 
 **Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
-`make test`): 29/62 byte-exact end-to-end (up from 27), 0 genuine
+`make test`): 29 of 62 byte-exact end-to-end (up from 27), 0 genuine
 mismatches anywhere, confirmed via a full `make clean && make all && make
 test` from a clean checkout with zero compiler warnings under `-Wall
 -Wextra -Wpedantic`.
@@ -1258,12 +1405,19 @@ per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
 `02_long`, `03_ctrlflow` and `04_funcs` are now all fully covered (the
 prior session's two open items, `02_long/03_retval.c`'s `DX:AX` `long`
 return convention and `04_funcs/06_regclass.c`'s real register-variable
-allocation, are both done this session — see above). Next up:
-`05_arrptr`/`06_struct` (array subscripting, multi-level pointers,
-structs/unions/enums — each adds real type-system work the current
-`SymEntry`/`ExprVal` model doesn't fully have yet), the `09_abiprobe`
-`chkstk`-threshold goldens, and the `mutos_cc` driver itself. See
-`src/mutos_cc/README.md`'s "Next steps" for the full, dependency-ordered
+allocation, are both done this session — see above). `05_arrptr` is now
+4/7 done this session (`01_arrbasic`/`03_ptrbasic`/`04_ptrarreq`/
+`06_ptrptr` — single-dimension array subscripting, multi-level pointers,
+general `&`/`*`, pointer/array-parameter equivalence). Next up:
+`05_arrptr/02_array2d.c` (2-dimensional arrays — `c1`'s actual combined-
+register-pair addressing codegen for `m[i][j]` still needs to be written,
+not just its wire shape understood — see this session's own section and
+`docs/DEVLOG.md`), `05_arrptr/05_arrofptr.c` and `07_strlibc.c` (string-
+literal/data-segment emission — an entirely new subsystem, nothing exists
+for it yet), then `06_struct` (structs/unions/enums — real type-system work
+the current `SymEntry`/`ExprVal` model doesn't fully have yet), the
+`09_abiprobe` `chkstk`-threshold goldens, and the `mutos_cc` driver itself.
+See `src/mutos_cc/README.md`'s "Next steps" for the full, dependency-ordered
 plan.
 
 ---

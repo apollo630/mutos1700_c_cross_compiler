@@ -2783,7 +2783,232 @@ body, no stack slot at all.
   once is left as an explicit `gen_fatal` rather than extrapolated.
 
 **Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
-`make test`): 29/62 byte-exact end-to-end (up from 27), 0 genuine
+`make test`): 29 of 62 byte-exact end-to-end (up from 27), 0 genuine
+mismatches anywhere, confirmed via a full `make clean && make all &&
+make test` from a clean checkout with zero compiler warnings under
+`-Wall -Wextra -Wpedantic`.
+
+### `05_arrptr` (4 of 7 files) — pointer-degree chaining, array subscripting, and two real `c1` register-allocation surprises: byte-level derivation (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+The first category needing real type-system work beyond the flat "2 bytes,
+maybe one hardcoded `TY_PTR_INT`" model every construct up to this point got
+away with. Four of the category's 7 files are confirmed byte-exact this
+session — `01_arrbasic.c` (single-dimension array subscripting),
+`03_ptrbasic.c` (explicit `&`/`*` as general unary operators), `04_ptrarreq.c`
+(the classic `a[i]`/`*(a + i)` K&R equivalence, plus array-parameter decay),
+and `06_ptrptr.c` (multi-level pointers, `int **`). `02_array2d.c` (2-D
+arrays) and `05_arrofptr.c`/`07_strlibc.c` (string literals) remain open —
+see their own subsections below for exactly how far each got.
+
+**Pointer-degree chaining is a real `incref()`/`decref()` walk, not "+8 per
+level".** `c0_parser.c` already had `TY_PTR_INT = TY_INT | 010` and a
+one-off `TY_PTR_FUNC_INT = 72`, the latter's own comment already citing the
+underlying v7/cc formula (`incref(t) = ((t & ~TYPE) << TYLEN) | (t & TYPE) |
+tag`, `TYPE=7`, `TYLEN=2`) without generalizing it, since nothing before this
+session needed more than these two fixed values. `06_ptrptr.c`'s `int **pp;`
+forced the generalization: `ty_incref_tag()`/`ty_ptr_of()`/`ty_decref()` now
+implement the formula directly. Confirmed against `06_ptrptr.1.golden`:
+`pp`'s own `NAME`/`AMPER`/`ASSIGN` all carry type **40**, not the naive
+"`TY_PTR_INT + 8` = 16" a flat-degree model would predict —
+`ty_ptr_of(ty_ptr_of(TY_INT))` = `ty_incref_tag(8, PTR)` =
+`((8 & ~7) << 2) | (8 & 7) | 8` = `32 | 0 | 8` = `40`, matching exactly.
+`**pp = 6;` confirms the inverse: two chained `STAR`s, `ty_decref(40) = 8`
+then `ty_decref(8) = 0` — `06_ptrptr.1.golden`'s two `STAR` nodes are typed
+8 then 0, in that order.
+
+**`a[i]` is `*(&a + i*sizeof(elem))`, reusing `05_incdec.c`'s own
+established `AMPER`/`ITOP`/`PLUS`/`STAR` shapes — the new part is entirely
+in `c1`'s codegen for a *non-constant* scale.** `OP_ITOP` previously only
+ever folded two compile-time constants (the literal "1" in `++`/`--` — see
+`emit_incdec()`'s comment); `01_arrbasic.1.golden`'s `a[i]` needs the SAME
+opcode to scale a genuinely runtime value (`i`) by a constant (2). Confirmed
+shape (`01_arrbasic.s.golden`): `"lea di,*-14.(bp)" / "mov si,*-16.(bp)" /
+"sal si,*1" / "add di,si"` — the base address (from `OP_AMPER`) claims DI
+first, so the index is scaled into SI instead (repeated-shift strength
+reduction, same style as `06_compasgn`'s confirmed `*=2`), then combined via
+a plain `add`. `04_ptrarreq.c`'s `*(a + i)` (`a` a plain pointer parameter,
+never needing an `AMPER`/`lea` at all) shows the *mirror* shape when DI is
+still free at `OP_ITOP` time: `"mov di,*-6.(bp)" / "sal di,*1" / "add di,
+*4.(bp)"` — the scaled index claims DI, and the pointer parameter is added
+in straight from memory. The rule implemented in `c1_gen.c`'s `OP_ITOP`: use
+SI instead of DI whenever the value stack's current top (right after
+popping `OP_ITOP`'s own two operands) is already `VK_REG("di")` (a
+preceding `OP_AMPER`) or a still-deferred `VK_MEM_DIRECT` (see below) — DI
+free otherwise. `OP_PLUS`'s own new pointer-arithmetic case then picks
+whichever operand is already resident in a register as the destination
+(DI preferred) and adds the other in via its own rendered text directly —
+legal on the 8086 for a memory or immediate right-hand `ADD` operand,
+confirmed by `04_ptrarreq.s.golden`'s `"add di,*4.(bp)"` needing no separate
+load of `a` at all.
+
+**A dereferenced value must be force-materialized before feeding further
+arithmetic — leaving it as a lazy `"(di)"` operand only works when it's
+about to become an `ASSIGN`'s own lhs.** Confirmed by both
+`01_arrbasic.s.golden`'s `"sum = sum + a[i];"` and `04_ptrarreq.s.golden`'s
+`"s = s + *(a + i);"`, each showing `"mov di,(di)"` (in place, same
+register) immediately after the address computation, before the outer `add`
+— the 8086's `ADD` cannot take two memory operands, and `(di)` IS one. New
+logic in the plain-`TY_INT` `OP_PLUS` case (gated to `OP_PLUS` only —
+commutative, so operand order doesn't matter; deliberately NOT generalized
+to `OP_MINUS`, unconfirmed by any golden and order-sensitive) intercepts a
+`VK_IND` operand before the pre-existing register-class-variable special
+case (`06_regclass`'s own "right operand already in DI" branch), which a
+naively-materialized `VK_IND` would otherwise wrongly trigger — the two are
+visually similar (both end up `VK_REG("di")`) but need different codegen,
+so this had to be careful to fire first and always `break`.
+
+**The genuinely unexpected discovery this session: an indirect-assignment
+target whose right-hand side needs its own working registers gets its
+address PUSHED to the real hardware stack, not left resident in a
+register — confirmed two independent ways.** `01_arrbasic.s.golden`'s
+`"a[i] = i * i;"`:
+```
+lea	di,*-14.(bp)
+mov	si,*-16.(bp)
+sal	si,*1
+add	di,si
+push	di                  <- address pushed BEFORE the rhs's own code
+mov	ax,*-16.(bp)
+imul	*-16.(bp)
+pop	bx                    <- retrieved via BX (not DI/SI - both live)
+mov	(bx),ax
+```
+`03_ptrbasic.s.golden`'s `"*p = *p + 1;"` (the exact construct flagged as an
+open question at the end of the PRIOR session's investigation into this
+file — see below for how it got resolved):
+```
+push	*-10.(bp)             <- p's own memory operand, pushed directly -
+                                 NOT first loaded into any register
+mov	di,*-10.(bp)              <- this is the RHS's own "*p", loading p
+mov	di,(di)                     <- materializing that dereference
+inc	di                            <- "+1" (the existing INC special case)
+pop	bx
+mov	(bx),di
+```
+Contrast the SAME file's `"*p = 20;"` (a bare-constant rhs, confirmed
+already-passing, unaffected): `"mov di,*-10.(bp)" / "mov (di),*20."` — no
+push at all. The discriminator, worked out by close comparison of these two
+shapes within the same file: whether the wire IMMEDIATELY following the
+completed address (this `OP_STAR`'s own position in the stream) is exactly
+`CON` then `ASSIGN` and nothing else. Getting there took real dead ends
+worth recording, since the next person hitting a similar case will want
+them: the first hypothesis (spill only when DI is *already* occupied by
+something else) was falsified by `01_arrbasic`'s FIRST-star equivalent (`a[i]`'s
+own address computation, which has nothing else pending yet, matching
+`"*p = 20;"`'s starting condition exactly, yet still needs the push) and by
+value-stack-depth checks (`g.valsp == 0` holds identically at both the
+push and no-push sites — confirmed by re-deriving `OP_EXPR`'s own stack-
+reset behavior, which already unconditionally zeroes `g.valsp` between
+statements). What actually distinguishes them is RHS complexity, which `c1`
+(deliberately opcode-by-opcode, no lookahead — see its own file-header
+comment) cannot know without cheating: the fix adds exactly that cheat,
+narrowly. `c1_read_op()`/`c1_read_num()` are plain `getc()` calls against an
+ordinary seekable `FILE*` (confirmed via `c1_stream.c`), so a save/restore
+of `temp1`'s file position via `ftell`/`fseek` gives one-to-few opcodes of
+real lookahead with zero effect on any other opcode's own reads afterward -
+this is the first place `c1_gen.c` has ever needed or used lookahead. The
+new `VK_IND_PENDING` value kind carries no register (the address lives on
+the hardware stack, not in one); `OP_ASSIGN` retrieves it via `"pop bx"`
+specifically (never DI/SI, both of which may still hold live pieces of the
+just-evaluated rhs) and renders the store through `(bx)`. Scoped narrowly:
+only attempted for a FINAL (`TY_INT`) dereference, never the first of a
+chained `**pp` (`TY_PTR_INT` — always immediately re-dereferenced, never
+itself a target), and the pushed operand is `OP_STAR`'s ORIGINAL,
+pre-`load_into_di()` operand (a raw memory operand for a plain pointer
+variable, or whatever register an `OP_PLUS` already computed it into for a
+subscript) — never a fresh, unconditional `"push di"`, which would have
+been wrong for the `*p` case (confirmed by first getting this wrong: an
+earlier attempt that unconditionally loaded into DI before pushing produced
+`"mov di,*-10.(bp)" / "push di"` for `*p = *p + 1;`, two instructions where
+the golden has one).
+
+**A parallel, independently-discovered deferral for `OP_AMPER`, covering
+two more distinct needs.** An array's address-of (`AMPER`) is now deferred
+by default — a new `VK_MEM_DIRECT` value, carrying just the original
+`VK_MEM`'s own offset — rather than eagerly emitting a `"lea"` the moment
+`AMPER`'s own opcode is processed, UNLESS the immediately-following opcode
+is `OP_NAME` (one opcode of lookahead, same `ftell`/`fseek` technique):
+that specific case (`a[i]`'s own runtime-index subscript, `emit_subscript()`'s
+`NAME`/`AMPER`/`NAME`/`CON`/`ITOP`/`PLUS`/`STAR` shape) needs the `"lea"`
+emitted eagerly to match `01_arrbasic.s.golden`'s own instruction order
+(`"lea"` BEFORE the index is loaded and scaled) — deferring it instead would
+land it AFTER, which was in fact the first, wrong attempt at this (confirmed
+by trying the fully-deferred version first and diffing against the golden).
+Two confirmed consumers for the deferred (non-`NAME`-followed) case: (1) a
+compile-time-CONSTANT-index subscript (`04_ptrarreq.c`'s `"v[0] = 1;"`,
+`v[1] = 2;"`, etc.) — `OP_PLUS`'s pointer-arithmetic case, on seeing a
+`VK_MEM_DIRECT` base paired with a `VK_IMM` scaled index (always the case
+when `OP_ITOP`'s own two operands were both constants, i.e. the index was
+itself a bare `CON`, never a `NAME`), folds the WHOLE address into a single
+new `VK_MEM_DIRECT(base_offset + scaled_index)` with **no instruction at
+all** — confirmed against `04_ptrarreq.s.golden`'s `"v[0] = 1;"` compiling
+to a lone `"mov *-12.(bp),*1."`, no `lea`/`add` of any kind; `OP_STAR`
+recognizes a `VK_MEM_DIRECT` operand and passes it through completely
+unchanged (dereferencing a compile-time-known address is just that memory
+location itself — no load, no indirection). (2) A bare array-decayed CALL
+ARGUMENT (`"sumarr(v, 4);"`) — confirmed the hard way, by first trying
+eager-except-for-constant-index-peek (checking only for the `CON`/`CON`/
+`ITOP` subscript-fold shape specifically) and finding it broke this case:
+`gen_call()` pushes arguments RIGHT-TO-LEFT (`docs/MUTOS_C_ABI.md` sect.
+1.1), so an eagerly-computed `"lea di,&v"` for the FIRST-declared argument
+would sit in DI while the SECOND argument (`4`, a plain `CON`) gets pushed
+FIRST — clobbering DI with `"mov di,*4."` before `v`'s own address is ever
+pushed. `04_ptrarreq.s.golden` confirms the fix's own ordering:
+`"mov di,*4." / "push di" / "lea di,*-12.(bp)" / "push di"` — `v`'s `"lea"`
+materializes only inside `gen_call()`'s own reverse-order loop, at the exact
+point it is about to be pushed, via a new `VK_MEM_DIRECT` case there.
+`OP_ASSIGN` materializes a still-deferred `VK_MEM_DIRECT` rhs the same way,
+for a bare `"p = &x;"`/`"p = a;"`/`"pp = &p;"` — confirmed UNCHANGED against
+`05_incdec.s.golden` and `06_ptrptr.s.golden` (both still passing; a bare
+assignment has nothing between `AMPER` and `ASSIGN` for deferral to affect).
+
+**Array-parameter decay (`"int a[];"`), confirmed against
+`04_ptrarreq.1.golden`/`.s.golden`.** `parse_param_decls()` accepts a
+trailing `'[' ... ']'` on an `int` parameter now (any size token between the
+brackets is consumed and discarded — real K&R semantics: a parameter's
+array size is never meaningful), marking it exactly like a plain
+`"int *a"` parameter (same `pptr`/`TY_PTR_INT` path) — confirmed by
+`sumarr(a, n)`'s own `*(a + i)` codegen needing no `AMPER`/decay step at
+all, unlike a real array local.
+
+**Not yet attempted: `05_arrptr/02_array2d.c` (2-dimensional arrays).**
+The WIRE shape is understood from the golden, including one genuinely
+unexplained wrinkle: `m[i][j]`'s OUTER-dimension `OP_ITOP` node carries type
+**104**, not the plain `TY_PTR_INT(8)` every other `PLUS`/`STAR`/`AMPER` node
+in the same expression uses. `104 = ty_incref_tag(ty_incref_tag(TY_INT, ARRAY),
+PTR)` — i.e. "pointer to array of int", a real, principled value under the
+same `incref()` formula this session generalized (ARRAY=030 the same way
+PTR=010 is) — but WHY this one specific node carries that richer type while
+the `AMPER`/`PLUS`/`STAR` nodes immediately around it all stay flat
+`TY_PTR_INT(8)` was not fully reconstructed; real v7/cc's own `build()`
+(`v7/cc/c01.c`) suggests a candidate derivation (`disarray()`'s `decref()`+
+`AMPER` chaining) but doesn't cleanly reproduce the OBSERVED byte, so this
+is recorded as an empirically-pinned constant for this ONE confirmed shape,
+not a general N-dimensional formula. Worse: even granting that type value,
+`c1`'s ACTUAL codegen for `m[i][j]` (from `02_array2d.s.golden`) is not the
+two-independent-scaled-adds shape a naive per-dimension implementation would
+produce — it factors the two dimensions together into a single combined
+computation using SI as scratch: `"lea di,&m" / "mov si,i" / "sal si,*1" /
+"sal si,*1" / "add si,j" / "sal si,*1" / "add di,si"` (`i*4 + j`, then the
+WHOLE sum scaled by 2, not `i*8` and `j*2` added separately) — a genuinely
+different, smarter address-computation than anything currently
+implemented, needing dedicated pattern-recognition codegen this session did
+not attempt to write (high risk of a subtly-wrong "looks plausible" result
+without more data points than this one file provides — deliberately left
+as an explicit gap rather than guessed).
+
+**Not yet attempted: `05_arrptr/05_arrofptr.c` and `07_strlibc.c` (string
+literals).** Need an entirely new data-segment/string-constant emission
+subsystem — the real v7/cc equivalent is `c00.c`'s `putstr()` (`"fake a
+static char array"`), and `mutos_cc.h` already transcribes `OP_BDATA`/
+`OP_WDATA`/`OP_DATA` as presumably-relevant pseudo-ops from `v7/cc/c0.h` —
+but none of their argument shapes have been reverse-engineered from any
+golden yet; `dump_temp.py`'s `OPCODES` table has no entries for them either
+(they would stop the dump cleanly with a "no confirmed argument shape"
+message on first encounter). Genuinely unstarted, not just unfinished.
+
+**Full-corpus regression** (`tests/mutos_cc/run_goldens.sh`, run via
+`make test`): 33/62 byte-exact end-to-end (up from 29), 0 genuine
 mismatches anywhere, confirmed via a full `make clean && make all &&
 make test` from a clean checkout with zero compiler warnings under
 `-Wall -Wextra -Wpedantic`.
