@@ -226,7 +226,7 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 37/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 38/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -240,13 +240,73 @@ plus all 7 of
 `04_ptrarreq.c`, `05_arrofptr.c`, `06_ptrptr.c` and `07_strlibc.c` (one- and
 two-dimensional array subscripting, multi-level pointers, explicit `&`/`*`,
 pointer/array-parameter equivalence, and string literals), plus
-`09_abiprobe/01_argvmain.c` - see the sections below. ABI/
+`09_abiprobe/01_argvmain.c` and `10_integ/05_matmul.c` (the first
+evaluation-order codegen: a right operand computed first and spilled) -
+see the sections below. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c1`: verified this session (byte-exact, `10_integ/05_matmul` - evaluation order: right operand first, spilled)
+
+**`sum = sum + a[i][k] * b[k][j];` now compiles exactly as the real
+compiler does:** the right element is computed first and pushed (`... /
+mov di,(di)` / `push di`), then the left one (`... / mov di,(di)`), then
+`mov ax,di` / `pop cx` / `imul cx` - `v7/cc/table.s`'s `*` template
+`%n,n` (`SS` / `F` / `mul (sp)+,R`: the right operand onto the stack
+first). `mutos_c1` streams temp1 in postfix (left-first) order, so it now
+pre-scans each expression (`plan_expression()`, reusing `scan_op_args()`'s
+arity table), and when an operator must be evaluated right operand first
+replays temp1's subtrees in that order through the ordinary opcode
+handlers ("subtree replay", the plan `docs/DEVLOG.md` recorded last
+session), with two value-stack steps in between: a spill (`push`, new
+value kind `VK_STACKED`) and a swap. An expression with no such operator
+gets no plan and streams exactly as before. No `mutos_c0` or wire-format
+change, so `dump_temp.py` is unaffected.
+
+**Only the golden-confirmed decision is taken:** int `*` whose two operands
+are both complete 2-D element reads with plain-variable subscripts. By
+v7's `degree()` a 1-D element (`a[i] * b[j]`) is just as hard, so the real
+compiler very probably spills it too - but no golden shows it, so it stays
+refused (register-occupancy guard, as before). `02_bubsort`'s swapped
+relational and `03_linklist`'s right-hand-side-first store use the same
+mechanism with other decisions; neither is taken yet.
+
+**Found on the way, not fixed (see "Open items"): `mutos_c0` emits a
+constant LEFT operand of a binary operator on the right** - `7 - x`
+compiles as `x - 7` (likewise `/`, `%`, `<<`, `<`, ...). Silent wrong code;
+invisible to every golden, since no corpus file has a constant left
+operand. Found by this session's semantic check.
+
+**Verification (this session):**
+
+- `make test` (clean build): **38/62** byte-exact end-to-end (up from 37 of
+  62), 0 genuine mismatches; `mutos_as` 67/67 and `mutos_cpp` 5/5
+  unchanged. Zero warnings under `-Wall -Wextra -Wpedantic`.
+- `mutos_c1` alone on all 62 golden `.1`/`.2` pairs, against the previous
+  binary: `.s`, stderr and exit status identical for all 61 others;
+  `05_matmul` now matches (42 of 62 via `c1` alone, up from 41). Every
+  file that still stops is a byte-exact prefix of its golden except
+  `02_bubsort` (unchanged - the relational swap).
+- Semantic check (the one `docs/DEVLOG.md`'s process lessons asked for
+  before any reordering): an interpreter for `c1`'s instruction subset,
+  validated first against real goldens' results, runs fuzzed programs
+  built around 2-D arrays and compares every scalar's and every array
+  element's final value with the expected one. 3500 programs: every output
+  that changed is a program with a product of two 2-D elements that the
+  previous binary refused; every accepted output assembles with
+  `mutos_as` and computes exactly the expected state (690 executed, 593
+  through the new spill, 116 of those nested inside a pending indirect
+  store). 1500 scalar-only programs: output identical to the previous
+  binary.
+- Hand-written edge cases (a `return`, a loop condition, a `for`
+  increment, a call argument) correct; two such products in one statement,
+  `a[i] * b[j]`, and a `register` subscript refused explicitly.
+- ASan/UBSan build of `mutos_c1` over the 62 golden pairs and 800 fuzzed
+  programs: clean.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (byte-exact, string literals - `05_arrptr/05_arrofptr`, `07_strlibc`; `09_abiprobe/01_argvmain`; six older `c1` bugs)
 
@@ -297,7 +357,7 @@ subscript (`a[i] += 2;`) is now refused instead of mis-compiled.
 
 **Verification (this session):**
 
-- `make test`: **37/62** byte-exact end-to-end (up from 34 of 62:
+- `make test`: 37 of 62 byte-exact end-to-end (up from 34 of 62:
   `05_arrofptr`, `07_strlibc`, `09_abiprobe/01_argvmain`), 0 genuine
   mismatches; `mutos_as`/`mutos_cpp` suites unchanged. Zero warnings under
   `-Wall -Wextra -Wpedantic`.
@@ -1613,29 +1673,30 @@ section; headline findings:
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
-`02_long`, `03_ctrlflow`, `04_funcs` and now `05_arrptr` (including string
-literals) are all fully covered. In order:
+`02_long`, `03_ctrlflow`, `04_funcs` and `05_arrptr` (including string
+literals) are all fully covered, and `10_integ/05_matmul` now passes via
+`c1`'s evaluation-order planning. In order:
 
-1. **Evaluation order (`10_integ/05_matmul`).** `c0` is byte-exact for it;
-   `c1` stops at `a[i][k] * b[k][j]`, whose golden evaluates the RIGHT operand
-   first and spills it (`push di` ... `pop cx` / `imul cx`). `02_bubsort`
-   (a relational with swapped operands: `i < n - 1` -> `cmp di,i` / `ble`) and
-   `03_linklist` (`cur->next = head;` right-hand side first) show the same
-   v7 mechanism - operands ordered by v7's `degree()`. A streaming `c1`
-   cannot do this; the plan ("subtree replay": a per-statement pre-scan of
-   temp1 indexing each operator's operand ranges, then generating them in the
-   chosen order with the existing handlers) is in `docs/DEVLOG.md`'s
-   "Evaluation order - the plan for `10_integ/05_matmul`".
+1. **Fix `mutos_c0`'s constant-left-operand bug** (see "Open items") -
+   silent wrong code for `7 - x` and every other non-commutative operator
+   with a constant left operand; small and self-contained.
 2. **`char` element access** - opcode 109 as char-to-int, `movb`/`cbw`,
    byte stores; this unlocks the six `09_abiprobe` frame files (whose
    goldens already show every shape - see above) and moves `10_integ/
    04_strrev` further.
-3. **`06_struct`** (structs/unions/enums - real type-system work the current
+3. **More evaluation-order decisions**, each on its own golden:
+   `02_bubsort`'s swapped relational (`i < n - 1` -> `cmp di,i` / `ble`,
+   v7's `optim()` swapping operands by `degree()` and mapping the operator
+   through `maprel[]`) once `mutos_c0` parses that file, and
+   `03_linklist`'s right-hand-side-first store once structs exist. Both
+   plug into `c1`'s existing plan mechanism as new decisions in
+   `order_right_first()`.
+4. **`06_struct`** (structs/unions/enums - real type-system work the current
    `SymEntry`/`ExprVal` model doesn't fully have yet), the remaining
    81..127-byte `chkstk` gap, and the `mutos_cc` driver itself.
 
 The register-occupancy guard's refusals (see the `c1_gen.c` review section
-above) mark where real spill/reordering codegen - and an SI-scratch
+above) mark where further spill/reordering codegen - and an SI-scratch
 generalization for functions with a `register` local - will be needed; each
 needs its own golden before it can be implemented. See
 `src/mutos_cc/README.md`'s "Next steps" for the full plan.
@@ -1833,3 +1894,15 @@ far.
    call whose argument list spans multiple physical lines), re-check that specific
    behavior against it — see `src/mutos_cpp/README.md`'s "Known, documented
    simplifications" section for exactly which three cases these are.
+6. **`mutos_c0` emits a constant LEFT operand of a binary operator on the
+   RIGHT** (found 2026-09-24 by the `05_matmul` semantic check - see
+   `docs/DEVLOG.md`'s "Evaluation order - implemented" section): `7 - x`,
+   `7 / x`, `7 % x`, `7 << x` and `7 < x` produce the same temp1 bytes as
+   `x - 7`, `x / 7`, ...; `2 - 9 - x` becomes `x - (-7)`. `c0_parser.c`
+   keeps a constant unmaterialized for folding and `emit_materialize()`
+   writes it only when the operator is reached, after the right operand's
+   bytes. Silent wrong code for every non-commutative operator (harmless
+   in value, but not v7's wire order, for `+`/`*`/`&`/`|`/`^`); no golden
+   is affected, since no corpus file has a constant left operand. v7's own
+   `fold()` never reorders, so the correct stream is `CON 7, NAME x,
+   MINUS`.

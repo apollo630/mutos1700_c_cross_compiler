@@ -31,13 +31,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  37/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  38/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus all 4 of `02_long`: `01_addsub`/`02_muldiv`/`03_retval`/`04_params`,
   plus all 7 of
   `03_ctrlflow`, plus all 7 of `04_funcs`, plus all 7 of `05_arrptr` (string
-  literals included), plus `09_abiprobe/01_argvmain`) — see
+  literals included), plus `09_abiprobe/01_argvmain` and `10_integ/05_matmul`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -386,7 +386,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 37/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 38/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
@@ -445,7 +445,12 @@ scope and intent, not a snapshot of what's done.
   arithmetic follows v7/cc/c12.c's `distrib()`, and string literals -
   `05_arrofptr`/`07_strlibc` - the first use of the `temp2` data stream,
   rendered as `.data` / `.byte` lines), as is `09_abiprobe/01_argvmain` -
-  see `STATUS.md`/`docs/DEVLOG.md` again for those derivations.**
+  see `STATUS.md`/`docs/DEVLOG.md` again for those derivations. So is
+  `10_integ/05_matmul`, the first evaluation-order codegen: `mutos_c1`
+  pre-scans each expression and, where the real compiler evaluates the
+  right operand first (v7's `%n,n` template - computed onto the stack,
+  then the left), replays temp1's subtrees in that order through its
+  ordinary handlers.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -460,10 +465,12 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: evaluation-order codegen for
-  `10_integ/05_matmul` (the real compiler evaluates the harder operand
-  first and spills - a plan is in `docs/DEVLOG.md`), `char` element access
-  (unlocks the `09_abiprobe` frame files), then `06_struct`
+  dependency-ordered list: fixing `mutos_c0`'s constant-left-operand
+  bug (`7 - x` compiles as `x - 7` - see `STATUS.md`'s open items), `char`
+  element access (unlocks the `09_abiprobe` frame files), further
+  evaluation-order decisions (`02_bubsort`'s relational swap,
+  `03_linklist`'s store) on `mutos_c1`'s now-existing plan mechanism,
+  then `06_struct`
   (structs/unions/enums), the remaining 81..127-byte `chkstk` gap (the
   `09_abiprobe` goldens narrowed the threshold to `(80,128]`), then the
   `mutos_cc` driver itself.

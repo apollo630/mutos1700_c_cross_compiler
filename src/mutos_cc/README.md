@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 37/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 38/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -22,7 +22,7 @@ of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
 `04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus
 all 7 of `05_arrptr`: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
 `04_ptrarreq.c`, `05_arrofptr.c`, `06_ptrptr.c` and `07_strlibc.c`, plus
-`09_abiprobe/01_argvmain.c`. See
+`09_abiprobe/01_argvmain.c` and `10_integ/05_matmul.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -915,9 +915,25 @@ supported" diagnostic - so shapes like `f(a) + a * b`, `v[a + 1]` or
 `if (a + b < c)`, which need a spill or a different evaluation order, are
 refused rather than silently miscompiled. The same guard keeps a
 `register` local's register (`DI`/`SI`) from being used as scratch, except
-while computing that variable's own new value. No golden yet confirms the
-real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
-"`c1_gen.c` review" section.
+while computing that variable's own new value. See `docs/DEVLOG.md`'s
+Milestone 4 "`c1_gen.c` review" section.
+
+**Evaluation order.** `c1` reads temp1 in postfix (left-operand-first)
+order, but the real compiler sometimes evaluates the right operand first -
+`v7/cc/table.s`'s `*` template `%n,n` computes it onto the stack before
+the left one. At the start of every expression `plan_expression()`
+pre-scans it (with `scan_op_args()`, the arity table `scan_consumer()`
+uses too); when an operator must go right operand first it builds a plan
+that replays temp1's subtrees in that order through the ordinary opcode
+handlers, with a spill (`push`, value kind `VK_STACKED`) and a swap in
+between. Only the golden-confirmed decision is taken: int `*` of two
+complete 2-D element reads with plain-variable subscripts
+(`10_integ/05_matmul.s.golden`'s `... / push di` ... `mov ax,di` / `pop
+cx` / `imul cx`). Every other expression gets no plan and streams exactly
+as before; shapes that would need a different order and have no golden -
+`a[i] * b[j]`, `f(a) + a * b`, ... - are still refused by the guard above.
+Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
+section.
 
 ## Next steps (roughly in dependency order)
 
@@ -977,12 +993,15 @@ real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
    member layout, sizes beyond a flat "2 bytes") - real type-system work
    the current `SymEntry`/`ExprVal` model doesn't fully have yet, untouched
    so far.
-4. **Evaluation order (`10_integ/05_matmul`)**: the real compiler evaluates
-   the harder operand of `a[i][k] * b[k][j]` first and spills it (`push
-   di` ... `pop cx` / `imul cx`); `02_bubsort`'s swapped comparison and
-   `03_linklist`'s right-hand-side-first store are the same v7 `degree()`
-   mechanism. A streaming `c1` cannot reorder yet; the plan ("subtree
-   replay") is in `docs/DEVLOG.md`.
+4. **Evaluation order**: done for `10_integ/05_matmul` (see "Evaluation
+   order" above). `02_bubsort`'s swapped comparison (v7's `optim()`
+   swapping a relational's operands by `degree()`, through `maprel[]`) and
+   `03_linklist`'s right-hand-side-first store are the same mechanism with
+   other decisions - each a new case in `order_right_first()`, once
+   `mutos_c0` can parse those files. Before that: `mutos_c0` emits a
+   constant LEFT operand of a binary operator on the right (`7 - x`
+   compiles as `x - 7`) - silent wrong code no golden exercises, found by
+   the `05_matmul` semantic check; see `STATUS.md`'s open items.
 5. **`char` element access and `09_abiprobe/frame*`**: their goldens have
    narrowed the real `chkstk` threshold to `(80,128]` (implemented - see
    above); the files themselves now declare fine but need `char` element
@@ -1017,8 +1036,9 @@ real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
   above), including its `Val`/value-stack operand-kind tracking, the
   emission layer every line of assembly text goes through (typed `Opnd`
   operands, `ins0()`/`ins1()`/`ins2()`, `put_label()`/`put_line()`, the
-  `RELOPS`/`ALUOPS` tables and `SEQ_*` fixed idioms), and the
-  register-occupancy guard (see above).
+  `RELOPS`/`ALUOPS` tables and `SEQ_*` fixed idioms), the
+  register-occupancy guard, and the evaluation-order planner (both see
+  above).
 - `c1_main.c` - CLI entry point (`mutos_c1 temp1 temp2 output.s`).
 
 ## Testing
