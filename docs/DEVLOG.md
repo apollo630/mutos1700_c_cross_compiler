@@ -3678,6 +3678,16 @@ These apply to *every* milestone, not just the one where they were first learned
   was found only by reading a sample of the output. Anything that reorders
   evaluation (see the `05_matmul` plan) wants a semantic check - running
   fuzzed programs in an 8086 emulator against their expected results.
+- **A consistency check must agree with the moment it runs at.**
+  `check_docs.py`'s Check 5 compared a "Last updated" stamp with the file's
+  last commit in `git log`. Run from the pre-commit hook, that is the
+  PREVIOUS commit, so the first commit of a new day with a correctly bumped
+  stamp (`STATUS.md`: 2026-09-24, last commit 2026-09-23) was blocked, while a
+  commit on a later day that forgot to bump the stamp passed the hook and
+  failed only in CI, after the push. For a file
+  with uncommitted changes the check now expects today's date (the date the
+  pending commit will carry); for an unchanged file - e.g. CI's clean
+  checkout - still the last commit's date.
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.
