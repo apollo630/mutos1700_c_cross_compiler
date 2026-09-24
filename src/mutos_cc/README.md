@@ -944,6 +944,25 @@ as before; shapes that would need a different order and have no golden -
 Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
 section.
 
+**Conditional evaluation.** The same plan mechanism generates every
+expression containing `&&`, `||`, `?:` or the comma operator, in v7's
+order: `plan_value()` transcribes `c10.c`'s `cexpr()` (a value-context
+`&&`/`||`/`!` is a condition branching to a true label plus `mov
+di,*0.` / `jmp` / `mov di,*1.`; `c ? a : b` is a branch-if-false on `c`,
+the true arm, `jmp`, the false arm), and `plan_cbranch()` transcribes
+`c11.c`'s `cbranch()` - jumping code for `&&`/`||`/`!` in an
+`if`/`while`/`for` condition, as `10_integ/01_wordcount.s.golden` shows
+for `||`. Each operand's temp1 range is replayed at its place in that
+structure, so its code runs exactly when C evaluates it. A postfix
+`++`/`--` fixup is done at the end of the conditionally evaluated region
+it belongs to - a condition (after the operand's load, before the
+compare), a `?:` arm, a comma's left operand - or before a `call`; a
+postfix operand tested for truth or against 0 gets `or di,di` (the real
+compiler's shape, from `tests/mutos_as/kernel_nonopt/`: `mov di,n / dec
+n / or di,di / beq L`). The streaming `LOGAND`/`LOGOR`/`COLON`/`QUEST`/
+`SEQNC` handlers are gone. Full derivation in `docs/DEVLOG.md`'s
+"Conditional evaluation" section.
+
 **A constant operand goes to the right.** Before choosing code, v7's
 `c1` moves a constant operand of a commutative operator (`+ * & | ^`)
 to the right (`c12.c`'s `acommute()` sorts operands by `degree()`, a
@@ -1022,9 +1041,11 @@ shape is refused (no golden shows v7's register choice for it).
    other decisions - each a new case in `order_right_first()`, once
    `mutos_c0` can parse those files. The constant-left-operand case of
    the relational swap is done (see "A constant operand goes to the
-   right"). Two open `mutos_c1` bugs - side effects in conditionally
-   evaluated operands, and a postfix `++`/`--` in a condition - are in
-   `STATUS.md`'s open items.
+   right"). `&&`/`||`/`?:`/`,` are done too (see "Conditional
+   evaluation"); one shape difference remains there: a tested call
+   result is `cmp ax,*0` where the real compiler has `or ax,ax`
+   (`kernel_nonopt/sys1.s`, four instances), v7's `tst r` fallback that
+   `c1` now emits only for a postfix operand.
 5. **`char` element access and `09_abiprobe/frame*`**: their goldens have
    narrowed the real `chkstk` threshold to `(80,128]` (implemented - see
    above); the files themselves now declare fine but need `char` element

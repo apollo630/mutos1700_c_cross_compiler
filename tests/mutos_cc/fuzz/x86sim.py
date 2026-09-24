@@ -7,8 +7,8 @@ generates - and reports the final state: main()'s return value (AX at
 "jmp cret") and every local variable's word(s), located through c1's
 own "| _name=-N." frame comments. It is a checker, not an emulator:
 anything outside the subset (a call, a byte operation, a static
-label operand, a branch on flags not set by a cmp, ...) stops it with
-exit status 2 and a message, never with a guess.
+label operand, a branch on flags not set by a cmp or an "or r,r", ...)
+stops it with exit status 2 and a message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
 .s.golden it can execute (30 of the 62 - the rest call a function or
@@ -31,7 +31,10 @@ SP0 = 0xF000          # initial stack pointer; the frame lives below it
 STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 
 # Instructions that change the flags. A conditional branch is only
-# accepted while the flags still come from the most recent cmp.
+# accepted while the flags still come from the most recent cmp - or
+# from "or r,r" (same register twice), mutos_c1's truth test of a
+# register value: it leaves r unchanged, clears CF and OF and sets ZF/SF
+# from r, exactly the flags of "cmp r,0".
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
                 "dec", "sal", "shl", "sar", "imul", "idiv", "neg"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi"}
@@ -172,7 +175,8 @@ class Sim:
                 pc = self.labels[ops[0]]
             elif mnem in BRANCHES:
                 if self.cmp is None:
-                    raise SimError(f"'{mnem}' on flags not set by a cmp")
+                    raise SimError(f"'{mnem}' on flags not set by a cmp "
+                                   "or an 'or r,r'")
                 a, b = self.cmp
                 take = {"blt": s16(a) < s16(b), "ble": s16(a) <= s16(b),
                         "bgt": s16(a) > s16(b), "bge": s16(a) >= s16(b),
@@ -193,6 +197,8 @@ class Sim:
                 a, b = self.get(ops[0]), self.get(ops[1])
                 self.put(ops[0], {"add": a + b, "sub": a - b, "and": a & b,
                                   "or": a | b, "xor": a ^ b}[mnem])
+                if mnem == "or" and ops[0] == ops[1] and ops[0] in self.regs:
+                    self.cmp = (a, 0)
             elif mnem == "inc":
                 self.put(ops[0], self.get(ops[0]) + 1)
             elif mnem == "dec":

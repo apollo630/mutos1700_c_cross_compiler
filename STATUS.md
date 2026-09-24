@@ -250,6 +250,84 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c1`: verified this session (conditional evaluation: `&&`, `||`, `?:`, `,` and postfix `++`/`--` in conditions - former open items 6 and 7 fixed)
+
+**Both open wrong-code bugs the fuzzer found are fixed**, by generating
+every conditionally evaluated operand where v7's code generator does -
+inside its branch structure:
+
+- **A postfix `++`/`--` in a condition** (`if (n++ > 9)`, `while (n--)`)
+  now has its fixup emitted right after the operand is loaded, before the
+  compare - the real non-optimized compiler's shape, found in
+  `tests/mutos_as/kernel_nonopt/` (five instances in `lp_AC.s` and
+  `sys1.s`): `mov R,n / dec n / or R,R / beq L` for a truth test,
+  `... / or R,R / ble L` against 0, `mov R,n / dec n / cmp R,*2. / blt L`
+  against 2. `or R,R` - not `cmp R,*0` - is how the real compiler tests a
+  value it has just computed into a register (v7's `tst r` fallback);
+  `mutos_c1` now emits it for a postfix operand's value. Before, the
+  fixup waited for the next `EXPR`, inside the branch taken when the test
+  held: `if (n++ > 9)` left `n` alone when false; `do ... while (n-- >
+  0)` never terminated.
+- **`&&`, `||`, `?:` and `,` are generated through the evaluation-order
+  plan** (`plan_value()`/`plan_cbranch()` in `c1_gen.c`): each operand's
+  temp1 range is replayed at its v7 position, between new plan steps
+  that emit the branches, labels and 0/1 values (v7's `cexpr()` for
+  value contexts, `cbranch()` for conditions). Before, all operands were
+  computed ahead of the branches: `z = x ? y++ : 4;` always incremented
+  `y`, `z = (x > 1) && (y++ > 0);` likewise, and `z = x ? y / x : 1;`
+  divided by zero (on an 8086: a divide-error trap) when `x` was 0.
+- **An `if`/`while`/`for` condition with `&&`/`||`/`!` is now jumping
+  code**, never a materialized 0/1 that is then tested - the shape
+  `10_integ/01_wordcount.s.golden` shows for its `||` (`cmp ... / beq
+  L10000 / <second operand> / cmp ... / bne L9 / L10000:`), reproduced
+  exactly by an `int` version of that condition (the golden itself still
+  stops at an initializer opcode in `c1` alone).
+- **Related sequence points**: a comma operator's left operand has its
+  fixups done before the right operand (`z = (n++, n + 1)` was one too
+  low), and a call's before the `call` (`f(n++)`: `push` / `inc` / `call`,
+  as `kernel_nonopt/sys1.s`'s `clearseg(a++)` - which pushes the operand
+  from memory where `c1` still goes through DI, a separate, pre-existing
+  shape difference). Postfix fixups are tracked per conditional region,
+  so one queued outside an `?:` arm or `&&` operand still happens on
+  every path.
+
+**Found on the way (pre-existing): a `long` comparison used as a value**
+(`z = l > 0L;`) printed an operand placeholder as code (`cmp
+*-8.(bp),<unmaterialized-long-const>`), exit status 0. It is now an
+explicit refusal; as a condition (`if (l > 0L)`, the confirmed shape) it
+compiles as before.
+
+No `mutos_c0` or wire-format change, so `dump_temp.py` is unaffected.
+For an operand without code of its own (every `&&`/`||`/`?:` in the
+corpus) the output is byte-identical to before.
+
+**Verification (this session):**
+
+- `make test` (clean build): 38/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- `mutos_c1` alone on the 62 golden `.1`/`.2` pairs: `.s`, stderr and
+  exit status identical to the previous build for all 62.
+- `fuzz_c.py` now generates both constructs by default (the two opt-in
+  flags are gone). 9000 programs (six seeds, three scalar-only) against
+  the previous build: 0 WRONG, 0 BAD, 0 regressions; 88 go from wrong to
+  correct, 1 from BAD to correct, 339 from refused to correct (mostly
+  register-guard refusals of operands that used to be computed ahead of
+  the branches). Every one of the 499 programs whose output changed
+  contains `&&`, `||`, `?:`, a comma operator or a postfix operator, and
+  no program the previous build compiled is refused now.
+- 25 hand-written cases the fuzzer cannot produce (`while`/`do`/`for`
+  conditions, nested `?:`, `!` of `&&`, comma in a condition, a division
+  in an untaken arm, ...), executed with `x86sim.py` (which now accepts
+  flags set by `or r,r`) and checked variable by variable against the host
+  C compiler on `short` locals: all 24 that compile are correct, the 25th
+  is a correct register-guard refusal. The previous build: 10 wrong, 2
+  non-terminating or trapping, 3 refused.
+- ASan/UBSan builds of both passes over the 62 golden pairs and 1200
+  fuzzed programs: clean.
+- After the `long` guard above, re-run: `make test` and the 62 golden
+  pairs unchanged, the hand-written cases unchanged, 3000 further fuzzed
+  programs (two new seeds) 0 WRONG, 0 BAD, 0 regressions.
+
 ### `mutos_c0`/`mutos_c1`: verified this session (constant left operands; semantic fuzzing added)
 
 **`mutos_c0` bug fixed: a constant LEFT operand was emitted on the right.**
@@ -287,7 +365,8 @@ difference against an earlier build is classified (fixed / regression
 / still correct). `x86sim.py` reproduces the C value of all 30 goldens
 it can execute, struct and bit-field programs included. It found two
 more, pre-existing `mutos_c1` wrong-code bugs, recorded as "Open items"
-6 and 7 and avoided by the fuzzer's default (each has an opt-in flag).
+6 and 7 and avoided by the fuzzer's default (each had an opt-in flag) -
+both fixed later the same day, see the section above.
 
 **Verification (this session):**
 
@@ -1743,16 +1822,11 @@ per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
 literals) are all fully covered, and `10_integ/05_matmul` now passes via
 `c1`'s evaluation-order planning. In order:
 
-1. **The two open `mutos_c1` wrong-code bugs** (see "Open items" 6 and 7) -
-   side effects in conditionally evaluated operands, and a postfix
-   `++`/`--` in a condition. Each can first become an explicit refusal;
-   the real shapes want goldens. `tests/mutos_cc/fuzz/fuzz_c.py`'s
-   `--side-effects-in-conditionals`/`--postfix-in-conditions` verify a fix.
-2. **`char` element access** - opcode 109 as char-to-int, `movb`/`cbw`,
+1. **`char` element access** - opcode 109 as char-to-int, `movb`/`cbw`,
    byte stores; this unlocks the six `09_abiprobe` frame files (whose
    goldens already show every shape - see above) and moves `10_integ/
    04_strrev` further.
-3. **More evaluation-order decisions**, each on its own golden:
+2. **More evaluation-order decisions**, each on its own golden:
    `02_bubsort`'s swapped relational (`i < n - 1` -> `cmp di,i` / `ble`,
    v7's `optim()` swapping operands by `degree()` and mapping the operator
    through `maprel[]` - done for a constant left operand) once `mutos_c0`
@@ -1760,6 +1834,14 @@ literals) are all fully covered, and `10_integ/05_matmul` now passes via
    `03_linklist`'s right-hand-side-first store once structs exist. Both
    plug into `c1`'s existing plan mechanism as new decisions in
    `order_right_first()`.
+3. **Two shape follow-ups from the conditional-evaluation work** (both
+   currently correct code, just not the real compiler's bytes; see
+   `docs/DEVLOG.md`'s "Conditional evaluation" section): a call result
+   tested as a condition is `cmp ax,*0` where `kernel_nonopt/sys1.s`
+   (four instances) has `or ax,ax` - v7's `tst r` fallback, which `c1`
+   emits so far only for a postfix operand; and a postfix call argument is
+   `mov di,a / push di / inc a` where the kernel pushes the memory operand
+   directly (`push *-56.(bp) / inc *-56.(bp) / call _clearse`).
 4. **`06_struct`** (structs/unions/enums - real type-system work the current
    `SymEntry`/`ExprVal` model doesn't fully have yet), the remaining
    81..127-byte `chkstk` gap, and the `mutos_cc` driver itself.
@@ -1963,26 +2045,3 @@ far.
    call whose argument list spans multiple physical lines), re-check that specific
    behavior against it — see `src/mutos_cpp/README.md`'s "Known, documented
    simplifications" section for exactly which three cases these are.
-6. **`mutos_c1` executes side effects in operands C does not evaluate**
-   (found 2026-09-24 by `tests/mutos_cc/fuzz/`; pre-existing): in a VALUE
-   context, `z = x ? y++ : 4;`, `z = (x > 1) && (y++ > 0);` and `z = (x < 1)
-   || (y++ > 0);` increment `y` even when that operand is skipped, and a
-   comma assignment `(u = 5, ...)` there is performed likewise - `c1`
-   computes a `?:`'s branches and a `&&`/`||`'s right operand before its
-   branch code (the `if (x > 1 && y++ > 0)` form was correct in the same
-   probe). Silent wrong code. A fix needs the operand's code emitted
-   inside the branch structure (the evaluation-order plan could replay
-   those subtrees there) or, as a first step, a refusal whenever such an
-   operand contains a side effect. `fuzz_c.py
-   --side-effects-in-conditionals` generates these.
-7. **A postfix `++`/`--` in an `if`/`while` condition happens only when the
-   condition is true** (found 2026-09-24 the same way; pre-existing): `c1`
-   defers a postfix increment to the statement's `EXPR` opcode, but a
-   condition ends in `CBRANCH`, so the increment lands at the next `EXPR` -
-   inside the branch taken when the condition holds. `if (n++ > 9) s = 1;`
-   leaves `n` unchanged when `n <= 9`; `while (n-- > 3) s = s + 1;` ends with
-   `n` one too high. Silent wrong code. It cannot simply be flushed before
-   the conditional jump (an `inc` there would change the flags the jump
-   tests), so it wants its own golden - or, as a first step, a refusal of a
-   deferred increment still pending at `CBRANCH`. `fuzz_c.py
-   --postfix-in-conditions` generates these.

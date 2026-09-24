@@ -26,8 +26,7 @@ declining a shape it has no golden for; refusals are tallied by reason.
 
 Usage:
     fuzz_c.py [-n COUNT] [-s SEED] [-j JOBS] [--baseline DIR]
-              [--no-arrays] [--side-effects-in-conditionals]
-              [--keep DIR] [--reasons]
+              [--no-arrays] [--keep DIR] [--reasons]
 
 See README.md in this directory for what is generated and why.
 """
@@ -163,11 +162,8 @@ INDEXES = ["i", "j", "k"]
 
 
 class Gen:
-    def __init__(self, rnd, arrays, se_in_cond, postfix_in_cond):
+    def __init__(self, rnd, arrays):
         self.r = rnd
-        self.se_in_cond = se_in_cond
-        self.postfix_in_cond = postfix_in_cond
-        self.in_if_cond = False
         self.a2 = {}
         self.a1 = {}
         if arrays:
@@ -197,15 +193,15 @@ class Gen:
         return ("el2", name, self.r.choice(INDEXES), self.r.choice(INDEXES))
 
     def side_effect(self, depth, cond_ctx):
-        if self.side_effect_used or (cond_ctx and not self.se_in_cond):
-            return None      # known c1 bug in conditional operands - see README.md
+        """`cond_ctx`: the operand is conditionally evaluated (a ?: arm, an
+        &&/|| right operand) - where C may skip the side effect."""
+        if self.side_effect_used:
+            return None
         if self.r.random() >= 0.08:
             return None
         self.side_effect_used = True
         if self.r.random() < 0.5:
             forms = ["post++", "pre++", "post--", "pre--"]
-            if self.in_if_cond and not self.postfix_in_cond:
-                forms = ["pre++", "pre--"]     # known c1 bug in conditions - see README.md
             return ("inc", self.r.choice(forms), "n")
         e1 = self.expr(max(depth - 1, 0), cond_ctx)
         while e1[0] in ("var", "el1", "el2"):
@@ -269,9 +265,7 @@ class Gen:
     def statement(self):
         self.side_effect_used = False
         if self.r.random() < 0.2:
-            self.in_if_cond = True
             cond = self.expr(self.r.randint(1, 2), truth=True)
-            self.in_if_cond = False
             then = ("assign", self.target(), self.rhs_in_cond())
             other = None
             if self.r.random() < 0.4:
@@ -352,9 +346,9 @@ class Gen:
         return s
 
 
-def generate(rnd, arrays, se_in_cond, postfix_in_cond=False):
+def generate(rnd, arrays):
     while True:
-        g = Gen(rnd, arrays, se_in_cond, postfix_in_cond)
+        g = Gen(rnd, arrays)
         try:
             src, env, ret = g.program()
         except Skip:
@@ -461,14 +455,6 @@ def main():
                     help="directory with an earlier build's mutos_c0 and mutos_c1")
     ap.add_argument("--no-arrays", action="store_true",
                     help="scalars only (no 1-D/2-D arrays)")
-    ap.add_argument("--side-effects-in-conditionals", action="store_true",
-                    help="also put ++/-- and comma assignments into ?: branches "
-                         "and &&/|| right operands (see README.md: a known "
-                         "mutos_c1 bug makes these fail today)")
-    ap.add_argument("--postfix-in-conditions", action="store_true",
-                    help="also put a postfix ++/-- into if conditions (see "
-                         "README.md: a known mutos_c1 bug makes these fail "
-                         "today)")
     ap.add_argument("--keep", metavar="DIR", help="where to save BAD programs "
                     "(default: a new directory under /tmp)")
     ap.add_argument("--reasons", action="store_true",
@@ -480,9 +466,7 @@ def main():
             sys.exit(f"fuzz_c: {path} not found - build first (make) or set "
                      f"MUTOS_{name.upper()}")
     rnd = random.Random(args.seed)
-    progs = [generate(rnd, not args.no_arrays, args.side_effects_in_conditionals,
-                      args.postfix_in_conditions)
-             for _ in range(args.count)]
+    progs = [generate(rnd, not args.no_arrays) for _ in range(args.count)]
 
     counts, reasons, bad, cmp = {}, {}, [], {}
     with tempfile.TemporaryDirectory(prefix="fuzz_c.") as workroot:
@@ -513,9 +497,7 @@ def main():
 
     n = args.count
     print(f"fuzz_c: {n} programs, seed {args.seed}"
-          f"{', scalars only' if args.no_arrays else ''}"
-          f"{', side effects in conditionals' if args.side_effects_in_conditionals else ''}"
-          f"{', postfix ++/-- in conditions' if args.postfix_in_conditions else ''}")
+          f"{', scalars only' if args.no_arrays else ''}")
     print(f"  correct {counts.get('ok', 0)}, refused {counts.get('refused', 0)}, "
           f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}")
     if args.baseline:

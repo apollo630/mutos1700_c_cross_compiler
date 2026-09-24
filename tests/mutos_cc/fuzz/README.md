@@ -17,8 +17,8 @@ directly, on random programs:
   code `mutos_c1` emits for a call-free `main()`. It reports `main()`'s
   return value and every local's final value (found through `c1`'s own
   `| _name=-N.` frame comments). Anything outside its subset - a call, a
-  byte operation, a branch on flags not set by a `cmp` - stops it with an
-  error, never a guess.
+  byte operation, a branch on flags not set by a `cmp` or an `or r,r` -
+  stops it with an error, never a guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
 `tests/mutos_cc` `.s.golden` it can execute (30 of the 62; the others
@@ -47,7 +47,6 @@ tests/mutos_cc/fuzz/fuzz_c.py --baseline /tmp/base   # compare with an earlier b
 | `--no-arrays` | scalars only |
 | `--reasons` | list every refusal reason with its count - a map of what `c1` does not support yet |
 | `--keep DIR` | where to save problem programs (default: a new directory under `/tmp`) |
-| `--side-effects-in-conditionals`, `--postfix-in-conditions` | re-enable constructs that hit two known `mutos_c1` bugs (below) |
 
 The tools are taken from `src/` (build first, `make`), or from
 `$MUTOS_CPP`/`$MUTOS_C0`/`$MUTOS_C1`/`$MUTOS_AS` - e.g. sanitizer builds.
@@ -93,7 +92,12 @@ scalar or an array element and `if`/`else`; expressions use `+ - * / % &
 products of two 2-D elements (the evaluation-order case). At most one side
 effect (`u` or `n`) per statement, and neither variable is read
 otherwise, so no expected value depends on C's unspecified operand order.
-A program that would divide by zero is dropped.
+Side effects also occur where C may skip them - in a `?:` arm, an
+`&&`/`||` right operand, an `if` condition - and must happen exactly when
+C evaluates the operand. A program that would divide by zero is dropped;
+a division C does not evaluate (in an untaken `?:` arm, a skipped
+`&&`/`||` operand) is kept, since the compiled code must not execute it
+either - on an 8086 that is a divide-error trap.
 
 Some choices only raise the share of programs `c1` accepts (a single
 refused statement discards the whole program): no constant in a truth
@@ -104,23 +108,15 @@ its registers), and frames of at most 80 bytes (81-127 is `c1`'s
 unconfirmed `chkstk` gap). About 30% of programs compile with arrays,
 about 60% without.
 
-## Known `mutos_c1` bugs the default avoids
+## Formerly known `mutos_c1` bugs
 
-Both are recorded in `STATUS.md`'s open items, with repros:
-
-1. **Side effects in an operand C does not evaluate are executed.**
-   `z = x ? y++ : 4;` and `z = a && b++;` increment `y`/`b` even when that
-   operand is skipped (a value-context `?:`/`&&`/`||` computes its operands
-   before its branches). `--side-effects-in-conditionals` generates these.
-2. **A postfix `++`/`--` in an `if`/`while` condition happens only on the
-   true path.** `c1` defers a postfix increment to the statement's `EXPR`
-   opcode, and a condition ends in `CBRANCH` instead, so the increment
-   lands at the next `EXPR` - inside the branch taken when the condition
-   holds (`while (n-- > 3)` loses the last decrement).
-   `--postfix-in-conditions` generates these.
-
-Once one is fixed, drop its avoidance here (search `fuzz_c.py` for
-"known c1 bug") so the default run covers it.
+The first runs found two `mutos_c1` wrong-code bugs, which the generator
+then avoided behind opt-in flags: side effects in an operand C does not
+evaluate were executed anyway (`z = x ? y++ : 4;` always incremented
+`y`), and a postfix `++`/`--` in an `if`/`while` condition happened only
+on the true path. Both were fixed on 2026-09-24 (see `docs/DEVLOG.md`'s
+"Conditional evaluation" section); the flags are gone and the default
+run generates both constructs.
 
 ## Typical use while changing the compiler
 
