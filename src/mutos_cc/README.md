@@ -236,7 +236,13 @@ long as every operand feeding it is also constant (matching real K&R
 `return 6 * 7;` still contains a single folded `CON(42)` node, never
 a `TIMES` opcode), and is emitted as a real `NAME`/operator tree the
 moment a variable enters the picture, materializing any constant
-sibling as a genuine `CON` leaf at that point. Folding uses 16-bit
+sibling as a genuine `CON` leaf at that point - IN ITS OWN PLACE: while a
+constant left operand is still pending, the right operand is parsed into
+a memory buffer, and the `CON` is written ahead of it once the right
+operand turns out not to be constant (`rhs_begin()`/`rhs_end()`), so `7 -
+x` is `CON 7, NAME x, MINUS`, v7's order. (Until 2026-09-24 it was
+written after the right operand - `7 - x` compiled as `x - 7`, for every
+binary operator; see `docs/DEVLOG.md`.) Folding uses 16-bit
 truncation (`trunc16()`), matching the target's 16-bit `int` - except
 an integer literal too large for a plain `int` (K&R/C89 promotion
 rule: `ExprVal` gains an `is_long` flag, carrying the full untruncated
@@ -244,13 +250,16 @@ value; see the char/long/cast/sizeof derivation below). A
 postfix/prefix `++`/`--` operand and a bare array name used as an
 rvalue are never treated as compile-time constants (both always
 emit real code - see the increment/decrement/pointer/array
-derivation below). A `?:` with a compile-time-constant condition
-folds to whichever branch is selected (matching real K&R `cc`'s own
-`build()`-time folding again), though not itself exercised by any
-golden (`07_ternary`'s own condition is always a real comparison).
-A parenthesized comma-list's embedded `IDENT '=' expr` items are
-never constants (an assignment always has a side effect, so it is
-always emitted for real, exactly like `assign-stmt`'s own handling).
+derivation below). A `?:` folds only when its condition AND both
+branches are constants (v7/cc/c01.c's `fold(QUEST)`); any other `?:` -
+a constant condition included - is a real `QUEST` tree, its parts in
+source order (`c1` refuses a constant condition: no golden shows its
+shape). A comma list is never folded either (v7 never folds `SEQNC`):
+each item, a constant last one included, is written before the `SEQNC`
+that consumes it. A parenthesized comma-list's embedded `IDENT '=' expr`
+items are never constants (an assignment always has a side effect, so
+it is always emitted for real, exactly like `assign-stmt`'s own
+handling).
 `sizeof(...)` is the one exception to the fold-or-emit model
 entirely: it emits its own `CON(TY_UNSIGN, <size>)` node immediately
 and unconditionally, never deferred as a further-foldable `ExprVal`
@@ -935,6 +944,19 @@ as before; shapes that would need a different order and have no golden -
 Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
 section.
 
+**A constant operand goes to the right.** Before choosing code, v7's
+`c1` moves a constant operand of a commutative operator (`+ * & | ^`)
+to the right (`c12.c`'s `acommute()` sorts operands by `degree()`, a
+constant's being the lowest) and exchanges a relational's operands when
+the left one is a constant, mirroring the operator (`optim()`'s
+`maprel[]`: `7 < x` is `x > 7`). `mutos_c1` does the same
+(`constant_to_right()`, the `mirror` column of `RELOPS`); since a
+constant emits no code, exchanging the two values in the operator's
+handler is exactly equivalent to receiving them the other way round.
+For a non-commutative operator (`7 - x`, `7 / x`, `7 << x`) there is
+nothing to exchange; when the right operand is itself compound, such a
+shape is refused (no golden shows v7's register choice for it).
+
 ## Next steps (roughly in dependency order)
 
 1. **All of `01_expr` and `03_ctrlflow` are now done.**
@@ -998,10 +1020,11 @@ section.
    swapping a relational's operands by `degree()`, through `maprel[]`) and
    `03_linklist`'s right-hand-side-first store are the same mechanism with
    other decisions - each a new case in `order_right_first()`, once
-   `mutos_c0` can parse those files. Before that: `mutos_c0` emits a
-   constant LEFT operand of a binary operator on the right (`7 - x`
-   compiles as `x - 7`) - silent wrong code no golden exercises, found by
-   the `05_matmul` semantic check; see `STATUS.md`'s open items.
+   `mutos_c0` can parse those files. The constant-left-operand case of
+   the relational swap is done (see "A constant operand goes to the
+   right"). Two open `mutos_c1` bugs - side effects in conditionally
+   evaluated operands, and a postfix `++`/`--` in a condition - are in
+   `STATUS.md`'s open items.
 5. **`char` element access and `09_abiprobe/frame*`**: their goldens have
    narrowed the real `chkstk` threshold to `(80,128]` (implemented - see
    above); the files themselves now declare fine but need `char` element
@@ -1049,6 +1072,14 @@ every stage (`.i`/`.1`/`.2`/`.s`) byte-for-byte, reporting "not yet
 supported" separately from a genuine mismatch (see "Current scope"
 above) so the exit status stays a meaningful signal as coverage
 grows.
+
+`tests/mutos_cc/fuzz/` (`make fuzz`) complements that with random
+programs: `fuzz_c.py` computes what each one must do under C semantics,
+runs it through the real pipeline, and executes the output with
+`x86sim.py`, comparing every variable at every statement boundary; with
+`--baseline` it also classifies every difference against an earlier
+build. It found the constant-left-operand bug and two open `mutos_c1`
+bugs - see its README.
 
 ## Tooling
 

@@ -25,6 +25,9 @@
 #   make cc         # build just mutos_c0/mutos_c1
 #   make clean      # clean every component
 #   make test       # run every component's golden-diff test suite
+#   make fuzz       # semantic fuzzing of mutos_c0/mutos_c1 (see
+#                   # tests/mutos_cc/fuzz/README.md); FUZZ_ARGS passes
+#                   # options, e.g. make fuzz FUZZ_ARGS="-n 2000 -s 7"
 #   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
@@ -32,7 +35,7 @@
 CC     = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-.PHONY: all ld as cpp cc clean test check-docs install-hooks
+.PHONY: all ld as cpp cc clean test fuzz check-docs install-hooks
 
 all: ld as cpp cc
 
@@ -82,6 +85,13 @@ test: all
 # header for exactly what it checks and why each check is shaped that way.
 check-docs:
 	@python3 scripts/check_docs.py
+
+# Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
+# "test" (whose golden diffs are exact and fast); a fixed default seed
+# keeps a plain "make fuzz" repeatable.
+FUZZ_ARGS = -n 500 -s 1
+fuzz: cpp cc as
+	@python3 tests/mutos_cc/fuzz/fuzz_c.py $(FUZZ_ARGS)
 
 # One-time setup per clone: points git at the tracked .githooks/ directory
 # instead of the untracked (and therefore un-shareable) .git/hooks/, so

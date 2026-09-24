@@ -3607,8 +3607,8 @@ when BOTH operands are constants and never reorders), so the real front
 end writes `CON 7, NAME x, MINUS`. No corpus file has a constant left
 operand, which is why every `.1.golden` still matches. Silent wrong code
 for any non-commutative operator; harmless (but not v7's wire order) for
-`+`/`*`/`&`/`|`/`^`. Not fixed here - it is a `c0` change with its own
-verification; recorded in `STATUS.md`'s open items. The fix is to buffer
+`+`/`*`/`&`/`|`/`^`. Not fixed in this change - it is a `c0` change with
+its own verification; fixed the same day (next section). The fix is to buffer
 the right operand's bytes while the left one is still a pending constant
 (the `open_memstream()` technique `for`'s deferred increment already
 uses) and emit `CON` first unless the right operand folds too.
@@ -3645,6 +3645,120 @@ uses) and emit `CON` first unless the right operand folds too.
   `register` subscript are refused with explicit diagnostics.
 - ASan/UBSan build of `mutos_c1` over the 62 golden pairs and 800 fuzzed
   programs: clean.
+
+### Constant left operands, and semantic fuzzing (`mutos_c0`/`mutos_c1` fixed, `tests/mutos_cc/fuzz/` added, verified this session)
+
+**The `mutos_c0` bug, and its three other faces.** `ExprVal` keeps a
+constant unwritten so it can fold with a constant sibling;
+`emit_materialize()` wrote it only when the operator was reached - after
+the right operand had streamed its own bytes. `git log -S` puts the
+pattern in `mutos_c0`'s first commit (`0688fbe`, 2026-09-14). Probed end to
+end (x=5, y=3, c=1) before the fix: `7 - x` gave -2, `2 - 9 - x` 12, `7 -
+x * y` 8, `7 < x` 1, `c ? 7 : y` 3 (the branches swapped, since `COLON`
+received them in the wrong order), `y + (x = 1, 5)` 7 (a constant last
+comma item was written after its `SEQNC`, which then paired with `y`'s
+slot); and `z = 0 ? x : 3;` failed in `c1` with "internal: 2 unconsumed
+expression values", because a constant `?:` condition returned one
+branch while the other's bytes stayed in the stream.
+
+v7 settles what the stream must be. `c01.c`'s `fold()` handles `+ - * /
+% & | ^ << >>`, the unary `-`/`~` and the six comparisons, only when both
+operands are constants, and never reorders them; `build()` calls
+`fold(QUEST, ...)` only when the condition AND both `COLON` branches are
+constants, and otherwise builds the tree; `SEQNC`, `&&` and `||` are
+never folded. (`mutos_c0` does fold `&&`/`||` of two constants - a
+wire-level divergence with no semantic effect, left as is.)
+
+The fix (`c0_parser.c`): while a constant left operand is pending, the
+right operand is parsed into an `open_memstream()` buffer
+(`rhs_begin()`); `rhs_end()` then leaves a constant pair to the caller's
+fold, or writes the left `CON` first and the buffered bytes after it -
+the technique `parse_for_stmt()`'s deferred increment already used. It
+is applied at all 13 binary-operator sites. `parse_expr()`'s `?:`
+buffers its true branch while the condition is a pending constant and
+its false branch while the condition or the true branch is, folds only
+when all three are constants, and otherwise writes condition, true
+branch, false branch, `COLON`, `QUEST` in that order; the comma list
+materializes its last item before `SEQNC`. `rhs_end()` treats a constant
+right operand that wrote bytes as an internal error (a constant never
+writes anything).
+
+**The `mutos_c1` counterpart.** The first fuzz run against the previous
+build showed regressions: `7 | e` had compiled (correctly, `|` being
+commutative) and was now refused. v7's `c1` moves constants right before
+choosing code - `c12.c`'s `acommute()` sorts a commutative operator's
+operands by descending `degree()` (a constant's is -3, below everything),
+and `optim()` exchanges a relational's operands when `degree(left) <
+degree(right)`, mapping the operator through `c10.c`'s `maprel[]`. The
+old `c0` bug had been doing that for `c1`, by accident and for every
+operator. `mutos_c1` now does it itself: `constant_to_right()` for `+ * &
+| ^` (int and long), and a `mirror` column in `RELOPS` for the
+relationals. A constant emits no code (`VK_IMM`/`VK_LCON`), so exchanging
+the two values in the handler is exactly the same as receiving them in
+the other order: the output for every commutative or equality operator
+with a constant left operand is byte-identical to before the `c0` fix.
+The general relational swap (two non-constant operands - `02_bubsort`)
+still needs the evaluation-order plan.
+
+**`tests/mutos_cc/fuzz/`.** `x86sim.py` interprets the instruction subset
+`c1` emits for a call-free `main()`; every golden it can execute (30 of
+62) returns its C source's value, struct and bit-field programs
+included. It refuses rather than guesses - notably a conditional branch
+on flags that a non-`cmp` instruction has since changed. `fuzz_c.py`
+builds each program as a syntax tree, evaluates it under C semantics on a
+16-bit `int` (short-circuit included), and compares every scalar and
+array element at every statement boundary: a marker `m = 101;` before
+each statement makes `x86sim.py` snapshot the frame. The markers were
+added after the first large differential run showed "regressions" that
+were really masked wrong code - a wrong value a later statement
+overwrote. Generator constraints keep the expected values well-defined
+(subscripts are constants 0/1 fixed after initialization; the side-effect
+variables `u` and `n` are never read otherwise, at most one side effect
+per statement) and raise the share of accepted programs (no constants in
+truth contexts, no constant divisors, right operands mostly simple,
+frames of at most 80 bytes): about 30% of programs compile with arrays,
+60% without. `--baseline` classifies every difference against an
+earlier build with no knowledge of the change.
+
+**Two more `mutos_c1` wrong-code bugs, pre-existing, not fixed** (see
+`STATUS.md`'s open items 6 and 7). In a value context, `?:` branches and
+a `&&`/`||` right operand are computed before the branch code, so their
+side effects happen even when C skips the operand (`z = x ? y++ : 4;`
+increments `y` for `x` = 0). And a postfix `++`/`--` in an `if`/`while`
+condition waits for the next `EXPR` opcode - inside the branch taken
+when the condition holds - so `while (n-- > 3)` ends with `n` one too
+high. Both were confirmed identical in the previous build. The fuzzer's
+default avoids both; `--side-effects-in-conditionals` and
+`--postfix-in-conditions` generate them.
+
+**Verification.**
+
+- `make test` (clean build): 38/62, 0 genuine mismatches, zero warnings.
+- `mutos_c1` alone on the 62 golden `.1`/`.2` pairs and `mutos_c0` on the 62
+  `.i` goldens, each against the previous build: identical (`c0` differs
+  only in the partial output of one compile that fails with the same
+  diagnostics - error recovery turns an undeclared name into constant 0,
+  which is now written on the left).
+- 6000 fuzzed programs (four seeds with arrays, two scalar-only) against
+  the previous build: 2356 compile, all correct at every statement
+  boundary, 0 BAD. 198 go from WRONG to correct, 9 from WRONG to an
+  explicit refusal, 202 from refused to correct, 7 from `c1`'s internal
+  error (the orphaned `?:` bytes) to an explicit refusal.
+- 51 programs changed but were correct in both builds. Each was re-run
+  with up to 60 different initial values: the new build was correct on
+  every variant, and a variant proves the old output wrong for 31 of
+  them; for the other 20 the reversed order is unobservable (`if (12 -
+  i)` tests the same as `if (i - 12)`; `(... ) == 2` of a 0/1 value) or
+  sits in a branch no variant took.
+- 4 programs the old build compiled "correctly" are now refused. Three
+  computed a wrong value that happened to be invisible (`0 - a[j][k]`
+  with that element 0; a truth-tested `7 - b[k][i]`; a truth-tested `(3 -
+  a[k][i]) - 8`), in a `const - <compound>` shape `c1` now declines (no
+  golden shows v7's register choice for it). The fourth is `y = (~9 ? (t
+  % s) : ~2);`: `c0` now emits v7's real `QUEST` tree for the constant
+  condition, and `c1` has no confirmed shape for one.
+- ASan/UBSan builds of both passes over 1500 fuzzed programs (including
+  300 with both known-bug flags on) and the golden suite: clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -3818,6 +3932,14 @@ These apply to *every* milestone, not just the one where they were first learned
   reordering). And keep the generator away from a known-broken construct
   while validating something else, rather than letting it drown the
   signal.
+- **A baseline that "passes" can be right by luck.** Random programs mask
+  wrong values constantly - a comparison or truth test squashes them to
+  0/1, a later statement overwrites them. Check intermediate state, not
+  just the final one (`fuzz_c.py`'s statement markers), and before calling
+  a changed-but-correct output harmless, re-run the program with other
+  initial values: that turned 31 of 51 "both correct" differences into
+  proven fixes. Conversely, a "regression" from right-by-luck to an
+  honest refusal is not one - read each before believing it.
 - **A consistency check must agree with the moment it runs at.**
   `check_docs.py`'s Check 5 compared a "Last updated" stamp with the file's
   last commit in `git log`. Run from the pre-commit hook, that is the

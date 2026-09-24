@@ -487,6 +487,89 @@ static void emit_materialize(FILE *t1, ExprVal v)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Keeping a pending constant LEFT operand on the left.
+ *
+ * temp1 is postfix: a binary node's left operand's bytes, then its
+ * right operand's, then the node. A left operand that is still an
+ * unmaterialized constant (kept so it can fold with a constant right
+ * operand - see ExprVal) has written nothing yet when the right operand
+ * is parsed, and the right operand writes its bytes as it is parsed.
+ * Materializing the constant only once the operator is reached would
+ * put it AFTER the right operand - "7 - x" as "x - 7" - which is what
+ * this file did for every binary operator until 2026-09-24 (found by
+ * the semantic fuzz check - see docs/DEVLOG.md). v7 never reorders
+ * operands in c0 (v7/cc/c01.c's fold() folds only when BOTH are
+ * constants), so the real stream for "7 - x" is CON 7, NAME x, MINUS.
+ *
+ * So while a constant left operand is pending, the right operand is
+ * parsed into a memory buffer instead (rhs_begin()); rhs_end() then
+ * either leaves everything to the caller's fold (the right operand is
+ * a constant too, and wrote nothing), or writes the left constant's CON
+ * first and the buffered right operand after it. The same
+ * open_memstream() technique parse_for_stmt()'s deferred increment
+ * uses. */
+typedef struct {
+    FILE  *mem;   /* NULL: no capture (the left operand was not constant) */
+    char  *buf;
+    size_t len;
+} RhsCapture;
+
+/* Returns the stream the right operand must be parsed into. */
+static FILE *rhs_begin(RhsCapture *c, Parser *p, FILE *t1, ExprVal lhs)
+{
+    c->mem = NULL;
+    c->buf = NULL;
+    c->len = 0;
+    if (!lhs.is_const)
+        return t1;
+    c->mem = open_memstream(&c->buf, &c->len);
+    if (!c->mem) {
+        c0_error_at(p->cur.line, "internal: could not buffer an operand "
+                    "(out of memory)");
+        return t1;
+    }
+    return c->mem;
+}
+
+/* Ends rhs_begin()'s capture and returns the left operand as the caller
+ * must now treat it: unchanged when the right operand is a constant too
+ * (the caller folds the pair), otherwise already emitted - its CON is
+ * written ahead of the right operand's buffered bytes. */
+static ExprVal rhs_end(RhsCapture *c, Parser *p, FILE *t1, ExprVal lhs,
+                       ExprVal rhs)
+{
+    if (!c->mem)
+        return lhs;
+    fclose(c->mem);
+    if (rhs.is_const) {
+        /* A constant writes nothing (see ExprVal) - anything else would
+         * be a pending-constant bookkeeping bug in this file. */
+        if (c->len != 0)
+            c0_error_at(p->cur.line, "internal: a constant operand wrote "
+                        "intermediate code");
+        free(c->buf);
+        return lhs;
+    }
+    emit_materialize(t1, lhs);
+    fwrite(c->buf, 1, c->len, t1);
+    free(c->buf);
+    lhs.is_const = 0; /* emitted - keeps its type */
+    return lhs;
+}
+
+/* Ends a capture by writing whatever it buffered to `t1` as is - for
+ * '?:', which places its pending constants itself (parse_expr()). */
+static void capture_flush(RhsCapture *c, FILE *t1)
+{
+    if (!c->mem)
+        return;
+    fclose(c->mem);
+    fwrite(c->buf, 1, c->len, t1);
+    free(c->buf);
+    c->mem = NULL;
+}
+
 /* Emits the CON/ITOP scaling sequence plus the final INCBEF/DECBEF/
  * INCAFT/DECAFT node itself, for an lvalue whose NAME has already
  * been emitted by the caller. `optag` is one of OP_INCBEF/OP_DECBEF/
@@ -1163,8 +1246,15 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             advance(p);
             emit_materialize(t1, v);
             ExprVal rhs = parse_comma_item(p, t1);
+            /* v7 never folds SEQNC (v7/cc/c01.c's build()), so the
+             * last item is a real operand, written BEFORE the SEQNC
+             * node - a constant one used to be written after it,
+             * which paired SEQNC with the wrong operands
+             * ("y + (x = 1, 5)" added y's slot to 1). */
+            emit_materialize(t1, rhs);
             outcode(t1, "BN", OP_SEQNC, TY_INT);
             v = rhs;
+            v.is_const = 0;
         }
         expect(p, T_RPAREN, "')'");
         return v;
@@ -1386,7 +1476,9 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
     for (;;) {
         if (p->cur.kind == T_STAR) {
             advance(p);
-            ExprVal r = parse_unary(p, t1);
+            RhsCapture cap;
+            ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
+            v = rhs_end(&cap, p, t1, v, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value * r.value));
                 continue;
@@ -1404,7 +1496,9 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
         } else if (p->cur.kind == T_SLASH) {
             int line = p->cur.line;
             advance(p);
-            ExprVal r = parse_unary(p, t1);
+            RhsCapture cap;
+            ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
+            v = rhs_end(&cap, p, t1, v, r);
             if (v.is_const && r.is_const) {
                 if (r.value == 0) {
                     c0_error_at(line, "Division by zero in constant expression");
@@ -1422,7 +1516,9 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
         } else if (p->cur.kind == T_PERCENT) {
             int line = p->cur.line;
             advance(p);
-            ExprVal r = parse_unary(p, t1);
+            RhsCapture cap;
+            ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
+            v = rhs_end(&cap, p, t1, v, r);
             if (v.is_const && r.is_const) {
                 if (r.value == 0) {
                     c0_error_at(line, "Division by zero in constant expression");
@@ -1450,7 +1546,9 @@ static ExprVal parse_add(Parser *p, FILE *t1)
     for (;;) {
         if (p->cur.kind == T_PLUS) {
             advance(p);
-            ExprVal r = parse_mul(p, t1);
+            RhsCapture cap;
+            ExprVal r = parse_mul(p, rhs_begin(&cap, p, t1, v));
+            v = rhs_end(&cap, p, t1, v, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value + r.value));
                 continue;
@@ -1482,7 +1580,9 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_MINUS) {
             advance(p);
-            ExprVal r = parse_mul(p, t1);
+            RhsCapture cap;
+            ExprVal r = parse_mul(p, rhs_begin(&cap, p, t1, v));
+            v = rhs_end(&cap, p, t1, v, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value - r.value));
                 continue;
@@ -1514,7 +1614,9 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         else if (p->cur.kind == T_SHR) op = OP_RSHIFT;
         else break;
         advance(p);
-        ExprVal r = parse_add(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_add(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             /* Folded on the host: the left shift goes through an
              * unsigned intermediate (shifting a negative signed value
@@ -1561,7 +1663,9 @@ static ExprVal parse_relational(Parser *p, FILE *t1)
         else if (p->cur.kind == T_GE) op = OP_GREATEQ;
         else break;
         advance(p);
-        ExprVal r = parse_shift(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_shift(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             long res;
             switch (op) {
@@ -1592,7 +1696,9 @@ static ExprVal parse_equality(Parser *p, FILE *t1)
         else if (p->cur.kind == T_NE) op = OP_NEQUAL;
         else break;
         advance(p);
-        ExprVal r = parse_relational(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_relational(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             long res = (op == OP_EQUAL) ? (v.value == r.value)
                                          : (v.value != r.value);
@@ -1612,7 +1718,9 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
     ExprVal v = parse_equality(p, t1);
     while (p->cur.kind == T_AMP) {
         advance(p);
-        ExprVal r = parse_equality(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_equality(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value & r.value));
             continue;
@@ -1630,7 +1738,9 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
     ExprVal v = parse_bitand(p, t1);
     while (p->cur.kind == T_CARET) {
         advance(p);
-        ExprVal r = parse_bitand(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_bitand(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value ^ r.value));
             continue;
@@ -1648,7 +1758,9 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
     ExprVal v = parse_bitxor(p, t1);
     while (p->cur.kind == T_PIPE) {
         advance(p);
-        ExprVal r = parse_bitxor(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_bitxor(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value | r.value));
             continue;
@@ -1673,7 +1785,9 @@ static ExprVal parse_logand(Parser *p, FILE *t1)
     ExprVal v = parse_bitor(p, t1);
     while (p->cur.kind == T_ANDAND) {
         advance(p);
-        ExprVal r = parse_bitor(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_bitor(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) && (r.value != 0));
             continue;
@@ -1691,7 +1805,9 @@ static ExprVal parse_logor(Parser *p, FILE *t1)
     ExprVal v = parse_logand(p, t1);
     while (p->cur.kind == T_OROR) {
         advance(p);
-        ExprVal r = parse_logand(p, t1);
+        RhsCapture cap;
+        ExprVal r = parse_logand(p, rhs_begin(&cap, p, t1, v));
+        v = rhs_end(&cap, p, t1, v, r);
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) || (r.value != 0));
             continue;
@@ -1723,26 +1839,36 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
     if (p->cur.kind != T_QUEST)
         return cond;
     advance(p); /* consume '?' */
-    ExprVal t = parse_logor(p, t1);
-    if (!expect(p, T_COLON, "':'"))
+    /* The stream order is cond, true branch, false branch, COLON,
+     * QUEST - so, exactly as for a binary operator (see rhs_begin()),
+     * a branch is parsed into a buffer while anything before it is
+     * still an unwritten constant: the true branch when the condition
+     * is one, the false branch when the condition or the true branch
+     * is. (Before 2026-09-24 a constant true branch was written after
+     * the false one - "c ? 7 : y" selected y - and a constant condition
+     * returned one branch while the other's bytes stayed in the
+     * stream.) */
+    RhsCapture tcap, fcap;
+    ExprVal t = parse_logor(p, rhs_begin(&tcap, p, t1, cond));
+    if (!expect(p, T_COLON, "':'")) {
+        capture_flush(&tcap, t1);
         return ev_dynamic();
-    ExprVal f = parse_logor(p, t1);
+    }
+    ExprVal pending = cond.is_const ? cond : t;
+    ExprVal f = parse_logor(p, rhs_begin(&fcap, p, t1, pending));
 
-    if (cond.is_const) {
-        /* Compile-time-constant condition - matches this file's
-         * established "fold whenever every operand is constant"
-         * policy elsewhere (real K&R cc's build() folds this too),
-         * though not itself exercised by 07_ternary.c (its condition
-         * is always a real, non-constant comparison). */
+    if (cond.is_const && t.is_const && f.is_const) {
+        /* v7/cc/c01.c's fold(QUEST): folded only when the condition
+         * AND both branches are constants (nothing was written); any
+         * other constant condition is built as a real QUEST tree. */
+        capture_flush(&tcap, t1);
+        capture_flush(&fcap, t1);
         return (cond.value != 0) ? t : f;
     }
-
-    /* cond is already fully emitted here (parse_relational()/etc.
-     * never leave a non-constant result unmaterialized - only a
-     * still-foldable compile-time constant ever does, and that case
-     * already returned above), so only the two branches might still
-     * need materializing. */
+    emit_materialize(t1, cond);
+    capture_flush(&tcap, t1);
     emit_materialize(t1, t);
+    capture_flush(&fcap, t1);
     emit_materialize(t1, f);
     outcode(t1, "BN", OP_COLON, TY_INT);
     outcode(t1, "BN", OP_QUEST, TY_INT);
