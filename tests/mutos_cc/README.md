@@ -96,6 +96,11 @@ mapping from short name to intent.
 | `09_abiprobe` | Targeted ABI probes, see below | `01_argvmain`, `02_frame080` … `07_frame300` |
 | `10_integ` | Small realistic programs | `01_wordcount`, `02_bubsort`, `03_linklist`, `04_strrev`, `05_matmul` |
 
+`fuzz/` is not part of the corpus: it holds host-only random-program
+fuzzing tools for `mutos_c0`/`mutos_c1` (`make fuzz` from the repo root -
+see `fuzz/README.md`). It contains no `.c` files, so nothing that walks
+this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
+
 ### `09_abiprobe` — resolving a documented open question
 
 `docs/DEVLOG.md`'s Milestone 4 section had an explicit **open item**: the

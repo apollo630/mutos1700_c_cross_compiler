@@ -107,6 +107,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   scripts/makefiles above) was checked against this toolchain's real
   significant-character limits (see "Identifier length limits" below)
   and MUTOS 1700's real `DIRSIZ`=14 filename limit.
+  `fuzz/` is the one non-corpus directory in it: host-only random-program
+  fuzzing (`make fuzz`, see `tests/mutos_cc/fuzz/README.md`) - `fuzz_c.py`
+  computes what each generated program must do under C semantics and
+  checks every variable at every statement boundary by executing
+  `mutos_c1`'s output with `x86sim.py`; `--baseline` classifies every
+  difference against an earlier build. It holds no `.c` files, so nothing
+  that walks the corpus sees it.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -461,13 +468,17 @@ scope and intent, not a snapshot of what's done.
   full derivation.
   Grammar/opcode coverage beyond that is explicit, clearly-diagnosed "not
   yet supported" — never silent wrong output — by design (see
-  `src/mutos_cc/README.md`'s "Current scope").
+  `src/mutos_cc/README.md`'s "Current scope"). The semantic fuzzer
+  (`tests/mutos_cc/fuzz/`) has found where that did not hold: `mutos_c0`
+  compiling `7 - x` as `x - 7` (fixed 2026-09-24), and two open
+  `mutos_c1` bugs - side effects in conditionally evaluated operands, and
+  a postfix `++`/`--` in a condition (see `STATUS.md`'s open items).
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: fixing `mutos_c0`'s constant-left-operand
-  bug (`7 - x` compiles as `x - 7` - see `STATUS.md`'s open items), `char`
-  element access (unlocks the `09_abiprobe` frame files), further
+  dependency-ordered list: the two open `mutos_c1` wrong-code bugs the
+  fuzzer found (see `STATUS.md`'s open items), `char` element access
+  (unlocks the `09_abiprobe` frame files), further
   evaluation-order decisions (`02_bubsort`'s relational swap,
   `03_linklist`'s store) on `mutos_c1`'s now-existing plan mechanism,
   then `06_struct`

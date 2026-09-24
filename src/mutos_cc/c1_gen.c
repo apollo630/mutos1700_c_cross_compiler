@@ -1243,21 +1243,24 @@ static void load_into_di(GenState *g, Val v); /* forward decl - defined
  * tests/mutos_cc/01_expr/03_rellogic.s.golden. */
 
 /* One row per relational/equality opcode: the branch-if-true
- * mnemonic (confirmed against 03_rellogic.s.golden) and the opcode of
- * the NEGATED relation (see cond_invert() below). */
+ * mnemonic (confirmed against 03_rellogic.s.golden), the opcode of
+ * the NEGATED relation (see cond_invert() below), and the one that
+ * holds with the two operands EXCHANGED (v7/cc/c10.c's maprel[] - see
+ * constant_to_right()). */
 typedef struct {
     int         op;
     const char *branch;
     int         inverse;
+    int         mirror;
 } RelOp;
 
 static const RelOp RELOPS[] = {
-    { OP_LESS,    "blt", OP_GREATEQ },
-    { OP_LESSEQ,  "ble", OP_GREAT   },
-    { OP_GREAT,   "bgt", OP_LESSEQ  },
-    { OP_GREATEQ, "bge", OP_LESS    },
-    { OP_EQUAL,   "beq", OP_NEQUAL  },
-    { OP_NEQUAL,  "bne", OP_EQUAL   },
+    { OP_LESS,    "blt", OP_GREATEQ, OP_GREAT   },
+    { OP_LESSEQ,  "ble", OP_GREAT,   OP_GREATEQ },
+    { OP_GREAT,   "bgt", OP_LESSEQ,  OP_LESS    },
+    { OP_GREATEQ, "bge", OP_LESS,    OP_LESSEQ  },
+    { OP_EQUAL,   "beq", OP_NEQUAL,  OP_EQUAL   },
+    { OP_NEQUAL,  "bne", OP_EQUAL,   OP_NEQUAL  },
 };
 
 /* NULL if `op` is not a relational/equality opcode. */
@@ -1267,6 +1270,40 @@ static const RelOp *find_relop(int op)
         if (RELOPS[i].op == op)
             return &RELOPS[i];
     return NULL;
+}
+
+/* A constant operand goes to the RIGHT - what v7/cc's c1 does before
+ * choosing any code, in two places: c12.c's acommute() re-sorts the
+ * operands of a commutative operator (+ * & | ^) by descending
+ * degree(), and a constant's degree (-3) is below every other
+ * operand's; c12.c's optim() exchanges a relational's operands when
+ * degree(left) < degree(right) - always so for a constant on the left
+ * - and maps the operator through maprel[] ("7 < x" -> "x > 7").
+ * mutos_c0 used to do this itself, by accident and for EVERY operator
+ * (it wrote a pending constant left operand after the right one - a
+ * bug for - / % << >> < ...; see docs/DEVLOG.md); it now writes v7's
+ * source order, so c1 does v7's canonicalization. A constant emits no
+ * code (VK_IMM/VK_LCON), so exchanging the two values here is exactly
+ * the same as having received them the other way round - the output
+ * for every commutative or equality operator with a constant left
+ * operand is what it was before that c0 fix. The general relational
+ * swap (by degree, for two non-constant operands - 10_integ/
+ * 02_bubsort's "i < n - 1") needs the evaluation-order plan and is not
+ * done here. */
+static int is_const_val(const Val *v)
+{
+    return v->kind == VK_IMM || v->kind == VK_LCON;
+}
+
+/* For a commutative operator: exchanges a constant left operand with
+ * a non-constant right one. */
+static void constant_to_right(Val *l, Val *r)
+{
+    if (is_const_val(l) && !is_const_val(r)) {
+        Val t = *l;
+        *l = *r;
+        *r = t;
+    }
 }
 
 static const char *cond_true_mnem(int op)
@@ -3227,6 +3264,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  *   confirmed by any golden. */
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
+                if (op == OP_PLUS)
+                    constant_to_right(&l, &r);
                 if (l.kind != VK_MEM)
                     gen_fatal("'long' %s with a non-memory left operand "
                               "is not yet supported",
@@ -3262,6 +3301,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           type);
             Val l, r;
             pop_operands(&g, &l, &r);
+            if (op == OP_PLUS)
+                constant_to_right(&l, &r);
             if (op == OP_PLUS && (r.kind == VK_IND || l.kind == VK_IND)) {
                 /* One operand is itself a dereferenced pointer
                  * ("sum = sum + a[i];" - 05_arrptr/01_arrbasic.c, or
@@ -3374,6 +3415,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           type);
             Val l, r;
             pop_operands(&g, &l, &r);
+            constant_to_right(&l, &r);
             if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
                 require_free(r, RB_DI, aluop(op)->name);
             load_into_di(&g, l);
@@ -3877,9 +3919,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * otherwise flow in here as an operand. */
             Val l, r;
             pop_operands(&g, &l, &r);
+            int relop = op;
+            if (is_const_val(&l) && !is_const_val(&r)) {
+                /* v7's optim(): exchanged, relation mirrored - see
+                 * constant_to_right(). */
+                Val t = l;
+                l = r;
+                r = t;
+                relop = find_relop(op)->mirror;
+            }
             Val c = {0};
             c.kind = VK_COND;
-            c.true_op = op;
+            c.true_op = relop;
             c.cl = simple_of(l);
             c.cr = simple_of(r);
             /* A 'long' comparison - NOT signaled by `type` above
@@ -4105,6 +4156,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type == TY_LONG) {
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
+                constant_to_right(&l, &r);
                 push_val(&g, gen_long_binop_call(&g, l, r, "lmul"));
                 break;
             }
@@ -4138,6 +4190,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             Val l, r;
             pop_operands(&g, &l, &r);
+            constant_to_right(&l, &r);
             /* Which operand becomes the "mov ax,<X>" side and which
              * becomes the IMUL operand: ordinarily the LEFT operand
              * goes into AX and the RIGHT is IMUL'd (every previously-

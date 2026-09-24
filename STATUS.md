@@ -250,6 +250,71 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c0`/`mutos_c1`: verified this session (constant left operands; semantic fuzzing added)
+
+**`mutos_c0` bug fixed: a constant LEFT operand was emitted on the right.**
+`7 - x` compiled as `x - 7` - and likewise `/`, `%`, `<<`, `>>` and the
+comparisons, since `mutos_c0`'s first commit. A constant is kept
+unwritten so it can fold with a constant sibling, and was written only
+when its operator was reached - after the right operand's bytes. Now,
+while a constant left operand is pending, the right operand is parsed
+into a memory buffer and the `CON` is written ahead of it
+(`rhs_begin()`/`rhs_end()` in `c0_parser.c`, at all 13 binary-operator
+sites). The same root cause had three more faces, fixed with it: `c ? 7 :
+y` selected the wrong branch; a constant `?:` condition kept the
+untaken branch's bytes in the stream (so `z = 0 ? x : 3;` failed in
+`c1` with an internal error); and a constant last comma item came after
+its `SEQNC` (`y + (x = 1, 5)` added 1, not 3). The stream is now v7's:
+`c01.c`'s `fold()` folds only when both operands are constants (for
+`?:`, all three parts) and never reorders, and `SEQNC` is never folded.
+
+**`mutos_c1` now moves a constant operand to the right itself**, as v7's
+`c1` does (`c12.c`'s `acommute()` for `+ * & | ^`; `optim()`'s `maprel[]`
+swap for relationals: `7 < x` is `x > 7`). The old `c0` bug had been doing
+this for it, so without it `7 | e`, `7 * x` or `7 == x` would have
+regressed; a constant emits no code, so exchanging the two values in the
+operator's handler gives exactly the previous output for those. `7 < x`
+etc., previously wrong, now compile correctly. A non-commutative
+`const - <compound>` that needs two registers is refused (no golden).
+
+**Semantic fuzzing: `tests/mutos_cc/fuzz/`** (`make fuzz`; see its
+README). `fuzz_c.py` generates random programs (2-D/1-D arrays, the
+full scalar operator set, `?:`, comma lists, `++`/`--`), computes what
+each must do under C semantics, runs it through the real pipeline and
+executes the output with `x86sim.py` - checking every variable at every
+statement boundary, not only at the end. With `--baseline` every
+difference against an earlier build is classified (fixed / regression
+/ still correct). `x86sim.py` reproduces the C value of all 30 goldens
+it can execute, struct and bit-field programs included. It found two
+more, pre-existing `mutos_c1` wrong-code bugs, recorded as "Open items"
+6 and 7 and avoided by the fuzzer's default (each has an opt-in flag).
+
+**Verification (this session):**
+
+- `make test` (clean build): 38/62 byte-exact, 0 genuine mismatches,
+  zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- `mutos_c1` alone on the 62 golden `.1`/`.2` pairs: identical to the
+  previous build (`.s`, stderr, exit status) - real v7 streams never had
+  a misplaced constant. `mutos_c0` on the 62 golden `.i` files: identical
+  for every successful compile (one failing compile's partial output
+  differs; same diagnostics).
+- 6000 fuzzed programs against the previous build: 2356 compile, all
+  correct at every statement; 0 BAD. 198 programs go from WRONG to
+  correct and 9 from WRONG to an explicit refusal, 202 from refused to
+  correct, and 7 from `c1`'s "internal: 2 unconsumed expression values"
+  (the orphaned `?:` branch) to an explicit refusal. 51 changed but
+  correct in both: re-run with up
+  to 60 different initial values each, the new build was correct on
+  every variant and the old one provably wrong on some for 31 of them;
+  the other 20 cannot show the old operand order (`if (12 - i)` tests the
+  same as `if (i - 12)`). 4 programs the old build compiled "correctly"
+  are now refused: 3 computed a masked wrong value (`0 - a` with `a` 0; a
+  truth-tested `7 - b`) in a `const - <compound>` shape `c1` now declines,
+  and 1 is a constant `?:` condition (`~9 ? ... : ...`), now v7's real
+  `QUEST` tree, which `c1` has no confirmed shape for.
+- ASan/UBSan builds of both passes over 1500 fuzzed programs and the
+  golden suite: clean.
+
 ### `mutos_c1`: verified this session (byte-exact, `10_integ/05_matmul` - evaluation order: right operand first, spilled)
 
 **`sum = sum + a[i][k] * b[k][j];` now compiles exactly as the real
@@ -275,8 +340,9 @@ refused (register-occupancy guard, as before). `02_bubsort`'s swapped
 relational and `03_linklist`'s right-hand-side-first store use the same
 mechanism with other decisions; neither is taken yet.
 
-**Found on the way, not fixed (see "Open items"): `mutos_c0` emits a
-constant LEFT operand of a binary operator on the right** - `7 - x`
+**Found on the way (fixed the same day - see the section above):
+`mutos_c0` emitted a constant LEFT operand of a binary operator on the
+right** - `7 - x`
 compiles as `x - 7` (likewise `/`, `%`, `<<`, `<`, ...). Silent wrong code;
 invisible to every golden, since no corpus file has a constant left
 operand. Found by this session's semantic check.
@@ -1677,9 +1743,11 @@ per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
 literals) are all fully covered, and `10_integ/05_matmul` now passes via
 `c1`'s evaluation-order planning. In order:
 
-1. **Fix `mutos_c0`'s constant-left-operand bug** (see "Open items") -
-   silent wrong code for `7 - x` and every other non-commutative operator
-   with a constant left operand; small and self-contained.
+1. **The two open `mutos_c1` wrong-code bugs** (see "Open items" 6 and 7) -
+   side effects in conditionally evaluated operands, and a postfix
+   `++`/`--` in a condition. Each can first become an explicit refusal;
+   the real shapes want goldens. `tests/mutos_cc/fuzz/fuzz_c.py`'s
+   `--side-effects-in-conditionals`/`--postfix-in-conditions` verify a fix.
 2. **`char` element access** - opcode 109 as char-to-int, `movb`/`cbw`,
    byte stores; this unlocks the six `09_abiprobe` frame files (whose
    goldens already show every shape - see above) and moves `10_integ/
@@ -1687,7 +1755,8 @@ literals) are all fully covered, and `10_integ/05_matmul` now passes via
 3. **More evaluation-order decisions**, each on its own golden:
    `02_bubsort`'s swapped relational (`i < n - 1` -> `cmp di,i` / `ble`,
    v7's `optim()` swapping operands by `degree()` and mapping the operator
-   through `maprel[]`) once `mutos_c0` parses that file, and
+   through `maprel[]` - done for a constant left operand) once `mutos_c0`
+   parses that file, and
    `03_linklist`'s right-hand-side-first store once structs exist. Both
    plug into `c1`'s existing plan mechanism as new decisions in
    `order_right_first()`.
@@ -1894,15 +1963,26 @@ far.
    call whose argument list spans multiple physical lines), re-check that specific
    behavior against it — see `src/mutos_cpp/README.md`'s "Known, documented
    simplifications" section for exactly which three cases these are.
-6. **`mutos_c0` emits a constant LEFT operand of a binary operator on the
-   RIGHT** (found 2026-09-24 by the `05_matmul` semantic check - see
-   `docs/DEVLOG.md`'s "Evaluation order - implemented" section): `7 - x`,
-   `7 / x`, `7 % x`, `7 << x` and `7 < x` produce the same temp1 bytes as
-   `x - 7`, `x / 7`, ...; `2 - 9 - x` becomes `x - (-7)`. `c0_parser.c`
-   keeps a constant unmaterialized for folding and `emit_materialize()`
-   writes it only when the operator is reached, after the right operand's
-   bytes. Silent wrong code for every non-commutative operator (harmless
-   in value, but not v7's wire order, for `+`/`*`/`&`/`|`/`^`); no golden
-   is affected, since no corpus file has a constant left operand. v7's own
-   `fold()` never reorders, so the correct stream is `CON 7, NAME x,
-   MINUS`.
+6. **`mutos_c1` executes side effects in operands C does not evaluate**
+   (found 2026-09-24 by `tests/mutos_cc/fuzz/`; pre-existing): in a VALUE
+   context, `z = x ? y++ : 4;`, `z = (x > 1) && (y++ > 0);` and `z = (x < 1)
+   || (y++ > 0);` increment `y` even when that operand is skipped, and a
+   comma assignment `(u = 5, ...)` there is performed likewise - `c1`
+   computes a `?:`'s branches and a `&&`/`||`'s right operand before its
+   branch code (the `if (x > 1 && y++ > 0)` form was correct in the same
+   probe). Silent wrong code. A fix needs the operand's code emitted
+   inside the branch structure (the evaluation-order plan could replay
+   those subtrees there) or, as a first step, a refusal whenever such an
+   operand contains a side effect. `fuzz_c.py
+   --side-effects-in-conditionals` generates these.
+7. **A postfix `++`/`--` in an `if`/`while` condition happens only when the
+   condition is true** (found 2026-09-24 the same way; pre-existing): `c1`
+   defers a postfix increment to the statement's `EXPR` opcode, but a
+   condition ends in `CBRANCH`, so the increment lands at the next `EXPR` -
+   inside the branch taken when the condition holds. `if (n++ > 9) s = 1;`
+   leaves `n` unchanged when `n <= 9`; `while (n-- > 3) s = s + 1;` ends with
+   `n` one too high. Silent wrong code. It cannot simply be flushed before
+   the conditional jump (an `inc` there would change the flags the jump
+   tests), so it wants its own golden - or, as a first step, a refusal of a
+   deferred increment still pending at `CBRANCH`. `fuzz_c.py
+   --postfix-in-conditions` generates these.
