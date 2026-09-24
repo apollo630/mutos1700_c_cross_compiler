@@ -140,7 +140,7 @@ static int ty_decref(int t) { return (t & 07) | ((t >> 2) & ~07); }
  * element; 07_strlibc.s.golden's "char *"-returning strcpy()). */
 static int ty_is_word(int t) { return t == TY_INT || t == TY_UNSIGN || ty_is_ptr(t); }
 
-typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
+typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_LONG, VK_LCON,
                VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR,
                VK_STATICADDR, VK_REGOFF, VK_SCALED, VK_ROWADDR,
                VK_STACKED } ValKind;
@@ -321,14 +321,6 @@ typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK
  * (still byte-identical for every already-confirmed case, since
  * ASSIGN was already always the very next opcode after LCON with
  * nothing in between). */
-/* VK_PAIR - OP_COLON's result: an unmaterialized pair of "?:"
- * branches, consumed only by the immediately following OP_QUEST (see
- * their handlers below and docs/DEVLOG.md's Milestone 4 section for
- * the 07_ternary derivation). Reuses the Val struct's cl/cr fields
- * (see the VK_COND comment below) purely as convenient storage for
- * two already-resolved SimpleVals - true-branch in cl, false-branch
- * in cr - not as an actual comparison. */
-
 /* A fully-resolved (never itself VK_COND) operand - used to hold the
  * two sides of a deferred comparison inside a VK_COND Val without
  * making the Val type self-referential. kind is usually VK_IMM,
@@ -339,6 +331,7 @@ typedef struct {
     long    imm;
     int     offset;
     const char *reg;
+    int     postfix;  /* see Val's own field of the same name */
 } SimpleVal;
 
 /* Forward-declared (as just a pointer target) so Val below can hold
@@ -359,21 +352,22 @@ typedef struct {
     /* VK_COND: a deferred, not-yet-materialized relational result -
      * "cl <true_op> cr" (true_op is one of OP_LESS/OP_LESSEQ/
      * OP_GREAT/OP_GREATEQ/OP_EQUAL/OP_NEQUAL). Deferring instead of
-     * immediately emitting code is what lets OP_LOGAND/OP_LOGOR fuse
-     * two comparisons into short-circuit "jumping code" without ever
-     * materializing an intermediate 0/1 - see the OP_LESS.../
-     * OP_LOGAND/OP_LOGOR/OP_EXCLA cases below and
-     * docs/DEVLOG.md's Milestone 4 section for the full derivation
-     * against 03_rellogic's goldens. */
+     * immediately emitting code is what lets a condition compile a
+     * comparison straight into one compare and branch
+     * (gen_cond_branch()), and "&&"/"||" become short-circuit "jumping
+     * code", without ever materializing an intermediate 0/1 - see the
+     * OP_LESS.../OP_EXCLA cases below, the "Conditional evaluation"
+     * section, and docs/DEVLOG.md's Milestone 4 section for the full
+     * derivation against 03_rellogic's goldens. */
     int       true_op;
     SimpleVal cl, cr;
     int       cond_is_long; /* VK_COND only: set when cl/cr are 'long'
      * operands (gen_long_cmp()'s shape below) rather than the
      * ordinary 16-bit shape emit_cmp_and_branch() renders - only
-     * OP_CBRANCH is confirmed to consume one (03_ctrlflow/01_addsub's
-     * "if (c > 0L)"); every other consumer (materialize(), OP_LOGAND/
-     * OP_LOGOR, OP_QUEST) gen_fatal()s on it rather than guessing a
-     * shape no golden confirms. */
+     * a condition is confirmed to consume one (02_long/01_addsub's
+     * "if (c > 0L)" - gen_cond_branch()); every other consumer
+     * (materialize(), via emit_cmp_and_branch()) gen_fatal()s on it
+     * rather than guessing a shape no golden confirms. */
     int       clobbered; /* set by the register-occupancy guard (see
      * note_writes()) when an instruction overwrote a register this
      * still-pending value lives in; pop_val() then refuses to hand it
@@ -384,6 +378,12 @@ typedef struct {
      * following runtime column index ("m[0][j]") can be refused
      * explicitly instead of falling into the 1-D code path, whose
      * instruction order no golden confirms for this shape. */
+    int       postfix;   /* VK_REG only: this is a postfix '++'/'--'
+     * operand's OLD value, just loaded by gen_incdec() (its fixup still
+     * queued). Tested for truth, or compared with 0, as a condition,
+     * such a value gets "or reg,reg" rather than "cmp reg,*0" - see
+     * gen_cond_branch(). Any operator's result is a fresh Val, so the
+     * flag never outlives the value it describes. */
 } Val;
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
@@ -435,28 +435,56 @@ enum {
 };
 
 /* One step of an evaluation-order plan (see the "Evaluation order"
- * section further below): stream a contiguous range of temp1 through
- * the ordinary opcode handlers, or one of the two value-stack steps a
- * reordered operator needs. */
-typedef enum { SEG_RANGE, SEG_SPILL, SEG_SWAP } SegKind;
+ * and "Conditional evaluation" sections further below): stream a
+ * contiguous range of temp1 through the ordinary opcode handlers, or
+ * one of the steps a reordered operator or a conditionally evaluated
+ * operand needs. `a`/`b`/`c` are per-kind arguments - usually indices
+ * into the plan's `slot` array, which holds the label numbers and
+ * deferred-fixup marks the steps pass to each other at run time. */
+typedef enum {
+    SEG_RANGE,   /* stream temp1 [start, end) */
+    SEG_SPILL,   /* the value on top goes onto the machine stack */
+    SEG_SWAP,    /* exchange the top two values (after a spill) */
+    SEG_GOTO,    /* position temp1 at `start` - past the opcodes the plan
+                  * itself stands for (LOGAND, LOGOR, COLON, QUEST, SEQNC,
+                  * an EXCLA under cbranch, the CBRANCH) */
+    SEG_ALLOC,   /* slot[a] = a fresh c1 label */
+    SEG_LABEL,   /* place label slot[a] */
+    SEG_MARK,    /* open a conditionally evaluated region (see
+                  * region_open()); a = its two-slot record */
+    SEG_BRANCH,  /* a condition: pop it, branch to slot[a] when its truth
+                  * equals b; closes region c */
+    SEG_LOGVAL,  /* a value-context &&/||/!: 0/1 into DI; slot[a] is the
+                  * label the condition branched to when true */
+    SEG_QTRUE,   /* end of a ?: true arm: a = the false label's slot, b =
+                  * the end label's slot (allocated here), c = the region */
+    SEG_QFALSE,  /* end of a ?: false arm: b = the end label's slot, c =
+                  * the region */
+    SEG_DISCARD  /* end of a comma operator's left operand: c = the region */
+} SegKind;
 typedef struct {
     SegKind kind;
-    long    start, end;   /* SEG_RANGE: temp1 byte offsets, [start, end) */
+    long    start, end;   /* SEG_RANGE: temp1 byte offsets, [start, end);
+                           * SEG_GOTO: the position (start) */
+    int     a, b, c;
 } Seg;
 
 /* An expression's opcode-visiting order, when it differs from temp1's
  * own postfix order. Fixed capacity, like GenState's other buffers: a
- * plan needs 5 steps at most per reordered operator (plus one range),
- * so this is far beyond any expression a register-occupancy guard
- * would let through anyway. */
-#define PLAN_MAX 64
+ * reordered operator needs 5 steps, an "&&"/"||" about 4 plus its
+ * operands' own, a "?:" 8 - so this is far beyond any expression a
+ * register-occupancy guard would let through anyway. */
+#define PLAN_MAX 256
+#define PLAN_SLOTS 128
 typedef struct {
     int  active;
     int  n, cur;          /* steps, and the one being executed */
     int  entered;         /* the current SEG_RANGE was already seeked to */
-    long end;             /* the expression's end - where its terminator
-                           * (EXPR/CBRANCH) starts, and where plain
-                           * streaming resumes once the plan is done */
+    long end;             /* where plain streaming resumes once the plan
+                           * is done: the expression's EXPR terminator,
+                           * or just past a CBRANCH the plan generated */
+    int  nslots;          /* slots handed out while building the plan */
+    int  slot[PLAN_SLOTS];
     Seg  seg[PLAN_MAX];
 } Plan;
 
@@ -536,12 +564,17 @@ typedef struct {
                                  * assignment's own "mov", not at
                                  * INCAFT's own position. */
     int  ndeferred;
+    int  defer_floor;          /* entries below this index of `deferred`
+                                 * belong to an enclosing, unconditionally
+                                 * evaluated part of the statement and must
+                                 * stay queued until its end - see
+                                 * region_open(); 0 outside a plan */
     Plan plan;                 /* the current expression's evaluation-
                                  * order plan, while one is active - see
                                  * the "Evaluation order" section */
 } GenState;
 
-static void gen_fatal(const char *fmt, ...)
+_Noreturn static void gen_fatal(const char *fmt, ...)
 {
     va_list ap;
     fprintf(stderr, "mutos_c1: ");
@@ -679,6 +712,7 @@ static SimpleVal simple_of(Val v)
     s.imm = v.imm;
     s.offset = v.offset;
     s.reg = v.reg;
+    s.postfix = v.postfix;
     return s;
 }
 
@@ -691,6 +725,7 @@ static Val val_from_simple(SimpleVal s)
     v.imm = s.imm;
     v.offset = s.offset;
     v.reg = s.reg;
+    v.postfix = s.postfix;
     return v;
 }
 
@@ -746,7 +781,6 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_REGOFF: snprintf(buf, n, "<unfolded-register-offset>"); break;
     case VK_IND_PENDING: snprintf(buf, n, "<unpopped-ind-pending>"); break;
     case VK_COND: snprintf(buf, n, "<unmaterialized-cond>"); break;
-    case VK_PAIR: snprintf(buf, n, "<unmaterialized-pair>"); break;
     case VK_LONG: snprintf(buf, n, "<unrendered-long-di:si>"); break;
     case VK_LCON: snprintf(buf, n, "<unmaterialized-long-const>"); break;
     case VK_FUNC: snprintf(buf, n, "<unrendered-func-name>"); break;
@@ -979,8 +1013,7 @@ static unsigned val_regs(const Val *v)
     case VK_REG:
     case VK_IND:  return reg_bit(v->reg);
     case VK_LONG: return RB_DI | RB_SI;
-    case VK_COND:
-    case VK_PAIR: return simple_regs(v->cl) | simple_regs(v->cr);
+    case VK_COND: return simple_regs(v->cl) | simple_regs(v->cr);
     case VK_ARGLIST: {
         unsigned m = 0;
         for (int i = 0; i < v->arglist->n; i++)
@@ -1315,7 +1348,7 @@ static const char *cond_true_mnem(int op)
 }
 
 /* The branch-condition-code negation used to short-circuit the
- * non-final operand(s) of an OP_LOGAND chain (jump to the overall
+ * non-final operand(s) of an "&&" chain (jump to the overall
  * false label when an early conjunct is false, i.e. when its
  * INVERSE condition holds) - confirmed via 03_rellogic's "a < b"
  * rendering as "bge" (LESS's inverse) when it is LOGAND's first
@@ -1332,7 +1365,7 @@ static int cond_invert(int op)
  * using `branch_op_code`'s mnemonic (the caller passes either
  * cond.true_op directly, for a "branch if true" site, or
  * cond_invert(cond.true_op), for a "branch if false" site - see
- * OP_LOGAND below). The right-hand side is loaded into DI first if
+ * gen_cond_branch()). The right-hand side is loaded into DI first if
  * it is itself a memory operand (8086 CMP cannot take two memory
  * operands); an immediate right-hand side is rendered directly via
  * render_cmp_imm(), matching 03_rellogic's "cmp *-6.(bp),di" (memory
@@ -1342,6 +1375,14 @@ static void emit_cmp_and_branch(GenState *g, Val cond, int branch_op_code, int t
     Val l = val_from_simple(cond.cl);
     Val r = val_from_simple(cond.cr);
     Opnd rhs;
+    /* A 'long' comparison has its own shape (gen_long_cmp(), reached
+     * only from gen_cond_branch()); rendered here it would print an
+     * operand placeholder as if it were code - as a value-context
+     * "z = l > 0L;" did until 2026-09-24. */
+    if (cond.cond_is_long)
+        gen_fatal("a 'long' comparison used as a value (not as an 'if'/"
+                  "'while'/'for' condition) is not yet supported - see "
+                  "src/mutos_cc/README.md");
     /* CMP takes neither an immediate first operand nor two memory
      * operands. The confirmed repair - a memory right operand loaded
      * into DI - covers every memory kind alike (a local, a constant-
@@ -1412,23 +1453,21 @@ static void gen_long_cmp(GenState *g, int op, SimpleVal l,
     put_label(g, true_lab);
 }
 
+static Val gen_logval(GenState *g, int ltrue); /* see "Conditional
+                                                 * evaluation" below */
+
 /* Materializes a single deferred comparison into a real 0/1 value in
  * DI - the "standalone relational" pattern (e.g. plain "r = a < b;"):
- * branch-if-true to a fresh label, set DI=0 and jump past, or set
- * DI=1 at the true label, then fall through (label printed with no
- * trailing newline, matching OP_LABEL's style, so whatever the
- * caller emits next glues onto the same source line - confirmed
- * against "L10001:mov\t*-10.(bp),di" in the golden). */
+ * branch-if-true to a fresh label, then gen_logval()'s "set DI=0 and
+ * jump past, or set DI=1 at the true label" (labels printed with no
+ * trailing newline, matching OP_LABEL's style, so whatever the caller
+ * emits next glues onto the same source line - confirmed against
+ * "L10001:mov\t*-10.(bp),di" in the golden). */
 static void materialize_cond(GenState *g, Val cond)
 {
     int ltrue = g->next_lab++;
-    int lend  = g->next_lab++;
     emit_cmp_and_branch(g, cond, cond.true_op, ltrue);
-    ins2(g, "mov", o_reg("di"), o_imm(0));
-    ins1(g, "jmp", o_lab(lend));
-    put_label(g, ltrue);
-    ins2(g, "mov", o_reg("di"), o_imm(1));
-    put_label(g, lend);
+    (void)gen_logval(g, ltrue);
 }
 
 /* No-op for anything already resolved; materializes a deferred
@@ -1482,23 +1521,11 @@ static void pop_operands(GenState *g, Val *l, Val *r)
                   "supported - see src/mutos_cc/README.md");
 }
 
-/* Wraps a non-VK_COND value as an implicit "!= 0" truth test -
- * OP_LOGAND/OP_LOGOR's fallback for an operand that is not itself a
- * relational comparison (not exercised by any current golden, since
- * both 03_rellogic's "&&"/"||" operands are always direct
- * comparisons, but the natural, zero-risk generalization of "any
- * nonzero value is true"). Never emits code - purely a description
- * of a comparison to be emitted later by whoever consumes it. */
-/* The registers emit_cmp_and_branch() itself writes for `cond`: DI,
- * when its right-hand side has to be loaded there first (8086 CMP
- * cannot take two memory operands). */
-static unsigned cmp_writes(Val cond)
-{
-    return (cond.cr.kind == VK_MEM || cond.cr.kind == VK_MEM_CVT ||
-            cond.cr.kind == VK_MEM_DIRECT || cond.cr.kind == VK_STATIC)
-           ? RB_DI : 0;
-}
-
+/* Wraps a non-VK_COND value as an implicit "!= 0" truth test - the
+ * condition any plain value stands for when a branch tests it (an
+ * "if"/"while" condition, an operand of "&&"/"||"/"!", a "?:"
+ * condition). Never emits code - purely a description of a
+ * comparison to be emitted later by whoever consumes it. */
 static Val as_cond(Val v)
 {
     if (v.kind == VK_COND)
@@ -1509,114 +1536,6 @@ static Val as_cond(Val v)
     c.cl = simple_of(v);
     c.cr = simple_of(val_imm(0));
     return c;
-}
-
-/* OP_LOGAND: fuses two (already as_cond()'d) comparisons into
- * classic short-circuit "jumping code" - confirmed against
- * 03_rellogic's "(a < b) && (b > 0)":
- *   cmp a,b; bge Lfalse     (INVERTED first condition -> false label)
- *   cmp b,0; bgt Ltrue      (direct second condition -> true label)
- *   Lfalse: di=0; jmp Lend
- *   Ltrue:  di=1
- *   Lend:
- * Label allocation order true,false,end matches the golden's
- * L10012(true)/L10013(false)/L10014(end) exactly (deduced from
- * which label each mnemonic branches to, not from textual order in
- * the .s output - the false label is referenced, hence printed,
- * before it is themselves allocated-lowest). */
-static Val gen_logand(GenState *g, Val l, Val r)
-{
-    Val cl = as_cond(l);
-    Val cr = as_cond(r);
-    int ltrue  = g->next_lab++;
-    int lfalse = g->next_lab++;
-    int lend   = g->next_lab++;
-    require_free(cr, cmp_writes(cl), "'&&'");
-    emit_cmp_and_branch(g, cl, cond_invert(cl.true_op), lfalse);
-    emit_cmp_and_branch(g, cr, cr.true_op, ltrue);
-    put_label(g, lfalse);
-    ins2(g, "mov", o_reg("di"), o_imm(0));
-    ins1(g, "jmp", o_lab(lend));
-    put_label(g, ltrue);
-    ins2(g, "mov", o_reg("di"), o_imm(1));
-    put_label(g, lend);
-    return val_reg("di");
-}
-
-/* OP_LOGOR: mirrors gen_logand() above but both conditions branch
- * directly (not inverted) to the SAME true label, and the false case
- * is a pure fallthrough (no separate false label needed, since
- * nothing needs to jump there) - confirmed against 03_rellogic's
- * "(a < 0) || (b > 0)":
- *   cmp a,0; blt Ltrue
- *   cmp b,0; bgt Ltrue
- *   di=0; jmp Lend
- *   Ltrue: di=1
- *   Lend:
- * matching the golden's L10015(true)/L10016(end) exactly. */
-static Val gen_logor(GenState *g, Val l, Val r)
-{
-    Val cl = as_cond(l);
-    Val cr = as_cond(r);
-    int ltrue = g->next_lab++;
-    int lend  = g->next_lab++;
-    require_free(cr, cmp_writes(cl), "'||'");
-    emit_cmp_and_branch(g, cl, cl.true_op, ltrue);
-    emit_cmp_and_branch(g, cr, cr.true_op, ltrue);
-    ins2(g, "mov", o_reg("di"), o_imm(0));
-    ins1(g, "jmp", o_lab(lend));
-    put_label(g, ltrue);
-    ins2(g, "mov", o_reg("di"), o_imm(1));
-    put_label(g, lend);
-    return val_reg("di");
-}
-
-/* OP_QUEST: the "?:" ternary select, given the (already-computed)
- * condition `cond` and the VK_PAIR of branch values (`pair.cl`=true,
- * `pair.cr`=false) OP_COLON packaged - confirmed against
- * 07_ternary's "a > b ? a : b":
- *   cmp a,b; ble Lfalse    (INVERTED condition branches to the false
- *                            label; fallthrough is the TRUE branch -
- *                            the opposite polarity from
- *                            materialize_cond()'s bare-comparison-as-
- *                            0/1-value pattern above, which branches
- *                            to a TRUE label instead. "?:" selects
- *                            between two arbitrary values rather than
- *                            producing a fixed 0/1, so each branch's
- *                            own codegen has to live inline inside
- *                            its own arm rather than behind a shared
- *                            "set di=1"/"set di=0" instruction)
- *   mov di,a                 (true branch, inline at the fallthrough)
- *   jmp Lend
- *   Lfalse: mov di,b          (false branch)
- *   Lend:
- * Label allocation order false,end matches the golden's
- * L10000(false)/L10001(end) exactly - only two labels, unlike
- * gen_logand()'s three, since there is no separate "true" label to
- * jump to (the true branch's code sits directly at the fallthrough
- * point, not behind its own jump target). Each branch is reloaded
- * into DI unconditionally, with no attempt to notice DI might
- * already hold the right value from the comparison's own setup (e.g.
- * the false branch here happens to equal what the "cmp"'s own
- * right-hand-side load already put in DI) - confirmed by the golden
- * itself re-doing "mov di,*-8.(bp)" at the false label rather than
- * omitting it. */
-static Val gen_quest(GenState *g, Val cond, Val pair)
-{
-    Val c = as_cond(cond);
-    int lfalse = g->next_lab++;
-    int lend   = g->next_lab++;
-    /* Both branch values were computed BEFORE the comparison, so it
-     * must not overwrite either; the two branch loads below are on
-     * mutually exclusive paths and cannot collide with each other. */
-    require_free(pair, cmp_writes(c), "'?:'");
-    emit_cmp_and_branch(g, c, cond_invert(c.true_op), lfalse);
-    load_into_di(g, val_from_simple(pair.cl));
-    ins1(g, "jmp", o_lab(lend));
-    put_label(g, lfalse);
-    load_into_di(g, val_from_simple(pair.cr));
-    put_label(g, lend);
-    return val_reg("di");
 }
 
 /* Emits "mov\tdi,<v>\n" to load `v` into DI - the confirmed generic
@@ -1738,11 +1657,21 @@ static void queue_deferred(GenState *g, Insn in)
     g->deferred[g->ndeferred++] = in;
 }
 
+/* Emits the queued fixups from index `base` on, in queue order, and
+ * drops them: the part of the queue that belongs to the statement or
+ * conditionally evaluated region that is now ending (see
+ * region_open()). */
+static void flush_deferred_from(GenState *g, int base)
+{
+    for (int i = base; i < g->ndeferred; i++)
+        put_insn(g, &g->deferred[i]);
+    if (g->ndeferred > base)
+        g->ndeferred = base;
+}
+
 static void flush_deferred(GenState *g)
 {
-    for (int i = 0; i < g->ndeferred; i++)
-        put_insn(g, &g->deferred[i]);
-    g->ndeferred = 0;
+    flush_deferred_from(g, 0);
 }
 
 /* Shared codegen for OP_INCBEF/OP_DECBEF/OP_INCAFT/OP_DECAFT -
@@ -1756,7 +1685,10 @@ static void flush_deferred(GenState *g)
  * add/sub with the immediate ("add\t<lv>,*2."). BEF commits
  * immediately, then loads the NEW value into DI; AFT loads the OLD
  * value into DI first, then defers the fixup instruction (see
- * queue_deferred() above) until the enclosing statement's OP_EXPR. */
+ * queue_deferred() above) - to the enclosing statement's OP_EXPR, or,
+ * inside a condition or a conditionally evaluated operand, to the end
+ * of that region (see the "Conditional evaluation" section below). The
+ * AFT result is flagged `postfix` for gen_cond_branch(). */
 static Val gen_incdec(GenState *g, int op, Val lv, Val amt)
 {
     if (lv.kind != VK_MEM)
@@ -1776,8 +1708,148 @@ static Val gen_incdec(GenState *g, int op, Val lv, Val amt)
     } else {
         load_into_di(g, lv);
         queue_deferred(g, fixup);
+        Val old = val_reg("di");
+        old.postfix = 1;
+        return old;
     }
     return val_reg("di");
+}
+
+/* -------------------------------------------------------------- */
+/* Conditional evaluation: conditions, "&&", "||", "?:" and ",".
+ *
+ * v7/cc's code generator never produces a 0/1 value to test it: a
+ * condition is compiled by cbranch() (v7/cc/c11.c) straight into
+ * branches - "&&"/"||"/"!" recursively into "jumping code", anything
+ * else by rcexpr(tree, cctab) plus one conditional branch. A value-
+ * context "&&"/"||"/"!"/relational is cbranch() to a true label plus
+ * "reg = 0 / jmp end / true: reg = 1 / end:", and "c ? a : b" is
+ * cbranch(c, false, 0), a, "jmp end", "false:", b, "end:" (both in
+ * c10.c's cexpr()). Every operand is generated AT ITS PLACE in that
+ * structure, so C's short-circuit and "?:" rules hold, and code for an
+ * operand C does not evaluate is never executed.
+ *
+ * mutos_c1 streams temp1 in postfix order, where all operands precede
+ * their operator. The evaluation-order plan (see that section) fixes
+ * this: plan_expression() lays such an expression out as operand
+ * ranges interleaved with the steps below, in v7's order. Before that
+ * (up to 2026-09-24), the operands' code was emitted ahead of the
+ * branches - silently wrong once an operand had a side effect ("z = x ?
+ * y++ : 4;" incremented y whatever x was) - and a condition's postfix
+ * "++"/"--" was flushed at the next OP_EXPR, inside whichever branch
+ * came first ("if (n++ > 9)" incremented n only when the test held).
+ *
+ * Confirmed shapes. The structure of every value-context form is the
+ * one 03_rellogic.s.golden ("&&", "||", "!") and 07_ternary.s.golden
+ * ("?:") show; jumping code for "||" in an "if" condition is 10_integ/
+ * 01_wordcount.s.golden's "cmpb ...,*32. / beq L10000 / <the second
+ * operand's code> / cmpb ...,*10. / bne L9 / L10000:" (v7's LOGOR with
+ * cond 0). A postfix "++"/"--" in a condition is the real non-optimized
+ * compiler output in tests/mutos_as/kernel_nonopt/ - five instances:
+ * "mov R,n / dec n / or R,R / beq L" (a truth test: lp_AC.s twice,
+ * sys1.s), "... / or R,R / ble L" (compared with 0: lp_AC.s) and "mov
+ * R,n / dec n / cmp R,*2. / blt L" (compared with 2: sys1.s) - the
+ * fixup immediately after the load, BEFORE the test (v7's rcexpr() does
+ * not delay() a postfix operator under cctab; the regtab fallback's
+ * "tst r" is MUTOS's "or r,r"). R is DI in a function without register
+ * variables (kernel_opt/delay.s, "while (d--)"). How the fixups are
+ * placed:
+ *
+ * - A condition or conditionally evaluated operand is a REGION
+ *   (region_open()/region_close()): fixups its own postfix operators
+ *   queue are emitted at its end - for a condition before its compare,
+ *   for a "?:" arm before the jump that leaves it, for a comma
+ *   operator's left operand before its right one (v7 evaluates that
+ *   operand with efftab, where delay() does apply). Fixups queued
+ *   before the region stay queued: they belong to every path.
+ * - gen_call() emits the current region's fixups before its "call" -
+ *   a call is a sequence point, and the real compiler increments an
+ *   argument right after pushing it (kernel_nonopt/sys1.s:
+ *   "clearseg(a++)" -> "push *-56.(bp) / inc *-56.(bp) / call
+ *   _clearse").
+ */
+
+/* A region's record is two plan slots: [0] the deferred-queue index at
+ * its start, [1] the enclosing region's floor. */
+static void region_open(GenState *g, int *rec)
+{
+    rec[0] = g->ndeferred;
+    rec[1] = g->defer_floor;
+    g->defer_floor = g->ndeferred;
+}
+
+static void region_close(GenState *g, const int *rec)
+{
+    flush_deferred_from(g, rec[0]);
+    g->defer_floor = rec[1];
+}
+
+/* One condition, cbranch()'s leaf case: branch to L<lbl> if the truth
+ * of `v` equals `cond_sense` (v7's "cond" - 1: branch if true, 0:
+ * branch if false; see OP_CBRANCH). Postfix fixups queued at or after
+ * `base` - this condition's own - are emitted first: the branch reads
+ * the flags, so they cannot come between the compare and the branch.
+ * The operand itself was loaded before them, so the compare sees its
+ * old value. A postfix operand's own value tested for truth or
+ * compared with 0 gets "or reg,reg" (see this section's header);
+ * everything else is emit_cmp_and_branch()'s ordinary shape. */
+static void gen_cond_branch(GenState *g, Val v, int lbl, int cond_sense, int base)
+{
+    Val c = as_cond(v);
+    if (c.cond_is_long) {
+        if (g->ndeferred > base)
+            gen_fatal("a postfix '++'/'--' in a 'long' comparison is not yet "
+                      "supported - see src/mutos_cc/README.md");
+        gen_long_cmp(g, c.true_op, c.cl, c.cr, cond_sense, lbl);
+        return;
+    }
+    int branch_op = cond_sense ? c.true_op : cond_invert(c.true_op);
+    flush_deferred_from(g, base);
+    if (c.cl.kind == VK_REG && c.cl.postfix &&
+        c.cr.kind == VK_IMM && c.cr.imm == 0) {
+        ins2(g, "or", o_reg(c.cl.reg), o_reg(c.cl.reg));
+        ins1(g, cond_true_mnem(branch_op), o_lab(lbl));
+        return;
+    }
+    emit_cmp_and_branch(g, c, branch_op, lbl);
+}
+
+/* The tail of a value-context "&&"/"||"/"!"/relational: the condition
+ * has branched to L<ltrue> when true and falls through when false -
+ * v7's czero/cone (c10.c's cexpr()), confirmed by 03_rellogic.s.golden:
+ *   mov di,*0. / jmp Lend / Ltrue: mov di,*1. / Lend:
+ * Lend is allocated here, after the condition's own labels, as v7's
+ * "label(isn++)" does. The value is left in DI. */
+static Val gen_logval(GenState *g, int ltrue)
+{
+    int lend = g->next_lab++;
+    ins2(g, "mov", o_reg("di"), o_imm(0));
+    ins1(g, "jmp", o_lab(lend));
+    put_label(g, ltrue);
+    ins2(g, "mov", o_reg("di"), o_imm(1));
+    put_label(g, lend);
+    return val_reg("di");
+}
+
+/* A "?:" arm's value, just generated, into DI - unconditionally, even
+ * when DI may already hold it: 07_ternary.s.golden reloads "mov di,
+ * *-8.(bp)" at the false label although the compare's own set-up had
+ * just put that very value there. */
+static void gen_arm_load(GenState *g)
+{
+    Val v = pop_val(g);
+    switch (v.kind) {
+    case VK_IMM: case VK_MEM: case VK_MEM_CVT: case VK_STATIC:
+    case VK_REG: case VK_IND:
+        load_into_di(g, v);
+        return;
+    case VK_COND:
+        gen_fatal("a '?:' branch that is itself a bare relational "
+                  "comparison is not yet supported");
+    default:
+        gen_fatal("this '?:' branch value is not yet supported - see "
+                  "src/mutos_cc/README.md");
+    }
 }
 
 /* Shared codegen for a 'long' '*'/'/'/'%' - the 8086 has no 32x32
@@ -1987,6 +2059,15 @@ static Val gen_call(GenState *g, Val callee, Val args, int is_long_ret)
         }
         nwords += 1;
     }
+
+    /* A call is a sequence point: postfix fixups queued while its
+     * arguments were computed are done before it - the real compiler
+     * increments an argument right after pushing it (kernel_nonopt/
+     * sys1.s: "clearseg(a++)" -> "push *-56.(bp) / inc *-56.(bp) / call
+     * _clearse"). Only the current region's (see region_open()): a
+     * fixup from outside a conditionally evaluated operand the call
+     * sits in must still happen on every path. */
+    flush_deferred_from(g, g->defer_floor);
 
     if (callee.kind == VK_FUNC) {
         ins1(g, "call", o_sym(callee.reg));
@@ -2315,8 +2396,12 @@ static Consumer scan_consumer(FILE *t1)
  * arguments where the plan seeked to, and its lookaheads (OP_AMPER's
  * scan_consumer(), OP_STAR's "&*" cancel, OP_PLUS's displacement
  * peek) still see temp1's real structure, because a subtree is
- * replayed whole. An expression with no reordered operator gets no
- * plan at all and streams exactly as before.
+ * replayed whole. The same mechanism places the operands of "&&",
+ * "||", "?:" and "," inside their branch structure, with steps that
+ * emit the branches, labels and 0/1 values between the ranges - see
+ * the "Conditional evaluation" section and plan_value()/
+ * plan_cbranch(). An expression with neither gets no plan at all and
+ * streams exactly as before.
  *
  * Only the golden-confirmed decision is taken (order_right_first()):
  * int TIMES whose two operands are both complete 2-D element reads.
@@ -2336,7 +2421,9 @@ typedef struct {
     int  kid[2];      /* operand node indices, -1 for none; kid[0] is
                        * the left (or only) operand */
     int  right_first; /* evaluate kid[1] before kid[0] */
-    int  reordered;   /* this node or a descendant is right_first */
+    int  planned;     /* this node or a descendant is right_first or a
+                       * conditional-evaluation node (is_control()) - its
+                       * subtree cannot simply be streamed */
 } ENode;
 
 typedef struct {
@@ -2358,12 +2445,20 @@ static int etree_add(ETree *t, ENode nd)
     return t->n++;
 }
 
+/* An expression's terminator, as prescan_expr() found it. */
+typedef struct {
+    int  op;          /* OP_EXPR or OP_CBRANCH */
+    long off;         /* its own opcode tag */
+    long after;       /* just past its arguments */
+    int  lbl, cond;   /* OP_CBRANCH's label and sense */
+} Term;
+
 /* Indexes the expression starting at temp1's current position into
  * `t`, restoring the position afterwards. Returns the root's index,
  * or -1 when the scan reaches an opcode scan_op_args() does not know
  * or the stream does not form exactly one tree before its terminator
  * - then no plan is made, which only ever means "stream as before". */
-static int prescan_expr(FILE *t1, ETree *t, long *expr_end)
+static int prescan_expr(FILE *t1, ETree *t, Term *term)
 {
     long savepos = ftell(t1);
     if (savepos < 0)
@@ -2372,15 +2467,27 @@ static int prescan_expr(FILE *t1, ETree *t, long *expr_end)
     int depth = 0, cap = 0, root = -1;
     for (;;) {
         long off = ftell(t1);
-        int type;
+        int type = 0, lbl = 0, cond = 0;
         int op = c1_read_op(t1, "temp1");
-        Arity ar = scan_op_args(t1, op, &type);
+        Arity ar;
+        if (op == OP_CBRANCH) {
+            lbl = c1_read_num(t1, "temp1");
+            cond = c1_read_num(t1, "temp1");
+            (void)c1_read_num(t1, "temp1");      /* source line */
+            ar = AR_STMT;
+        } else {
+            ar = scan_op_args(t1, op, &type);
+        }
         if (ar == AR_UNKNOWN)
             break;
         if (ar == AR_STMT) {
             if (depth == 1) {
                 root = stk[0];
-                *expr_end = off;
+                term->op = op;
+                term->off = off;
+                term->after = ftell(t1);
+                term->lbl = lbl;
+                term->cond = cond;
             }
             break;
         }
@@ -2486,30 +2593,187 @@ static void plan_add(Plan *p, Seg s)
     p->seg[p->n++] = s;
 }
 
-static void plan_build(Plan *p, const ETree *t, int i)
+static void plan_range(Plan *p, long start, long end)
+{
+    plan_add(p, (Seg){ SEG_RANGE, start, end, 0, 0, 0 });
+}
+
+static void plan_op(Plan *p, SegKind kind, int a, int b, int c)
+{
+    plan_add(p, (Seg){ kind, 0, 0, a, b, c });
+}
+
+/* `n` consecutive slots of the plan being built. */
+static int plan_slots(Plan *p, int n)
+{
+    if (p->nslots + n > PLAN_SLOTS)
+        gen_fatal("expression needs too many labels (internal limit %d)",
+                  PLAN_SLOTS);
+    int s = p->nslots;
+    p->nslots += n;
+    return s;
+}
+
+/* Conditional-evaluation nodes - see the "Conditional evaluation"
+ * section. Any expression containing one is generated through a plan,
+ * so that each operand's code lands inside the branch structure. */
+static int is_control(int op)
+{
+    return op == OP_LOGAND || op == OP_LOGOR || op == OP_QUEST ||
+           op == OP_SEQNC;
+}
+
+/* A node whose value v7 computes as "cbranch(node, true) + 0/1": an
+ * "&&"/"||", or a "!" of one. (A "!" of anything else, and a bare
+ * relational, stay lazy VK_CONDs - see OP_EXCLA/OP_LESS... - whose
+ * materialize_cond() is the same shape.) */
+static int is_logic(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
-    if (!n->reordered) {
-        plan_add(p, (Seg){ SEG_RANGE, n->start, n->end });
+    if (n->op == OP_LOGAND || n->op == OP_LOGOR)
+        return 1;
+    return n->op == OP_EXCLA && is_logic(t, n->kid[0]);
+}
+
+/* The type checks the streaming handlers of the opcodes a plan stands
+ * for would have made - a plan never runs those handlers. */
+static void check_int_node(const ENode *n)
+{
+    if (n->type == TY_INT)
+        return;
+    switch (n->op) {
+    case OP_LOGAND: case OP_LOGOR:
+        gen_fatal("%s of type %d not yet supported", aluop(n->op)->name,
+                  n->type);
+    case OP_EXCLA:
+        gen_fatal("EXCLA of type %d not yet supported", n->type);
+    case OP_COLON:
+        gen_fatal("COLON of type %d not yet supported", n->type);
+    case OP_QUEST:
+        gen_fatal("QUEST of type %d not yet supported", n->type);
+    case OP_SEQNC:
+        gen_fatal("SEQNC of type %d not yet supported", n->type);
+    default:
+        gen_fatal("internal: unexpected type check of opcode %d", n->op);
+    }
+}
+
+static void plan_value(Plan *p, const ETree *t, int i);
+
+/* v7/cc/c11.c's cbranch(): branch to slot[lbl] when node i's truth
+ * equals `cond`. */
+static void plan_cbranch(Plan *p, const ETree *t, int i, int lbl, int cond)
+{
+    const ENode *n = &t->v[i];
+    switch (n->op) {
+    case OP_LOGAND:
+    case OP_LOGOR:
+        check_int_node(n);
+        /* "a && b" branching when TRUE, or "a || b" when FALSE, needs a
+         * label of its own for the other outcome of `a`; the other two
+         * cases branch straight to lbl from both operands. */
+        if ((n->op == OP_LOGAND) == (cond != 0)) {
+            int l1 = plan_slots(p, 1);
+            plan_op(p, SEG_ALLOC, l1, 0, 0);
+            plan_cbranch(p, t, n->kid[0], l1, !cond);
+            plan_cbranch(p, t, n->kid[1], lbl, cond);
+            plan_op(p, SEG_LABEL, l1, 0, 0);
+        } else {
+            plan_cbranch(p, t, n->kid[0], lbl, cond);
+            plan_cbranch(p, t, n->kid[1], lbl, cond);
+        }
+        return;
+    case OP_EXCLA:
+        check_int_node(n);
+        plan_cbranch(p, t, n->kid[0], lbl, !cond);
+        return;
+    case OP_SEQNC: {
+        check_int_node(n);
+        int rec = plan_slots(p, 2);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, n->kid[0]);
+        plan_op(p, SEG_DISCARD, 0, 0, rec);
+        plan_cbranch(p, t, n->kid[1], lbl, cond);
+        return;
+    }
+    default: {
+        int rec = plan_slots(p, 2);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, i);
+        plan_op(p, SEG_BRANCH, lbl, cond, rec);
+        return;
+    }
+    }
+}
+
+/* Node i's value onto the value stack. */
+static void plan_value(Plan *p, const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (!n->planned) {
+        plan_range(p, n->start, n->end);
+        return;
+    }
+    if (is_logic(t, i)) {
+        /* v7's cexpr(): cbranch(tree, c=isn++, 1), then czero/cone. */
+        int ltrue = plan_slots(p, 1);
+        plan_op(p, SEG_ALLOC, ltrue, 0, 0);
+        plan_cbranch(p, t, i, ltrue, 1);
+        plan_op(p, SEG_LOGVAL, ltrue, 0, 0);
+        return;
+    }
+    if (n->op == OP_QUEST) {
+        /* v7's cexpr(): cbranch(tr1, c=isn++, 0), the true arm, "jbr
+         * r=isn++", "c:", the false arm, "r:". */
+        const ENode *colon = &t->v[n->kid[1]];
+        if (colon->op != OP_COLON)
+            gen_fatal("internal: QUEST without a preceding COLON pair");
+        check_int_node(colon);
+        check_int_node(n);
+        int lfalse = plan_slots(p, 1);
+        int lend = plan_slots(p, 1);
+        int rec = plan_slots(p, 2);
+        plan_op(p, SEG_ALLOC, lfalse, 0, 0);
+        plan_cbranch(p, t, n->kid[0], lfalse, 0);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, colon->kid[0]);
+        plan_op(p, SEG_QTRUE, lfalse, lend, rec);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, colon->kid[1]);
+        plan_op(p, SEG_QFALSE, 0, lend, rec);
+        return;
+    }
+    if (n->op == OP_SEQNC) {
+        /* v7's rcexpr(): the left operand with efftab, then the right. */
+        check_int_node(n);
+        int rec = plan_slots(p, 2);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, n->kid[0]);
+        plan_op(p, SEG_DISCARD, 0, 0, rec);
+        plan_value(p, t, n->kid[1]);
         return;
     }
     if (n->right_first) {
-        plan_build(p, t, n->kid[1]);
-        plan_add(p, (Seg){ SEG_SPILL, 0, 0 });
-        plan_build(p, t, n->kid[0]);
-        plan_add(p, (Seg){ SEG_SWAP, 0, 0 });
+        plan_value(p, t, n->kid[1]);
+        plan_op(p, SEG_SPILL, 0, 0, 0);
+        plan_value(p, t, n->kid[0]);
+        plan_op(p, SEG_SWAP, 0, 0, 0);
     } else {
         for (int k = 0; k < 2; k++)
             if (n->kid[k] >= 0)
-                plan_build(p, t, n->kid[k]);
+                plan_value(p, t, n->kid[k]);
     }
-    plan_add(p, (Seg){ SEG_RANGE, n->off, n->end });
+    plan_range(p, n->off, n->end);
 }
 
 /* Called at the top of the dispatch loop while no plan is active and
  * the value stack is empty: if the next opcode starts an expression
- * (a leaf) that needs a non-postfix evaluation order, activates a plan
- * for it. temp1's position is left unchanged either way. */
+ * (a leaf) that needs a non-postfix evaluation order - a reordered
+ * operator, or any conditional-evaluation node - activates a plan for
+ * it. A condition (CBRANCH terminator) containing one is planned as a
+ * whole with v7's cbranch(), CBRANCH included; any other expression up
+ * to its terminator, which is then read as usual. temp1's position is
+ * left unchanged either way. */
 static int plan_expression(GenState *g, FILE *t1)
 {
     long pos = ftell(t1);
@@ -2522,27 +2786,35 @@ static int plan_expression(GenState *g, FILE *t1)
         return 0;
 
     ETree t = { NULL, 0, 0 };
-    long end = 0;
-    int root = prescan_expr(t1, &t, &end);
-    int any = 0;
+    Term term = { 0, 0, 0, 0, 0 };
+    int root = prescan_expr(t1, &t, &term);
     /* Postfix order: every node's operands come before it, so one
      * forward pass sees a node's children fully marked. */
     for (int i = 0; root >= 0 && i < t.n; i++) {
         ENode *n = &t.v[i];
         n->right_first = order_right_first(&t, i);
-        n->reordered = n->right_first;
+        n->planned = n->right_first || is_control(n->op);
         for (int k = 0; k < 2; k++)
-            if (n->kid[k] >= 0 && t.v[n->kid[k]].reordered)
-                n->reordered = 1;
-        any |= n->right_first;
+            if (n->kid[k] >= 0 && t.v[n->kid[k]].planned)
+                n->planned = 1;
     }
+    int any = root >= 0 && t.v[root].planned;
     if (any) {
         Plan *p = &g->plan;
         p->n = 0;
-        plan_build(p, &t, root);
+        p->nslots = 0;
+        if (term.op == OP_CBRANCH) {
+            int lbl = plan_slots(p, 1);
+            p->slot[lbl] = term.lbl;       /* a temp1 label */
+            plan_cbranch(p, &t, root, lbl, term.cond);
+            p->end = term.after;
+        } else {
+            plan_value(p, &t, root);
+            p->end = term.off;
+        }
+        plan_add(p, (Seg){ SEG_GOTO, p->end, 0, 0, 0, 0 });
         p->cur = 0;
         p->entered = 0;
-        p->end = end;
         p->active = 1;
     }
     free(t.v);
@@ -2582,8 +2854,58 @@ static void plan_swap(GenState *g)
     g->valstack[g->valsp - 2] = tmp;
 }
 
+/* The conditional-evaluation steps (and SEG_GOTO) - see SegKind and
+ * the "Conditional evaluation" section. */
+static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
+{
+    Plan *p = &g->plan;
+    switch (s->kind) {
+    case SEG_GOTO:
+        if (fseek(t1, s->start, SEEK_SET) != 0)
+            gen_fatal("internal: temp1 is not seekable (fseek failed)");
+        return;
+    case SEG_ALLOC:
+        p->slot[s->a] = g->next_lab++;
+        return;
+    case SEG_LABEL:
+        put_label(g, p->slot[s->a]);
+        return;
+    case SEG_MARK:
+        region_open(g, &p->slot[s->a]);
+        return;
+    case SEG_BRANCH: {
+        const int *rec = &p->slot[s->c];
+        gen_cond_branch(g, pop_val(g), p->slot[s->a], s->b, rec[0]);
+        region_close(g, rec);
+        return;
+    }
+    case SEG_LOGVAL:
+        push_val(g, gen_logval(g, p->slot[s->a]));
+        return;
+    case SEG_QTRUE:
+        gen_arm_load(g);
+        region_close(g, &p->slot[s->c]);
+        p->slot[s->b] = g->next_lab++;
+        ins1(g, "jmp", o_lab(p->slot[s->b]));
+        put_label(g, p->slot[s->a]);
+        return;
+    case SEG_QFALSE:
+        gen_arm_load(g);
+        region_close(g, &p->slot[s->c]);
+        put_label(g, p->slot[s->b]);
+        push_val(g, val_reg("di"));
+        return;
+    case SEG_DISCARD:
+        discard_val(g);
+        region_close(g, &p->slot[s->c]);
+        return;
+    default:
+        gen_fatal("internal: unknown evaluation-order step %d", (int)s->kind);
+    }
+}
+
 /* Called at the top of the dispatch loop: while a plan is active, runs
- * the SPILL/SWAP steps that are due and positions temp1 at the next
+ * the non-range steps that are due and positions temp1 at the next
  * opcode to dispatch; once the last range has been streamed, ends the
  * plan at the expression's terminator, where plain streaming resumes. */
 static void plan_step(GenState *g, FILE *t1)
@@ -2605,6 +2927,11 @@ static void plan_step(GenState *g, FILE *t1)
         }
         if (s->kind == SEG_SWAP) {
             plan_swap(g);
+            p->cur++;
+            continue;
+        }
+        if (s->kind != SEG_RANGE) {
+            plan_control_step(g, t1, s);
             p->cur++;
             continue;
         }
@@ -3911,8 +4238,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* Deliberately does NOT emit anything here - see the
              * VK_COND field comment: the comparison is deferred until
              * whoever consumes it (materialize(), for a plain value
-             * context, or gen_logand()/gen_logor(), for a fused
-             * short-circuit context) decides how to compile it. Both
+             * context, or gen_cond_branch(), for a condition - an "if",
+             * or an operand of "&&"/"||"/"?:") decides how to compile
+             * it. Both
              * operands are run through materialize() first only to
              * cover the (unconfirmed by any golden) chained-relational
              * edge case "a < b < c", where a nested comparison could
@@ -3964,42 +4292,32 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * cond=0 (skip the true-branch on false) and 07_goto.
              * s.golden's "if (i >= 10) goto done;" using cond=1 (a
              * direct branch-if-true to the goto's own target, c0's
-             * "simpif" shortcut - see c0_parser.c). Reuses
-             * gen_logand()/gen_logor()'s own `as_cond()` wrapper so a
-             * non-comparison condition (not exercised by any current
-             * golden, but the same zero-risk "any nonzero value is
-             * true" generalization those two already rely on) is
-             * handled uniformly. */
+             * "simpif" shortcut - see c0_parser.c). Only a condition
+             * with no "&&"/"||"/"?:"/"," gets here: one with any of
+             * them is planned as a whole, CBRANCH included (see
+             * plan_expression()). The whole statement is the
+             * condition, so every queued postfix fixup is its own -
+             * see gen_cond_branch(). */
             int lbl = c1_read_num(temp1, "temp1");
             int cond_sense = c1_read_num(temp1, "temp1");
             (void)c1_read_num(temp1, "temp1"); /* source line - not
                                                  * rendered into the
                                                  * .s output, same as
                                                  * OP_EXPR's. */
-            Val v = pop_val(&g);
-            Val c = as_cond(v);
-            if (c.cond_is_long) {
-                gen_long_cmp(&g, c.true_op, c.cl, c.cr, cond_sense, lbl);
-                break;
-            }
-            int branch_op_code = cond_sense ? c.true_op : cond_invert(c.true_op);
-            emit_cmp_and_branch(&g, c, branch_op_code, lbl);
+            gen_cond_branch(&g, pop_val(&g), lbl, cond_sense, g.defer_floor);
             break;
         }
 
         case OP_LOGAND:
-        case OP_LOGOR: {
-            int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
-                gen_fatal("%s of type %d not yet supported", aluop(op)->name,
-                          type);
-            Val r = pop_val(&g);
-            Val l = pop_val(&g);
-            Val result = (op == OP_LOGAND) ? gen_logand(&g, l, r)
-                                            : gen_logor(&g, l, r);
-            push_val(&g, result);
-            break;
-        }
+        case OP_LOGOR:
+        case OP_COLON:
+        case OP_QUEST:
+        case OP_SEQNC:
+            /* Always generated through an evaluation-order plan (see
+             * plan_expression() and the "Conditional evaluation"
+             * section), which never streams these opcodes themselves. */
+            gen_fatal("internal: opcode %d reached outside an evaluation-"
+                      "order plan", op);
 
         case OP_EXCLA: {
             int type = c1_read_num(temp1, "temp1");
@@ -4024,70 +4342,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
-        case OP_COLON: {
-            /* Packages the two "?:" branch values for the
-             * immediately following OP_QUEST - emits no code of its
-             * own; each branch's own codegen has to live inside
-             * QUEST's conditional branches, not run unconditionally
-             * here (see gen_quest() above) - confirmed against
-             * 07_ternary.s.golden, which has no instruction
-             * corresponding to COLON itself. */
-            int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
-                gen_fatal("COLON of type %d not yet supported", type);
-            Val f = pop_val(&g);
-            Val t = pop_val(&g);
-            if (t.kind == VK_COND || f.kind == VK_COND)
-                gen_fatal("a '?:' branch that is itself a bare "
-                          "relational comparison is not yet supported");
-            Val pair = {0};
-            pair.kind = VK_PAIR;
-            pair.cl = simple_of(t);
-            pair.cr = simple_of(f);
-            push_val(&g, pair);
-            break;
-        }
-
-        case OP_QUEST: {
-            int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
-                gen_fatal("QUEST of type %d not yet supported", type);
-            Val pair = pop_val(&g);
-            Val cond = pop_val(&g);
-            if (pair.kind != VK_PAIR)
-                gen_fatal("internal: QUEST without a preceding COLON pair");
-            push_val(&g, gen_quest(&g, cond, pair));
-            break;
-        }
-
-        case OP_SEQNC: {
-            /* The comma operator: the left operand's side effects (if
-             * any) were already emitted by whichever opcode produced
-             * it - its value is simply discarded here, unmaterialized,
-             * exactly like any other unused value in this grammar
-             * scope (see OP_EXPR's own discard below) - confirmed
-             * against 07_ternary.s.golden's "(a = a + 1, b = b + 1,
-             * a + b)", where no instruction at all corresponds to
-             * either SEQNC node. Only reachable via
-             * c0_parser.c's parse_comma_item(), which restricts the
-             * left operand to something that was already fully
-             * emitted (a plain expression or an embedded assignment -
-             * never a still-unmaterialized compile-time constant),
-             * so there is never anything here that needs
-             * materializing before being dropped. */
-            int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
-                gen_fatal("SEQNC of type %d not yet supported", type);
-            Val rhs = pop_val(&g);
-            discard_val(&g); /* lhs - discarded, never materialized */
-            push_val(&g, rhs);
-            break;
-        }
-
         case OP_COMMA: {
             /* An OP_CALL argument-list separator (NOT the comma
-             * operator - that is the entirely distinct OP_SEQNC just
-             * above). Builds a VK_ARGLIST left-associatively, exactly
+             * operator - that is the entirely distinct OP_SEQNC, see
+             * plan_value()). Builds a VK_ARGLIST left-associatively, exactly
              * mirroring how c0_parser.c's parse_call() built it -
              * confirmed against 02_manyargs.1.golden's six-argument,
              * five-COMMA chain. No code is emitted here - a call

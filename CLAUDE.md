@@ -470,14 +470,15 @@ scope and intent, not a snapshot of what's done.
   yet supported" — never silent wrong output — by design (see
   `src/mutos_cc/README.md`'s "Current scope"). The semantic fuzzer
   (`tests/mutos_cc/fuzz/`) has found where that did not hold: `mutos_c0`
-  compiling `7 - x` as `x - 7` (fixed 2026-09-24), and two open
-  `mutos_c1` bugs - side effects in conditionally evaluated operands, and
-  a postfix `++`/`--` in a condition (see `STATUS.md`'s open items).
+  compiling `7 - x` as `x - 7`, and two `mutos_c1` bugs - side effects in
+  conditionally evaluated operands, and a postfix `++`/`--` in a
+  condition (all three fixed 2026-09-24; `&&`/`||`/`?:`/`,` are now
+  generated through `mutos_c1`'s evaluation-order plan, in v7's
+  `cexpr()`/`cbranch()` order - see `STATUS.md`).
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: the two open `mutos_c1` wrong-code bugs the
-  fuzzer found (see `STATUS.md`'s open items), `char` element access
+  dependency-ordered list: `char` element access
   (unlocks the `09_abiprobe` frame files), further
   evaluation-order decisions (`02_bubsort`'s relational swap,
   `03_linklist`'s store) on `mutos_c1`'s now-existing plan mechanism,

@@ -3720,16 +3720,18 @@ frames of at most 80 bytes): about 30% of programs compile with arrays,
 60% without. `--baseline` classifies every difference against an
 earlier build with no knowledge of the change.
 
-**Two more `mutos_c1` wrong-code bugs, pre-existing, not fixed** (see
-`STATUS.md`'s open items 6 and 7). In a value context, `?:` branches and
+**Two more `mutos_c1` wrong-code bugs, pre-existing, not fixed here** (then
+`STATUS.md`'s open items 6 and 7; fixed later the same day - see the next
+section). In a value context, `?:` branches and
 a `&&`/`||` right operand are computed before the branch code, so their
 side effects happen even when C skips the operand (`z = x ? y++ : 4;`
 increments `y` for `x` = 0). And a postfix `++`/`--` in an `if`/`while`
 condition waits for the next `EXPR` opcode - inside the branch taken
 when the condition holds - so `while (n-- > 3)` ends with `n` one too
 high. Both were confirmed identical in the previous build. The fuzzer's
-default avoids both; `--side-effects-in-conditionals` and
-`--postfix-in-conditions` generate them.
+default avoided both; `--side-effects-in-conditionals` and
+`--postfix-in-conditions` generated them (both flags were removed with the
+fix).
 
 **Verification.**
 
@@ -3759,6 +3761,149 @@ default avoids both; `--side-effects-in-conditionals` and
   condition, and `c1` has no confirmed shape for one.
 - ASan/UBSan builds of both passes over 1500 fuzzed programs (including
   300 with both known-bug flags on) and the golden suite: clean.
+
+### Conditional evaluation: `&&`, `||`, `?:`, `,` and postfix `++`/`--` in conditions (`mutos_c1` fixed and verified this session)
+
+Closes the two wrong-code bugs the fuzzer found in the previous session
+(`STATUS.md`'s former open items 6 and 7). Both have one root cause:
+`mutos_c1` streams temp1 in postfix order, so every operand's code was
+out before its operator's branches, and a postfix fixup waited for the
+statement's `EXPR`.
+
+**What v7 does (`v7/cc/c10.c`, `c11.c`).**
+
+- `rcexpr()` calls `delay()` - "`x + y++` is better treated as `x + y;
+  y++`" - only when `table != cctab && table != cregtab`. Under `cctab`
+  (a condition) a postfix operator is compiled in place: the `regtab`
+  fallback loads the old value, does the increment (`efftab`), and the
+  fixup code prints `tst r` for the condition codes. A comparison with a
+  constant 0 is reduced to its left operand first (`rcexpr()`'s first
+  test: `RELAT && tr2 == CON 0 && table == cctab`), so `n-- > 0` is the
+  same `tst r` plus a branch.
+- `cbranch()` turns `&&`/`||`/`!` into jumping code recursively (`LOGAND`
+  with cond 1 and `LOGOR` with cond 0 allocate one label of their own),
+  runs a `SEQNC`'s left operand with `efftab` (where `delay()` applies)
+  before branching on its right one, and compiles anything else with
+  `rcexpr(tree, cctab)` plus one branch.
+- `cexpr()` computes a value-context relational/`&&`/`||`/`!` as
+  `cbranch(tree, c=isn++, 1)` then `czero` / `jbr` / `c:` / `cone` /
+  `label(isn++)`, and `?:` as `cbranch(tr1, c=isn++, 0)`, the true arm,
+  `jbr r=isn++`, `c:`, the false arm, `r:`. Each arm is `rcexpr(arm,
+  regtab)`, whose own `delay()` finishes the arm's postfix fixups inside
+  it.
+- `CALL` pushes each argument through `sptab` - with `delay()` - so an
+  argument's postfix fixup follows its own push.
+
+**Real-hardware evidence.** The kernel's non-optimized compiler output
+has the postfix-in-condition shape five times (line numbers of the
+`mov`):
+
+```
+lp_AC.s:251  L23:mov dx,si / dec si / or dx,dx / beq L22          truth test
+lp_AC.s:317  L32:mov dx,*-10.(bp) / dec *-10.(bp) / or dx,dx / beq L33
+lp_AC.s:585  L74:mov dx,*-10.(bp) / dec *-10.(bp) / or dx,dx / ble L75   > 0
+sys1.s:340   L37:mov dx,_execnt / dec _execnt / cmp dx,*2. / blt L38      >= 2
+sys1.s:646   L59:mov dx,*-54.(bp) / dec *-54.(bp) / or dx,dx / beq L60   while (n--)
+```
+
+`dx` there because those functions keep register variables in DI and
+SI; `kernel_opt/delay.s` (`while (d--)`, no register variables) has `mov
+di,*4.(bp) / dec *4.(bp) / test di,di / je L3` - `c2` rewrites `or` to
+`test` and `beq` to `je` (compare `lp_AC.s` in both directories), so the
+non-optimized form is `or di,di / beq`. MUTOS renders v7's two `tst`
+spellings differently: the `cctab` template `tst A1` (an addressable
+operand) is `cmp A1,*0` (`03_rellogic.s.golden`, and `cmp di,*0` for a
+register variable, `sys1.s:208`), while the fixup's `tst r` is `or r,r`.
+The same `or ax,ax` follows calls whose result is tested (`sys1.s:121`,
+`sys1.s:1204`, `lp_AC.s:728`, `amx.s:3146`) - `mutos_c1` still emits
+`cmp ax,*0` there (not changed: a shape difference, not a bug; see
+`STATUS.md`'s "Next up"). `sys1.s` also has `clearseg(a++)` as `push
+*-56.(bp) / inc *-56.(bp) / call _clearse`. And `10_integ/01_wordcount.
+s.golden` shows jumping code for an `||` in an `if` (v7's `LOGOR` with
+cond 0: `cmpb ...,*32. / beq L10000 / <second operand> / cmpb ...,*10.
+/ bne L9 / L10000:`) - `mutos_c1` materialized that as 0/1 and tested
+it again.
+
+**Implementation (`c1_gen.c`).** Any expression containing `LOGAND`,
+`LOGOR`, `QUEST` or `SEQNC` is now generated through the
+evaluation-order plan; the streaming handlers for those opcodes (and
+`COLON`) are gone, together with `gen_logand()`/`gen_logor()`/
+`gen_quest()` and `VK_PAIR`. `plan_value()` (value context) and
+`plan_cbranch()` (a condition - for a `CBRANCH`-terminated expression
+the plan covers the `CBRANCH` too) transcribe `cexpr()` and `cbranch()`:
+operand ranges interleaved with new steps - `SEG_ALLOC`/`SEG_LABEL`
+(c1 labels, allocated when the step runs, so nested constructs number
+their labels in v7's order), `SEG_BRANCH` (one condition:
+`gen_cond_branch()`), `SEG_LOGVAL` (`gen_logval()`: the 0/1 tail, also
+used by `materialize_cond()` now), `SEG_QTRUE`/`SEG_QFALSE` (an arm's
+value into DI, its fixups, the jump and labels), `SEG_DISCARD` (a comma's
+left operand) and `SEG_GOTO` (past the opcodes the plan stands for). The
+plan's type checks reproduce the old handlers' refusals. A `!` of a plain
+value and a bare relational stay lazy `VK_COND`s, whose output was
+already v7's.
+
+Postfix fixups are scoped by REGION: `SEG_MARK` opens one for each
+condition, `?:` arm and comma left operand (`region_open()` records the
+queue index and raises `defer_floor`), and its closing step emits the
+fixups queued since (`region_close()`). A fixup queued before the region
+stays queued, so it still happens on every path. `gen_cond_branch()`
+emits a condition's fixups after its operand's load and before the
+compare (the branch reads the flags), and uses `or reg,reg` when the
+tested value is a postfix operand's old value (new `postfix` flag on
+`Val`/`SimpleVal`, set only by `gen_incdec()`'s AFT case) tested for
+truth or compared with 0. `gen_call()` emits the current region's fixups
+before `call`. A simple condition (no `&&`/`||`/`?:`/`,`) still streams;
+its `CBRANCH` handler now calls `gen_cond_branch()` too. `gen_fatal()` is
+`_Noreturn` now (the new switch statements needed it to compile without
+fall-through warnings).
+
+**Found on the way (pre-existing).** A `long` comparison consumed as a
+VALUE (`z = l > 0L;`) went through `materialize_cond()` into
+`emit_cmp_and_branch()`, which renders a 16-bit compare and printed the
+unmaterialized constant's placeholder as an operand (`cmp
+*-8.(bp),<unmaterialized-long-const>`, exit status 0) - although
+`cond_is_long`'s comment said every consumer but `CBRANCH` refused one.
+`emit_cmp_and_branch()` now does; a condition reaches `gen_long_cmp()`
+first, as before.
+
+**Deliberately not changed.** The `or` shape only for a postfix
+operand (call results and other computed values: the next step, above).
+A postfix operand is still loaded into DI eagerly, so `f(a++)` is `mov
+di,a / push di / inc a / call` where the kernel pushes the memory operand
+directly; making it lazy needs care (another argument's call would flush
+its fixup before the lazy push). A prefix `++`/`--` in a condition is
+unchanged (`dec n / mov di,n / cmp di,*0`); the only kernel sample is
+optimized (`dec (di) / jg`, `tty.s`'s `if (--q->c_cc <= 0)`), so the
+non-optimized shape is unknown.
+
+**Verification.**
+
+- `make test` (clean build): 38/62, 0 genuine mismatches, zero warnings.
+  `mutos_c1` alone on the 62 golden pairs: `.s`, stderr and exit status
+  identical to the previous build for all 62 - no corpus `&&`/`||`/`?:`
+  operand has code of its own, and the label order is unchanged for
+  them.
+- `fuzz_c.py` generates side effects in conditionally evaluated operands
+  and postfix operators in `if` conditions by default now. 9000
+  programs, six seeds (three scalar-only), against the previous build: 0
+  WRONG, 0 BAD, 0 regressions; 88 wrong -> correct, 339 refused ->
+  correct, 1 BAD -> correct (`t = ((11 | t) ? x : (19 / i));` with `i` =
+  0: the old build divided by zero in the untaken arm). Every one of the
+  499 programs whose output changed contains `&&`, `||`, `?:`, a comma
+  operator or a postfix operator.
+- 25 hand-written programs the generator cannot produce (loop conditions,
+  nested and `&&`-conditioned `?:`, `!(x && y)`, a comma in a condition,
+  `z = (n++, n + 1)`, `x ? y / x : 1`), executed with `x86sim.py` (taught
+  that `or r,r` sets the flags of `cmp r,0`; it still executes the same
+  30 of the 62 goldens, with the same values) and compared variable by variable with the host
+  C compiler on `short` locals: 24 correct, 1 correct refusal (register
+  guard). The previous build: 10 wrong, `do ... while (n-- > 0)` never
+  terminated, `x ? y / x : 1` trapped, 3 refused.
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden pairs and
+  1200 fuzzed programs: clean.
+- After the `long` guard: `make test`, the 62 golden pairs and the
+  hand-written cases unchanged; 3000 more programs (seeds 4 and 14) 0
+  WRONG, 0 BAD, 0 regressions.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -3911,6 +4056,13 @@ These apply to *every* milestone, not just the one where they were first learned
   constant-shift threshold (repeat for 1-2, `mov cx,N` / shift by `cl` from 3 up)
   was found, after `c1` had been silently wrong for counts of 3 or more since
   `04_shift`.
+- **A fix's real shape can come from the kernel corpus even without its C
+  source.** The postfix-in-condition shape was recognizable in
+  `kernel_nonopt/*.s` by pattern alone (`mov R,X` / `inc|dec X` / a test
+  of `R`), five times, with the idiom's variants (truth test, `> 0`,
+  `>= 2`) readable from the constants and branches. Scan for the
+  instruction pattern a construct must produce before concluding "no
+  golden shows it".
 - **Assemble what the fuzzer produces - and know what that still misses.**
   Feeding random programs' `mutos_c1` output to `mutos_as` found 43 of 1500
   that emitted instructions the 8086 does not have (`cmp *3.,...`, `cmp
