@@ -37,13 +37,16 @@ typedef struct SymEntry {
                                  * 05_incdec.1.golden's NAME(p) using
                                  * type 8. */
     int  offset;                /* bp-relative offset (negative) */
-    int  is_ptr;                 /* 1 iff declared "int *name" - only
-                                   * a single pointer-to-int degree is
-                                   * supported so far (see
-                                   * src/mutos_cc/README.md). */
-    int  is_array;                /* 1 iff declared "int name[N]" or
+    int  is_ptr;                 /* 1 iff declared as a pointer VARIABLE
+                                   * ("int *p", "char **pp", a "char
+                                   * *s[]" parameter) - `type` is then
+                                   * the full pointer type. 0 for an
+                                   * array of pointers ("char
+                                   * *names[3]" is_array, type 9). */
+    int  is_array;                /* 1 iff declared "T name[N]" or
                                     * "int name[N][M]" (see dim2) -
-                                    * arrays of int only so far; an
+                                    * `type` is then the ELEMENT type
+                                    * (int, char, long or a pointer); an
                                     * array is not a modifiable lvalue
                                     * (no postfix/prefix ++/--, no
                                     * direct assignment target) in

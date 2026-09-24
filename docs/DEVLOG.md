@@ -3276,7 +3276,7 @@ takes ownership by nulling it), and `parse_shift()` folded `(0 - 7) << 3`
 with a left shift of a negative value (undefined behavior - now an unsigned
 intermediate, with a count outside 0..15 an explicit error).
 
-**Verification.** `make test` 34/62 byte-exact, 0 genuine mismatches; `c1`
+**Verification.** `make test` 34 of 62 byte-exact, 0 genuine mismatches; `c1`
 alone on all 62 golden pairs changed only the 4 expected files (38 of 62
 now match via `c1` alone); 3000 random scalar programs, old vs. new: `c0`
 wire output identical, every `c1` output change one of the two intended
@@ -3285,6 +3285,239 @@ ones (AX-add, shift-by-CL), every new refusal a memory-operand shift;
 now blocked only by its right-operand-first spill (`push di` ... `pop cx /
 imul cx`), the evaluation-order problem the register-occupancy guard
 already names.
+
+### String literals (`05_arrptr/05_arrofptr`, `07_strlibc`), `09_abiprobe/01_argvmain`, and six older `mutos_c1` bugs found on the way (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+**The temp2 stream, finally used.** Every golden before `05_arrofptr` had a
+2-byte `.2` file (just `EOFC`); `05_arrofptr.2.golden` is 82 bytes. Decoded
+with `od -t x1z` and matched against `v7/cc/c00.c`'s `putstr()`, which sets
+`strflg` so that `outcode()` writes to the string file instead of temp1:
+
+```
+70 fe 04 00          LABEL 4
+c8 fe                BDATA
+01 00 6f 00          (1, 'o')      one pair per byte
+01 00 6e 00          (1, 'n')
+01 00 65 00          (1, 'e')
+01 00 00 00          (1, 0)        the terminating NUL, one more pair
+00 00                0             ends the BDATA run
+...                  LABEL 5 ... LABEL 6 ...
+00 fe                EOFC
+```
+
+In temp1 the literal is `v7/cc`'s "fake a static char array": `NAME(SC_STATIC,
+TY_CHAR, <label>)` - the same NAME shape a local static uses, the "offset"
+being the label - followed by the `AMPER(9)` that decays it. `mutos_c0` now
+reproduces both streams byte-for-byte for `05_arrofptr`, `07_strlibc` and
+(temp2 only - its temp1 needs `char` access) `10_integ/04_strrev`. Two details
+come from v7's source, not these goldens (no literal in them reaches 15
+bytes): `putstr()` closes the run and opens a new one (`0 BDATA`) before the
+15th, 30th, ... byte, and appends the NUL without that check; bytes beyond
+10000 are dropped.
+
+**Rendering, and 208 real literals that confirm it.** `mutos_c1` prints
+`.data` after the code (every golden has it, strings or not - `v7/cc/c10.c`
+prints `.globl` / `.data` at the same point) and then temp2: `L4:` (no
+newline, like every label) and `.byte<TAB>/6f,/6e,/65,/0` - lower-case hex,
+mutos_as's `/` prefix, no leading zeros - with a new `.byte` line after every
+9th value (`07_strlibc.s.golden`'s 13-value literal: 9, then 4). v7's `c11.c`
+prints each run on one line, in octal. The real, non-optimized MUTOS `c1`
+output already in the repo settles how the two rules combine: all 208 string
+blocks in `tests/mutos_as/kernel_nonopt/*.s` and `kernel_opt/*.s` have
+exactly the line lengths "runs of 14, 15, 15, ... values, each broken 9 +
+rest" predicts (a script over every `L<n>:.byte` block; e.g. `amx.s`'s
+29-character `"AMX      Based %x level %d %s\n"` is 9/5/9/6/2). A literal
+built from that same text by `mutos_c0`/`mutos_c1` reproduces `amx.s`'s `L22`
+block byte-for-byte. A byte of 0x80 or above prints as its 8-bit value -
+derived, not confirmed: the `/ff81`-style values in `amx.s` belong to a
+char-array INITIALIZER (`.byte /ff81`, a space, one value per line - a
+different code path).
+
+**Escapes.** `c0_lex.c` now follows `v7`'s `mapch()` exactly: `\t \n \b \r`,
+`\f` = 014, `\v` = 013, one to three octal digits (`\0`, `\012`, `\101`),
+backslash-newline as a continuation, and any other escaped character standing
+for itself (which is how `\\`, `\'` and `\"` work - `mapch()` has no case for
+them). The previous lexer took only a single `\0` digit. A literal keeps an
+explicit length, since `\0` can embed a NUL.
+
+**Label numbering.** v7 allocates a literal's label when the token is LEXED
+(`cval = isn++`); `mutos_c0` does it when the literal is PARSED. With v7's
+one-token peeks these are the same moment in every realistic program (the
+differences need a statement that starts with a string literal right after an
+`if (...)` condition, after an if-statement without `else`, or as a
+for-increment's first token). Checking this against `v7/cc/c02.c` turned up two
+places where `mutos_c0` allocated labels in a different order than v7 -
+invisible until an expression could allocate one: `for` allocates its two
+labels before parsing the init expression, and `switch` its break label
+before the controlling expression. Both fixed; no existing golden changes.
+
+**Types.** `char`/`long` locals and parameters now take `*` and `[N]`
+declarators (`char buf[20];`, `char *s;`, `char *names[3];` - an array of
+element type 9 - and the parameter `char *argv[];`, type 41 per
+`01_argvmain.1.golden`). Frame slots go through `v7`'s `rlength()` (size
+rounded up to a word): `07_strlibc.1.golden`'s `src` at -24 and `dst` at -44.
+A bare array name decays to `NAME(<element type>) AMPER(<pointer to
+element>)` - previously hard-coded to `int`, and typed as an `int` result
+(so `a + i` on an array was not pointer arithmetic). Prototypes take a
+pointer result and comma lists (`char *strcpy();`, `int strlen(), strcmp();`);
+a callee's NAME type is one FUNC degree via `incref()` - `strcpy`'s is 49,
+which the old `ret_type | 020` would have made 25. A statement that is just a
+call (`strcpy(src, "hello, mutos");`) is `NAME ... CALL` then `EXPR`.
+
+**`char` element access is refused, and why.** Accepting `char buf[80]` made
+`mutos_c0` reach the six `09_abiprobe/0N_frameNNN` files and emit a `.1`
+that differs from their goldens: the real front end wraps a `char` element in
+conversions `mutos_c0` does not insert. Opcode 109 (`OP_ITOC`), until now
+only seen with type `TY_CHAR` (08_castsize's explicit `(char) i`), also
+appears with type `TY_INT` - a char-to-int conversion:
+
+```
+buf[0] = 1;              ... STAR(1) CON(1) ITOC(1) ASSIGN(1)
+buf[0] + buf[80 - 1]     ... STAR(1) ITOC(0) ... STAR(1) ITOC(0) PLUS(0)
+```
+
+and the matching `.s` is `movb *-84.(bp),*1.` / `movb ax,*-84.(bp)` / `cbw` /
+`mov di,ax` / `movb ax,*-5.(bp)` / `cbw` / `add di,ax` - the first converted
+value moved out of AX when the second one needs it. So opcode 109 is "convert
+to/from char", its type argument the RESULT type. Until those conversions and
+the byte loads/stores exist, reading or writing a `char` (or `long`) through a
+subscript or pointer is refused in `mutos_c0`, which puts those six files back
+where they were ("not yet supported") and records the shape for the next
+session.
+
+**`mutos_c1`.** A string literal's address is a new value kind,
+`VK_STATICADDR`, rendered `#L4`: stored with one memory-immediate `mov`
+(`05_arrofptr.s.golden`'s `mov *-10.(bp),#L4`) and passed as an immediate,
+through DI (`07_strlibc.s.golden`'s `mov di,#L4` / `push di`); anywhere else
+(arithmetic, a comparison, a dereference) it is refused. Pointer types are
+accepted by type class instead of by a list of values (`ty_is_ptr()`,
+`ty_is_word()`): a `char *` loads, stores, pushes and returns like an `int`.
+A dereferenced call argument is loaded in place before the push
+(`05_arrofptr.s.golden`'s `strlen(names[i])` -> `mov di,(di)` / `push di`,
+not `push (di)`).
+
+**The AMPER decision needed a real lookahead.** `OP_AMPER` emitted its `lea`
+eagerly iff the next opcode was a NAME - meant for `a[i]`, whose index NAME
+follows. A string argument broke it: in `strcpy(src, "...")` the array `src`
+is followed by the literal's NAME, the eager `lea` left `&src` in DI, and
+pushing the literal first (right to left) needed DI. It is now decided by
+what CONSUMES the address: `scan_consumer()` walks the following opcodes
+with a count of the values each pushes and pops (an arity table covering
+every expression opcode) until one pops this value, then seeks back. Eager
+iff the consumer is a pointer `PLUS` taking it as its left operand, the
+right operand ends in `ITOP` and contains a variable - exactly `a[i]` and a
+2-D row step; everything else defers. Output of every golden unchanged.
+
+**A constant index on a pointer VALUE is a displacement.** `01_argvmain.s.
+golden`'s `strlen(argv[1])` (`argv` a parameter) is `mov di,*6.(bp)` / `mov
+di,*2.(di)`, not `add di,*2.` / `mov di,(di)` - `VK_IND` gained a
+displacement, and pointer `PLUS` with a constant index, when the next opcode
+is its `STAR`, produces an unloaded `VK_REGOFF` that `STAR` turns into
+`*2.(di)`. `10_integ/03_linklist.s.golden` confirms the zero-offset case as
+an assignment target (`cur->val = i;` -> `push *-8.(bp)` / `mov di,
+*-10.(bp)` / `pop bx` / `mov (bx),di`); with a non-zero offset that golden
+shows a different, right-operand-first shape (below), so that is refused.
+With `char *argv[]` parameters now parsed, `01_argvmain` passes end-to-end.
+
+**Six older bugs, found by testing around these changes** (all present in the
+previous binary; none is in a golden):
+
+| Source | Previous `mutos_c1` | Now |
+|---|---|---|
+| `if (*p)`, `return *p;` | `cmp <unpopped-ind-pending>,*0` (exit 0) | `mov di,p` / `cmp (di),*0`; the assignment-target test is `scan_consumer()` finding an `ASSIGN`, not "value stack empty" |
+| `a = v[1];`, `f(v[2])` | stored / pushed `&v[1]`, `&v[2]` (`lea`) | refused / `push *-10.(bp)`: `STAR` of a folded constant address now yields a plain memory operand, not the address kind |
+| `if (3 < a)`, `if (c < *p)`, `if (a < v[3])` | `cmp *3.,...`, `cmp *-6.(bp),(di)`, `cmp *-6.(bp),*-14.(bp)` - rejected only by `mutos_as` | a memory right operand of any kind is loaded into DI (the confirmed repair); the other two shapes are refused |
+| `*a = *b;` | `mov (bx),(di)` | `02_bubsort.s.golden`'s `mov di,(di)` / `pop bx` / `mov (bx),di` |
+| `*b = t;` | refused (memory-to-memory) | `02_bubsort.s.golden`'s `mov di,t` / `pop bx` / `mov (bx),di` |
+| `f(square)` | `push #_square` (no such 8086 instruction) | through DI like any immediate |
+
+and `a[i] += 2;` (a compound assignment through a subscript), which pushed a
+garbage pending-address value, is refused. The `v[1]` bug is the instructive
+one: every check used so far (goldens, prefix property, assembling fuzz
+output) passes on it - the code is legal, just wrong. See "Recurring process
+lessons".
+
+**Verification.**
+- `make test`: 37 of 62 byte-exact (up from 34 of 62; `05_arrofptr`,
+  `07_strlibc`, `09_abiprobe/01_argvmain`), 0 genuine mismatches; zero
+  warnings under `-Wall -Wextra -Wpedantic`.
+- `mutos_c1` alone on all 62 golden pairs: 41 match their `.s.golden` (up
+  from 38). Of those that stop, every partial `.s` is a byte-exact prefix of
+  the golden except `02_bubsort` and `05_matmul` (both already failed that
+  test before; both are the evaluation-order question below).
+- 1500 random programs in the previous grammar: `mutos_c0`'s wire output
+  identical to the previous binary for all; every `.s` difference or new
+  refusal is a case where the previous output was garbage, did not assemble,
+  or (7 programs) stored `&v[k]` for `v[k]`; the 28 newly accepted programs
+  are the `*p = x;` swap shape above. 1500 random programs using literals,
+  `char` arrays and pointers, pointer arrays and call statements: every
+  accepted `.s` assembles with `mutos_as`.
+- ASan/UBSan builds over the corpus and 1200 random programs: clean.
+- `dump_temp.py` decodes BDATA runs; all three `.2.golden` files with
+  literals now dump completely.
+
+### Evaluation order - the plan for `10_integ/05_matmul`
+
+`05_matmul` is the one golden whose `.1` `mutos_c0` already matches but whose
+`.s` `mutos_c1` cannot produce, and two other goldens show the same
+underlying behaviour:
+
+```
+sum = sum + a[i][k] * b[k][j];      (05_matmul)
+    lea di,&b / mov si,k / sal si,*1 / add si,j / sal si,*1 / add di,si
+    mov di,(di) / push di           <- RIGHT operand first, spilled
+    lea di,&a / ... / add di,si
+    mov di,(di) / mov ax,di / pop cx / imul cx / add ax,sum / mov sum,ax
+
+for (i = 0; i < n - 1; ...)         (02_bubsort)
+    mov di,*6.(bp) / dec di / cmp di,*-6.(bp) / ble L8
+                                    <- operands swapped, relation reversed
+
+cur->next = head;                   (03_linklist)
+    mov di,*-6.(bp) / mov si,*-8.(bp) / mov *2.(si),di
+                                    <- right-hand side first
+```
+
+All three are `v7/cc`'s code generator choosing an evaluation order by
+subtree difficulty. `c12.c`'s `optim()` swaps a relational's operands (and
+maps the operator through `maprel[]`) when `degree(tr1) < degree(tr2)`;
+`degree()` (`c11.c`) is -3 for a constant, -2 for `&x`, 0/1 for a leaf, and
+otherwise the node's Sethi-Ullman-style `degree` (`d1 == d2 ? d1 + islong :
+max(d1, d2)`); `dcalc()` turns that into 20/24 ("fits in the registers left"
+or not), which the code tables use to evaluate the harder operand first and,
+when both are hard, to compute the right one onto the stack.
+
+`mutos_c1` cannot do any of this today because it emits each opcode's code
+as it reads it: by the time `TIMES` is read, the left operand's code is
+already out. The plan keeps every existing handler and changes only the
+ORDER in which the dispatch loop visits parts of temp1 - "subtree replay":
+
+1. **One arity table.** `scan_op_args()` (added for `scan_consumer()` this
+   session) already knows every expression opcode's arguments and arity;
+   make it the single source for both uses.
+2. **Per-statement pre-scan.** At the first opcode of an expression (after
+   the previous statement's `EXPR`/`CBRANCH`/`RFORCE`), scan to its end and
+   build an index: for each operator, the file offsets of its left and
+   right operand subtrees (postfix, so each is one contiguous range), and
+   each subtree's v7 `degree`.
+3. **Replay.** When the loop reaches a left-operand range whose parent is
+   marked "right first", it seeks to the right range, generates it with the
+   ordinary handlers, then the left range, then skips the right range when
+   it comes up again in the stream and handles the parent. A spilled right
+   operand becomes a new value kind (`VK_STACKED`, consumed by `pop cx`); a
+   swapped relational is only a reordering plus `maprel`.
+4. **Only the golden-confirmed decisions.** `TIMES` with two hard operands
+   (`05_matmul`), the relational swap (`02_bubsort`), and an assignment
+   whose target is an offset-indirect (`03_linklist`) - each gated on its
+   own golden; every other reordering stays refused.
+5. **Verification.** The three goldens; `mutos_c1` alone on all 62 golden
+   pairs unchanged elsewhere; the prefix property for the two files that
+   fail it today; the random-program differential; and ideally an
+   8086-emulator run of fuzzed programs, since reordering is exactly where
+   legal-but-wrong code (the `v[1]` bug above) would hide.
+
+`02_bubsort` and `03_linklist` need more than this (struct types for the
+latter), so `05_matmul` is the one file the work would finish on its own.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -3437,6 +3670,14 @@ These apply to *every* milestone, not just the one where they were first learned
   constant-shift threshold (repeat for 1-2, `mov cx,N` / shift by `cl` from 3 up)
   was found, after `c1` had been silently wrong for counts of 3 or more since
   `04_shift`.
+- **Assemble what the fuzzer produces - and know what that still misses.**
+  Feeding random programs' `mutos_c1` output to `mutos_as` found 43 of 1500
+  that emitted instructions the 8086 does not have (`cmp *3.,...`, `cmp
+  mem,(di)`); nothing else had noticed. But it cannot catch legal code that
+  computes the wrong thing: `a = v[1];` storing `&v[1]` assembled fine and
+  was found only by reading a sample of the output. Anything that reorders
+  evaluation (see the `05_matmul` plan) wants a semantic check - running
+  fuzzed programs in an 8086 emulator against their expected results.
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.

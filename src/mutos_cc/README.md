@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 34/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 37/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -20,8 +20,9 @@ Workflow Guideline 3), not copied wholesale.
 of `03_ctrlflow`, plus all 7
 of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
 `04_mutrec.c`, `05_staticvar.c`, `06_regclass.c` and `07_funcptr.c`, plus
-5 of `05_arrptr`'s 7: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
-`04_ptrarreq.c` and `06_ptrptr.c`. See
+all 7 of `05_arrptr`: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
+`04_ptrarreq.c`, `05_arrofptr.c`, `06_ptrptr.c` and `07_strlibc.c`, plus
+`09_abiprobe/01_argvmain.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -45,6 +46,17 @@ the original's raw varargs-pointer-walk):
 | `N` | one 16-bit word | little-endian `(low, high)` |
 | `S` | one symbol name | `'_'` (iff non-empty) + up to `MCC_NCPS` (8) significant chars, 7-bit-masked + a terminating `NUL` |
 | `1` / `0` | the literal word 1 / 0 | shorthand constants |
+
+`temp1` carries everything but string-literal data, which goes to `temp2`
+(v7's `putstr()` switches `outcode()`'s destination with `strflg`), one
+block per literal: `LABEL <n>`, then `BDATA`, `(1, byte)` per byte and
+`(1, 0)` for the NUL, ended by a lone `0` - a new `BDATA` run starting
+before every 15th byte. `mutos_c1` reads `temp2` after `temp1`'s `EOFC`,
+behind the `.data` it always emits, rendering each run as `.byte` lines of
+at most 9 hex values (`L4:.byte\t/6f,/6e,/65,/0`) - confirmed against
+`05_arrptr/05_arrofptr` and `07_strlibc`, and against the line layout of
+all 208 literals in `tests/mutos_as/kernel_nonopt|kernel_opt/*.s`; see
+`docs/DEVLOG.md`'s Milestone 4 string-literal section.
 
 All opcode/type/storage-class values are transcribed verbatim from
 `v7/cc/c0.h` into `mutos_cc.h` - they are load-bearing wire-format
@@ -175,10 +187,10 @@ exactly `tests/mutos_cc/00_smoke`'s three programs plus all of
 translation-unit  := extdef*
 extdef            := IDENT '(' ')' compound-stmt
 compound-stmt     := '{' decl* stmt* '}'
-decl              := ('int' declarator (',' declarator)*
-                      | ('char'|'long') IDENT (',' IDENT)*) ';'
-declarator        := '*'+ IDENT | IDENT ('[' ICON ']' ('[' ICON ']')?)?
-stmt              := assign-stmt | star-assign-stmt | return-stmt
+decl              := ('int'|'char'|'long') declarator (',' declarator)* ';'
+declarator        := '*'* IDENT ('[' ICON ']' ('[' ICON ']')?)?
+stmt              := assign-stmt | star-assign-stmt | call-stmt | return-stmt
+call-stmt         := IDENT '(' ... ')' ... ';'
 assign-stmt       := IDENT assign-op expr ';'
 assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
                     | '<<=' | '>>=' | '&=' | '|=' | '^='
@@ -197,7 +209,7 @@ ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
 UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
 POSTFIX           := PRIMARY ('++'|'--')?
-PRIMARY           := ICON | IDENT | cast-expr | sizeof-expr
+PRIMARY           := ICON | IDENT | STRING | cast-expr | sizeof-expr
                     | '(' comma-item (',' comma-item)* ')'
 cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
 sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
@@ -958,17 +970,26 @@ real compiler's spill/reorder shapes; see `docs/DEVLOG.md`'s Milestone 4
    equivalence are now done (5 of 7 files - `01_arrbasic`/`02_array2d`/
    `03_ptrbasic`/`04_ptrarreq`/`06_ptrptr` - see "Current scope" above and
    `docs/DEVLOG.md`'s Milestone 4 section for the full derivation).
-   Remaining: `05_arrofptr.c`/`07_strlibc.c` (string literals - need an entirely new
-   data-segment/string-constant emission subsystem, `v7/cc/c00.c`'s
-   `putstr()` equivalent, that does not exist at all yet). Then
-   `06_struct` (structs/unions/enums - member layout, sizes beyond a flat
-   "2 bytes") - real type-system work the current `SymEntry`/`ExprVal`
-   model doesn't fully have yet, untouched so far.
-4. **`09_abiprobe/frame*`**: their goldens have narrowed the real
-   `chkstk` threshold to `(80,128]` (implemented - see above); the files
-   themselves still need `char` arrays in `mutos_c0`/`mutos_c1`, and the
-   81..127-byte gap stays "not yet supported" until a golden lands in it.
-5. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
+   String literals (`05_arrofptr.c`/`07_strlibc.c`) are done too, with
+   `char`/`long` arrays and pointers, pointer-returning prototypes and call
+   statements (see the `temp2` paragraph above and `docs/DEVLOG.md`) - so
+   all 7 of `05_arrptr` pass. Then `06_struct` (structs/unions/enums -
+   member layout, sizes beyond a flat "2 bytes") - real type-system work
+   the current `SymEntry`/`ExprVal` model doesn't fully have yet, untouched
+   so far.
+4. **Evaluation order (`10_integ/05_matmul`)**: the real compiler evaluates
+   the harder operand of `a[i][k] * b[k][j]` first and spills it (`push
+   di` ... `pop cx` / `imul cx`); `02_bubsort`'s swapped comparison and
+   `03_linklist`'s right-hand-side-first store are the same v7 `degree()`
+   mechanism. A streaming `c1` cannot reorder yet; the plan ("subtree
+   replay") is in `docs/DEVLOG.md`.
+5. **`char` element access and `09_abiprobe/frame*`**: their goldens have
+   narrowed the real `chkstk` threshold to `(80,128]` (implemented - see
+   above); the files themselves now declare fine but need `char` element
+   reads/writes - opcode 109 as a char-to-int conversion, `movb`/`cbw` -
+   which `mutos_c0` refuses until implemented. The 81..127-byte gap stays
+   "not yet supported" until a golden lands in it.
+6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
    `tests/mutos_cc/run_goldens.sh`). The `-P`/`-S` interaction

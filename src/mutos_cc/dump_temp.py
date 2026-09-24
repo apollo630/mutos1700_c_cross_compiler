@@ -20,10 +20,14 @@ Wire format (see c0_outcode.c/c0_outcode.h):
     S  - a symbol: '_' + up to MCC_NCPS name bytes + a NUL terminator
          (present only when the name is non-empty; c0 always writes
          non-empty names here, so this reader always expects '_' first)
-    0  - two raw zero bytes (used only as OP_SWIT's table terminator -
-         a single lone zero N-sized word, never a (0,0) pair)
-    1  - two bytes, value 1 low-byte-first (not used by any construct
-         mutos_c0 currently emits, listed for completeness)
+    0  - two raw zero bytes (OP_SWIT's table terminator - a single
+         lone zero N-sized word, never a (0,0) pair - and the end of a
+         BDATA run)
+    1  - two bytes, value 1 low-byte-first (the "another byte follows"
+         word of a BDATA run's (1, value) pairs)
+
+temp2 holds only string literals (c0_parser.c's putstr()): LABEL <n>,
+then one or more BDATA runs - BDATA, (1, byte)..., 0 - see OPCODES.
 
 Each opcode's own argument shape (how many N/S fields follow the B)
 is fixed and is transcribed below directly from every outcode() call
@@ -246,6 +250,17 @@ OPCODES = {
                                                 # argument tree (NULLOP,
                                                 # a lone expression, or a
                                                 # COMMA chain)
+    # -- string literals (temp2 only - c0_parser.c's putstr(), v7/cc/
+    # c00.c's function of the same name); confirmed byte-for-byte
+    # against 05_arrptr/05_arrofptr.2.golden, 07_strlibc.2.golden and
+    # 10_integ/04_strrev.2.golden: --
+    200: ("BDATA", []),                        # followed by (1, byte)
+                                                # pairs, then one lone 0
+                                                # word - decoded by the
+                                                # special case in dump();
+                                                # a literal's run is split
+                                                # ("0 BDATA") before every
+                                                # 15th byte
     218: ("NULLOP", []),                       # v7/cc/c04.c's
                                                 # treeout(NULL) shape - a
                                                 # zero-argument call's
@@ -400,6 +415,26 @@ def dump(path):
                     v = r.read_s()
                     parts.append('%s="%s"' % (label, v))
             print("[%6d] B  %-8s %s" % (offset, name, "  ".join(parts)))
+
+            if op == 200:  # OP_BDATA: (1, value) pairs until a word that
+                            # is not 1 (putstr()'s lone 0) - v7/cc/c11.c
+                            # reads it the same way
+                start = r.pos
+                vals = []
+                while True:
+                    w = r.read_n()
+                    if w != 1:
+                        break
+                    vals.append(r.read_n() & 0xFFFF)
+                text = "".join(chr(v) if 32 <= v < 127 and v != 92
+                               else "\\%o" % v for v in vals)
+                print("[%6d] %d byte(s): %s  \"%s\"" % (
+                    start, len(vals), " ".join("%02x" % v for v in vals),
+                    text))
+                if w != 0:
+                    raise DecodeError("BDATA run at offset %d ended by %d, "
+                                      "not 0" % (start, w))
+                continue
 
             if op == 213:  # OP_SWIT: variable trailing (label,value) pairs
                             # terminated by one lone zero N word

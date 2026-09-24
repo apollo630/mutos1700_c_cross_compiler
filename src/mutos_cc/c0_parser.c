@@ -4,13 +4,20 @@
  * Current grammar coverage (deliberately narrow - see
  * src/mutos_cc/README.md for the expansion plan):
  *
+ * (This summary shows the expression core; parse_extdef(),
+ * parse_param_decls(), parse_statement() and each parse_*_stmt() carry
+ * their own, fuller productions - prototypes, parameters, control flow,
+ * calls.)
+ *
  *   translation-unit  := extdef*
  *   extdef            := IDENT '(' ')' compound-stmt
  *   compound-stmt     := '{' decl* stmt* '}'
- *   decl              := ('int' declarator (',' declarator)*
- *                        | ('char'|'long') IDENT (',' IDENT)*) ';'
- *   declarator        := '*' IDENT | IDENT ('[' ICON ']')?
- *   stmt              := assign-stmt | star-assign-stmt | return-stmt
+ *   decl              := ('int'|'char'|'long') declarator
+ *                        (',' declarator)* ';'
+ *   declarator        := '*'* IDENT ('[' ICON ']' ('[' ICON ']')?)?
+ *                       | '(' '*' IDENT ')' '(' ')'
+ *   stmt              := assign-stmt | star-assign-stmt | call-stmt
+ *                       | return-stmt
  *   assign-stmt       := IDENT assign-op expr ';'
  *   assign-op         := '=' | '+=' | '-=' | '*=' | '/=' | '%='
  *                       | '<<=' | '>>=' | '&=' | '|=' | '^='
@@ -29,7 +36,7 @@
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
  *   UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
  *   POSTFIX           := PRIMARY ('++'|'--')?
- *   PRIMARY           := ICON | IDENT | cast-expr | sizeof-expr
+ *   PRIMARY           := ICON | IDENT | STRING | cast-expr | sizeof-expr
  *                       | '(' comma-item (',' comma-item)* ')'
  *   cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
  *   sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
@@ -163,6 +170,11 @@ typedef struct {
 
 typedef struct {
     Lexer  lx;
+    FILE  *t2;      /* the temp2 stream - string-literal data only (see
+                      * putstr()); every other opcode goes to temp1,
+                      * which is still passed around explicitly as `t1`
+                      * since parse_for_stmt() temporarily redirects it
+                      * to a memory buffer. */
     Token  cur;
     Token  la;      /* one token of lookahead beyond cur, valid iff
                        * have_la - see peek2_kind()'s comment below */
@@ -306,6 +318,13 @@ static int ty_decref(int t)
     return base | (cleared >> 2);
 }
 
+/* 1 iff `t`'s outermost derived-type degree is PTR (010) - "pointer to
+ * anything", whatever it points to. */
+static int ty_is_ptr(int t) { return (t & TY_XTYPE_MASK) == 010; }
+
+/* "pointer to char" (9) - the type every string literal decays to. */
+#define TY_PTR_CHAR (TY_CHAR | 010)
+
 /* Maximum K&R-style parameters a single function definition can
  * declare - sized generously; 04_funcs/02_manyargs.c's six-parameter
  * sum6() is the largest confirmed case in the current corpus. */
@@ -344,12 +363,11 @@ static int size_of_type(int t)
 static void advance(Parser *p)
 {
     /* A T_STRING token's text is malloc'd by the lexer and owned by
-     * the token (c0_lex.h). No grammar production consumes one yet
-     * (string literals are still unsupported - see src/mutos_cc/
-     * README.md), so it is released here, as the token is discarded;
-     * a future consumer takes ownership by setting p->cur.sval to
-     * NULL before advancing. Without this every string literal
-     * leaked (found by an ASan run over the corpus). */
+     * the token (c0_lex.h). It is released here, as the token is
+     * discarded - parse_primary()'s string-literal case writes it out
+     * (putstr()) before advancing, and any other production that meets
+     * one (a syntax error) simply drops it. Without this every string
+     * literal leaked (found by an ASan run over the corpus). */
     free(p->cur.sval);
     p->cur.sval = NULL;
     p->prev_line = p->cur.line; /* the line of the token we're about
@@ -484,10 +502,64 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 {
     outcode(t1, "BNN", OP_CON, TY_INT, 1);
     if (is_ptr) {
-        outcode(t1, "BNN", OP_CON, TY_INT, MCC_SZINT);
+        /* The scale is the pointed-to object's size (v7/cc/c01.c's
+         * build(): convert(..., ITP, plength(p1))) - MCC_SZINT for
+         * every pointer 05_incdec confirms; 1 for a "char *", which
+         * mutos_c1 does not accept yet. */
+        outcode(t1, "BNN", OP_CON, TY_INT, size_of_type(ty_decref(type)));
         outcode(t1, "BN", OP_ITOP, type);
     }
     outcode(t1, "BN", optag, type);
+}
+
+/*
+ * putstr() - v7/cc/c00.c's function of the same name, in the form a
+ * string literal in an expression uses (a non-zero label; the
+ * label-less form initializes a char array and is not needed yet).
+ * The literal's bytes go to TEMP2, never temp1 - v7's putstr() sets
+ * `strflg`, which makes outcode() write to the string file for the
+ * duration - as
+ *
+ *     LABEL <lab>  BDATA  (1 <byte>)...  (1 0)  0
+ *
+ * i.e. each byte as the pair (1, value) and the terminating NUL as one
+ * more pair (1, 0), the lone 0 ending the BDATA run. Confirmed
+ * byte-for-byte against 05_arrptr/05_arrofptr.2.golden ("one", "two",
+ * "three" - three consecutive runs, labels 4/5/6) and
+ * 05_arrptr/07_strlibc.2.golden ("hello, mutos"), plus
+ * 10_integ/04_strrev.2.golden ("mutos1700").
+ *
+ * Two details come from v7's source rather than from these goldens
+ * (none has 15 or more characters):
+ *   - before the 15th, 30th, ... byte the run is closed and a new one
+ *     opened ("0 BDATA") - "if (nchstr%15 == 0) outcode(\"0B\",
+ *     BDATA);" - so a run holds 14 bytes, then 15 per run; the NUL is
+ *     appended without that check. The real MUTOS c1 output in
+ *     tests/mutos_as/kernel_nonopt/ and kernel_opt/ confirms it
+ *     indirectly: all 208 string blocks there have exactly the .byte
+ *     line layout this split predicts (see mutos_c1's gen_strings());
+ *   - bytes beyond the 10000th are dropped (v7's `max`), the NUL too
+ *     once that limit is reached.
+ * Each byte is masked to 0..255 ("c & 0377") - the lexer already did
+ * that (c0_lex.c's lex_string()).
+ */
+#define MCC_STRRUN 15      /* v7 putstr()'s run length */
+#define MCC_STRMAX 10000   /* v7 putstr()'s `max` for a labelled string */
+static void putstr(Parser *p, int lab, const char *str, size_t len)
+{
+    outcode(p->t2, "BNB", OP_LABEL, lab, OP_BDATA);
+    size_t nch = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (nch >= MCC_STRMAX)
+            continue;
+        nch++;
+        if (nch % MCC_STRRUN == 0)
+            outcode(p->t2, "0B", OP_BDATA);
+        outcode(p->t2, "1N", (int)(unsigned char)str[i]);
+    }
+    if (nch < MCC_STRMAX)
+        outcode(p->t2, "10");
+    outcode(p->t2, "0");
 }
 
 static ExprVal parse_expr(Parser *p, FILE *t1);
@@ -559,6 +631,29 @@ static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
 }
 
 /*
+ * A 'char' (or 'long') element read or written through a subscript or
+ * a pointer is refused, although the address computation itself is
+ * known (e.g. every 09_abiprobe frame golden's "buf[80 - 1]": NAME(1) AMPER(9)
+ * CON(79) CON(1) ITOP(9) PLUS(9) STAR(1)): the real front end also
+ * wraps such a value in conversions - opcode 109 (OP_ITOC) with type
+ * TY_CHAR when an int is stored into it ("buf[0] = 1;" -> ... CON(1)
+ * ITOC(1) ASSIGN(1)), and with type TY_INT when it is used as an int
+ * operand ("buf[0] + buf[79]": ... STAR(1) ITOC(0) ... STAR(1) ITOC(0)
+ * PLUS) - and mutos_c0 does not insert those yet, nor can mutos_c1
+ * load or store a byte through an address. Refusing here keeps both
+ * from silently producing a wrong .1 (before 'char' arrays and
+ * pointers were accepted by parse_decl(), these programs stopped at
+ * the declaration instead). A 'char *' element ("char *names[3]")
+ * is a word and is not affected. */
+static void refuse_char_long_access(Parser *p, int elemtype)
+{
+    c0_error_at(p->cur.line, "reading or writing a '%s' through a subscript "
+                              "or pointer is not yet supported - see "
+                              "src/mutos_cc/README.md",
+                elemtype == TY_CHAR ? "char" : "long");
+}
+
+/*
  * Emits the address computation and final dereference for exactly
  * one subscript step "sym[idx-expr]" - `sym` must be an array or a
  * plain pointer variable, and its own NAME node must NOT have been
@@ -592,6 +687,8 @@ static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
         ptrtype = sym->type;
         elemtype = ty_decref(ptrtype);
     }
+    if (elemtype == TY_CHAR || elemtype == TY_LONG)
+        refuse_char_long_access(p, elemtype);
     ExprVal idx = parse_expr(p, t1);
     expect(p, T_RBRACK, "']'");
     emit_materialize(t1, idx);
@@ -764,13 +861,15 @@ static ExprVal parse_call(Parser *p, FILE *t1)
     int ret_type = lookup_func_type(p, name);
 
     /* The callee's own NAME leaf carries "function returning
-     * ret_type" (TY_FUNC_INT's own '| 020' FUNC-degree bit, generalized
-     * to any base return type - not just TY_INT) - confirmed against
+     * ret_type" - one FUNC degree on top of ret_type via the same
+     * incref() formula as every other derived type - confirmed against
      * 02_long/03_retval.1.golden's "_addlong" callee NAME using type
-     * 22 (TY_LONG(6) | 020(16)), vs. every other confirmed callee
-     * (always int-returning) using TY_FUNC_INT(=TY_INT|020=16) as
-     * before. */
-    outcode(t1, "BNNS", OP_NAME, SC_EXTERN, ret_type | 020, name);
+     * 22 (TY_LONG(6) | 020), every int-returning callee's
+     * TY_FUNC_INT(16), and 05_arrptr/07_strlibc.1.golden's "_strcpy"
+     * (declared "char *strcpy();"): type 49 = ((9 & ~7) << 2) | 1 |
+     * 020, "function returning pointer to char" - the case a plain
+     * "ret_type | 020" would get wrong (25). */
+    outcode(t1, "BNNS", OP_NAME, SC_EXTERN, ty_incref_tag(ret_type, 020), name);
 
     parse_call_args_and_emit(p, t1, ret_type);
     return ev_dynamic_typed(ret_type);
@@ -836,6 +935,38 @@ static ExprVal parse_indirect_call(Parser *p, FILE *t1)
 
 static ExprVal parse_primary(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_STRING) {
+        /* A string literal - v7/cc/c00.c tree()'s STRING case ("fake a
+         * static char array"): the literal's bytes are written to
+         * temp2 under a fresh label (putstr()), and the expression is a
+         * NAME of that unnamed static "char[]", which - being an array
+         * - decays to its address: NAME(SC_STATIC, TY_CHAR, <label>)
+         * AMPER(TY_PTR_CHAR). Confirmed byte-for-byte against
+         * 05_arrptr/05_arrofptr.1.golden ("names[0] = \"one\";" ...),
+         * 07_strlibc.1.golden (a call argument) and 10_integ/
+         * 04_strrev.1.golden - the NAME's "offset" is the label, the
+         * same convention a local static's NAME uses.
+         *
+         * The label is taken from the function-wide counter when the
+         * literal is PARSED. v7 takes it ("cval = isn++") when the
+         * token is LEXED, which with its one-token peeks is the same
+         * moment in every realistic program; the one theoretical
+         * difference is a statement that itself begins with a string
+         * literal right where v7 peeks past a construct (after an
+         * "if (...)" condition, after an if-statement without
+         * "else", or as the first token of a for-increment) - there v7
+         * would number the literal before that construct's own label.
+         * The same goes for the order of temp2's runs: the order in
+         * which literals are parsed, which parse_for_stmt()'s buffered
+         * increment does not change (it is parsed before the body, as
+         * in v7). */
+        int lab = p->isn++;
+        putstr(p, lab, p->cur.sval, p->cur.slen);
+        advance(p);
+        outcode(t1, "BNNN", OP_NAME, SC_STATIC, TY_CHAR, lab);
+        outcode(t1, "BN", OP_AMPER, TY_PTR_CHAR);
+        return ev_dynamic_typed(TY_PTR_CHAR);
+    }
     if (p->cur.kind == T_ICON) {
         /* An integer literal too large for a plain (16-bit, signed)
          * int is automatically 'long' - standard K&R/C89 integer-
@@ -927,15 +1058,21 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
         }
 
         if (sym->is_array) {
-            /* Array-name-as-rvalue decay ("p = a;"): the NAME node
-             * itself still uses the array's base element type/offset
-             * (the array's first element), followed by AMPER to take
-             * its address - confirmed against 05_incdec.s.golden's
-             * "lea di,*-16.(bp)". An array is never a modifiable
-             * lvalue, so no postfix '++'/'--' check follows. */
-            outcode(t1, "BNNN", OP_NAME, sym->hclass, TY_INT, sym->offset);
-            outcode(t1, "BN", OP_AMPER, TY_PTR_INT);
-            return ev_dynamic();
+            /* Array-name-as-rvalue decay ("p = a;", "strlen(buf)"):
+             * the NAME node itself carries the array's ELEMENT type
+             * (v7's disarray() retypes it), followed by AMPER of
+             * "pointer to element" to take its address - confirmed
+             * for "int a[4]" against 05_incdec.1.golden (NAME 0, AMPER
+             * 8; "lea di,*-16.(bp)") and for "char buf[20]" against
+             * 05_arrptr/07_strlibc.1.golden and 10_integ/04_strrev.
+             * 1.golden (NAME 1, AMPER 9). The result is typed as that
+             * pointer, so it combines like one ("a + i" is pointer
+             * arithmetic). An array is never a modifiable lvalue, so no
+             * postfix '++'/'--' check follows. */
+            int pt = ty_ptr_of(sym->type);
+            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            outcode(t1, "BN", OP_AMPER, pt);
+            return ev_dynamic_typed(pt);
         }
 
         outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
@@ -1108,6 +1245,8 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             return ev_dynamic();
         }
         int elemtype = ty_decref(v.type);
+        if (elemtype == TY_CHAR || elemtype == TY_LONG)
+            refuse_char_long_access(p, elemtype);
         outcode(t1, "BN", OP_STAR, elemtype);
         return ev_dynamic_typed(elemtype);
     }
@@ -1316,8 +1455,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
                 v = ev_const(trunc16(v.value + r.value));
                 continue;
             }
-            if (!v.is_const && v.type != TY_INT && v.type != TY_CHAR &&
-                v.type != TY_LONG) {
+            if (!v.is_const && ty_is_ptr(v.type)) {
                 /* pointer + int - array/pointer subscript arithmetic
                  * ("*(a + i)" - 05_arrptr/04_ptrarreq.c's confirmed
                  * K&R array/pointer-equivalence idiom; `v` (the
@@ -1615,8 +1753,9 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
 /* Declarations */
 
 /*
- * decl := ('int' declarator (',' declarator)* | 'char' IDENT (',' IDENT)* | 'long' IDENT (',' IDENT)*) ';'
- * declarator := '*' IDENT | IDENT ('[' ICON ']')?
+ * decl := ('int'|'char'|'long') declarator (',' declarator)* ';'
+ * declarator := '*'* IDENT ('[' ICON ']' ('[' ICON ']')?)?
+ *             | '(' '*' IDENT ')' '(' ')'      ('int' only)
  *
  * Matches v7/cc/c03.c's AUTO-storage-class declarator loop: each
  * name's offset is assigned by symtab_declare_auto() (autolen -=
@@ -1640,9 +1779,13 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * see src/mutos_cc/README.md.
  *
  * 'char'/'long' locals - confirmed against 08_castsize.1.golden/
- * .s.golden's "long l;"/"char c;" ANAME offsets - only support the
- * plain-IDENT declarator (no '*'/'[' forms; not exercised by any
- * golden yet). A 'long' occupies MCC_SZLONG (4) bytes of frame space,
+ * .s.golden's "long l;"/"char c;" ANAME offsets - take the same
+ * declarator forms as 'int' (except a function pointer or a 2-D
+ * array): "char buf[20];", "char *s;" and "char *names[3];" are
+ * confirmed by 05_arrptr/07_strlibc.1.golden and 05_arrofptr.1.golden
+ * (every size goes through rlength() - see there). Reading or writing
+ * a 'char'/'long' ELEMENT is refused elsewhere (see
+ * refuse_char_long_access()). A 'long' occupies MCC_SZLONG (4) bytes of frame space,
  * matching its real value size. A 'char' occupies MCC_SZINT (2) bytes
  * of frame space DESPITE its real value size being MCC_SZCHAR (1) -
  * confirmed by "long l;" (offset -10) immediately followed by
@@ -1681,6 +1824,19 @@ static int try_claim_register(Parser *p)
     return --p->regvar;
 }
 
+/* v7/cc/c04.c's rlength(): an object's size rounded up to a whole
+ * number of words ("(length(cs)+ALIGN) & ~ALIGN", ALIGN = 1) - the
+ * size an AUTO local actually occupies in the frame. Confirmed for a
+ * 1-byte object by 08_castsize.1.golden ("char c;" takes 2 bytes of
+ * frame) and for an even-sized array by 05_arrptr/07_strlibc.1.golden
+ * ("char src[20];" at -24, then "char dst[20];" at -44); an
+ * odd-length char array ("char s[5];" -> 6 bytes) follows the same
+ * rule but no golden shows one. */
+static int rlength(long bytes)
+{
+    return (int)((bytes + 1) & ~1L);
+}
+
 static void parse_decl(Parser *p, FILE *t1)
 {
     int is_register = 0;
@@ -1689,16 +1845,13 @@ static void parse_decl(Parser *p, FILE *t1)
         advance(p); /* consume 'register' */
     }
 
-    int symtype, slotsize;
+    int basetype;
     if (p->cur.kind == T_KW_INT) {
-        symtype = TY_INT;
-        slotsize = MCC_SZINT;
+        basetype = TY_INT;
     } else if (p->cur.kind == T_KW_CHAR) {
-        symtype = TY_CHAR;
-        slotsize = MCC_SZINT; /* slot size, not value size - see above */
+        basetype = TY_CHAR;
     } else if (p->cur.kind == T_KW_LONG) {
-        symtype = TY_LONG;
-        slotsize = MCC_SZLONG;
+        basetype = TY_LONG;
     } else {
         c0_error_at(p->cur.line,
             "only 'int'/'char'/'long' local declarations are supported "
@@ -1711,45 +1864,21 @@ static void parse_decl(Parser *p, FILE *t1)
     }
     advance(p); /* consume 'int'/'char'/'long' */
 
-    if (symtype != TY_INT) {
-        /* 'char'/'long': plain IDENT declarators only (no '*'/'['
-         * forms - not exercised by any golden yet). */
-        for (;;) {
-            if (p->cur.kind != T_IDENT) {
-                c0_error_at(p->cur.line, "expected an identifier in declaration");
-                break;
-            }
-            char name[LEX_IDENT_MAX];
-            strncpy(name, p->cur.ident, sizeof name - 1);
-            name[sizeof name - 1] = '\0';
-            int line = p->cur.line;
-            advance(p);
-
-            SymEntry *sym = symtab_declare_auto(&p->syms, name, symtype, slotsize);
-            if (!sym) {
-                c0_error_at(line, "'%s' redeclared", name);
-            } else {
-                outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
-            }
-
-            if (p->cur.kind == T_COMMA) {
-                advance(p);
-                continue;
-            }
-            break;
-        }
-        expect(p, T_SEMI, "';'");
-        return;
-    }
-
     for (;;) {
         if (p->cur.kind == T_LPAREN) {
             /* Function-pointer declarator: '(' '*' IDENT ')' '(' ')'
              * - e.g. "int (*fp)();" - confirmed against
              * 07_funcptr.1.golden's main()'s "_fp" ANAME. Only this
-             * exact shape (an empty parameter list) is supported -
-             * see src/mutos_cc/README.md. */
+             * exact shape (an empty parameter list, an 'int' result)
+             * is supported - see src/mutos_cc/README.md. */
+            int pline = p->cur.line;
             advance(p); /* consume '(' */
+            if (basetype != TY_INT) {
+                c0_error_at(pline, "a pointer to a function returning "
+                                    "'char'/'long' is not yet supported - "
+                                    "see src/mutos_cc/README.md");
+                break;
+            }
             if (!expect(p, T_STAR, "'*'"))
                 break;
             if (p->cur.kind != T_IDENT) {
@@ -1785,18 +1914,14 @@ static void parse_decl(Parser *p, FILE *t1)
             break;
         }
 
-        /* One or more leading '*'s - "int *p;"/"int **pp;" (a
-         * pointer-to-pointer local, degree 2 - 05_arrptr/06_ptrptr.c;
-         * a single '*' is the original, already-confirmed degree-1
-         * case, unchanged). ty_ptr_of() chained `ptr_degree` times
-         * matches 06_ptrptr.1.golden's "int **pp;" exactly: type 40,
-         * NOT a naive "16" - see ty_ptr_of()'s own comment above. */
+        /* Zero or more leading '*'s - "int *p;"/"int **pp;" (05_arrptr/
+         * 06_ptrptr.c: ty_ptr_of() chained, type 40 for "int **" - see
+         * its own comment above), "char *s;" (type 9). */
         int ptr_degree = 0;
         while (p->cur.kind == T_STAR) {
             ptr_degree++;
             advance(p);
         }
-        int is_ptr = (ptr_degree > 0);
 
         if (p->cur.kind != T_IDENT) {
             c0_error_at(p->cur.line, "expected an identifier in declaration");
@@ -1808,10 +1933,21 @@ static void parse_decl(Parser *p, FILE *t1)
         int line = p->cur.line;
         advance(p);
 
+        /* The declared (element) type: the base type plus one PTR
+         * degree per '*'. For an array this is its ELEMENT type - an
+         * array is recorded by SymEntry.is_array, not by an ARRAY
+         * degree in `type` (see c0_sym.h) - so "char *names[3];"
+         * (05_arrptr/05_arrofptr.c, an array of pointers - the shape
+         * argv has) is a 3-element array of type 9, confirmed by
+         * 05_arrofptr.1.golden's NAME(9)/AMPER(41) for "names[i]". */
+        int decltype = basetype;
+        for (int k = 0; k < ptr_degree; k++)
+            decltype = ty_ptr_of(decltype);
+
         int is_array = 0;
         long arraylen = 0;
         long dim2 = 0;
-        if (!is_ptr && p->cur.kind == T_LBRACK) {
+        if (p->cur.kind == T_LBRACK) {
             advance(p);
             if (p->cur.kind != T_ICON) {
                 c0_error_at(p->cur.line, "expected an array size constant");
@@ -1821,6 +1957,10 @@ static void parse_decl(Parser *p, FILE *t1)
             }
             expect(p, T_RBRACK, "']'");
             is_array = 1;
+            if (arraylen <= 0) {
+                c0_error_at(line, "array dimension must be positive");
+                arraylen = 1;
+            }
             /* A second '[' M ']' - a 2-D array "int m[N][M];"
              * (05_arrptr/02_array2d.c): N*M ints in row-major order,
              * one contiguous block, so its frame slot is simply
@@ -1829,13 +1969,15 @@ static void parse_decl(Parser *p, FILE *t1)
              * below MCC_STAUTO) and 10_integ/05_matmul.1.golden's
              * three "int a[2][2]"-style locals at -12/-20/-28. The
              * inner dimension M is kept (SymEntry.dim2) as the row
-             * size emit_subscript() scales the outer index by. A
-             * third dimension is rejected rather than guessed: its
-             * wire shape follows from the same v7/cc derivation (see
-             * emit_subscript()'s comment), but mutos_c1's combined
-             * address arithmetic for it (v7/cc/c12.c's distrib()
-             * iterating over three scaled terms) is confirmed by no
-             * golden. */
+             * size emit_subscript() scales the outer index by. Only a
+             * plain 'int' element is accepted (emit_subscript_2d()
+             * and mutos_c1's 2-D address arithmetic are 'int'-only),
+             * and a third dimension is rejected rather than guessed:
+             * its wire shape follows from the same v7/cc derivation
+             * (see emit_subscript()'s comment), but mutos_c1's
+             * combined address arithmetic for it (v7/cc/c12.c's
+             * distrib() iterating over three scaled terms) is
+             * confirmed by no golden. */
             if (p->cur.kind == T_LBRACK) {
                 advance(p);
                 if (p->cur.kind != T_ICON) {
@@ -1849,6 +1991,10 @@ static void parse_decl(Parser *p, FILE *t1)
                     c0_error_at(line, "array dimension must be positive");
                     dim2 = 1;
                 }
+                if (decltype != TY_INT)
+                    c0_error_at(line, "a 2-D array of anything but 'int' is "
+                                       "not yet supported - see "
+                                       "src/mutos_cc/README.md");
                 if (p->cur.kind == T_LBRACK) {
                     c0_error_at(line, "arrays of three or more dimensions "
                                        "are not yet supported - see "
@@ -1864,21 +2010,18 @@ static void parse_decl(Parser *p, FILE *t1)
             }
         }
 
-        int size = is_array
-                 ? (int)(arraylen * (dim2 ? dim2 : 1) * MCC_SZINT)
-                 : MCC_SZINT;
-        int decltype = TY_INT;
-        for (int k = 0; k < ptr_degree; k++)
-            decltype = ty_ptr_of(decltype);
+        /* The frame slot: rlength() of the whole object - one element
+         * (a 'char' still takes a whole word, a 'long' two, any pointer
+         * one), or N (x M) elements of the element's own size. */
+        int size = rlength((is_array ? arraylen * (dim2 ? dim2 : 1) : 1) *
+                           (long)size_of_type(decltype));
 
-        /* 'register' is only attempted for a plain (non-array)
-         * declarator - see this function's own comment above; a
-         * pointer degree is left alone here too (goodreg() itself
-         * would accept it, but no golden exercises "register int
-         * *p;", so it takes the ordinary AUTO path rather than
-         * guessing the codegen a real register-resident pointer would
-         * need). */
-        int regnum = (is_register && !is_array && !is_ptr)
+        /* 'register' is only attempted for a plain 'int' scalar - see
+         * this function's own comment above; a pointer, an array, or a
+         * 'char'/'long' takes the ordinary AUTO path (goodreg() would
+         * accept a pointer, but no golden exercises "register int *p;",
+         * so it is not guessed at). */
+        int regnum = (is_register && !is_array && decltype == TY_INT)
                    ? try_claim_register(p) : -1;
 
         if (regnum >= 0) {
@@ -1899,7 +2042,7 @@ static void parse_decl(Parser *p, FILE *t1)
             if (!sym) {
                 c0_error_at(line, "'%s' redeclared", name);
             } else {
-                sym->is_ptr = is_ptr;
+                sym->is_ptr = (ptr_degree > 0 && !is_array);
                 sym->is_array = is_array;
                 sym->dim2 = (int)dim2;
                 outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
@@ -2234,6 +2377,8 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
         for (int i = 0; i < nstars; i++) {
             curtype = ty_decref(curtype);
+            if (curtype == TY_CHAR || curtype == TY_LONG)
+                refuse_char_long_access(p, curtype);
             outcode(t1, "BN", OP_STAR, curtype);
         }
     }
@@ -2251,6 +2396,30 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     emit_materialize(t1, rhs);
 
     outcode(t1, "BN", OP_ASSIGN, curtype);
+    outcode(t1, "BN", OP_EXPR, line);
+}
+
+/*
+ * call-stmt := IDENT '(' ... ')' ... ';'
+ *
+ * An expression statement that starts with a function call, its value
+ * discarded - "strcpy(src, \"hello, mutos\");" (05_arrptr/
+ * 07_strlibc.c). v7's statement() compiles ANY expression followed by
+ * ';' this way (rcexpr(tree()) - the tree, then EXPR with the line);
+ * the only other expression statements this grammar has are the
+ * assignment forms above, which are separate productions because an
+ * assignment is not part of parse_expr()'s precedence chain. The call
+ * may be the left operand of a larger expression ("f(x) + 1;" parses,
+ * pointless as it is), which parse_expr() handles as usual. Confirmed
+ * against 07_strlibc.1.golden: NAME(_strcpy) <args> COMMA CALL, then
+ * EXPR with the statement's own line - nothing else, no ASSIGN.
+ */
+static void parse_call_stmt(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    ExprVal v = parse_expr(p, t1);
+    expect(p, T_SEMI, "';'");
+    emit_materialize(t1, v);
     outcode(t1, "BN", OP_EXPR, line);
 }
 
@@ -2563,6 +2732,17 @@ static void parse_do_stmt(Parser *p, FILE *t1, int retlab)
 static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
 {
     advance(p); /* consume 'for' */
+
+    /* Both labels are allocated before anything inside the parentheses
+     * is parsed - v7/cc/c02.c statement()'s FOR case does "contlab =
+     * isn++; brklab = isn++;" and only then calls forstmt(). That order
+     * is invisible unless the init expression allocates a label of its
+     * own - a string literal ("for (s = \"abc\"; ...)") - which then
+     * gets the number after these two, as in v7. */
+    int saved_brklab = p->brklab, saved_contlab = p->contlab;
+    int test_lab = p->isn++;
+    int brk_lab  = p->isn++;
+
     expect(p, T_LPAREN, "'('");
 
     if (p->cur.kind != T_SEMI) {
@@ -2573,9 +2753,6 @@ static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
     }
     expect(p, T_SEMI, "';'");
 
-    int saved_brklab = p->brklab, saved_contlab = p->contlab;
-    int test_lab = p->isn++;
-    int brk_lab  = p->isn++;
     p->contlab = test_lab;
     p->brklab  = brk_lab;
 
@@ -2654,6 +2831,12 @@ static void parse_switch_stmt(Parser *p, FILE *t1, int retlab)
     int saved_in_switch = p->in_switch;
     int case_base = p->ncases;
 
+    /* v7/cc/c02.c statement()'s SWITCH case allocates the break label
+     * BEFORE parsing the controlling expression ("brklab = isn++; np =
+     * pexpr();") and the dispatch label only afterwards, in pswitch() -
+     * observable only when the expression holds a string literal. */
+    int sw_brklab = p->isn++;
+
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
     emit_materialize(t1, cond);
@@ -2664,7 +2847,7 @@ static void parse_switch_stmt(Parser *p, FILE *t1, int retlab)
     outcode(t1, "BN", OP_RFORCE, TY_INT);
     outcode(t1, "BN", OP_EXPR, line);
 
-    p->brklab = p->isn++;
+    p->brklab = sw_brklab;
     int swlab = p->isn++;
     branch_op(t1, swlab);
 
@@ -2805,6 +2988,8 @@ static void parse_statement(Parser *p, FILE *t1, int retlab)
         parse_goto_stmt(p, t1);
     } else if (p->cur.kind == T_IDENT && peek2_kind(p) == T_COLON) {
         parse_label_stmt(p, t1, retlab);
+    } else if (p->cur.kind == T_IDENT && peek2_kind(p) == T_LPAREN) {
+        parse_call_stmt(p, t1);
     } else if (p->cur.kind == T_IDENT) {
         parse_assign_stmt(p, t1);
     } else if (p->cur.kind == T_STAR) {
@@ -2860,7 +3045,7 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
 
 /*
  * param-decls := (('int'/'char'/'long') param-declarator (',' param-declarator)* ';')*
- * param-declarator := '*' IDENT | IDENT
+ * param-declarator := '*'* IDENT ('[' ICON? ']')? | '(' '*' IDENT ')' '(' ')'
  *
  * The K&R-style parameter TYPE declarations between a function's
  * '(' name-list ')' and its '{' - matches v7/cc/c03.c's own
@@ -2946,11 +3131,16 @@ static void parse_param_decls(Parser *p, FILE *t1,
                 break;
             }
 
-            int is_ptr = 0;
-            if (symtype == TY_INT && p->cur.kind == T_STAR) {
-                is_ptr = 1;
+            /* Leading '*'s - any base type, any degree ("char *a;" -
+             * 10_integ/04_strrev.c; "int *a;"). */
+            int ptr_degree = 0;
+            while (p->cur.kind == T_STAR) {
+                ptr_degree++;
                 advance(p);
             }
+            int ptype_full = symtype;
+            for (int k = 0; k < ptr_degree; k++)
+                ptype_full = ty_ptr_of(ptype_full);
             if (p->cur.kind != T_IDENT) {
                 c0_error_at(p->cur.line,
                     "expected a parameter name in declaration");
@@ -2968,13 +3158,13 @@ static void parse_param_decls(Parser *p, FILE *t1,
                     "'%s' is not one of this function's declared "
                     "parameters", p->cur.ident);
             } else {
-                ptype[idx] = symtype;
-                pptr[idx] = is_ptr;
+                ptype[idx] = ptype_full;
+                pptr[idx] = (ptr_degree > 0);
                 pdeclared[idx] = 1;
             }
             advance(p); /* consume IDENT */
 
-            if (symtype == TY_INT && !is_ptr && p->cur.kind == T_LBRACK) {
+            if (p->cur.kind == T_LBRACK) {
                 /* "int a[];" - an array parameter, K&R's array-decays-
                  * to-pointer rule (05_arrptr/04_ptrarreq.c's
                  * "sumarr(a, n) int a[]; int n; { ... }") - a
@@ -2985,13 +3175,18 @@ static void parse_param_decls(Parser *p, FILE *t1,
                  * pointer arithmetic - see emit_subscript()'s own
                  * is_ptr branch). Any size between the brackets is
                  * accepted and ignored, matching real K&R semantics
-                 * (a parameter's array size is not meaningful). */
+                 * (a parameter's array size is not meaningful). The
+                 * element type may itself be a pointer: "char
+                 * *argv[];" is "char **argv" - type 41, confirmed by
+                 * 09_abiprobe/01_argvmain.1.golden's NAME(argv). */
                 advance(p); /* '[' */
                 if (p->cur.kind == T_ICON)
                     advance(p);
                 expect(p, T_RBRACK, "']'");
-                if (idx >= 0)
+                if (idx >= 0) {
+                    ptype[idx] = ty_ptr_of(ptype_full);
                     pptr[idx] = 1;
+                }
             }
 
             if (p->cur.kind == T_COMMA) {
@@ -3008,7 +3203,7 @@ static void parse_param_decls(Parser *p, FILE *t1,
                        * parameter explicitly. */
 
     for (int i = 0; i < nparams; i++) {
-        int decltype = pfunc[i] ? TY_PTR_FUNC_INT : pptr[i] ? TY_PTR_INT : ptype[i];
+        int decltype = pfunc[i] ? TY_PTR_FUNC_INT : ptype[i];
         int size = (pfunc[i] || pptr[i]) ? MCC_SZINT
                  : (ptype[i] == TY_LONG) ? MCC_SZLONG
                  : MCC_SZINT; /* slot size - a char parameter still
@@ -3107,7 +3302,8 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
 
 /*
  * external definition:
- *   (('int'|'char'|'long') IDENT '(' ')' ';')                  |
+ *   (('int'|'char'|'long') '*'* IDENT '(' ')'
+ *                          (',' '*'* IDENT '(' ')')* ';')      |
  *   (('int'|'char'|'long')? IDENT '(' (IDENT (',' IDENT)*)? ')'
  *      ('int'|'char'|'long' IDENT (',' IDENT)* ';')* '{' ... '}')
  *
@@ -3116,10 +3312,15 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
  * source has SOME declaration preceding the use) - parsed and
  * entirely discarded (register_func() only), confirmed against
  * 04_mutrec.1.golden, which contains no additional wire output at all
- * for this line: every call site emits the exact same NAME(SC_EXTERN,
- * TY_FUNC_INT, name) leaf regardless of whether a prototype preceded
- * it (see parse_call()). Only an EMPTY parameter list is supported
- * for a prototype - not exercised by any golden otherwise.
+ * for this line: an int-returning callee's NAME is the same
+ * NAME(SC_EXTERN, TY_FUNC_INT, name) leaf whether or not a prototype
+ * preceded it (see parse_call()). What a prototype DOES change is a
+ * call's types when the function returns something else - "long
+ * addlong();"/"char *strcpy();" (02_long/03_retval.c, 05_arrptr/
+ * 07_strlibc.c). A prototype may declare a pointer result ('*'s
+ * before the name) and may be one of a comma-separated list ("int
+ * strlen(), strcmp();"); only an EMPTY parameter list is supported -
+ * not exercised by any golden otherwise.
  *
  * The second form is an actual function DEFINITION (a body follows) -
  * an implicit-int K&R definition ("name(params) paramdecls { ... }",
@@ -3149,86 +3350,118 @@ static void parse_extdef(Parser *p, FILE *t1)
         has_type = 1;
         advance(p); /* consume 'int'/'char'/'long' */
     }
+    int base_type = ret_type;
 
-    if (p->cur.kind != T_IDENT) {
-        if (has_type)
-            c0_error_at(p->cur.line,
-                "expected an identifier in top-level declaration");
-        else
-            c0_error_at(p->cur.line,
-                "external definition syntax (expected a function name - "
-                "mutos_c0's current grammar coverage only handles `name() "
-                "{ ... }` function definitions - see src/mutos_cc/README.md)");
-        advance(p);
-        return;
-    }
+    for (int ndecl = 0; ; ndecl++) {
+        /* Leading '*'s make the function return a pointer - "char
+         * *strcpy();" (05_arrptr/07_strlibc.c, 10_integ/04_strrev.c) -
+         * the same incref() chaining a local's declarator uses. */
+        int ptr_degree = 0;
+        while (has_type && p->cur.kind == T_STAR) {
+            ptr_degree++;
+            advance(p);
+        }
+        ret_type = base_type;
+        for (int k = 0; k < ptr_degree; k++)
+            ret_type = ty_ptr_of(ret_type);
 
-    Token name_tok = p->cur;
-    advance(p); /* consume IDENT */
-
-    if (p->cur.kind != T_LPAREN) {
-        if (has_type) {
-            /* Matches the original parse_top_prototype()'s own
-             * diagnostic exactly - a typed top-level declaration with
-             * no '(' at all (e.g. "int x;") is a global VARIABLE
-             * declaration, not yet supported. */
-            c0_error_at(p->cur.line,
-                "a top-level declaration must be a function prototype "
-                "('name();') - a global variable declaration is not yet "
-                "supported - see src/mutos_cc/README.md");
-            while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
-                advance(p);
-            if (p->cur.kind == T_SEMI)
-                advance(p);
+        if (p->cur.kind != T_IDENT) {
+            if (has_type)
+                c0_error_at(p->cur.line,
+                    "expected an identifier in top-level declaration");
+            else
+                c0_error_at(p->cur.line,
+                    "external definition syntax (expected a function name - "
+                    "mutos_c0's current grammar coverage only handles `name() "
+                    "{ ... }` function definitions - see src/mutos_cc/README.md)");
+            advance(p);
             return;
         }
-        expect(p, T_LPAREN, "'('");
-        return;
-    }
-    advance(p); /* consume '(' */
 
-    /*
-     * K&R-style parameter-NAME list (bare identifiers only - types
-     * follow separately, see parse_param_decls() above). An empty
-     * '()' (no params) takes the pre-existing, unchanged path.
-     */
-    char param_names[MCC_MAXPARAMS][LEX_IDENT_MAX];
-    int nparams = 0;
-    if (p->cur.kind != T_RPAREN) {
-        for (;;) {
-            if (p->cur.kind != T_IDENT) {
-                c0_error_at(p->cur.line, "expected a parameter name");
-                break;
-            }
-            if (nparams >= MCC_MAXPARAMS) {
+        Token name_tok = p->cur;
+        name_tok.sval = NULL; /* an IDENT never owns one; never alias it */
+        advance(p); /* consume IDENT */
+
+        if (p->cur.kind != T_LPAREN) {
+            if (has_type) {
+                /* Matches the original parse_top_prototype()'s own
+                 * diagnostic exactly - a typed top-level declaration with
+                 * no '(' at all (e.g. "int x;") is a global VARIABLE
+                 * declaration, not yet supported. */
                 c0_error_at(p->cur.line,
-                    "too many parameters (internal limit %d)", MCC_MAXPARAMS);
+                    "a top-level declaration must be a function prototype "
+                    "('name();') - a global variable declaration is not yet "
+                    "supported - see src/mutos_cc/README.md");
+                while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+                    advance(p);
+                if (p->cur.kind == T_SEMI)
+                    advance(p);
+                return;
+            }
+            expect(p, T_LPAREN, "'('");
+            return;
+        }
+        advance(p); /* consume '(' */
+
+        /*
+         * K&R-style parameter-NAME list (bare identifiers only - types
+         * follow separately, see parse_param_decls() above). An empty
+         * '()' (no params) takes the pre-existing, unchanged path.
+         */
+        char param_names[MCC_MAXPARAMS][LEX_IDENT_MAX];
+        int nparams = 0;
+        if (p->cur.kind != T_RPAREN) {
+            for (;;) {
+                if (p->cur.kind != T_IDENT) {
+                    c0_error_at(p->cur.line, "expected a parameter name");
+                    break;
+                }
+                if (nparams >= MCC_MAXPARAMS) {
+                    c0_error_at(p->cur.line,
+                        "too many parameters (internal limit %d)", MCC_MAXPARAMS);
+                    break;
+                }
+                snprintf(param_names[nparams], LEX_IDENT_MAX, "%s", p->cur.ident);
+                nparams++;
+                advance(p);
+                if (p->cur.kind == T_COMMA) {
+                    advance(p);
+                    continue;
+                }
                 break;
             }
-            snprintf(param_names[nparams], LEX_IDENT_MAX, "%s", p->cur.ident);
-            nparams++;
-            advance(p);
+        }
+        if (!expect(p, T_RPAREN, "')'"))
+            return;
+
+        if (has_type && nparams == 0 &&
+            (p->cur.kind == T_SEMI || p->cur.kind == T_COMMA)) {
+            /* "TYPE name();" - a prototype-only declaration, no body,
+             * possibly one of a comma-separated list ("int strlen(),
+             * strcmp();" - 05_arrptr/07_strlibc.c) - see this
+             * function's own comment above. No wire output at all:
+             * 07_strlibc.1.golden starts straight with main()'s SYMDEF. */
+            register_func(p, name_tok.ident, ret_type);
             if (p->cur.kind == T_COMMA) {
                 advance(p);
                 continue;
             }
-            break;
+            advance(p); /* consume ';' */
+            return;
         }
-    }
-    if (!expect(p, T_RPAREN, "')'"))
-        return;
 
-    if (has_type && nparams == 0 && p->cur.kind == T_SEMI) {
-        /* "TYPE name();" - a prototype-only declaration, no body -
-         * see this function's own comment above. */
-        advance(p); /* consume ';' */
+        if (ndecl > 0) {
+            /* "int f(), g() { ... }" - a definition after a prototype
+             * in the same declarator list is not C. */
+            c0_error_at(p->cur.line, "a function definition cannot follow "
+                                      "other declarators in the same "
+                                      "declaration");
+        }
+        outcode(t1, "BS", OP_SYMDEF, name_tok.ident);
         register_func(p, name_tok.ident, ret_type);
+        cfunc(p, name_tok.ident, t1, param_names, nparams, ret_type);
         return;
     }
-
-    outcode(t1, "BS", OP_SYMDEF, name_tok.ident);
-    register_func(p, name_tok.ident, ret_type);
-    cfunc(p, name_tok.ident, t1, param_names, nparams, ret_type);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3238,6 +3471,7 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     Parser p;
     memset(&p, 0, sizeof p); /* p.cur.sval must start NULL - advance() frees it */
     lex_init(&p.lx, in, c0_diag_filename);
+    p.t2 = temp2;
     p.isn = 1;
     p.have_la = 0;
     p.syms.head = NULL;
