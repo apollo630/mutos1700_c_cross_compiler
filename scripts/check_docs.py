@@ -18,7 +18,8 @@ this repo (see CLAUDE.md's Session-Start Protocol / Workflow Guideline 6):
      as one line each; the check needs no "expected value" to maintain,
      only that every occurrence of a fact agrees with every other one.
   5. A "Last updated: YYYY-MM-DD" line that doesn't match the file's actual
-     last git-commit date.
+     last git-commit date - or, for a file with uncommitted changes, today's
+     date (the date the commit about to be made will carry).
 
 This does not replace human review - it only catches the mechanical,
 easy-to-miss cases: a number bumped in one place but not another, a
@@ -31,6 +32,7 @@ Exit status is 0 if clean, 1 if any check found something. Run from
 anywhere inside the repo; it locates the repo root itself.
 """
 
+import datetime
 import difflib
 import os
 import re
@@ -261,14 +263,46 @@ def last_commit_date(root, relpath):
     return out.stdout.strip() or None
 
 
+def has_uncommitted_changes(root, relpath):
+    """True if the working tree (staged or not) differs from HEAD for
+    `relpath`. False if it does not - or if there is no HEAD yet."""
+    r = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", relpath],
+        capture_output=True, cwd=root,
+    )
+    return r.returncode == 1
+
+
 def check_last_updated(root, files):
+    # A file that is about to be committed must carry the date of THAT
+    # commit, not of its previous one. Comparing only against `git log`
+    # made the pre-commit hook reject every correctly bumped stamp on the
+    # first commit of a new day (the log still showed the previous day's
+    # commit) - and let through a commit on a later day that forgot to
+    # bump the stamp at all (CI then failed after the push). For a file
+    # with uncommitted changes the expected
+    # date is therefore today's (local time, as git records the author
+    # date of a new commit); for an unchanged file, e.g. in CI's clean
+    # checkout, it is still its last commit's date.
+    today = datetime.date.today().isoformat()
     for relpath in files:
         lines = read_lines(root, relpath)
+        changed = None
         for lineno, line in enumerate(lines, 1):
             m = DATE_STAMP_RE.search(line)
             if not m:
                 continue
             stated = m.group(1)
+            if changed is None:
+                changed = has_uncommitted_changes(root, relpath)
+            if changed:
+                if stated != today:
+                    report(
+                        f"{relpath}:{lineno}: says 'Last updated {stated}' but the "
+                        f"file has uncommitted changes, so the commit carrying them "
+                        f"will be dated {today} - bump the date as part of that change"
+                    )
+                continue
             actual = last_commit_date(root, relpath)
             if actual and actual != stated:
                 report(

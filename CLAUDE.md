@@ -286,7 +286,8 @@ You act as an expert systems programmer, compiler architect, and operating syste
      catches the part of this that's easy to miss by hand — a number restated in more
      than one file that fell out of sync, a stale/renamed filename still quoted
      somewhere, a broken internal link, or a "Last updated" stamp that doesn't match
-     the file's actual last commit. It runs in CI on every push/PR touching a `.md`
+     the file's actual last commit (for a file with uncommitted changes: today's date,
+     the date the pending commit will carry). It runs in CI on every push/PR touching a `.md`
      file (`.github/workflows/docs-consistency.yml`), and — after a one-time
      `make install-hooks` per clone — automatically before every local commit too
      (`.githooks/pre-commit`, blocks the commit on failure; bypass with
