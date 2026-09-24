@@ -237,23 +237,67 @@ static Token lex_number(Lexer *lx, int first, int line)
     return t;
 }
 
+/* Sentinel lex_escape() result for a backslash-newline inside a
+ * string or character literal: the pair is a line continuation that
+ * contributes no character at all. */
+#define LEX_ESC_CONTINUATION (-2)
+
+/*
+ * The character denoted by a backslash escape; the backslash itself
+ * has already been consumed. Transcribes v7/cc/c00.c's mapch() - the
+ * single routine the real front end uses for both string and
+ * character literals - exactly:
+ *
+ *   \t \n \b \r        the usual control characters
+ *   \f                  014 (form feed)
+ *   \v                  013 (vertical tab)
+ *   \d, \dd, \ddd       1 to 3 OCTAL digits (so \0 is NUL, \012 a
+ *                       newline, \377 the byte 255); the first
+ *                       non-octal character after them is pushed back
+ *   \<newline>          a continuation: no character, the next source
+ *                       line continues the literal
+ *   \<anything else>    that character itself - which is how \\, \'
+ *                       and \" work: mapch() has no case for them
+ *
+ * An octal escape can exceed a byte (\777 is 511); lex_string() keeps
+ * only the low 8 bits, exactly like v7's putstr()'s "c & 0377".
+ * Returns LEX_ESC_CONTINUATION for a backslash-newline and EOF at end
+ * of input.
+ */
 static int lex_escape(Lexer *lx)
 {
     int c = lex_rawgetc(lx);
     switch (c) {
-    case 'n': return '\n';
     case 't': return '\t';
+    case 'n': return '\n';
     case 'b': return '\b';
     case 'r': return '\r';
-    case 'f': return '\f';
-    case '\\': return '\\';
-    case '\'': return '\'';
-    case '"': return '"';
-    case '0': return '\0';
-    default:  return c;
+    case 'f': return 014;
+    case 'v': return 013;
+    case '\n': return LEX_ESC_CONTINUATION;
+    case '0': case '1': case '2': case '3':
+    case '4': case '5': case '6': case '7': {
+        int n = 0, digits = 0;
+        while (digits < 3 && c >= '0' && c <= '7') {
+            n = (n << 3) + (c - '0');
+            digits++;
+            c = lex_rawgetc(lx);
+        }
+        lex_ungetc(lx, c);
+        return n;
+    }
+    default:
+        return c; /* EOF included - the caller reports it */
     }
 }
 
+/*
+ * A string literal; the opening '"' has already been consumed. The
+ * processed bytes are kept with an explicit length (Token.slen), since
+ * an escape like \0 legitimately embeds a NUL. Ends at the closing
+ * '"'; a raw newline or end of input first is an error (v7's mapch():
+ * "Nonterminated string").
+ */
 static Token lex_string(Lexer *lx, int line)
 {
     Token t = {0};
@@ -261,6 +305,10 @@ static Token lex_string(Lexer *lx, int line)
     t.line = line;
     size_t cap = 32, n = 0;
     char *s = malloc(cap);
+    if (!s) {
+        c0_error_at(line, "out of memory reading a string literal");
+        return t;
+    }
     for (;;) {
         int c = lex_rawgetc(lx);
         if (c == EOF || c == '\n') {
@@ -269,13 +317,29 @@ static Token lex_string(Lexer *lx, int line)
         }
         if (c == '"')
             break;
-        if (c == '\\')
+        if (c == '\\') {
             c = lex_escape(lx);
-        if (n + 1 >= cap) { cap *= 2; s = realloc(s, cap); }
-        s[n++] = (char)c;
+            if (c == LEX_ESC_CONTINUATION)
+                continue;
+            if (c == EOF) {
+                c0_error_at(line, "Unterminated string literal");
+                break;
+            }
+        }
+        if (n + 1 >= cap) {
+            char *ns = realloc(s, cap * 2);
+            if (!ns) {
+                c0_error_at(line, "out of memory reading a string literal");
+                break;
+            }
+            s = ns;
+            cap *= 2;
+        }
+        s[n++] = (char)(c & 0377);
     }
     s[n] = '\0';
     t.sval = s;
+    t.slen = n;
     return t;
 }
 

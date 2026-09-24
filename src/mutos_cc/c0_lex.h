@@ -56,7 +56,14 @@ typedef struct {
     int     is_long;            /* T_ICON: had an 'l'/'L' suffix */
     int     is_unsigned;        /* T_ICON: had a 'u'/'U' suffix */
     char   *sval;                /* T_STRING: owned, malloc'd, escapes
-                                   * already processed */
+                                   * already processed (v7/cc/c00.c's
+                                   * mapch() rules - see c0_lex.c's
+                                   * lex_escape()); NUL-terminated for
+                                   * convenience, but may also contain
+                                   * embedded NULs ("a\0b"), so slen,
+                                   * not strlen(), is its length */
+    size_t  slen;                /* T_STRING: number of bytes in sval,
+                                   * excluding the convenience NUL */
 } Token;
 
 typedef struct {
