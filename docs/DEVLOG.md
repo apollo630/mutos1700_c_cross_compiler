@@ -3519,6 +3519,133 @@ ORDER in which the dispatch loop visits parts of temp1 - "subtree replay":
 `02_bubsort` and `03_linklist` need more than this (struct types for the
 latter), so `05_matmul` is the one file the work would finish on its own.
 
+### Evaluation order - implemented for `10_integ/05_matmul` (`mutos_c1` extended and verified this session)
+
+**The v7 mechanism, confirmed from source.** `v7/cc/table.s`'s `*` entry
+(`cr42`) tries, in order, `%n,aw` (right operand addressable), `%n,ew*` /
+`%n,e` (right operand fits in the registers left over), and `%n,n`, whose
+template is `SS` / `F` / `mul (sp)+,R`. In `c10.c`'s `cexpr()` a template
+letter `S` is the right subtree and a second `S` routes it through the
+stack table, so `%n,n` computes the RIGHT operand onto the stack first,
+then the left into the working register - exactly `05_matmul.s.golden`:
+
+```
+lea di,&b / mov si,k / sal si,*1 / add si,j / sal si,*1 / add di,si
+mov di,(di) / push di                                   SS
+lea di,&a / mov si,i / sal si,*1 / add si,k / sal si,*1 / add di,si
+mov di,(di)                                             F
+mov ax,di / pop cx / imul cx                            mul (sp)+,R
+```
+
+Which operand is "right" comes from `c12.c`'s `acommute()`: `insert()`
+keeps commutative operands sorted by descending `degree()`, moving a term
+back only past a strictly LOWER degree, so two equal-degree operands stay
+in source order - `b[k][j]` is the spilled one because it is the source's
+right operand.
+
+**Implementation ("subtree replay", as planned).** `c1_gen.c`'s new
+"Evaluation order" section:
+
+- `plan_expression()` runs at the first opcode of every expression (a
+  leaf, with the value stack empty). `prescan_expr()` walks temp1 to the
+  expression's terminator (`EXPR`/`CBRANCH`) with `scan_op_args()` - the
+  arity table `scan_consumer()` already used, now its second client -
+  building an `ENode` index: each node's own opcode offset, its subtree's
+  start offset (postfix: every subtree is one contiguous byte range), and
+  its operands. It then restores temp1's position.
+- `order_right_first()` is the only decision taken: int `TIMES` whose two
+  operands are both `is_2d_elem_read()` - the exact wire shape
+  `emit_subscript_2d()` writes for `m[i][j]` with two plain-variable
+  subscripts. If no node qualifies, no plan is made and the expression
+  streams exactly as before (hence: every other golden and every fuzzed
+  program without such a product produces byte-identical output).
+- `plan_build()` turns the index into a `Plan` of `SEG_RANGE` steps
+  (merged when adjacent) plus the two value-stack steps a reordered
+  operator needs: `[right] SPILL [left] SWAP [operator ...]`.
+  `plan_step()` executes it at the top of the dispatch loop - seeking to
+  each range, letting the ORDINARY handlers read their own opcodes there,
+  and stopping with an internal error if a handler ever reads past a
+  range's end. Handler lookaheads (`OP_AMPER`'s `scan_consumer()`,
+  `OP_STAR`'s `&*` cancel, `OP_PLUS`'s displacement peek) are unaffected,
+  since a subtree is replayed whole and still sees temp1's real structure
+  around it.
+- `plan_spill()` loads a dereferenced value in place and pushes it (`mov
+  di,(di)` / `push di`, the same shape a dereferenced call argument gets)
+  and leaves the new `VK_STACKED` in its place; `plan_swap()` restores
+  left/right order on the value stack. `OP_TIMES` pops a `VK_STACKED`
+  right operand as `mov ax,<left reg>` / `pop cx` / `imul cx`.
+  `pop_val()` and `discard_val()` refuse `VK_STACKED`, so no other
+  consumer can silently unbalance the machine stack.
+
+**Why the gate is narrower than v7's rule.** By `c12.c`'s `degree()`
+(`islong()` is 1 for `int`; `TIMES` by a power of two keeps its operand's
+degree), a 1-D element `a[i]` has degree 1 - the same as a 2-D element -
+and both are a `STAR` over a computed address, so `dcalc()` is the same
+too. The real compiler therefore very probably spills `a[i] * b[j]` the
+same way. But no golden shows it, so it stays refused (by the
+register-occupancy guard, as before). The MUTOS register budget itself
+(`nrleft` at the match) cannot be recovered from one golden: all it shows
+is that a degree-1 non-addressable right operand did not fit.
+
+**Also noticed, not changed.** `tests/mutos_as/kernel_nonopt/*.s` has no
+`mov ax,(reg)` anywhere - a value behind a computed address reaches AX
+through the working register (`mov di,(di)` / `mov ax,di`, as in this
+golden), and only an addressable operand (`mov ax,*10.(di)`, amx.s) is
+loaded straight into AX. `c1` currently emits `mov ax,(di)` for e.g.
+`x = a[i] * y;`, which is therefore probably not the real shape. No
+golden covers it.
+
+**A pre-existing `mutos_c0` bug, found by the semantic check below.** A
+constant LEFT operand of a binary operator is emitted on the RIGHT: `7 -
+x`, `7 / x`, `7 % x`, `7 << x` and `7 < x` produce the same temp1 bytes as
+`x - 7`, `x / 7`, ...; `2 - 9 - x` becomes `x - (-7)`. Cause:
+`c0_parser.c` keeps a constant unmaterialized (`ExprVal.is_const`) so it
+can fold it with a constant sibling, and `emit_materialize()` writes it
+only when the operator is reached - after the right operand's own bytes
+have been streamed. v7 does not do this (`c01.c`'s `fold()` folds only
+when BOTH operands are constants and never reorders), so the real front
+end writes `CON 7, NAME x, MINUS`. No corpus file has a constant left
+operand, which is why every `.1.golden` still matches. Silent wrong code
+for any non-commutative operator; harmless (but not v7's wire order) for
+`+`/`*`/`&`/`|`/`^`. Not fixed here - it is a `c0` change with its own
+verification; recorded in `STATUS.md`'s open items. The fix is to buffer
+the right operand's bytes while the left one is still a pending constant
+(the `open_memstream()` technique `for`'s deferred increment already
+uses) and emit `CON` first unless the right operand folds too.
+
+**Verification.**
+
+- `make test`: 38 of 62 byte-exact end-to-end (up from 37 of 62:
+  `10_integ/05_matmul`), 0 genuine mismatches; `mutos_as` 67/67 and
+  `mutos_cpp` 5/5 unchanged; zero warnings under `-Wall -Wextra
+  -Wpedantic` from a clean build.
+- `mutos_c1` alone on all 62 golden `.1`/`.2` pairs, against the previous
+  binary: `.s`, stderr and exit status identical for 61; only `05_matmul`
+  changed, and now matches (42 of 62 match via `c1` alone, up from 41).
+  Every file that still stops is a byte-exact prefix of its golden except
+  `02_bubsort` (the relational swap, unchanged).
+- A semantic check, as the lesson below asked for: a small interpreter for
+  the instruction subset `c1` emits (validated first on real goldens:
+  `05_matmul` returns 134, `02_array2d` 138, `01_arrbasic` 30, `04_for`
+  45, `01_intarith` 2 - all correct by hand) runs every accepted output of
+  a random-program generator built around 2-D arrays, and compares the
+  final value of every scalar AND every array element with the value the
+  generator computed (16-bit wraparound). Over 3500 such programs: every
+  output that differs from the previous binary's is a program containing
+  a product of two 2-D elements that the previous binary refused; every
+  accepted output assembles with `mutos_as` and ends in exactly the
+  expected state (690 programs executed, 593 of them through the new
+  spill, 116 with the spill nested inside a pending indirect store - `push`
+  address, `push` operand, `pop cx`, `pop bx`). 1500 scalar-only programs:
+  output identical to the previous binary for all.
+- Hand-written edge cases: a plan whose first step is not at the current
+  position (`return a[i][k] * b[k][j];`), a loop condition, a `for`
+  increment (whose bytes `c0` defers past the body), a call argument - all
+  correct; two such products in one statement, `a[i] * b[j]`, and a
+  `register` subscript are refused with explicit diagnostics.
+- ASan/UBSan build of `mutos_c1` over the 62 golden pairs and 800 fuzzed
+  programs: clean.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -3677,7 +3804,20 @@ These apply to *every* milestone, not just the one where they were first learned
   computes the wrong thing: `a = v[1];` storing `&v[1]` assembled fine and
   was found only by reading a sample of the output. Anything that reorders
   evaluation (see the `05_matmul` plan) wants a semantic check - running
-  fuzzed programs in an 8086 emulator against their expected results.
+  fuzzed programs in an 8086 emulator against their expected results
+  (done for the `05_matmul` change: an interpreter for `c1`'s instruction
+  subset, validated on real goldens first, comparing every variable's
+  final value - see that section).
+- **A semantic check finds bugs the golden corpus structurally cannot.**
+  Its first run flagged `mutos_c0` compiling `7 - x` as `x - 7` - wrong
+  since the first binary operator, invisible to all 62 goldens because
+  none of them has a constant left operand. When such a check flags a
+  program, first compare the PREVIOUS binary's output for it: identical
+  output means a pre-existing bug, not a regression of the change under
+  test (all four first flags here were that `c0` bug; none involved the
+  reordering). And keep the generator away from a known-broken construct
+  while validating something else, rather than letting it drown the
+  signal.
 - **A consistency check must agree with the moment it runs at.**
   `check_docs.py`'s Check 5 compared a "Last updated" stamp with the file's
   last commit in `git log`. Run from the pre-commit hook, that is the

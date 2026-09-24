@@ -19,7 +19,11 @@
  * its section below), which alone knows mutos_as's source-line syntax
  * and also runs the register-occupancy guard (note_writes()) that
  * turns a register collision into an explicit "not yet supported"
- * instead of silently wrong code.
+ * instead of silently wrong code. The ORDER in which the loop visits
+ * temp1 is postfix order, except where an expression's operands must
+ * be evaluated right operand first - see the "Evaluation order"
+ * section (plan_expression()), which then replays temp1's subtrees in
+ * that order through the same handlers.
  *
  * Unlike the constant-folding-only version of this file (which only
  * ever needed a stack of plain numbers), generating real code for
@@ -138,7 +142,18 @@ static int ty_is_word(int t) { return t == TY_INT || t == TY_UNSIGN || ty_is_ptr
 
 typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_PAIR, VK_LONG, VK_LCON,
                VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR,
-               VK_STATICADDR, VK_REGOFF, VK_SCALED, VK_ROWADDR } ValKind;
+               VK_STATICADDR, VK_REGOFF, VK_SCALED, VK_ROWADDR,
+               VK_STACKED } ValKind;
+/* VK_STACKED - an operand that was evaluated AHEAD of its left-hand
+ * sibling and pushed onto the real machine stack ("push di"), so the
+ * sibling's own code could use the working registers freely - the
+ * evaluation-order section's SEG_SPILL step (plan_spill()) produces
+ * it. It carries no register and no operand text: its only consumer
+ * is the operator that pops it back ("pop cx"). Confirmed for one
+ * operator only, int TIMES (10_integ/05_matmul.s.golden's "a[i][k] *
+ * b[k][j]" -> ... "push di" ... "mov ax,di" / "pop cx" / "imul cx");
+ * pop_val() and discard_val() refuse it, so any other consumer is an
+ * internal error rather than a silently unbalanced machine stack. */
 /* VK_REGOFF - "the pointer value `cl` (a memory operand or a
  * register), plus the constant `imm` bytes", neither loaded nor added
  * yet: pointer arithmetic with a compile-time-constant index
@@ -419,6 +434,32 @@ enum {
     RB_DI = 1u << 5
 };
 
+/* One step of an evaluation-order plan (see the "Evaluation order"
+ * section further below): stream a contiguous range of temp1 through
+ * the ordinary opcode handlers, or one of the two value-stack steps a
+ * reordered operator needs. */
+typedef enum { SEG_RANGE, SEG_SPILL, SEG_SWAP } SegKind;
+typedef struct {
+    SegKind kind;
+    long    start, end;   /* SEG_RANGE: temp1 byte offsets, [start, end) */
+} Seg;
+
+/* An expression's opcode-visiting order, when it differs from temp1's
+ * own postfix order. Fixed capacity, like GenState's other buffers: a
+ * plan needs 5 steps at most per reordered operator (plus one range),
+ * so this is far beyond any expression a register-occupancy guard
+ * would let through anyway. */
+#define PLAN_MAX 64
+typedef struct {
+    int  active;
+    int  n, cur;          /* steps, and the one being executed */
+    int  entered;         /* the current SEG_RANGE was already seeked to */
+    long end;             /* the expression's end - where its terminator
+                           * (EXPR/CBRANCH) starts, and where plain
+                           * streaming resumes once the plan is done */
+    Seg  seg[PLAN_MAX];
+} Plan;
+
 typedef struct {
     FILE *out;                /* the .s output stream - see the emission
                                 * layer (put_insn() and friends) */
@@ -495,6 +536,9 @@ typedef struct {
                                  * assignment's own "mov", not at
                                  * INCAFT's own position. */
     int  ndeferred;
+    Plan plan;                 /* the current expression's evaluation-
+                                 * order plan, while one is active - see
+                                 * the "Evaluation order" section */
 } GenState;
 
 static void gen_fatal(const char *fmt, ...)
@@ -553,6 +597,9 @@ static Val pop_val(GenState *g)
         gen_fatal("a 2-D array subscript used in a shape other than a "
                   "complete \"m[i][j]\" element reference is not yet "
                   "supported - see src/mutos_cc/README.md");
+    if (v.kind == VK_STACKED)
+        gen_fatal("internal: a spilled (machine-stack) operand reached a "
+                  "consumer other than int TIMES");
     return v;
 }
 
@@ -563,6 +610,9 @@ static void discard_val(GenState *g)
 {
     if (g->valsp <= 0)
         gen_fatal("expression stack underflow - malformed temp1 stream");
+    if (g->valstack[g->valsp - 1].kind == VK_STACKED)
+        gen_fatal("internal: a spilled (machine-stack) operand was "
+                  "discarded - the machine stack would be left unbalanced");
     g->valsp--;
 }
 
@@ -703,6 +753,7 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_ARGLIST: snprintf(buf, n, "<unrendered-arglist>"); break;
     case VK_SCALED: snprintf(buf, n, "<unmaterialized-scaled-index>"); break;
     case VK_ROWADDR: snprintf(buf, n, "<unmaterialized-row-address>"); break;
+    case VK_STACKED: snprintf(buf, n, "<spilled-operand>"); break;
     }
 }
 
@@ -2182,6 +2233,361 @@ static Consumer scan_consumer(FILE *t1)
 }
 
 /* -------------------------------------------------------------- */
+/* Evaluation order ("subtree replay").
+ *
+ * mutos_c1 generates code opcode by opcode in temp1's own postfix
+ * order, which is always left operand first. The real compiler does
+ * not: v7/cc's code tables choose, per operator, which operand to
+ * evaluate first by how hard each one is. For '*' (v7/cc/table.s,
+ * "cr42"), once neither operand is addressable and the right one no
+ * longer fits in the registers left over (v7's dcalc() = 24, template
+ * "%n,n"), the template is
+ *
+ *     SS          the RIGHT operand, computed onto the stack
+ *     F           then the left one, into the working register
+ *     mul (sp)+,R
+ *
+ * (v7/cc/c10.c's cexpr(): 'S' = the right subtree, a second 'S' =
+ * through the stack table). 10_integ/05_matmul.s.golden is the MUTOS
+ * version of exactly that, for "sum + a[i][k] * b[k][j]":
+ *
+ *     lea di,&b / ... / add di,si / mov di,(di) / push di     SS
+ *     lea di,&a / ... / add di,si / mov di,(di)                F
+ *     mov ax,di / pop cx / imul cx                              the multiply
+ *
+ * v7's acommute() keeps commutative operands of EQUAL degree in source
+ * order (insert() only moves a strictly lower-degree term back), which
+ * is why the right operand here is the source's own b[k][j].
+ *
+ * Because mutos_c1 streams, the left operand's code would already be
+ * out by the time OP_TIMES is read. So at the first opcode of every
+ * expression (a leaf, with the value stack empty) plan_expression()
+ * pre-scans temp1 up to the expression's terminator (EXPR/CBRANCH),
+ * using scan_op_args() - the same arity table scan_consumer() uses -
+ * to index each node's byte range (postfix: every subtree is one
+ * contiguous range). If an operator is to be evaluated right operand
+ * first (order_right_first()), it builds a Plan - the order in which
+ * to stream those ranges through the ORDINARY opcode handlers:
+ *
+ *     ... [right subtree] SPILL [left subtree] SWAP [the operator] ...
+ *
+ * SPILL (plan_spill()) pushes the right operand's value onto the
+ * machine stack and leaves VK_STACKED in its place; SWAP puts the two
+ * values back in left/right order for the operator's own handler.
+ * Nothing else changes: each handler still reads its own opcode and
+ * arguments where the plan seeked to, and its lookaheads (OP_AMPER's
+ * scan_consumer(), OP_STAR's "&*" cancel, OP_PLUS's displacement
+ * peek) still see temp1's real structure, because a subtree is
+ * replayed whole. An expression with no reordered operator gets no
+ * plan at all and streams exactly as before.
+ *
+ * Only the golden-confirmed decision is taken (order_right_first()):
+ * int TIMES whose two operands are both complete 2-D element reads.
+ * v7's degree() gives a 1-D element ("a[i]") the same degree, so the
+ * real compiler very probably spills "a[i] * b[j]" the same way - but
+ * no golden shows it, so it stays refused (by the register-occupancy
+ * guard, as before). 02_bubsort's swapped relational and 03_linklist's
+ * right-hand-side-first store are the same mechanism with other
+ * decisions (see docs/DEVLOG.md); neither is taken here. */
+
+/* One node of a pre-scanned expression. */
+typedef struct {
+    int  op, type;
+    long off;         /* its own opcode tag */
+    long start;       /* the first opcode of its subtree */
+    long end;         /* just past its own arguments */
+    int  kid[2];      /* operand node indices, -1 for none; kid[0] is
+                       * the left (or only) operand */
+    int  right_first; /* evaluate kid[1] before kid[0] */
+    int  reordered;   /* this node or a descendant is right_first */
+} ENode;
+
+typedef struct {
+    ENode *v;
+    int    n, cap;
+} ETree;
+
+static int etree_add(ETree *t, ENode nd)
+{
+    if (t->n == t->cap) {
+        int cap = t->cap ? 2 * t->cap : 64;
+        ENode *v = realloc(t->v, (size_t)cap * sizeof *v);
+        if (!v)
+            gen_fatal("out of memory");
+        t->v = v;
+        t->cap = cap;
+    }
+    t->v[t->n] = nd;
+    return t->n++;
+}
+
+/* Indexes the expression starting at temp1's current position into
+ * `t`, restoring the position afterwards. Returns the root's index,
+ * or -1 when the scan reaches an opcode scan_op_args() does not know
+ * or the stream does not form exactly one tree before its terminator
+ * - then no plan is made, which only ever means "stream as before". */
+static int prescan_expr(FILE *t1, ETree *t, long *expr_end)
+{
+    long savepos = ftell(t1);
+    if (savepos < 0)
+        gen_fatal("internal: temp1 is not seekable (ftell failed)");
+    int *stk = NULL;
+    int depth = 0, cap = 0, root = -1;
+    for (;;) {
+        long off = ftell(t1);
+        int type;
+        int op = c1_read_op(t1, "temp1");
+        Arity ar = scan_op_args(t1, op, &type);
+        if (ar == AR_UNKNOWN)
+            break;
+        if (ar == AR_STMT) {
+            if (depth == 1) {
+                root = stk[0];
+                *expr_end = off;
+            }
+            break;
+        }
+        ENode nd = { op, type, off, off, ftell(t1), { -1, -1 }, 0, 0 };
+        int need = (ar == AR_BINARY) ? 2 : (ar == AR_UNARY) ? 1 : 0;
+        if (depth < need)
+            break;
+        if (need == 2) {
+            nd.kid[0] = stk[depth - 2];
+            nd.kid[1] = stk[depth - 1];
+        } else if (need == 1) {
+            nd.kid[0] = stk[depth - 1];
+        }
+        depth -= need;
+        if (need > 0)
+            nd.start = t->v[nd.kid[0]].start;
+        if (depth == cap) {
+            cap = cap ? 2 * cap : 32;
+            int *s = realloc(stk, (size_t)cap * sizeof *s);
+            if (!s)
+                gen_fatal("out of memory");
+            stk = s;
+        }
+        stk[depth++] = etree_add(t, nd);
+    }
+    free(stk);
+    if (fseek(t1, savepos, SEEK_SET) != 0)
+        gen_fatal("internal: temp1 is not seekable (fseek failed)");
+    return root;
+}
+
+/* An ITOP node scaling a plain variable by a constant ("i * 4"). */
+static int is_var_times_con(const ETree *t, const ENode *itop)
+{
+    return t->v[itop->kid[0]].op == OP_NAME && t->v[itop->kid[1]].op == OP_CON;
+}
+
+/* Node `i` reads one int element of a 2-D int array through two
+ * runtime subscripts that are plain variables - exactly the shape
+ * mutos_c0's emit_subscript_2d() writes for "m[i][j]":
+ *
+ *   STAR(0)
+ *     PLUS(ptr)
+ *       AMPER(8)                   the row, re-decayed ...
+ *         STAR(0)                  ... after being dereferenced
+ *           PLUS(ptr)
+ *             AMPER(8) NAME m
+ *             ITOP(104) NAME i CON <row size>
+ *       ITOP(ptr) NAME j CON <element size>
+ *
+ * (whether each index NAME is a variable the 2-D codegen accepts is
+ * still checked there, when the element is generated). */
+static int is_2d_elem_read(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (n->op != OP_STAR || n->type != TY_INT)
+        return 0;
+    const ENode *col = &t->v[n->kid[0]];
+    if (col->op != OP_PLUS || !ty_is_ptr(col->type))
+        return 0;
+    const ENode *rowamp = &t->v[col->kid[0]];
+    const ENode *colidx = &t->v[col->kid[1]];
+    if (rowamp->op != OP_AMPER || rowamp->type != TY_PTR_INT ||
+        colidx->op != OP_ITOP || !ty_is_ptr(colidx->type) ||
+        !is_var_times_con(t, colidx))
+        return 0;
+    const ENode *rowstar = &t->v[rowamp->kid[0]];
+    if (rowstar->op != OP_STAR || rowstar->type != TY_INT)
+        return 0;
+    const ENode *row = &t->v[rowstar->kid[0]];
+    if (row->op != OP_PLUS || !ty_is_ptr(row->type))
+        return 0;
+    const ENode *base = &t->v[row->kid[0]];
+    const ENode *rowidx = &t->v[row->kid[1]];
+    return base->op == OP_AMPER && base->type == TY_PTR_INT &&
+           t->v[base->kid[0]].op == OP_NAME &&
+           rowidx->op == OP_ITOP && rowidx->type == TY_PTR_ARY_INT &&
+           is_var_times_con(t, rowidx);
+}
+
+/* The evaluation-order decision - see this section's header. */
+static int order_right_first(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    return n->op == OP_TIMES && n->type == TY_INT &&
+           is_2d_elem_read(t, n->kid[0]) && is_2d_elem_read(t, n->kid[1]);
+}
+
+static void plan_add(Plan *p, Seg s)
+{
+    if (s.kind == SEG_RANGE) {
+        if (s.start == s.end)
+            return;
+        if (p->n > 0 && p->seg[p->n - 1].kind == SEG_RANGE &&
+            p->seg[p->n - 1].end == s.start) {
+            p->seg[p->n - 1].end = s.end;
+            return;
+        }
+    }
+    if (p->n >= PLAN_MAX)
+        gen_fatal("expression needs too many evaluation-order steps "
+                  "(internal limit %d)", PLAN_MAX);
+    p->seg[p->n++] = s;
+}
+
+static void plan_build(Plan *p, const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (!n->reordered) {
+        plan_add(p, (Seg){ SEG_RANGE, n->start, n->end });
+        return;
+    }
+    if (n->right_first) {
+        plan_build(p, t, n->kid[1]);
+        plan_add(p, (Seg){ SEG_SPILL, 0, 0 });
+        plan_build(p, t, n->kid[0]);
+        plan_add(p, (Seg){ SEG_SWAP, 0, 0 });
+    } else {
+        for (int k = 0; k < 2; k++)
+            if (n->kid[k] >= 0)
+                plan_build(p, t, n->kid[k]);
+    }
+    plan_add(p, (Seg){ SEG_RANGE, n->off, n->end });
+}
+
+/* Called at the top of the dispatch loop while no plan is active and
+ * the value stack is empty: if the next opcode starts an expression
+ * (a leaf) that needs a non-postfix evaluation order, activates a plan
+ * for it. temp1's position is left unchanged either way. */
+static int plan_expression(GenState *g, FILE *t1)
+{
+    long pos = ftell(t1);
+    if (pos < 0)
+        gen_fatal("internal: temp1 is not seekable (ftell failed)");
+    int op = c1_read_op(t1, "temp1");
+    if (fseek(t1, pos, SEEK_SET) != 0)
+        gen_fatal("internal: temp1 is not seekable (fseek failed)");
+    if (op != OP_NAME && op != OP_CON && op != OP_LCON)
+        return 0;
+
+    ETree t = { NULL, 0, 0 };
+    long end = 0;
+    int root = prescan_expr(t1, &t, &end);
+    int any = 0;
+    /* Postfix order: every node's operands come before it, so one
+     * forward pass sees a node's children fully marked. */
+    for (int i = 0; root >= 0 && i < t.n; i++) {
+        ENode *n = &t.v[i];
+        n->right_first = order_right_first(&t, i);
+        n->reordered = n->right_first;
+        for (int k = 0; k < 2; k++)
+            if (n->kid[k] >= 0 && t.v[n->kid[k]].reordered)
+                n->reordered = 1;
+        any |= n->right_first;
+    }
+    if (any) {
+        Plan *p = &g->plan;
+        p->n = 0;
+        plan_build(p, &t, root);
+        p->cur = 0;
+        p->entered = 0;
+        p->end = end;
+        p->active = 1;
+    }
+    free(t.v);
+    return any;
+}
+
+/* SEG_SPILL: the right operand just computed goes onto the machine
+ * stack - loaded in place first when it is a dereference, the same
+ * "mov di,(di)" / "push di" a dereferenced call argument gets
+ * (05_arrptr/05_arrofptr.s.golden) and 10_integ/05_matmul.s.golden
+ * shows here. */
+static void plan_spill(GenState *g)
+{
+    Val v = materialize(g, pop_val(g));
+    if (v.kind == VK_IND) {
+        ins2(g, "mov", o_reg(v.reg), o_val(v));
+        v = val_reg(v.reg);
+    }
+    if (v.kind != VK_REG)
+        gen_fatal("internal: a spilled operand is expected in a register "
+                  "or behind one");
+    ins1(g, "push", o_reg(v.reg));
+    Val s = {0};
+    s.kind = VK_STACKED;
+    push_val(g, s);
+}
+
+/* SEG_SWAP: the left operand (generated second) is on top of the
+ * spilled right one; the operator's handler pops right, then left. */
+static void plan_swap(GenState *g)
+{
+    if (g->valsp < 2 || g->valstack[g->valsp - 2].kind != VK_STACKED)
+        gen_fatal("internal: evaluation-order swap without a spilled "
+                  "operand below the top of the value stack");
+    Val tmp = g->valstack[g->valsp - 1];
+    g->valstack[g->valsp - 1] = g->valstack[g->valsp - 2];
+    g->valstack[g->valsp - 2] = tmp;
+}
+
+/* Called at the top of the dispatch loop: while a plan is active, runs
+ * the SPILL/SWAP steps that are due and positions temp1 at the next
+ * opcode to dispatch; once the last range has been streamed, ends the
+ * plan at the expression's terminator, where plain streaming resumes. */
+static void plan_step(GenState *g, FILE *t1)
+{
+    Plan *p = &g->plan;
+    while (p->active) {
+        if (p->cur == p->n) {
+            if (ftell(t1) != p->end)
+                gen_fatal("internal: evaluation-order plan ended away from "
+                          "its expression's end");
+            p->active = 0;
+            return;
+        }
+        Seg *s = &p->seg[p->cur];
+        if (s->kind == SEG_SPILL) {
+            plan_spill(g);
+            p->cur++;
+            continue;
+        }
+        if (s->kind == SEG_SWAP) {
+            plan_swap(g);
+            p->cur++;
+            continue;
+        }
+        if (!p->entered) {
+            if (fseek(t1, s->start, SEEK_SET) != 0)
+                gen_fatal("internal: temp1 is not seekable (fseek failed)");
+            p->entered = 1;
+        }
+        long pos = ftell(t1);
+        if (pos < s->end)
+            return;
+        if (pos > s->end)
+            gen_fatal("internal: an opcode handler read past the end of a "
+                      "reordered subtree");
+        p->cur++;
+        p->entered = 0;
+    }
+}
+
+/* -------------------------------------------------------------- */
 /* temp2 - the string-literal data file (see gen_strings()). */
 
 /* The most values the real compiler puts on one ".byte" line of a
@@ -2267,6 +2673,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
     g.next_lab = 10000; /* see GenState's next_lab field comment */
 
     for (;;) {
+        /* Evaluation order - see that section: an active plan decides
+         * where the next opcode is read from; otherwise, at the start
+         * of each expression, check whether it needs one. */
+        plan_step(&g, temp1);
+        if (!g.plan.active && g.valsp == 0 && plan_expression(&g, temp1))
+            plan_step(&g, temp1);
+
         int op = c1_read_op(temp1, "temp1");
         if (op == OP_EOFC)
             break;
@@ -3697,6 +4110,32 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             if (type != TY_INT)
                 gen_fatal("TIMES of type %d not yet supported", type);
+            if (g.valsp >= 1 && g.valstack[g.valsp - 1].kind == VK_STACKED) {
+                /* The right operand was evaluated first and spilled (see
+                 * the "Evaluation order" section): the left one, just
+                 * computed, goes from its working register into AX, the
+                 * spilled one is popped into CX, and CX is the IMUL
+                 * operand - 10_integ/05_matmul.s.golden's "mov\tdi,(di)"
+                 * / "mov\tax,di" / "pop\tcx" / "imul\tcx" (v7/cc/
+                 * table.s's "%n,n": SS, F, "mul (sp)+,R"). A left
+                 * operand behind a pointer is loaded in place first, as
+                 * every dereferenced operand is. */
+                (void)pop_any(&g);
+                Val l = materialize(&g, pop_val(&g));
+                if (l.kind == VK_IND) {
+                    ins2(&g, "mov", o_reg(l.reg), o_val(l));
+                    l = val_reg(l.reg);
+                }
+                if (l.kind != VK_REG || strcmp(l.reg, "ax") == 0)
+                    gen_fatal("internal: the left operand of a multiply with "
+                              "a spilled right operand is expected in a "
+                              "working register other than ax");
+                ins2(&g, "mov", o_reg("ax"), o_reg(l.reg));
+                ins1(&g, "pop", o_reg("cx"));
+                ins1(&g, "imul", o_reg("cx"));
+                push_val(&g, val_reg("ax"));
+                break;
+            }
             Val l, r;
             pop_operands(&g, &l, &r);
             /* Which operand becomes the "mov ax,<X>" side and which
