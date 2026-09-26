@@ -31,7 +31,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  49/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
+  50/62 of `tests/mutos_cc/`'s goldens (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus all 4 of `02_long`: `01_addsub`/`02_muldiv`/`03_retval`/`04_params`,
@@ -39,7 +39,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `03_ctrlflow`, plus all 7 of `04_funcs`, plus all 7 of `05_arrptr` (string
   literals included), plus all 7 of `09_abiprobe` (`char` element access), plus
   all 3 of `07_scope` (file-scope variables, block scope), plus
-  `10_integ/02_bubsort`, `04_strrev` and `05_matmul`) — see
+  `10_integ/01_wordcount`, `02_bubsort`, `04_strrev` and `05_matmul`) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -397,7 +397,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 49/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 50/62 of the full corpus** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
@@ -471,7 +471,16 @@ scope and intent, not a snapshot of what's done.
   rule. All three `07_scope` files followed the same day: file-scope
   variables (`CSPACE`/`BSS`+`NLABEL`+`SSPACE` in `temp1`, referenced by
   `NAME(SC_EXTERN, type, "_name")`, rendered `.comm`/`_name:.blkb` and
-  as a bare `_name` operand) and nested blocks with their own scope.**
+  as a bare `_name` operand) and nested blocks with their own scope.
+  `10_integ/01_wordcount` completed `10_integ`'s char files the same day:
+  a file-scope `char text[] = "..."` (`SYMDEF`/`DATA`/`NLABEL`, the
+  string's `BDATA` runs in `temp1`, `EVEN` - rendered `.data` /
+  `_text:.byte ...`), character constants, and a char compared with a
+  constant in 0..127 - the constant typed char, no `ITOC` (v7 `optim()`'s
+  CHAR retyping, done by the MUTOS front end) - as a byte compare,
+  `cmpb _text(bx),*10.`, or against 0 `movb dx,#_text(bx)` / `orb dx,dx`,
+  the element addressed with the index in BX and the array's symbol as
+  displacement.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -492,9 +501,9 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: more `char` shapes (a byte compare with a
-  constant, char call arguments and conditions) and a file-scope char
-  array with an initializer - then `10_integ/01_wordcount`, then
+  dependency-ordered list: more `char` shapes (a char with one int
+  operand, char call arguments and conditions, a store into a file-scope
+  array element), then
   `06_struct` (structs/unions/enums) and `10_integ/03_linklist`, the
   remaining 81..127-byte `chkstk` gap (the `09_abiprobe` goldens narrowed
   the threshold to `(80,128]`), `08_float`, then the `mutos_cc` driver

@@ -27,7 +27,9 @@ Wire format (see c0_outcode.c/c0_outcode.h):
          word of a BDATA run's (1, value) pairs)
 
 temp2 holds only string literals (c0_parser.c's putstr()): LABEL <n>,
-then one or more BDATA runs - BDATA, (1, byte)..., 0 - see OPCODES.
+then one or more BDATA runs - BDATA, (1, byte)..., 0 - see OPCODES. The
+same runs, without the LABEL, initialize a file-scope char array in
+temp1 (DATA, NLABEL, BDATA...).
 
 Each opcode's own argument shape (how many N/S fields follow the B)
 is fixed and is transcribed below directly from every outcode() call
@@ -175,7 +177,17 @@ OPCODES = {
     113: ("NLABEL", [S("name")]),               # a named label - here the
                                                  # static's own BSS block,
                                                  # which the SSPACE that
-                                                 # follows reserves
+                                                 # follows reserves, or an
+                                                 # initialized array's DATA
+                                                 # block (below)
+    # "char text[] = \"...\";" (10_integ/01_wordcount - v7's extdef() for
+    # a declarator followed by '='; c0_parser.c's parse_global_chararray())
+    # is SYMDEF("_text") (none for 'static'), DATA, NLABEL("_text"), the
+    # string's BDATA runs (putstr()'s label-less form, here in temp1), and
+    # EVEN when the size is odd - confirmed byte-for-byte against
+    # 01_wordcount.1.golden --
+    203: ("DATA", []),                         # opens the initialized-data
+                                                # block NLABEL names
 
     # -- expression-tree leaves/operators (treeout()) --
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name
@@ -263,10 +275,11 @@ OPCODES = {
                                                 # argument tree (NULLOP,
                                                 # a lone expression, or a
                                                 # COMMA chain)
-    # -- string literals (temp2 only - c0_parser.c's putstr(), v7/cc/
-    # c00.c's function of the same name); confirmed byte-for-byte
-    # against 05_arrptr/05_arrofptr.2.golden, 07_strlibc.2.golden and
-    # 10_integ/04_strrev.2.golden: --
+    # -- string literals (temp2 - c0_parser.c's putstr(), v7/cc/c00.c's
+    # function of the same name); confirmed byte-for-byte against
+    # 05_arrptr/05_arrofptr.2.golden, 07_strlibc.2.golden and
+    # 10_integ/04_strrev.2.golden; and a char array's string
+    # initializer (temp1, no LABEL - 10_integ/01_wordcount.1.golden): --
     200: ("BDATA", []),                        # followed by (1, byte)
                                                 # pairs, then one lone 0
                                                 # word - decoded by the

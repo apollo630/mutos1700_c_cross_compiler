@@ -75,7 +75,17 @@ is loaded into AL and sign-extended by
 .BR cbw ,
 stored from DL with
 .BR movb ,
-and read through a pointer variable via DX and BX). A local
+read through a pointer variable via DX and BX, and compared with a
+constant by
+.B cmpb
+or, compared with 0 when its address had to be computed first, loaded
+into DL and tested with
+.BR "orb dx,dx" ;
+an element of a file-scope
+.B char
+array has the index in BX and the array's symbol as its displacement,
+.BR _text(bx) ).
+A local
 .B static
 variable is addressed by its label, a file-scope one by its symbol
 .RB ( "mov di,_counter" );
@@ -85,7 +95,13 @@ or, for a
 .B static
 one, a labelled
 .B .bss
-block. A constant shift count of 1 or
+block; an initialized
+.B char
+array is a labelled
+.B .data
+block of
+.B .byte
+values. A constant shift count of 1 or
 2 is a repeated single-bit shift, a larger one is loaded into CX and
 shifted by CL. A call's arguments are evaluated from the last to the
 first, each pushed as soon as it is computed, as the real compiler does.

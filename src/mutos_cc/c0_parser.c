@@ -7,8 +7,9 @@
  * (This summary shows the expression core; parse_extdef(),
  * parse_param_decls(), parse_statement() and each parse_*_stmt() carry
  * their own, fuller productions - prototypes, file-scope variables
- * (parse_global_var()), parameters, nested blocks with their own scope
- * (parse_nested_block()), control flow, calls.)
+ * (parse_global_var(); a string-initialized "char name[]" -
+ * parse_global_chararray()), parameters, nested blocks with their own
+ * scope (parse_nested_block()), control flow, calls.)
  *
  *   translation-unit  := extdef*
  *   extdef            := IDENT '(' ')' compound-stmt
@@ -38,7 +39,7 @@
  *   UNARY             := ('-'|'+'|'~'|'!'|'*') UNARY | ('++'|'--') IDENT
  *                       | '&' IDENT ('[' expr ']')? | POSTFIX
  *   POSTFIX           := PRIMARY ('++'|'--')?
- *   PRIMARY           := ICON | IDENT | STRING | cast-expr | sizeof-expr
+ *   PRIMARY           := ICON | CCON | IDENT | STRING | cast-expr | sizeof-expr
  *                       | '(' comma-item (',' comma-item)* ')'
  *   cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
  *   sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
@@ -487,12 +488,22 @@ typedef struct {
                      * long-typed arithmetic so far. Not propagated by
                      * '+'/'-' (parse_add()) or any other combinator -
                      * no golden yet confirms those. */
+    int  char_obj; /* 1 iff this is a 'char' object as written - a char
+                     * variable's NAME or a char element/dereference's
+                     * STAR, with no operator or conversion on top (set
+                     * by ev_char_obj() only). A relational or equality
+                     * operator compares such an operand with a small
+                     * constant as a char, with no ITOC - see
+                     * char_const_compare(). */
 } ExprVal;
 
-static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; e.type = TY_INT; return e; }
-static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; e.type = TY_LONG; return e; }
-static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; e.type = TY_INT; return e; }
+static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; e.type = TY_INT; e.char_obj = 0; return e; }
+static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; e.type = TY_LONG; e.char_obj = 0; return e; }
+static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; e.type = TY_INT; e.char_obj = 0; return e; }
 static ExprVal ev_dynamic_typed(int ty) { ExprVal e = ev_dynamic(); e.type = ty; return e; }
+/* A value of type `ty` just emitted as a NAME or STAR leaf: marked as a
+ * char object when `ty` is TY_CHAR (see ExprVal's char_obj). */
+static ExprVal ev_char_obj(int ty) { ExprVal e = ev_dynamic_typed(ty); e.char_obj = (ty == TY_CHAR); return e; }
 
 /* If `v` is still an unmaterialized constant, emits it now as a real
  * CON leaf (treeout()'s CON case: outcode("BNN", CON, type, value)) -
@@ -542,7 +553,9 @@ static void emit_materialize(FILE *t1, ExprVal v)
  *
  * - an operand of a binary arithmetic, shift, bitwise, relational or
  *   equality operator that is a char is widened first - BOTH operands
- *   of "c + c" (promote_char());
+ *   of "c + c" (promote_char()) - except a char object compared with a
+ *   constant in 0..127, where the constant is typed char instead
+ *   (char_compare_rhs() - 10_integ/01_wordcount.1.golden);
  * - an assignment converts its right-hand side to the target's type
  *   (convert_assign()): int -> char is ITOC(TY_CHAR), char -> int
  *   ITOC(TY_INT), char -> long CTOL, char -> char nothing. v7's build()
@@ -703,6 +716,23 @@ static void capture_flush(RhsCapture *c, FILE *t1)
     c->mem = NULL;
 }
 
+/* Starts buffering an operand unconditionally (rhs_begin() does so only
+ * behind a pending constant) - for char_compare_rhs(), which decides
+ * what goes in front of the right operand only once it is parsed.
+ * Ended with capture_flush(). */
+static FILE *capture_begin(RhsCapture *c, Parser *p, FILE *t1)
+{
+    c->buf = NULL;
+    c->len = 0;
+    c->mem = open_memstream(&c->buf, &c->len);
+    if (!c->mem) {
+        c0_error_at(p->cur.line, "internal: could not buffer an operand "
+                    "(out of memory)");
+        return t1;
+    }
+    return c->mem;
+}
+
 /* Emits the CON/ITOP scaling sequence plus the final INCBEF/DECBEF/
  * INCAFT/DECAFT node itself, for an lvalue whose NAME has already
  * been emitted by the caller. `optag` is one of OP_INCBEF/OP_DECBEF/
@@ -729,53 +759,73 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 }
 
 /*
- * putstr() - v7/cc/c00.c's function of the same name, in the form a
- * string literal in an expression uses (a non-zero label; the
- * label-less form initializes a char array and is not needed yet).
- * The literal's bytes go to TEMP2, never temp1 - v7's putstr() sets
- * `strflg`, which makes outcode() write to the string file for the
- * duration - as
+ * putstr() - v7/cc/c00.c's function of the same name, in both of its
+ * forms, writing to `dst`:
+ *
+ * - a string literal in an expression (a non-zero `lab`): the bytes go
+ *   to TEMP2, never temp1 - v7's putstr() sets `strflg`, which makes
+ *   outcode() write to the string file for the duration - as
  *
  *     LABEL <lab>  BDATA  (1 <byte>)...  (1 0)  0
  *
- * i.e. each byte as the pair (1, value) and the terminating NUL as one
- * more pair (1, 0), the lone 0 ending the BDATA run. Confirmed
- * byte-for-byte against 05_arrptr/05_arrofptr.2.golden ("one", "two",
- * "three" - three consecutive runs, labels 4/5/6) and
- * 05_arrptr/07_strlibc.2.golden ("hello, mutos"), plus
- * 10_integ/04_strrev.2.golden ("mutos1700").
+ * - the initializer of a file-scope "char name[] = \"...\";" (`lab` 0 -
+ *   v7's cinit() calls putstr(0, flex ? 10000 : nel)): the same runs
+ *   without the LABEL, written where the declaration is, into temp1
+ *   (strflg is not set) - BDATA (1 <byte>)... (1 0) 0 - confirmed
+ *   byte-for-byte against 10_integ/01_wordcount.1.golden's "char
+ *   text[] = \"the quick brown fox\\njumps over the lazy dog\\n\";":
+ *   three runs of 14, 15 and 16 values (the last one ending in the
+ *   NUL) straight after NLABEL "_text". Only the flexible "[]" form is
+ *   supported (see parse_global_chararray()), so `max` is always
+ *   v7's 10000 here too.
  *
- * Two details come from v7's source rather than from these goldens
- * (none has 15 or more characters):
- *   - before the 15th, 30th, ... byte the run is closed and a new one
- *     opened ("0 BDATA") - "if (nchstr%15 == 0) outcode(\"0B\",
- *     BDATA);" - so a run holds 14 bytes, then 15 per run; the NUL is
- *     appended without that check. The real MUTOS c1 output in
- *     tests/mutos_as/kernel_nonopt/ and kernel_opt/ confirms it
- *     indirectly: all 208 string blocks there have exactly the .byte
- *     line layout this split predicts (see mutos_c1's gen_strings());
- *   - bytes beyond the 10000th are dropped (v7's `max`), the NUL too
- *     once that limit is reached.
- * Each byte is masked to 0..255 ("c & 0377") - the lexer already did
- * that (c0_lex.c's lex_string()).
+ * Returns the number of bytes written, the NUL included (v7's
+ * `nchstr` - the array's size in the initializer form).
+ *
+ * In both forms each byte is the pair (1, value) and the terminating
+ * NUL one more pair (1, 0), the lone 0 ending the BDATA run. The
+ * labelled form is confirmed byte-for-byte against
+ * 05_arrptr/05_arrofptr.2.golden ("one", "two", "three" - three
+ * consecutive runs, labels 4/5/6) and 05_arrptr/07_strlibc.2.golden
+ * ("hello, mutos"), plus 10_integ/04_strrev.2.golden ("mutos1700").
+ *
+ * Before the 15th, 30th, ... byte the run is closed and a new one
+ * opened ("0 BDATA") - "if (nchstr%15 == 0) outcode(\"0B\", BDATA);" -
+ * so a run holds 14 bytes, then 15 per run; the NUL is appended without
+ * that check. This came from v7's source first; the real MUTOS c1
+ * output in tests/mutos_as/kernel_nonopt/ and kernel_opt/ confirmed it
+ * indirectly (all 208 string blocks there have exactly the .byte line
+ * layout this split predicts - see mutos_c1's put_bdata_run()), and
+ * 01_wordcount.1.golden now confirms it directly (runs of 14, 15, 16).
+ * Bytes beyond the 10000th are dropped (v7's `max`), the NUL too once
+ * that limit is reached - from v7's source only. Each byte is masked to
+ * 0..255 ("c & 0377") - the lexer already did that (c0_lex.c's
+ * lex_string()).
  */
 #define MCC_STRRUN 15      /* v7 putstr()'s run length */
-#define MCC_STRMAX 10000   /* v7 putstr()'s `max` for a labelled string */
-static void putstr(Parser *p, int lab, const char *str, size_t len)
+#define MCC_STRMAX 10000   /* v7 putstr()'s `max` for a labelled string
+                            * or a flexible "char name[]" initializer */
+static size_t putstr(FILE *dst, int lab, const char *str, size_t len)
 {
-    outcode(p->t2, "BNB", OP_LABEL, lab, OP_BDATA);
+    if (lab)
+        outcode(dst, "BNB", OP_LABEL, lab, OP_BDATA);
+    else
+        outcode(dst, "B", OP_BDATA);
     size_t nch = 0;
     for (size_t i = 0; i < len; i++) {
         if (nch >= MCC_STRMAX)
             continue;
         nch++;
         if (nch % MCC_STRRUN == 0)
-            outcode(p->t2, "0B", OP_BDATA);
-        outcode(p->t2, "1N", (int)(unsigned char)str[i]);
+            outcode(dst, "0B", OP_BDATA);
+        outcode(dst, "1N", (int)(unsigned char)str[i]);
     }
-    if (nch < MCC_STRMAX)
-        outcode(p->t2, "10");
-    outcode(p->t2, "0");
+    if (nch < MCC_STRMAX) {
+        nch++;
+        outcode(dst, "10");
+    }
+    outcode(dst, "0");
+    return nch;
 }
 
 static ExprVal parse_expr(Parser *p, FILE *t1);
@@ -1186,7 +1236,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
          * increment does not change (it is parsed before the body, as
          * in v7). */
         int lab = p->isn++;
-        putstr(p, lab, p->cur.sval, p->cur.slen);
+        (void)putstr(p->t2, lab, p->cur.sval, p->cur.slen);
         advance(p);
         outcode(t1, "BNNN", OP_NAME, SC_STATIC, TY_CHAR, lab);
         outcode(t1, "BN", OP_AMPER, TY_PTR_CHAR);
@@ -1223,6 +1273,23 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
         long raw = p->cur.ival;
         advance(p);
         return ev_const_long(raw);
+    }
+    if (p->cur.kind == T_CCON) {
+        /* A character constant is an ordinary int constant - v7/cc/
+         * c00.c's getcc() returns CON with the character's value, so it
+         * folds and materializes (CON(TY_INT, v)) like any integer
+         * literal. getcc() keeps a one-character constant as a signed
+         * char ("realc = cval; cval = realc;"), so a byte above 127 is
+         * negative ('\377' is -1) - from v7's source; no golden has one.
+         * Confirmed for 0..127 against 10_integ/01_wordcount.1.golden's
+         * '\0', '\n' and ' ' (CON values 0, 10, 32 - typed char there,
+         * see char_compare_rhs()). c0_lex.c's lex_char() reads one
+         * character or escape only (a multi-character constant, which
+         * v7 packs two to a word, is its "Malformed character
+         * constant"). */
+        long v = (int8_t)(uint8_t)(p->cur.ival & 0377);
+        advance(p);
+        return ev_const(v);
     }
     if (p->cur.kind == T_IDENT) {
         if (peek2_kind(p) == T_LPAREN)
@@ -1262,7 +1329,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * a[i];") - see emit_subscript()'s own comment for the
              * two confirmed shapes. */
             int elemtype = emit_subscript(p, t1, sym);
-            return ev_dynamic_typed(elemtype);
+            return ev_char_obj(elemtype);
         }
 
         /* treeout()'s NAME case - see emit_name(): a numeric offset
@@ -1307,8 +1374,9 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             int optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
             advance(p);
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
+            return ev_dynamic_typed(sym->type);
         }
-        return ev_dynamic_typed(sym->type);
+        return ev_char_obj(sym->type);
     }
     if (p->cur.kind == T_LPAREN) {
         if (peek2_kind(p) == T_STAR)
@@ -1515,7 +1583,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         if (elemtype == TY_LONG)
             refuse_long_access(p);
         outcode(t1, "BN", OP_STAR, elemtype);
-        return ev_dynamic_typed(elemtype);
+        return ev_char_obj(elemtype);
     }
     if (p->cur.kind == T_KW_SIZEOF) {
         /* sizeof '(' ('int'|'char'|'long'|IDENT) ')' - confirmed
@@ -1867,6 +1935,65 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
  * c0) is what turns a comparison into a materialized 0/1 value or
  * fuses it into a short-circuit branch; c0's job is only to emit the
  * tree. Confirmed byte-for-byte against 03_rellogic's ".1.golden". */
+/*
+ * The right operand of a relational or equality operator `op` whose left
+ * operand `*l` is parsed (and, unless still a pending constant, emitted);
+ * `rhs_parser` parses it at the next-tighter precedence level. Returns
+ * 1 when the whole comparison has been written here - a char compared
+ * with a small constant, see below - and the caller's result is then an
+ * ordinary dynamic int. Otherwise returns 0 with *l and *r the two
+ * operands, each char among them widened (promote_char()), for the
+ * caller to fold or emit as before.
+ *
+ * A char OBJECT (a char variable, element or dereference as written -
+ * ExprVal's char_obj) compared with a constant in 0..127 is not widened:
+ * the constant is typed as a char instead, and the node stays int -
+ * 10_integ/01_wordcount.1.golden's "text[i] != '\0'", "text[i] ==
+ * '\n'" and "text[i] == ' '":
+ *
+ *     ... PLUS(9) STAR(1)  CON(1, 0)  NEQUAL(0)        (no ITOC)
+ *
+ * against "buf[0] + buf[79]"'s ITOC(0) on both operands. This is
+ * v7/cc/c12.c optim()'s rule - "if (tree->tr1->type==CHAR &&
+ * tree->tr2->op==CON && ... && tree->tr2->value <= 127 &&
+ * tree->tr2->value >= 0) tree->tr2->type = CHAR;" for any RELAT
+ * operator - applied by the MUTOS front end itself, in temp1 (vanilla
+ * v7 widens nothing in c0 at all, so it can leave it to c1). Only the
+ * STAR operand is confirmed; a char variable is taken the same way (the
+ * rule names no operand shape beyond "addressable or a STAR", and its
+ * code, "cmpb *-8.(bp),*97.", is in tests/mutos_as/kernel_nonopt/
+ * lp_AC.s). Anything else - a constant outside 0..127, a constant on
+ * the left, a char compared with a non-constant - keeps the conversions
+ * this file already wrote (and mutos_c1 refuses a widened char in a
+ * comparison, as before). Whether ITOC goes in front of the right
+ * operand is only known once that is parsed, so the right operand is
+ * buffered first (capture_begin()).
+ */
+static int char_compare_rhs(Parser *p, FILE *t1, int op, ExprVal *l,
+                            ExprVal *r,
+                            ExprVal (*rhs_parser)(Parser *, FILE *))
+{
+    RhsCapture cap;
+    if (l->char_obj) {
+        ExprVal rv = rhs_parser(p, capture_begin(&cap, p, t1));
+        if (rv.is_const && !rv.is_long && rv.value >= 0 && rv.value <= 127) {
+            capture_flush(&cap, t1);        /* a constant wrote nothing */
+            outcode(t1, "BNN", OP_CON, TY_CHAR, (int)rv.value);
+            outcode(t1, "BN", op, TY_INT);
+            return 1;
+        }
+        *l = promote_char(t1, *l);          /* after the left operand */
+        capture_flush(&cap, t1);            /* then the right one */
+        *r = promote_char(t1, rv);
+        return 0;
+    }
+    ExprVal v = promote_char(t1, *l);       /* before the right operand's bytes */
+    ExprVal rv = rhs_parser(p, rhs_begin(&cap, p, t1, v));
+    *l = rhs_end(&cap, p, t1, v, rv);
+    *r = promote_char(t1, rv);
+    return 0;
+}
+
 static ExprVal parse_relational(Parser *p, FILE *t1)
 {
     ExprVal v = parse_shift(p, t1);
@@ -1878,11 +2005,11 @@ static ExprVal parse_relational(Parser *p, FILE *t1)
         else if (p->cur.kind == T_GE) op = OP_GREATEQ;
         else break;
         advance(p);
-        v = promote_char(t1, v); /* before the right operand's bytes */
-        RhsCapture cap;
-        ExprVal r = parse_shift(p, rhs_begin(&cap, p, t1, v));
-        v = rhs_end(&cap, p, t1, v, r);
-        r = promote_char(t1, r);
+        ExprVal r;
+        if (char_compare_rhs(p, t1, op, &v, &r, parse_shift)) {
+            v = ev_dynamic();
+            continue;
+        }
         if (ty_is_ptr(v.type) || ty_is_ptr(r.type)) {
             /* v7 orders pointers UNSIGNED - build() turns the operator
              * into LESSP/LESSEQP/GREATP/GREATEQP ("op =+ LESSEQP-LESSEQ")
@@ -1921,11 +2048,11 @@ static ExprVal parse_equality(Parser *p, FILE *t1)
         else if (p->cur.kind == T_NE) op = OP_NEQUAL;
         else break;
         advance(p);
-        v = promote_char(t1, v); /* before the right operand's bytes */
-        RhsCapture cap;
-        ExprVal r = parse_relational(p, rhs_begin(&cap, p, t1, v));
-        v = rhs_end(&cap, p, t1, v, r);
-        r = promote_char(t1, r);
+        ExprVal r;
+        if (char_compare_rhs(p, t1, op, &v, &r, parse_relational)) {
+            v = ev_dynamic();
+            continue;
+        }
         if (v.is_const && r.is_const) {
             long res = (op == OP_EQUAL) ? (v.value == r.value)
                                          : (v.value != r.value);
@@ -3773,18 +3900,29 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
  * when its type and linkage agree ("extern int total;" ... "int
  * total;"), and writes what its own class calls for (CSPACE again for
  * a second tentative definition, as v7 does). Only a plain IDENT of
- * type int, char or long is supported - a pointer, an array, an
- * initializer, a 'static' function: no golden shows their shapes (a
- * local 'static' has the same restriction - see parse_static_decl()).
+ * type int, char or long is supported here, plus one array form - a
+ * "char name[]" initialized with a string literal (see
+ * parse_global_chararray()). Any other pointer, array or initializer,
+ * and a 'static' function: no golden shows their shapes (a local
+ * 'static' has the same restriction - see parse_static_decl()).
  */
+static void parse_global_chararray(Parser *p, FILE *t1, int sclass,
+                                   const char *name, int line);
+
 static void parse_global_var(Parser *p, FILE *t1, int sclass, int type,
                              int ptr_degree, const char *name, int line)
 {
+    if (ptr_degree == 0 && type == TY_CHAR && p->cur.kind == T_LBRACK &&
+        peek2_kind(p) == T_RBRACK) {
+        parse_global_chararray(p, t1, sclass, name, line);
+        return;
+    }
     if (ptr_degree > 0 || p->cur.kind == T_LBRACK || p->cur.kind == T_ASSIGN) {
         c0_error_at(line, "a file-scope pointer, array or initialized "
                           "variable ('%s') is not yet supported - only "
-                          "plain 'int'/'char'/'long' variables are - see "
-                          "src/mutos_cc/README.md", name);
+                          "plain 'int'/'char'/'long' variables and a "
+                          "'char name[]' initialized with a string are - "
+                          "see src/mutos_cc/README.md", name);
         while (p->cur.kind != T_SEMI && p->cur.kind != T_COMMA &&
                p->cur.kind != T_EOF)
             advance(p);
@@ -3817,6 +3955,86 @@ static void parse_global_var(Parser *p, FILE *t1, int sclass, int type,
     else if (is_static)
         outcode(t1, "BBSBN", OP_BSS, OP_NLABEL, sym->name, OP_SSPACE, size);
     /* 'extern': a declaration only - no wire output. */
+}
+
+/*
+ * "char name[] = \"...\";" at file scope (optionally 'static') - v7/cc/
+ * c02.c's extdef() for a declarator followed by '=':
+ *
+ *     setinit(ds);
+ *     if (sclass==EXTERN)
+ *             outcode("BS", SYMDEF, ds->name);
+ *     outcode("BBS", DATA, NLABEL, ds->name);
+ *     if (cinit(ds, 1, sclass) & ALIGN)
+ *             outcode("B", EVEN);
+ *
+ * and cinit()'s string case, putstr(0, flex ? 10000 : nel) - the
+ * label-less putstr() form, into temp1 (see putstr()); cinit() returns
+ * the array's size, which for a flexible "[]" array is the string's
+ * length plus its NUL, so an odd size is followed by EVEN. Confirmed
+ * byte-for-byte against 10_integ/01_wordcount.1.golden, which starts
+ *
+ *     SYMDEF "_text"  DATA  NLABEL "_text"
+ *     BDATA (14 bytes) 0  BDATA (15 bytes) 0  BDATA (16 bytes) 0  EVEN
+ *
+ * for "char text[] = \"the quick brown fox\\njumps over the lazy
+ * dog\\n\";" (45 bytes with the NUL) - its main() follows.
+ *
+ * The name is a file-scope char ARRAY from here on (SymEntry.is_array,
+ * type TY_CHAR, SC_EXTERN): an element is NAME(SC_EXTERN, TY_CHAR,
+ * "_text") AMPER(9) <index> CON(1) ITOP(9) PLUS(9) STAR(1) - the same
+ * emit_subscript() shape a local char array has, which is what the
+ * golden shows. 'static' writes no SYMDEF (v7's "if (sclass==EXTERN)";
+ * unlike the BSS case - mutos_cc.h delta 5 - there is no SYMDEF("") to
+ * drop here), which no golden shows but v7 settles. Refused: a sized
+ * array ("char s[8] = ...", v7 pads with SSPACE), a brace list, an
+ * array without an initializer, 'extern' with an initializer - none has
+ * a golden - and a name declared before in any form.
+ */
+static void parse_global_chararray(Parser *p, FILE *t1, int sclass,
+                                   const char *name, int line)
+{
+    advance(p); /* '[' */
+    advance(p); /* ']' */
+    if (p->cur.kind != T_ASSIGN || peek2_kind(p) != T_STRING ||
+        sclass == T_KW_EXTERN) {
+        c0_error_at(line, "a file-scope 'char %s[]' is only supported with a "
+                          "string-literal initializer and no 'extern' so far "
+                          "- see src/mutos_cc/README.md", name);
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_COMMA &&
+               p->cur.kind != T_EOF)
+            advance(p);
+        return;
+    }
+    advance(p); /* '=' */
+    if (is_known_func(p, name) || symtab_lookup(&p->globals, name)) {
+        c0_error_at(line, "'%s' redeclared - a second declaration of an "
+                          "initialized file-scope array is not supported",
+                    name);
+        advance(p); /* the string */
+        return;
+    }
+    int is_static = (sclass == T_KW_STATIC);
+    SymEntry *sym = symtab_declare_global(&p->globals, name, TY_CHAR, is_static);
+    if (!sym) {
+        advance(p);
+        return;
+    }
+    sym->is_array = 1;
+    if (!is_static)
+        outcode(t1, "BS", OP_SYMDEF, sym->name);
+    outcode(t1, "BBS", OP_DATA, OP_NLABEL, sym->name);
+    /* v7's lexer numbers every string token as it reads it ("cval =
+     * isn++" in c00.c's symbol()), an initializer's too, although the
+     * label-less putstr() never writes that number: main()'s labels in
+     * 01_wordcount.1.golden start at 2 (BRANCH 2, LABEL 3), one later
+     * than a file without the initializer (04_strrev's first function:
+     * BRANCH 1, LABEL 2). */
+    p->isn++;
+    size_t n = putstr(t1, 0, p->cur.sval, p->cur.slen);
+    advance(p); /* the string */
+    if (n & 1)
+        outcode(t1, "B", OP_EVEN);
 }
 
 /*

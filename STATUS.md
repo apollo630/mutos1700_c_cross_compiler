@@ -226,7 +226,7 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 49/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 50/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -243,10 +243,12 @@ pointer/array-parameter equivalence, and string literals), plus all 7 of
 `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c` large-frame
 probes - `char` element access), plus all 3 of `07_scope`:
 `01_globstat.c`, `02_shadow.c` and `03_externdef.c` (file-scope variables
-and block scope), plus `10_integ/02_bubsort.c`,
-`04_strrev.c` and `05_matmul.c` (evaluation-order codegen: a right
-operand computed first and spilled, call arguments right to left, a
-relational's operands swapped by degree) - see the sections below. ABI/
+and block scope), plus `10_integ/01_wordcount.c` (a file-scope char
+array with a string initializer, a char compared with a constant),
+`02_bubsort.c`, `04_strrev.c` and `05_matmul.c` (evaluation-order
+codegen: a right operand computed first and spilled, call arguments
+right to left, a relational's operands swapped by degree) - see the
+sections below. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -254,9 +256,98 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c0`/`mutos_c1`: verified this session (`10_integ/01_wordcount` - a file-scope char array, character constants, a char compared with a constant)
+
+**50/62 byte-exact end-to-end, up from 49 of 62** - `10_integ/
+01_wordcount`, the last `10_integ` file that needs no structs. Full
+derivation in `docs/DEVLOG.md`'s section of the same name.
+
+- **A file-scope `char name[] = "..."` (`mutos_c0`).** v7's `extdef()`
+  for an initialized declarator, confirmed byte-for-byte against
+  `01_wordcount.1.golden`: `SYMDEF "_text"`, `DATA`, `NLABEL "_text"`,
+  the string's `BDATA` runs (the label-less form of `putstr()`, in
+  temp1: runs of 14, 15 and 16 values - the first golden with a string
+  of 15 or more characters, so v7's run split is now confirmed directly),
+  `EVEN` for the odd size (45). The string token uses up a label number
+  (v7's lexer: `cval = isn++`), so `main()`'s labels start at 2. A
+  `static` one writes no `SYMDEF` (v7; no golden). Elements are the
+  ordinary subscript shape on `NAME(12, 1, "_text")`. Refused: a sized
+  array, a brace list, no initializer, `extern` with one, a second
+  declaration.
+- **Character constants (`mutos_c0`)** were not parsed at all (`'\n'` -
+  "expected an expression"): now an int `CON` (v7's `getcc()`).
+- **A char compared with a constant (`mutos_c0`).** A char variable,
+  element or dereference compared with a constant in 0..127 is not
+  widened; the constant is typed char - `STAR(1) CON(1, 10) EQUAL(0)` -
+  v7 `c12.c` `optim()`'s CHAR retyping, which the MUTOS front end does
+  itself (`char_compare_rhs()`). Any other char comparison keeps its
+  `ITOC`s (and stays refused by `mutos_c1`).
+- **`mutos_c1`.** `DATA` renders `.data`, a temp1 `BDATA` run the
+  string-literal renderer's `.byte` lines (`put_bdata_run()`, now shared
+  with `gen_strings()`). `text[i]` is `VK_SYMIDX` until the `STAR`, which
+  loads the index - `mov dx,*-6.(bp)` / `mov bx,dx` - and makes the
+  element `_text(bx)`. A char compared with a char-typed constant is a
+  byte compare (`VK_COND.cond_is_byte`): `cmpb _text(bx),*10.` (also for
+  an addressable char - `cmpb *-8.(bp),*97.` in `kernel_nonopt/lp_AC.s`),
+  and a computed element against 0 `movb dx,#_text(bx)` / `orb dx,dx` -
+  v7's `cctab` `%n*,z` template; the `#` marks a symbol displacement
+  loaded through v7's `#1` operand (`o_load()`, also used for a char
+  element stored into a char: `movb dx,#_amxi_bu(bx)` in
+  `kernel_nonopt/amx.s`). Refused: a local char array element with a
+  runtime index in a comparison, a store into a file-scope array
+  element, `&text[i]`, `text + i`, a constant index on a file-scope
+  array.
+- **Pre-existing silent wrong code fixed (refused):** `if (!(l > 0L))`
+  compiled to `cmp *-8.(bp),<unmaterialized-long-const>` (a placeholder
+  as operand text, one word compared), exit status 0 - `OP_EXCLA` built
+  its inverted comparison without `cond_is_long`. It keeps the flag now
+  (and the new byte flag), and `gen_long_cmp()` refuses the inverted
+  operator like any other unconfirmed long comparison.
+- **`dump_temp.py`** decodes `DATA` (`01_wordcount.1.golden` used to
+  stop there); **`x86sim.py`** executes `.byte` data (a char array's, a
+  string literal's), `_text(bx)`/`#_text(bx)` operands, `cmpb` and `orb`
+  - 51 of the 62 goldens now run (up from 50), `01_wordcount` returning
+  55, its C source's value.
+
+**Verification (this session):**
+
+- `make test` (clean build): 50/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build: `mutos_c0` on the 62 golden `.i` files
+  changed exactly `01_wordcount` (a refusal -> its `.1`/`.2` goldens); 50
+  of 62 now match through `c0` alone. `mutos_c1` alone on the 62 golden
+  pairs: only `01_wordcount` changed (a refusal at opcode 203 -> its
+  `.s.golden`); 54 of 62 now match through `c1` alone.
+- `dump_temp.py` over all 124 golden `.1`/`.2` files: output changed for
+  `01_wordcount.1.golden` only.
+- `fuzz_c.py` against the previous build: 18000 programs (seeds 11-16, two
+  scalar-only) and 18000 with `--scope` (seeds 21-26, three scalar-only):
+  all 36000 byte-identical, 0 WRONG, 0 BAD (the generator makes no chars
+  and no negated long comparison).
+- 10 hand-written programs run through `mutos_cpp`, both passes,
+  `mutos_as` and `x86sim.py`, compared with the host C compiler (`short`/
+  `signed char`): char locals and globals against constants with all six
+  operators and against 0, vowel counting with `||`/`&&` over a global
+  array, `c = s[i]` / `n = s[i]` / `return s[i]`, a `static` array with
+  `else if`, comparisons as values and under `!`, three initializers
+  (odd and even sizes, runs of 14 and 13) plus a literal walked by a
+  `char *` against 0, `*p == 'h'`, character constants including `'\377'`,
+  and `01_wordcount` itself: all 10 correct, all assemble. 17 refusal
+  cases (a negative or larger constant, a constant on the left, two
+  chars, a constant index, a store, `&s[i]`, `s + i`, a char index, a
+  local array element, a char plus an int, a char condition, a sized, an
+  uninitialized, an `extern`-initialized and a redeclared array, and
+  `!(l > 0L)`) stop with their diagnostic.
+- `x86sim.py` mutation check on `01_wordcount`: a flipped branch after a
+  `cmpb` changes the result (55 -> 88); a broken `orb` test and a wrong
+  base register are reported.
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden inputs,
+  the hand-written programs and 3000 fuzzed programs (half `--scope`):
+  clean.
+
 ### `mutos_c0`/`mutos_c1`: verified this session (`07_scope` - file-scope variables and block scope)
 
-**49/62 byte-exact end-to-end, up from 46 of 62** - all three `07_scope`
+**49 of 62 byte-exact end-to-end, up from 46 of 62** - all three `07_scope`
 files. Full derivation in `docs/DEVLOG.md`'s section of the same name.
 
 - **File-scope variables (`mutos_c0`).** A top-level declarator without
@@ -301,7 +392,7 @@ files. Full derivation in `docs/DEVLOG.md`'s section of the same name.
 
 **Verification (this session):**
 
-- `make test` (clean build): 49/62 byte-exact, 0 genuine mismatches, zero
+- `make test` (clean build): 49 of 62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   changed exactly the three `07_scope` files to their `.1`/`.2` goldens,
@@ -1989,19 +2080,16 @@ section; headline findings:
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
 `02_long`, `03_ctrlflow`, `04_funcs`, `05_arrptr`, `07_scope` and
-`09_abiprobe` are all fully covered, and `10_integ` has three of its five
-files. The 13 files left: `06_struct` (9), `08_float` (2), `10_integ/
-01_wordcount` and `03_linklist`. In order:
+`09_abiprobe` are all fully covered, and `10_integ` has four of its five
+files. The 12 files left: `06_struct` (9), `08_float` (2) and `10_integ/
+03_linklist`. In order:
 
 1. **More `char`**, each shape with its evidence already recorded in
-   `docs/DEVLOG.md`'s `char` section: a char compared with a constant
-   (`cmpb`, `10_integ/01_wordcount.s.golden` and v7 `optim()`'s CHAR
-   retyping of the constant), a char with one int operand (computed in
-   AX, `kernel_nonopt/amx.s`), char call arguments (`movb ax,...` /
-   `cbw` / `push ax`) and conditions; with a file-scope char array and
-   its initializer (`SYMDEF`/`DATA`/`NLABEL`/`BDATA` in temp1; `.s.golden`
-   `_text:.byte ...`, elements `_text(bx)`/`#_text(bx)`) and `else if`,
-   that is `10_integ/01_wordcount`.
+   `docs/DEVLOG.md`'s `char` section: a char with one int operand
+   (computed in AX, `kernel_nonopt/amx.s`), char call arguments (`movb
+   ax,...` / `cbw` / `push ax`) and conditions, and a store into a
+   file-scope array element (`push *-34.(bp)` ... `pop bx` / `movb
+   _amxscd(bx),dx` in `amx.s` - the index pushed, not an address).
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb

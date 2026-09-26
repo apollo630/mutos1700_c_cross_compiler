@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 49/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 50/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -25,8 +25,8 @@ all 7 of `05_arrptr`: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
 all 7 of `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c`
 large-frame probes), plus all 3 of `07_scope`: `01_globstat.c`,
 `02_shadow.c` and `03_externdef.c` (file-scope variables and block
-scope), plus `10_integ/02_bubsort.c`, `04_strrev.c` and
-`05_matmul.c`. See
+scope), plus `10_integ/01_wordcount.c`, `02_bubsort.c`, `04_strrev.c`
+and `05_matmul.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -60,7 +60,10 @@ behind the `.data` it always emits, rendering each run as `.byte` lines of
 at most 9 hex values (`L4:.byte\t/6f,/6e,/65,/0`) - confirmed against
 `05_arrptr/05_arrofptr` and `07_strlibc`, and against the line layout of
 all 208 literals in `tests/mutos_as/kernel_nonopt|kernel_opt/*.s`; see
-`docs/DEVLOG.md`'s Milestone 4 string-literal section.
+`docs/DEVLOG.md`'s Milestone 4 string-literal section. The same runs,
+without the `LABEL`, initialize a file-scope `char name[] = "..."` - in
+`temp1`, where the declaration is, after `DATA` and `NLABEL`
+(`10_integ/01_wordcount`, see "Current scope").
 
 All opcode/type/storage-class values are transcribed verbatim from
 `v7/cc/c0.h` into `mutos_cc.h` - they are load-bearing wire-format
@@ -947,7 +950,9 @@ Confirmed consumers: int `+` of two chars (above), `return` (`movb
 ax,*-24.(bp)` / `cbw`, already in the return register), and an int
 assignment (`mov <lhs>,ax`, from the non-optimized kernel output in
 `tests/mutos_as/kernel_nonopt/amx.s`). A char with one int operand, `-`,
-a char comparison and a char call argument are refused. A byte through
+a char compared with anything but a constant in 0..127 (see
+`10_integ/01_wordcount` below), and a char call argument are refused. A
+byte through
 a pointer variable goes through DX and BX (`mov dx,*4.(bp)` / `mov
 bx,dx` / `movb dx,(bx)` - the int case uses DI), through an address
 already in DI as `(di)`, and a char store through DX (`movb
@@ -992,9 +997,9 @@ MUTOS front end does not (`mutos_cc.h` delta 5). Every file-scope name is
 keeps a second, file-wide table (`Parser.globals`, searched after the
 function's own by `lookup_var()`), and `emit_name()` writes either shape.
 A redeclaration is accepted when type and linkage agree. Only a plain
-`int`/`char`/`long` name is supported; a file-scope pointer, array or
-initializer (`10_integ/01_wordcount`'s `char text[] = "..."`) and a
-`static` function are refused.
+`int`/`char`/`long` name is supported, plus a `char name[]` initialized
+with a string (`10_integ/01_wordcount`, below); any other file-scope
+pointer, array or initializer and a `static` function are refused.
 
 `mutos_c1` reads such a `NAME` as a memory operand named by its symbol:
 the `VK_STATIC` kind a local `static` already used, with a new `Val.sym`
@@ -1026,6 +1031,48 @@ a `SETREG` at the `}`. The function body itself shares the parameters'
 scope, as in v7. Before, a nested declaration went into the function's
 single flat scope: shadowing was refused ("'x' redeclared"), and each
 sibling block got fresh slots (a larger frame than the real compiler's).
+
+**A file-scope `char` array, character constants, and a char compared
+with a constant (confirmed via `10_integ/01_wordcount`).** `char text[] =
+"...";` is `extdef()`'s initialized-declarator case
+(`parse_global_chararray()`): `SYMDEF "_text"` (none for `static`),
+`DATA`, `NLABEL "_text"`, then the string's `BDATA` runs from the
+label-less `putstr()` - in temp1 - and `EVEN` when the size (the string
+plus its NUL) is odd. v7's lexer numbers every string token as it reads
+it, so the initializer uses up a label number although nothing is
+written under it - `main()`'s labels start at 2. The name is a
+file-scope char array; an element is the ordinary subscript shape,
+`NAME(12, 1, "_text") AMPER(9) <i> CON(1) ITOP(9) PLUS(9) STAR(1)`.
+Only the flexible `[]` form with a string is supported (a sized array,
+a brace list, no initializer, `extern` with one: refused). A character
+constant (`'\n'`) is an int `CON` (v7's `getcc()`, a byte above 127
+sign-extended). And a char variable, element or dereference compared
+with a constant in 0..127 is NOT widened: the constant is typed char
+instead - `STAR(1) CON(1, 10) EQUAL(0)` - which is v7 `c12.c`
+`optim()`'s CHAR retyping of a relational's constant, done by the MUTOS
+front end itself (`char_compare_rhs()`: the right operand is buffered,
+so the left one's `ITOC` can still be written when the right one turns
+out not to be such a constant).
+
+In `mutos_c1` the data renders as `.globl _text` / `.data` /
+`_text:.byte\t/74,...` (the string-literal renderer, `put_bdata_run()`,
+9 values to a line) / `.even`. `text[i]` - the array's address, a
+link-time constant, plus an index the `ITOP` by 1 left as the variable
+itself - is a pending `VK_SYMIDX` until the `STAR`, which loads the index
+into DX and on into BX and makes the element `_text(bx)`. Compared with a
+char-typed constant (a `VK_COND` with `cond_is_byte`), a char in memory
+is a byte compare, in the two shapes of v7's `cctab`: `cmpb
+_text(bx),*10.` (also for an addressable char - `cmpb *-8.(bp),*97.` in
+`kernel_nonopt/lp_AC.s`), and, for a computed element against 0, the
+byte loaded and tested - `movb dx,#_text(bx)` / `orb dx,dx` / `beq`.
+Loaded into a register through v7's `#1` operand the element's symbol
+takes the `#` marker (`o_load()`: also `movb dx,#_amxi_bu(bx)` before a
+char store in `kernel_nonopt/amx.s`); as an instruction operand or read
+as an int (`movb ax,_amxscd(bx)` / `cbw`) it does not. A local char
+array element with a runtime index (addressed through DI), a store into
+a file-scope array element, `&text[i]`, `text + i`, a constant index,
+and a char compared with a negative or larger constant, a non-constant
+or a constant on the left are refused.
 
 ## `SETSTK` / local-frame handling
 
@@ -1222,16 +1269,15 @@ first (0/1 in DI, `push di`).
    "Current scope"); with call arguments right to left and the degree
    swap of a comparison's operands, `10_integ/04_strrev` and `02_bubsort`
    pass too. **`07_scope`: done** (file-scope variables and block scope -
-   see "Current scope"). Next: the further `char` shapes whose evidence
-   `docs/DEVLOG.md`'s `char` section records - a char compared with a
-   constant (`cmpb`, `10_integ/01_wordcount`), a char with one int
-   operand (computed in AX), char call arguments and conditions - which
-   with a file-scope char array and its initializer (`SYMDEF`, `DATA`,
-   `NLABEL` and `BDATA` runs in temp1 - `01_wordcount.1.golden` starts
-   with them, `.s.golden` has `_text:.byte ...`; the elements are
-   addressed `_text(bx)`/`#_text(bx)`) and `else if` bring
-   `10_integ/01_wordcount`. The 81..127-byte `chkstk` gap stays "not yet
-   supported" until a golden lands in it.
+   see "Current scope"). **`10_integ/01_wordcount`: done** (a file-scope
+   char array with a string initializer, character constants, a char
+   compared with a constant - see "Current scope"). Next: the further
+   `char` shapes whose kernel evidence `docs/DEVLOG.md`'s `char` section
+   records - a char with one int operand (computed in AX), char call
+   arguments (`movb ax,...` / `cbw` / `push ax`) and conditions - and a
+   store into a file-scope array element (the kernel pushes the index:
+   `push *-34.(bp)` ... `pop bx` / `movb _amxscd(bx),dx`). The 81..127-byte
+   `chkstk` gap stays "not yet supported" until a golden lands in it.
 6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
