@@ -68,9 +68,18 @@ register the real compiler's output confirms (DI for most integer
 arithmetic, AX/DX for multiply, divide and return values, SI as a
 secondary index register, DI and SI for
 .B register
-variables, CX for shift counts and constant multipliers or divisors). A constant shift count of 1 or
+variables, CX for shift counts and constant multipliers or divisors;
+a
+.B char
+is loaded into AL and sign-extended by
+.BR cbw ,
+stored from DL with
+.BR movb ,
+and read through a pointer variable via DX and BX). A constant shift count of 1 or
 2 is a repeated single-bit shift, a larger one is loaded into CX and
-shifted by CL. An expression whose evaluation would overwrite a
+shifted by CL. A call's arguments are evaluated from the last to the
+first, each pushed as soon as it is computed, as the real compiler does.
+An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered
 \(en is refused by a built-in register-occupancy check, never emitted
@@ -87,8 +96,12 @@ Input path for the primary intermediate-code stream, as written by
 .BR mutos_c0 (1).
 .TP
 .I temp2
-Input path for the string-literal side stream (read for command-line
-compatibility; not yet consumed by any opcode this pass implements).
+Input path for the string-literal side stream, read after
+.I temp1
+and rendered as
+.B .byte
+lines after the code's
+.BR .data .
 .TP
 .I assembly.s
 Output path for the generated

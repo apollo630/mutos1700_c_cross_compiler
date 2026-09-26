@@ -34,7 +34,8 @@
  *   SHIFT             := ADD (('<<'|'>>') ADD)*
  *   ADD               := MUL (('+'|'-') MUL)*
  *   MUL               := UNARY (('*'|'/'|'%') UNARY)*
- *   UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
+ *   UNARY             := ('-'|'+'|'~'|'!'|'*') UNARY | ('++'|'--') IDENT
+ *                       | '&' IDENT ('[' expr ']')? | POSTFIX
  *   POSTFIX           := PRIMARY ('++'|'--')?
  *   PRIMARY           := ICON | IDENT | STRING | cast-expr | sizeof-expr
  *                       | '(' comma-item (',' comma-item)* ')'
@@ -488,6 +489,106 @@ static void emit_materialize(FILE *t1, ExprVal v)
 }
 
 /* ------------------------------------------------------------------ */
+/* 'char' conversions - opcode 109 (OP_ITOC), its type argument the
+ * RESULT type.
+ *
+ * Vanilla v7 treats char and int alike when inserting conversions
+ * (v7/cc/c01.c's lintyp() maps both to the same row of cvtab[]), and
+ * lets the PDP-11's sign-extending MOVB do the widening. The MUTOS
+ * front end does not: its goldens show explicit conversions, in
+ * exactly the places v7's build() applies cvtab[] conversions:
+ *
+ *   buf[0] = 1;             ... STAR(1) CON(1) ITOC(1) ASSIGN(1)
+ *   buf[0] + buf[79]        ... STAR(1) ITOC(0) ... STAR(1) ITOC(0) PLUS(0)
+ *   return buf[0];          ... STAR(1) ITOC(0) RFORCE(0)
+ *   t = *a;  (both char)    ... STAR(1) ASSIGN(1)            (none)
+ *   c = (char) i;           NAME(i) ITOC(1)
+ *   l = (long) c;           NAME(c) CTOL(6)
+ *
+ * (09_abiprobe/0N_frameNNN, 06_struct/06_union, 10_integ/04_strrev,
+ * 01_expr/08_castsize .1.goldens.) So:
+ *
+ * - an operand of a binary arithmetic, shift, bitwise, relational or
+ *   equality operator that is a char is widened first - BOTH operands
+ *   of "c + c" (promote_char());
+ * - an assignment converts its right-hand side to the target's type
+ *   (convert_assign()): int -> char is ITOC(TY_CHAR), char -> int
+ *   ITOC(TY_INT), char -> long CTOL, char -> char nothing. v7's build()
+ *   runs the SAME conversion code for a cast and an assignment ("if
+ *   (dope&ASSGOP || op==CAST)"), which is why "(char) i" and "(long) c"
+ *   confirm the assignment conversions too, and doret() returns through
+ *   an assignment to the function's type ("return buf[0];" in an int
+ *   function: ITOC(TY_INT)).
+ *
+ * Where v7 applies no conversion at all - a condition, an operand of
+ * '&&'/'||'/'!'/'~'/'?:', a call argument - the MUTOS stream shows none
+ * in any golden either way, and mutos_c1 would need a byte-sized test
+ * or push no golden shows; char_value_refused() stops there with an
+ * explicit "not yet supported" instead of guessing. */
+
+/* Widens a char operand to int (OP_ITOC with type TY_INT), written right
+ * after the operand's own bytes - so for a binary operator's LEFT
+ * operand it must be called before the right operand is parsed. A no-op
+ * for anything that is not a char. */
+static ExprVal promote_char(FILE *t1, ExprVal v)
+{
+    if (v.is_const || v.type != TY_CHAR)
+        return v;
+    outcode(t1, "BN", OP_ITOC, TY_INT);
+    return ev_dynamic();
+}
+
+/* Reports a char value in a context whose conversion (if any) no golden
+ * confirms - see this section's header. Returns 1 if it did. */
+static int char_value_refused(ExprVal v, int line, const char *ctx)
+{
+    if (v.is_const || v.type != TY_CHAR)
+        return 0;
+    c0_error_at(line, "a 'char' value used as %s is not yet supported - see "
+                      "src/mutos_cc/README.md", ctx);
+    return 1;
+}
+
+/* Converts an already-emitted right-hand side to the type of the
+ * assignment target `lhs_type` - see this section's header. `rhs` must
+ * already be materialized. The '=' form only: a compound assignment
+ * ("c += 1", "i += c") is left alone by the caller. */
+static void convert_assign(FILE *t1, int lhs_type, ExprVal rhs, int line)
+{
+    if (lhs_type == TY_CHAR) {
+        if (rhs.type == TY_CHAR && !rhs.is_const)
+            return;                          /* char = char: none */
+        if (rhs.type == TY_LONG || ty_is_ptr(rhs.type)) {
+            c0_error_at(line, "storing a '%s' value into a 'char' is not yet "
+                              "supported - see src/mutos_cc/README.md",
+                        rhs.type == TY_LONG ? "long" : "pointer");
+            return;
+        }
+        outcode(t1, "BN", OP_ITOC, TY_CHAR);
+        return;
+    }
+    if (lhs_type == TY_LONG) {
+        /* An int-typed value assigned to a 'long' needs an explicit
+         * widening conversion first - confirmed against 02_long/
+         * 01_addsub.1.golden's "b = 23456;" (CON, then ITOL(TY_LONG),
+         * then ASSIGN); a char one goes straight to long with the
+         * MUTOS-specific CTOL, as "(long) c" does (08_castsize). */
+        if (rhs.type == TY_LONG)
+            return;
+        if (rhs.type == TY_CHAR && !rhs.is_const)
+            outcode(t1, "BN", OP_CTOL, TY_LONG);
+        else
+            outcode(t1, "BN", OP_ITOL, TY_LONG);
+        return;
+    }
+    if (ty_is_ptr(lhs_type)) {
+        (void)char_value_refused(rhs, line, "a pointer's new value");
+        return;
+    }
+    (void)promote_char(t1, rhs);             /* int = char */
+}
+
+/* ------------------------------------------------------------------ */
 /* Keeping a pending constant LEFT operand on the left.
  *
  * temp1 is postfix: a binary node's left operand's bytes, then its
@@ -690,6 +791,7 @@ static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
     ExprVal row = parse_expr(p, t1);
     expect(p, T_RBRACK, "']'");
     emit_materialize(t1, row);
+    (void)promote_char(t1, row);
     outcode(t1, "BNN", OP_CON, TY_INT, sym->dim2 * MCC_SZINT);
     outcode(t1, "BN", OP_ITOP, rowptr);
     outcode(t1, "BN", OP_PLUS, TY_PTR_INT);
@@ -706,6 +808,7 @@ static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
     ExprVal col = parse_expr(p, t1);
     expect(p, T_RBRACK, "']'");
     emit_materialize(t1, col);
+    (void)promote_char(t1, col);
     outcode(t1, "BNN", OP_CON, TY_INT, MCC_SZINT);
     outcode(t1, "BN", OP_ITOP, TY_PTR_INT);
     outcode(t1, "BN", OP_PLUS, TY_PTR_INT);
@@ -714,26 +817,19 @@ static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
 }
 
 /*
- * A 'char' (or 'long') element read or written through a subscript or
- * a pointer is refused, although the address computation itself is
- * known (e.g. every 09_abiprobe frame golden's "buf[80 - 1]": NAME(1) AMPER(9)
- * CON(79) CON(1) ITOP(9) PLUS(9) STAR(1)): the real front end also
- * wraps such a value in conversions - opcode 109 (OP_ITOC) with type
- * TY_CHAR when an int is stored into it ("buf[0] = 1;" -> ... CON(1)
- * ITOC(1) ASSIGN(1)), and with type TY_INT when it is used as an int
- * operand ("buf[0] + buf[79]": ... STAR(1) ITOC(0) ... STAR(1) ITOC(0)
- * PLUS) - and mutos_c0 does not insert those yet, nor can mutos_c1
- * load or store a byte through an address. Refusing here keeps both
- * from silently producing a wrong .1 (before 'char' arrays and
- * pointers were accepted by parse_decl(), these programs stopped at
- * the declaration instead). A 'char *' element ("char *names[3]")
- * is a word and is not affected. */
-static void refuse_char_long_access(Parser *p, int elemtype)
+ * A 'long' element read or written through a subscript or a pointer is
+ * refused, although the address computation itself is known: no golden
+ * shows a two-word load or store through an address, nor which
+ * conversions the real front end wraps around one. (A 'char' element
+ * used to be refused here too, until its conversions - see
+ * promote_char()/convert_assign() - and mutos_c1's byte loads and
+ * stores were implemented against the 09_abiprobe frame goldens.) A
+ * 'long *' element is a word and is not affected. */
+static void refuse_long_access(Parser *p)
 {
-    c0_error_at(p->cur.line, "reading or writing a '%s' through a subscript "
+    c0_error_at(p->cur.line, "reading or writing a 'long' through a subscript "
                               "or pointer is not yet supported - see "
-                              "src/mutos_cc/README.md",
-                elemtype == TY_CHAR ? "char" : "long");
+                              "src/mutos_cc/README.md");
 }
 
 /*
@@ -770,11 +866,13 @@ static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
         ptrtype = sym->type;
         elemtype = ty_decref(ptrtype);
     }
-    if (elemtype == TY_CHAR || elemtype == TY_LONG)
-        refuse_char_long_access(p, elemtype);
+    if (elemtype == TY_LONG)
+        refuse_long_access(p);
     ExprVal idx = parse_expr(p, t1);
     expect(p, T_RBRACK, "']'");
     emit_materialize(t1, idx);
+    (void)promote_char(t1, idx); /* v7's build(PLUS): a char index is
+                                   * widened like any other operand */
     outcode(t1, "BNN", OP_CON, TY_INT, size_of_type(elemtype));
     outcode(t1, "BN", OP_ITOP, ptrtype);
     outcode(t1, "BN", OP_PLUS, ptrtype);
@@ -818,8 +916,12 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
 
         ExprVal rhs = parse_expr(p, t1);
         emit_materialize(t1, rhs);
+        if (sym)
+            convert_assign(t1, sym->type, rhs, line);
         outcode(t1, "BN", OP_ASSIGN, sym ? sym->type : TY_INT);
-        return ev_dynamic();
+        /* The assignment's value has the target's type (v7's build():
+         * "t = t1" for an assignment operator). */
+        return ev_dynamic_typed(sym ? sym->type : TY_INT);
     }
     return parse_expr(p, t1);
 }
@@ -920,12 +1022,19 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
     if (p->cur.kind == T_RPAREN) {
         outcode(t1, "B", OP_NULLOP);
     } else {
+        /* A char argument: v7 converts no call argument (the argument
+         * list is built with COMMA, a no-conversion operator), and no
+         * golden shows what MUTOS pushes for one - refused. */
+        int line = p->cur.line;
         ExprVal v = parse_expr(p, t1);
         emit_materialize(t1, v);
+        (void)char_value_refused(v, line, "a call argument");
         while (p->cur.kind == T_COMMA) {
             advance(p);
+            line = p->cur.line;
             ExprVal rhs = parse_expr(p, t1);
             emit_materialize(t1, rhs);
+            (void)char_value_refused(rhs, line, "a call argument");
             outcode(t1, "BN", OP_COMMA, TY_INT);
         }
     }
@@ -1188,8 +1297,9 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * conversion opcodes confirmed against
              * 08_castsize.1.golden: long->int is LTOI, int->char is
              * ITOC, char->long is the MUTOS-specific CTOL (see
-             * mutos_cc.h). Any other (source, target) pair - int-
-             * >int, int->long, char->int, long->char, char->char,
+             * mutos_cc.h); char->int is ITOC with type TY_INT (see
+             * promote_char()'s section). Any other (source, target)
+             * pair - int->int, int->long, long->char, char->char,
              * long->long - is not yet supported; none is exercised
              * by this file. */
             advance(p); /* consume '(' */
@@ -1214,6 +1324,11 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 return ev_const(0);
             }
             advance(p); /* consume IDENT */
+            if (sym->is_array) {
+                c0_error_at(line, "a cast of an array name is not yet "
+                                   "supported - see src/mutos_cc/README.md");
+                return ev_dynamic();
+            }
             outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
             int optag;
             if (sym->type == TY_LONG && target == TY_INT)
@@ -1222,6 +1337,11 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 optag = OP_ITOC;
             else if (sym->type == TY_CHAR && target == TY_LONG)
                 optag = OP_CTOL;
+            else if (sym->type == TY_CHAR && target == TY_INT)
+                optag = OP_ITOC; /* type TY_INT: char -> int - the same
+                                  * conversion "return c;" gets, which v7
+                                  * builds through the very code path a
+                                  * cast uses (see convert_assign()) */
             else {
                 c0_error_at(line, "this cast combination is not yet "
                                    "supported - see src/mutos_cc/README.md");
@@ -1252,6 +1372,11 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * which paired SEQNC with the wrong operands
              * ("y + (x = 1, 5)" added y's slot to 1). */
             emit_materialize(t1, rhs);
+            /* v7 types SEQNC like its right operand ("t = t2"), so a
+             * char last item would make it a char SEQNC - unconfirmed,
+             * and this file writes SEQNC(TY_INT) - refused. */
+            (void)char_value_refused(rhs, p->cur.line,
+                                     "the last operand of a comma operator");
             outcode(t1, "BN", OP_SEQNC, TY_INT);
             v = rhs;
             v.is_const = 0;
@@ -1292,6 +1417,28 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
             advance(p);
             return ev_const(0);
+        }
+        if (peek2_kind(p) == T_LBRACK && (sym->is_array || sym->is_ptr)) {
+            /* '&' IDENT '[' expr ']' - the address of one element
+             * ("swapch(&s[lo], &s[hi]);" - 10_integ/04_strrev.c): v7's
+             * build(AMPER) takes the address of the subscript's STAR
+             * node, so the stream is the ordinary element reference
+             * followed by AMPER("pointer to element") - confirmed
+             * against 04_strrev.1.golden: NAME(s) NAME(lo) CON(1)
+             * ITOP(9) PLUS(9) STAR(1) AMPER(9). mutos_c1 cancels the
+             * STAR/AMPER pair ("&*x" is "x"). A 2-D array's element
+             * address has no golden. */
+            if (sym->is_array && sym->dim2 > 0) {
+                c0_error_at(line, "'&' of a 2-D array element is not yet "
+                                   "supported - see src/mutos_cc/README.md");
+                advance(p);
+                return ev_dynamic();
+            }
+            advance(p); /* consume IDENT - emit_subscript() starts at '[' */
+            int elem = emit_subscript(p, t1, sym);
+            int rt = ty_ptr_of(elem);
+            outcode(t1, "BN", OP_AMPER, rt);
+            return ev_dynamic_typed(rt);
         }
         if (sym->is_array) {
             /* "&a" on an array: v7/cc/c01.c's build() deliberately
@@ -1335,8 +1482,8 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             return ev_dynamic();
         }
         int elemtype = ty_decref(v.type);
-        if (elemtype == TY_CHAR || elemtype == TY_LONG)
-            refuse_char_long_access(p, elemtype);
+        if (elemtype == TY_LONG)
+            refuse_long_access(p);
         outcode(t1, "BN", OP_STAR, elemtype);
         return ev_dynamic_typed(elemtype);
     }
@@ -1449,7 +1596,9 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         ExprVal v = parse_unary(p, t1);
         if (v.is_const)
             return ev_const(trunc16(~v.value));
-        (void)line;
+        /* v7 converts no unary operand (build()'s non-BINARY path) - a
+         * char here would be a char-typed COMPL, which has no golden. */
+        (void)char_value_refused(v, line, "the operand of '~'");
         emit_materialize(t1, v); /* no-op: a non-constant operand has
                                    * already been emitted (e.g. as a
                                    * NAME) by the time we get here. */
@@ -1462,7 +1611,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         ExprVal v = parse_unary(p, t1);
         if (v.is_const)
             return ev_const(v.value == 0 ? 1 : 0);
-        (void)line;
+        (void)char_value_refused(v, line, "the operand of '!'");
         emit_materialize(t1, v); /* no-op, same as COMPL above */
         outcode(t1, "BN", OP_EXCLA, TY_INT);
         return ev_dynamic();
@@ -1476,9 +1625,11 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
     for (;;) {
         if (p->cur.kind == T_STAR) {
             advance(p);
+            v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
             v = rhs_end(&cap, p, t1, v, r);
+            r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value * r.value));
                 continue;
@@ -1496,9 +1647,11 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
         } else if (p->cur.kind == T_SLASH) {
             int line = p->cur.line;
             advance(p);
+            v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
             v = rhs_end(&cap, p, t1, v, r);
+            r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 if (r.value == 0) {
                     c0_error_at(line, "Division by zero in constant expression");
@@ -1516,9 +1669,11 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
         } else if (p->cur.kind == T_PERCENT) {
             int line = p->cur.line;
             advance(p);
+            v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
             v = rhs_end(&cap, p, t1, v, r);
+            r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 if (r.value == 0) {
                     c0_error_at(line, "Division by zero in constant expression");
@@ -1546,11 +1701,26 @@ static ExprVal parse_add(Parser *p, FILE *t1)
     for (;;) {
         if (p->cur.kind == T_PLUS) {
             advance(p);
+            v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_mul(p, rhs_begin(&cap, p, t1, v));
             v = rhs_end(&cap, p, t1, v, r);
+            r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value + r.value));
+                continue;
+            }
+            if (!r.is_const && ty_is_ptr(r.type)) {
+                /* v7's build() scales the LEFT operand here (cvtab[int]
+                 * [ptr]'s leftc ITP), whose bytes are already written;
+                 * compiled as an int '+' this silently added the
+                 * unscaled integer (found 2026-09-26). */
+                c0_error_at(p->cur.line, "%s is not yet supported - see "
+                            "src/mutos_cc/README.md",
+                            ty_is_ptr(v.type) ? "adding two pointers"
+                                              : "an integer plus a pointer "
+                                                "(the pointer on the right)");
+                v = ev_dynamic();
                 continue;
             }
             if (!v.is_const && ty_is_ptr(v.type)) {
@@ -1580,11 +1750,24 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_MINUS) {
             advance(p);
+            v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_mul(p, rhs_begin(&cap, p, t1, v));
             v = rhs_end(&cap, p, t1, v, r);
+            r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 v = ev_const(trunc16(v.value - r.value));
+                continue;
+            }
+            if (ty_is_ptr(v.type) || ty_is_ptr(r.type)) {
+                /* "p - 1" must step back one ELEMENT (ITOP scaling, as
+                 * for '+'), "q - p" divide the byte difference by the
+                 * element size (v7's build(): PTI after the MINUS); as a
+                 * plain int '-' both were silently wrong (found
+                 * 2026-09-26). */
+                c0_error_at(p->cur.line, "pointer subtraction is not yet "
+                            "supported - see src/mutos_cc/README.md");
+                v = ev_dynamic();
                 continue;
             }
             emit_materialize(t1, v);
@@ -1614,9 +1797,11 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         else if (p->cur.kind == T_SHR) op = OP_RSHIFT;
         else break;
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_add(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             /* Folded on the host: the left shift goes through an
              * unsigned intermediate (shifting a negative signed value
@@ -1663,9 +1848,19 @@ static ExprVal parse_relational(Parser *p, FILE *t1)
         else if (p->cur.kind == T_GE) op = OP_GREATEQ;
         else break;
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_shift(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
+        if (ty_is_ptr(v.type) || ty_is_ptr(r.type)) {
+            /* v7 orders pointers UNSIGNED - build() turns the operator
+             * into LESSP/LESSEQP/GREATP/GREATEQP ("op =+ LESSEQP-LESSEQ")
+             * - which neither this file nor mutos_c1 has; a signed LESS
+             * misorders addresses above 0x7FFF (found 2026-09-26). */
+            c0_error_at(p->cur.line, "an ordered comparison of pointers is "
+                        "not yet supported - see src/mutos_cc/README.md");
+        }
         if (v.is_const && r.is_const) {
             long res;
             switch (op) {
@@ -1696,9 +1891,11 @@ static ExprVal parse_equality(Parser *p, FILE *t1)
         else if (p->cur.kind == T_NE) op = OP_NEQUAL;
         else break;
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_relational(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             long res = (op == OP_EQUAL) ? (v.value == r.value)
                                          : (v.value != r.value);
@@ -1718,9 +1915,11 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
     ExprVal v = parse_equality(p, t1);
     while (p->cur.kind == T_AMP) {
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_equality(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value & r.value));
             continue;
@@ -1738,9 +1937,11 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
     ExprVal v = parse_bitand(p, t1);
     while (p->cur.kind == T_CARET) {
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_bitand(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value ^ r.value));
             continue;
@@ -1758,9 +1959,11 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
     ExprVal v = parse_bitxor(p, t1);
     while (p->cur.kind == T_PIPE) {
         advance(p);
+        v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_bitxor(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value | r.value));
             continue;
@@ -1785,9 +1988,11 @@ static ExprVal parse_logand(Parser *p, FILE *t1)
     ExprVal v = parse_bitor(p, t1);
     while (p->cur.kind == T_ANDAND) {
         advance(p);
+        (void)char_value_refused(v, p->cur.line, "an operand of '&&'/'||'");
         RhsCapture cap;
         ExprVal r = parse_bitor(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        (void)char_value_refused(r, p->cur.line, "an operand of '&&'/'||'");
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) && (r.value != 0));
             continue;
@@ -1805,9 +2010,11 @@ static ExprVal parse_logor(Parser *p, FILE *t1)
     ExprVal v = parse_logand(p, t1);
     while (p->cur.kind == T_OROR) {
         advance(p);
+        (void)char_value_refused(v, p->cur.line, "an operand of '&&'/'||'");
         RhsCapture cap;
         ExprVal r = parse_logand(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        (void)char_value_refused(r, p->cur.line, "an operand of '&&'/'||'");
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) || (r.value != 0));
             continue;
@@ -1856,6 +2063,11 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
     }
     ExprVal pending = cond.is_const ? cond : t;
     ExprVal f = parse_logor(p, rhs_begin(&fcap, p, t1, pending));
+    /* v7's QUEST/COLON convert nothing (COLON only balances int/pointer
+     * types); a char condition or arm has no golden - refused. */
+    (void)(char_value_refused(cond, p->cur.line, "a '?:' condition") ||
+           char_value_refused(t, p->cur.line, "a '?:' result") ||
+           char_value_refused(f, p->cur.line, "a '?:' result"));
 
     if (cond.is_const && t.is_const && f.is_const) {
         /* v7/cc/c01.c's fold(QUEST): folded only when the condition
@@ -1910,8 +2122,9 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
  * array): "char buf[20];", "char *s;" and "char *names[3];" are
  * confirmed by 05_arrptr/07_strlibc.1.golden and 05_arrofptr.1.golden
  * (every size goes through rlength() - see there). Reading or writing
- * a 'char'/'long' ELEMENT is refused elsewhere (see
- * refuse_char_long_access()). A 'long' occupies MCC_SZLONG (4) bytes of frame space,
+ * a 'long' ELEMENT is refused elsewhere (see refuse_long_access()); a
+ * 'char' one is read and written with the conversions promote_char()'s
+ * section describes. A 'long' occupies MCC_SZLONG (4) bytes of frame space,
  * matching its real value size. A 'char' occupies MCC_SZINT (2) bytes
  * of frame space DESPITE its real value size being MCC_SZCHAR (1) -
  * confirmed by "long l;" (offset -10) immediately followed by
@@ -2294,6 +2507,14 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
     ExprVal v = parse_expr(p, t1);
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, v);
+    /* v7/cc/c04.c's doret() returns through an assignment to the
+     * function's own type, so an int function returning a char
+     * converts it - 10_integ/04_strrev.1.golden's "return buf[0];" ->
+     * ... STAR(1) ITOC(0) RFORCE(0). (A char- or long-returning
+     * function's conversions are not confirmed; mutos_c1 refuses a
+     * char RFORCE either way.) */
+    if (p->cur_ret_type == TY_INT)
+        (void)promote_char(t1, v);
 
     outcode(t1, "BN", OP_RFORCE, p->cur_ret_type);
     outcode(t1, "BN", OP_EXPR, stmt_line);
@@ -2396,19 +2617,6 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
-    /* An int-typed value assigned to a 'long' lvalue needs an
-     * explicit widening conversion first - a plain int is only 2
-     * bytes wide, and a 'long' lvalue's ASSIGN case expects a real
-     * VK_LONG-producing value (see c1_gen.c) - confirmed against
-     * 02_long/01_addsub.1.golden's "b = 23456;" (23456 fits a plain
-     * int, so it takes the ordinary CON path, not LCON's), which
-     * wraps the CON in OP_ITOL(TY_LONG) before ASSIGN. Only applies
-     * to plain '=' - the ten compound-assignment operators are not
-     * confirmed for a 'long' lvalue by any golden. */
-    if (optag == OP_ASSIGN && subtype < 0 && sym && sym->type == TY_LONG &&
-        rhs.type != TY_LONG)
-        outcode(t1, "BN", OP_ITOL, TY_LONG);
-
     /* The operator's type argument is the LVALUE's type (TY_INT for
      * every case confirmed so far, but TY_PTR_INT for "p = a;" -
      * confirmed against 05_incdec.1.golden byte 242-243; the ten
@@ -2419,9 +2627,28 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
      * value) - confirmed against 01_arrbasic.1.golden's "a[i] = i *
      * i;" (ASSIGN(TY_INT), matching the array's int element type,
      * not the pointer type the AMPER/PLUS/STAR chain computed the
-     * address with). Falls back to TY_INT for the already-reported
-     * undeclared-name case above. */
+     * address with) and 09_abiprobe/02_frame080.1.golden's "buf[0] =
+     * 1;" (ASSIGN(TY_CHAR)). Falls back to TY_INT for the already-
+     * reported undeclared-name case above. */
     int assign_type = (subtype >= 0) ? subtype : (sym ? sym->type : TY_INT);
+
+    /* The right-hand side converted to the target's type - see
+     * convert_assign() (an int -> long ITOL, "b = 23456;" in 02_long/
+     * 01_addsub.1.golden; an int -> char ITOC(1), "buf[0] = 1;"; a char
+     * -> int ITOC(0); ...). A compound assignment's conversions are
+     * confirmed for none of these types; a char target of one is
+     * refused, a char right-hand side widened like any other binary
+     * operand (mutos_c1 then refuses it). */
+    if (optag == OP_ASSIGN) {
+        if (sym)
+            convert_assign(t1, assign_type, rhs, line);
+    } else if (assign_type == TY_CHAR) {
+        c0_error_at(line, "a compound assignment to a 'char' is not yet "
+                          "supported - see src/mutos_cc/README.md");
+    } else {
+        (void)promote_char(t1, rhs);
+    }
+
     outcode(t1, "BN", optag, assign_type);
     outcode(t1, "BN", OP_EXPR, line);
 }
@@ -2503,8 +2730,8 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
         for (int i = 0; i < nstars; i++) {
             curtype = ty_decref(curtype);
-            if (curtype == TY_CHAR || curtype == TY_LONG)
-                refuse_char_long_access(p, curtype);
+            if (curtype == TY_LONG)
+                refuse_long_access(p);
             outcode(t1, "BN", OP_STAR, curtype);
         }
     }
@@ -2520,6 +2747,10 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     ExprVal rhs = parse_expr(p, t1);
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
+    if (sym)
+        convert_assign(t1, curtype, rhs, line); /* e.g. "*a = *b;" on
+                                                  * two char pointers:
+                                                  * none (04_strrev) */
 
     outcode(t1, "BN", OP_ASSIGN, curtype);
     outcode(t1, "BN", OP_EXPR, line);
@@ -2692,16 +2923,18 @@ static void parse_if_stmt(Parser *p, FILE *t1, int retlab)
     advance(p); /* consume 'if' */
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
+    (void)char_value_refused(cond, p->cur.line, "a condition");
     expect(p, T_RPAREN, "')'");
     emit_materialize(t1, cond);
     int line = p->cur.line;
 
     /* v7/cc's "simpif" shortcut: an if-body that is exactly a bare
-     * 'goto label;' / 'break;' / 'continue;' compiles to a single
-     * direct CBRANCH(target, cond=1) - no extra label allocated at
-     * all - confirmed against 07_goto.s.golden ('if (i>=10) goto
-     * done;') and 05_breakcont.s.golden ('if (j==3) break;' / 'if (i
-     * ==j) continue;'). Only recognized when nothing but the bare
+     * 'goto label;' / 'break;' / 'continue;' / 'return;' compiles to a
+     * single direct CBRANCH(target, cond=1) - no extra label allocated
+     * at all - confirmed against 07_goto.s.golden ('if (i>=10) goto
+     * done;'), 05_breakcont.s.golden ('if (j==3) break;' / 'if (i
+     * ==j) continue;') and 10_integ/04_strrev ('if (lo >= hi)
+     * return;'). Only recognized when nothing but the bare
      * keyword (+ target, for goto) + ';' follows; anything else
      * (including a trailing 'else', not exercised by any golden)
      * falls through to the general shape below. */
@@ -2731,6 +2964,17 @@ static void parse_if_stmt(Parser *p, FILE *t1, int retlab)
             else
                 outcode(t1, "BNNN", OP_CBRANCH, target, 1, line);
         }
+        return;
+    }
+    if (p->cur.kind == T_KW_RETURN && peek2_kind(p) == T_SEMI) {
+        /* A bare 'return;' is the same shortcut, branching straight to
+         * the function's return label (v7/cc/c02.c: "case RETURN: if
+         * (nextchar()==';') { o2 = retlab; goto simpif; }") - confirmed
+         * against 10_integ/04_strrev.1.golden's "if (lo >= hi) return;"
+         * -> GREATEQ, CBRANCH(retlab, cond=1). */
+        advance(p); /* 'return' */
+        advance(p); /* ';' */
+        outcode(t1, "BNNN", OP_CBRANCH, retlab, 1, line);
         return;
     }
 
@@ -2770,6 +3014,7 @@ static void parse_while_stmt(Parser *p, FILE *t1, int retlab)
 
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
+    (void)char_value_refused(cond, p->cur.line, "a condition");
     emit_materialize(t1, cond);
     int line = p->cur.line; /* p->cur is still ')' here */
     expect(p, T_RPAREN, "')'");
@@ -2818,6 +3063,7 @@ static void parse_do_stmt(Parser *p, FILE *t1, int retlab)
     }
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
+    (void)char_value_refused(cond, p->cur.line, "a condition");
     emit_materialize(t1, cond);
     int line = p->cur.line; /* p->cur is still ')' here - same
                               * last-consumed-token convention as
@@ -2886,6 +3132,7 @@ static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
 
     if (p->cur.kind != T_SEMI) {
         ExprVal cond = parse_expr(p, t1);
+        (void)char_value_refused(cond, p->cur.line, "a condition");
         emit_materialize(t1, cond);
         int line = p->cur.line; /* p->cur is still ';' here */
         outcode(t1, "BNNN", OP_CBRANCH, brk_lab, 0, line);
@@ -2965,6 +3212,7 @@ static void parse_switch_stmt(Parser *p, FILE *t1, int retlab)
 
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
+    (void)char_value_refused(cond, p->cur.line, "a 'switch' value");
     emit_materialize(t1, cond);
     int line = p->cur.line; /* p->cur is still ')' here - same
                               * last-consumed-token convention as

@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """x86sim.py - executes mutos_c1 output for a semantic check.
 
-Runs the subset of mutos_as-syntax 8086 code that mutos_c1 emits for a
-single, parameterless main() without calls - the shape fuzz_c.py
-generates - and reports the final state: main()'s return value (AX at
-"jmp cret") and every local variable's word(s), located through c1's
-own "| _name=-N." frame comments. It is a checker, not an emulator:
-anything outside the subset (a call, a byte operation, a static
-label operand, a branch on flags not set by a cmp or an "or r,r", ...)
-stops it with exit status 2 and a message, never with a guess.
+Runs the subset of mutos_as-syntax 8086 code that mutos_c1 emits - the
+shape fuzz_c.py generates, a parameterless main(), plus calls of other
+functions defined in the same file (with the shared "cret" epilogue and
+the "chkstk" large-frame helper built in) and "movb"/"cbw" byte
+operations - and reports the final state: main()'s return value (AX at
+main's "jmp cret") and every local variable's word(s), located through
+c1's own "| _name=-N." frame comments. It is a checker, not an
+emulator: anything outside the subset (a libc or indirect call, a
+static label operand, a branch on flags not set by a cmp or an "or
+r,r", ...) stops it with exit status 2 and a message, never with a
+guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
-.s.golden it can execute (30 of the 62 - the rest call a function or
-use byte operations) returns the value its C source computes, among
-them 01_expr/06_compasgn (33), 03_ctrlflow/05_breakcont (12),
-05_arrptr/02_array2d (138), 10_integ/05_matmul (134) and even
-06_struct/07_bitfield (12), whose code mutos_c1 cannot produce yet.
+.s.golden it can execute (47 of the 62 - the rest call libc or runtime
+helpers, or use statics, 'long' carries or a jump table) returns the
+value its C source computes, among them 01_expr/06_compasgn (33),
+03_ctrlflow/05_breakcont (12), 04_funcs/03_recfact (720), 05_arrptr/
+02_array2d (138), 09_abiprobe/03_frame128 (3, through chkstk),
+10_integ/02_bubsort (91) and 05_matmul (134), and even 06_struct/
+07_bitfield (12) and 06_union (3), whose code mutos_c1 cannot produce
+yet.
 
 Usage:
     x86sim.py file.s        prints "ret=<n>", then "<name>=<off>" per
@@ -119,7 +125,7 @@ class Sim:
         self.mem[(a + 1) & M16] = (v >> 8) & 0xFF
 
     def _ea(self, op):
-        m = re.match(r"^(?:\*(-?\d+)\.)?\((\w+)\)$", op)
+        m = re.match(r"^(?:[*#](-?\d+)\.)?\((\w+)\)$", op)
         if not m or m.group(2) not in self.regs:
             return None
         disp = int(m.group(1)) if m.group(1) else 0
@@ -154,11 +160,44 @@ class Sim:
             self.snapshots.append((s16(v), Result(None, self.regs["bp"],
                                                   dict(self.locals), dict(self.mem))))
 
+    # Byte operands ("movb"): mutos_as spells a byte register by its word
+    # register's name - "movb ax,*-84.(bp)" loads AL, "movb *-6.(bp),dx"
+    # stores DL - so a register operand means its LOW byte, and the high
+    # byte of a register destination is left as it was (8086 MOV AL,..).
+    BYTE_REGS = ("ax", "bx", "cx", "dx")
+
+    def get_byte(self, op):
+        if op in self.BYTE_REGS:
+            return self.regs[op] & 0xFF
+        if op in self.regs:
+            raise SimError(f"byte operand '{op}' has no low byte")
+        m = re.match(r"^[*#](-?\d+)\.?$", op)
+        if m:
+            return int(m.group(1)) & 0xFF
+        a = self._ea(op)
+        if a is not None:
+            return self.mem.get(a, 0)
+        raise SimError(f"byte operand '{op}' not supported")
+
+    def put_byte(self, op, v):
+        if op in self.BYTE_REGS:
+            self.regs[op] = (self.regs[op] & 0xFF00) | (v & 0xFF)
+            return
+        a = self._ea(op)
+        if a is None:
+            raise SimError(f"byte destination '{op}' not supported")
+        self.mem[a] = v & 0xFF
+        if self.watch in self.locals and \
+                a == (self.regs["bp"] + self.locals[self.watch]) & M16:
+            self.snapshots.append((s16(self._rd(a)), Result(None, self.regs["bp"],
+                                                            dict(self.locals), dict(self.mem))))
+
     # -- execution ------------------------------------------------------
     def run(self):
         if "_main" not in self.labels:
             raise SimError("no _main")
         pc = self.labels["_main"]
+        depth = 0                   # calls in progress (see "call")
         for _ in range(STEP_LIMIT):
             if pc >= len(self.prog):
                 raise SimError("ran off the end of the code")
@@ -167,6 +206,18 @@ class Sim:
             if mnem in FLAG_WRITERS:
                 self.cmp = None
             if mnem == "jmp":
+                if ops[0] == "cret" and depth > 0:
+                    # cret (docs/MUTOS_C_ABI.md): lea sp,-4(bp) / pop si /
+                    # pop di / pop bp / ret
+                    self.regs["sp"] = (self.regs["bp"] - 4) & M16
+                    for r in ("si", "di", "bp"):
+                        self.regs[r] = self._rd(self.regs["sp"])
+                        self.regs["sp"] = (self.regs["sp"] + 2) & M16
+                    pc = self._rd(self.regs["sp"])
+                    self.regs["sp"] = (self.regs["sp"] + 2) & M16
+                    depth -= 1
+                    self.cmp = None
+                    continue
                 if ops[0] == "cret":
                     return Result(s16(self.regs["ax"]), self.regs["bp"],
                                   dict(self.locals), self.mem, self.snapshots)
@@ -225,6 +276,27 @@ class Sim:
                     raise SimError("division overflow")
                 self.regs["ax"] = q & M16
                 self.regs["dx"] = (n - q * d) & M16
+            elif mnem == "call" and ops[0] == "chkstk":
+                # The large-frame allocation helper (docs/MUTOS_C_ABI.md
+                # sect. 1.9): sp -= ax, as "sub sp,ax" would, returning
+                # with the return address left in ax.
+                self.regs["sp"] = (self.regs["sp"] - self.regs["ax"]) & M16
+                self.regs["ax"] = pc
+            elif mnem == "call":
+                # A call of a function in the same file only (a libc or
+                # indirect call has no code here to run).
+                if ops[0] not in self.labels:
+                    raise SimError(f"call target '{ops[0]}' not supported")
+                self.regs["sp"] = (self.regs["sp"] - 2) & M16
+                self._wr(self.regs["sp"], pc)
+                pc = self.labels[ops[0]]
+                depth += 1
+                self.cmp = None
+            elif mnem == "movb":
+                self.put_byte(ops[0], self.get_byte(ops[1]))
+            elif mnem == "cbw":
+                al = self.regs["ax"] & 0xFF
+                self.regs["ax"] = (al | 0xFF00) if al & 0x80 else al
             elif mnem == "cwd":
                 self.regs["dx"] = M16 if self.regs["ax"] & 0x8000 else 0
             elif mnem == "push":

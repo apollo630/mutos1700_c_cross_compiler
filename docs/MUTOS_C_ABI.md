@@ -69,6 +69,12 @@ register to work with it) — that is never visible to the caller.
 - Arguments are pushed **right-to-left** (the last-declared parameter is pushed
   first), so the **first-declared parameter ends up at the lowest stack offset**,
   closest to the return address.
+- The real compiler also **evaluates** them right to left, each one pushed as soon as
+  it is computed (v7's `comarg()` order) - `tests/mutos_cc/10_integ/04_strrev.s.golden`'s
+  `reverse(s, lo + 1, hi - 1)`: `mov di,*8.(bp) / dec di / push di / mov di,*6.(bp) /
+  inc di / push di / push *4.(bp) / call _reverse / add sp,*6.`. C leaves the
+  evaluation order unspecified, so this is not part of the calling convention a callee
+  can observe, but `mutos_c1` must reproduce it for byte-for-byte output.
 - The **caller** removes the arguments after the call (classic cdecl-style
   caller-cleanup), via `add sp,N` where `N = 2 × (number of argument words)`.
   Confirmed at every single call site examined, with no exceptions:
@@ -605,18 +611,25 @@ it; the note says so where that's the case.
       call (§1.1). Implemented and verified (`c1_gen.c`'s `gen_call()`,
       confirmed via `04_funcs/01_call`/`02_manyargs`'s reverse-order
       pushes and `02_long/04_params`'s `add sp,*8.` word-count-based
-      cleanup for a `long` argument).
+      cleanup for a `long` argument). Arguments are also *evaluated* right
+      to left, each pushed as soon as it is computed (`plan_call()`,
+      confirmed via `10_integ/04_strrev`'s `reverse(s, lo + 1, hi - 1)`).
 - [x] Return: `AX` for (`int`) scalars (§1.5). Implemented and verified
       (`c1_gen.c`'s `RFORCE` handler, now also confirmed to skip its
       usual move when the value is already `AX` — a call result or an
       `OP_TIMES`/`OP_DIVIDE` quotient, see `04_funcs/01_call`/
-      `03_recfact`). `char`/pointer scalars aren't
-      distinguished yet, since `mutos_c0`'s type system is currently
-      `int`-only.
-- [ ] Return: `DX:AX` (`DX`=high) for `long` (§1.5) — **not yet
-      implemented**: no `long` support yet.
-- [ ] `long` = 2 words, high word at the lower address/offset, everywhere (locals,
-      by-reference, by-value parameters) (§1.6) — **not yet implemented**.
+      `03_recfact`). A pointer returns exactly like an `int` (`05_arrptr/
+      07_strlibc`'s `char *strcpy()`); a `char` returned from an `int`
+      function is widened in `AX` with `movb ax,<mem>` / `cbw`
+      (`10_integ/04_strrev`'s `return buf[0];`). A `char`-returning
+      function is not yet supported.
+- [x] Return: `DX:AX` (`DX`=high) for `long` (§1.5). Implemented and verified
+      (`02_long/03_retval`: `mov ax,si / mov dx,di` before `jmp cret`, and
+      `mov di,dx / mov si,ax` after a call).
+- [~] `long` = 2 words, high word at the lower address/offset, everywhere (locals,
+      by-reference, by-value parameters) (§1.6) — **implemented and verified**
+      for locals, constants and by-value parameters (all of `02_long`); a
+      `long` read or written through a pointer is not yet supported.
 - [x] Epilogue: `jmp cret` (shared routine: `lea sp,[bp-4] / pop si / pop di /
       pop bp / ret`) (§1.2). Implemented and verified (`c1_gen.c`'s
       `RETRN` handler).
@@ -626,9 +639,12 @@ it; the note says so where that's the case.
       `extra=6`, `09_abiprobe/02_frame080`'s 80), `mov ax,#N. / call chkstk` from
       128 bytes up (`09_abiprobe/03_frame128` … `07_frame300`); the unconfirmed
       81..127-byte gap is an explicit "not yet supported" rather than a guess.
-- [ ] Long multiply/divide/modulo: emit calls to `almul`/`aldiv`/`alrem` using their
-      *own* extended, pointer-first calling convention (§1.8) — not the general ABI.
-      **Not yet implemented**: no `long` support yet.
+- [x] Long multiply/divide/modulo: calls to runtime helpers (§1.8). Implemented
+      and verified as the real compiler's output shows it (`02_long/02_muldiv`):
+      `call lmul` / `ldiv` / `lrem` with both operands pushed flat, low word then
+      high word, right operand first, the result in `DX:AX` - simpler than §1.8's
+      pointer-first `almul`/`aldiv`/`alrem` convention, which this compiled code
+      does not use.
 - [ ] `crt0` (own object, real or reimplemented) must: read `argc`/`argv` off the
       initial `sp`, scan for the NULL `argv` terminator, set `_environ`, call `_main`
       with `(argc, argv, envp)` per the standard ABI, then call `exit()` (not raw

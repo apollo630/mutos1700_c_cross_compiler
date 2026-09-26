@@ -3735,7 +3735,7 @@ fix).
 
 **Verification.**
 
-- `make test` (clean build): 38/62, 0 genuine mismatches, zero warnings.
+- `make test` (clean build): 38 of 62, 0 genuine mismatches, zero warnings.
 - `mutos_c1` alone on the 62 golden `.1`/`.2` pairs and `mutos_c0` on the 62
   `.i` goldens, each against the previous build: identical (`c0` differs
   only in the partial output of one compile that fails with the same
@@ -3878,7 +3878,7 @@ non-optimized shape is unknown.
 
 **Verification.**
 
-- `make test` (clean build): 38/62, 0 genuine mismatches, zero warnings.
+- `make test` (clean build): 38 of 62, 0 genuine mismatches, zero warnings.
   `mutos_c1` alone on the 62 golden pairs: `.s`, stderr and exit status
   identical to the previous build for all 62 - no corpus `&&`/`||`/`?:`
   operand has code of its own, and the label order is unchanged for
@@ -3904,6 +3904,284 @@ non-optimized shape is unknown.
 - After the `long` guard: `make test`, the 62 golden pairs and the
   hand-written cases unchanged; 3000 more programs (seeds 4 and 14) 0
   WRONG, 0 BAD, 0 regressions.
+
+### `char` element access, call arguments right to left, and `02_bubsort`'s comparison shapes (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+Eight more corpus files byte-exact end-to-end (46/62, up from 38 of
+62): the six `09_abiprobe/0N_frameNNN` files, `10_integ/04_strrev` and
+`10_integ/02_bubsort`. Three pieces of work, each derived from the
+goldens before any code was written, plus two pre-existing silent
+wrong-code bugs found on the way.
+
+**1. `char` conversions on the wire (`mutos_c0`).** Vanilla v7 has no
+char conversions to speak of: `c01.c`'s `lintyp()` puts `CHAR` and `INT`
+in the same row of `cvtab[]`, and the PDP-11's sign-extending `movb`
+widens a char for free. The MUTOS front end inserts explicit ones, with
+opcode 109 (`OP_ITOC`) carrying the RESULT type:
+
+```
+buf[0] = 1;            NAME(1) AMPER(9) CON CON ITOP PLUS STAR(1) CON(1) ITOC(1) ASSIGN(1)
+buf[0] + buf[79]       ... STAR(1) ITOC(0) ... STAR(1) ITOC(0) PLUS(0)      (09_abiprobe)
+n.b[0] + n.b[1]        ... STAR(1) ITOC(0) ... STAR(1) ITOC(0) PLUS(0)      (06_union)
+return buf[0];         ... STAR(1) ITOC(0) RFORCE(0)                         (04_strrev)
+t = *a;  *a = *b;      ... STAR(1) ASSIGN(1)    - no conversion, char = char (04_strrev)
+c = (char) i;          NAME(i) ITOC(1)                                        (08_castsize)
+l = (long) c;          NAME(c) CTOL(6)                                        (08_castsize)
+```
+
+The consistent reading is v7's `build()` with char given its own
+`cvtab[]` row: every operand of a binary arithmetic, shift, bitwise,
+relational or equality operator that is a char is widened first - BOTH
+operands of `c + c`, which one `cvtab[]` lookup could not do, so MUTOS
+promotes each operand before the lookup - and an assignment converts its
+right-hand side to the target's type (int -> char `ITOC(1)`, char -> int
+`ITOC(0)`, char -> long `CTOL`, char -> char nothing). v7's `build()`
+runs the same conversion code for a cast and an assignment (`if
+(dope&ASSGOP || op==CAST)`), so `(char) i` and `(long) c` confirm the
+assignment conversions too, and `doret()` returns through a `build(ASSIGN)`
+to the function's own type, which is where `return buf[0];`'s `ITOC(0)`
+comes from. `c0_parser.c`: `promote_char()` (after each binary operand -
+for the LEFT one before the right operand's bytes are parsed, so the
+`ITOC` lands in postfix position), `convert_assign()` (every `=`: the
+assign statement, `*p = ...`, an embedded `x = ...` in a comma list; it
+also absorbs the old `ITOL`-for-a-long-target special case), a `char ->
+int` cast (`ITOC(0)`, the same path), and the `return` in an int
+function. Where v7 converts nothing - a condition, an operand of
+`&&`/`||`/`!`/`~`/`?:`, a call argument, a comma operator's last operand
+- no golden shows what MUTOS does, and `mutos_c1` would need a byte test
+or push; `char_value_refused()` stops there.
+
+`'&' IDENT '[' expr ']'` (the address of one element) is new too:
+`build(AMPER)` of the subscript's `STAR`, so the element reference plus
+`AMPER(pointer to element)` - `04_strrev.1.golden`'s `swapch(&s[lo],
+&s[hi])`. And the `if (...) return;` "simpif" shortcut v7's `c02.c` has
+alongside the `goto`/`break`/`continue` ones (`if (nextchar()==';') {
+o2 = retlab; goto simpif; }`): one `CBRANCH(retlab, cond=1)`, no label
+of its own - `04_strrev.1.golden`'s `if (lo >= hi) return;`. With these,
+`mutos_c0` reproduces all eight files' `.1`/`.2` goldens (and
+`02_bubsort`'s, which only needed the `&`).
+
+**Found on the way (pre-existing, `mutos_c0` and `mutos_c1`): a plain
+`char` variable used as an int was read as a word.** `char c; ... return
+c;` compiled to `mov di,*-6.(bp)` / `mov ax,di`, and `a + b` of two char
+locals to `mov di,*-6.(bp)` / `add di,*-8.(bp)` - `mutos_c0` emitted the
+char `NAME` with no conversion, and `mutos_c1` treated every `NAME` as a
+word, so the value picked up the slot's unused high byte (a char local
+has a whole word of frame, `08_castsize`). Exit status 0, no diagnostic.
+The conversions above fix the wire; `mutos_c1` now also refuses any char
+operand a consumer was not written for (see below), so a missing
+conversion can no longer reach a word instruction silently.
+
+**2. Byte operands (`mutos_c1`).** Two ideas carry it:
+
+- `Val.bytev` marks a memory operand that holds a char (a char `NAME`, a
+  char `STAR`). Only a byte instruction may touch it, so `pop_val()`
+  refuses it and the char-aware consumers - a char `ASSIGN` (either
+  side), `ITOC`, `CTOL`, `AMPER` - pop with `POP_BYTE`.
+- `VK_CHARX` is `ITOC(TY_INT)` of such an operand, left unloaded:
+  loading a char as an int is always `movb ax,<mem>` / `cbw` (CBW is
+  fixed to AL/AX), and in `buf[0] + buf[79]` both operands need AX, so
+  the golden loads the left one, moves it aside, then loads the right
+  one: `movb ax,*-84.(bp)` / `cbw` / `mov di,ax` / `movb ax,*-5.(bp)` /
+  `cbw` / `add di,ax`. Loading at the `ITOC` would have had to
+  overwrite the first value. v7's own `optim()` does the same in effect
+  (`c12.c`'s `ITOC` case turns "ITOC of a NAME" into a char-typed NAME
+  that the consuming template loads). Confirmed consumers only, via
+  `POP_CHARX`: int `PLUS` of two chars, `RFORCE` (`04_strrev`'s `return
+  buf[0];` -> `movb ax,*-24.(bp)` / `cbw`, already in the return
+  register), and an int `ASSIGN`'s right-hand side (`movb ax,...` /
+  `cbw` / `mov <lhs>,ax` - no corpus golden, but four instances in
+  `tests/mutos_as/kernel_nonopt/amx.s`, the real non-optimized
+  compiler's output). Everything else refuses a `VK_CHARX`: a char with
+  ONE int operand computes in AX in the kernel (`movb ax,*23.(bx)` /
+  `cbw` / `and ax,*-2.`), a shape `mutos_c1`'s `PLUS` would not produce;
+  `MINUS`'s operand order, comparisons (`cmpb`, see below) and call
+  arguments are unconfirmed.
+
+Where a char element's address comes from decides its operand
+(`OP_STAR`'s `TY_CHAR` case): a compile-time-known address is the stack
+slot itself (`movb *-84.(bp),*1.`); a pointer VARIABLE is loaded into
+DX and copied to BX, the byte addressed as `(bx)` - `04_strrev`'s
+`swapch()`: `mov dx,*4.(bp)` / `mov bx,dx` / `movb dx,(bx)` (the int case
+loads into DI instead), and the same `mov dx,*-6.(bp)` / `mov bx,dx` /
+`movb ax,(bx)` / `cbw` in `kernel_nonopt/lp_AC.s`; an address already in
+a base register is `(di)` (`amx.s`: `movb ax,(di)`). A char `ASSIGN`
+routes a char source through DX, the byte working register `08_castsize`
+already showed for `(char) i` - `movb dx,(bx)` / `movb *-6.(bp),dx`, and
+before the `pop bx` of a pushed target: `*a = *b;` -> `push *4.(bp)` /
+`mov dx,*6.(bp)` / `mov bx,dx` / `movb dx,(bx)` / `pop bx` / `movb
+(bx),dx`; `*b = t;` -> `push *6.(bp)` / `movb dx,*-6.(bp)` / `pop bx` /
+`movb (bx),dx` (the int `swap()` in `02_bubsort` pushes the same way). An
+`ITOC(1)` of a constant folds to the sign-extended low byte (v7's `p->
+value << 8 >> 8`), so `buf[0] = 1;` is one `movb`. A constant stored
+through a char pointer and a constant index on a char pointer (`p[2]`)
+have no golden and are refused.
+
+The frame goldens also settled a rendering rule: a displacement outside
+-128..127 takes the `#` marker exactly like an immediate - `movb
+#-132.(bp),*1.` / `movb ax,#-132.(bp)` in `03_frame128` ... `07_frame300`,
+while `*-5.(bp)` in the same files keeps `*`. `render_operand()` had
+`*` unconditionally (no earlier golden had a larger displacement).
+`kernel_opt` mostly agrees (`#610.(di)`), with some `*610.(bx)` forms
+`c2` rewrote; the non-optimized kernel has no such displacement.
+
+`&*` (an element's address, `STAR` followed by `AMPER`) cancels for a
+1-D element too now, leaving the address computation's result; and an
+`ITOP` scaling by 1 (a char index) leaves a plain variable index in
+memory - v7's `optim()` drops a multiplication by 1 - so `&s[hi]` is
+`mov di,*4.(bp)` / `add di,*8.(bp)`, the pointer loaded and the index
+added, as the golden has it.
+
+**3. Call arguments right to left.** v7's `comarg()` (`c10.c`) compiles
+a call's arguments from the last to the first, each one straight onto
+the stack before the next is started. `mutos_c1` streamed the arguments
+left to right and pushed them afterwards (`gen_call()`), which is the
+same bytes as long as at most the LAST argument has code of its own -
+true for every earlier golden - but `reverse(s, lo + 1, hi - 1)`
+computed `lo + 1` into DI and then `hi - 1` over it (a register-guard
+refusal). A call with two or more arguments, any but the last of which
+has code, is now generated through the evaluation-order plan
+(`plan_call()`): the callee's `NAME` (no code), each argument from the
+last to the first followed by `SEG_PUSHARG` (`push_call_arg()`), then
+`SEG_CALL` (`finish_call()`) - `04_strrev.s.golden`: `mov di,*8.(bp)` /
+`dec di` / `push di` / `mov di,*6.(bp)` / `inc di` / `push di` / `push
+*4.(bp)` / `call _reverse` / `add sp,*6.`. A call planned for another
+reason (a `&&`/`?:` inside an argument) takes the same order.
+`gen_call()` is split into `push_call_arg()`/`finish_call()`, shared by
+both paths.
+
+**Found on the way (pre-existing, `mutos_c1`):** a comparison used as a
+call argument (`f(a < b)`) reached the push unmaterialized and was
+written as `push <unmaterialized-cond>`, exit status 0. `push_call_arg()`
+materializes it (0/1 in DI, `push di`).
+
+**More pre-existing silent wrong code, found while writing the
+hand-written checks - all around pointers, which the fuzzer does not
+generate.** Each now stops with an explicit "not yet supported" (or, the
+last one, is fixed):
+
+- `q - 1` on an `int *` subtracted one BYTE and `q - p` gave the byte
+  difference (`mutos_c0` built a plain int `MINUS`; v7 scales the integer
+  with `ITOP` and divides a pointer difference with `PTI`) - `mutos_c0`
+  refuses pointer subtraction.
+- `i + p` (the pointer on the right) added the unscaled integer - v7
+  scales the LEFT operand here, whose bytes are already written when the
+  pointer is seen - `mutos_c0` refuses it (`p + i` is unaffected).
+- `p < q` was a signed compare; v7 turns an ordered comparison with a
+  pointer operand into its unsigned `LESSP`... variants, which neither
+  pass has, and addresses above 0x7FFF compare wrongly signed -
+  `mutos_c0` refuses it (`==`/`!=` are unaffected).
+- `p == &x` compared `p` with `x`'s CONTENTS: an address operand
+  (`VK_MEM_DIRECT`, the deferred `lea`) was rendered as a memory operand -
+  `mutos_c1` refuses it in a comparison and in int `+`/`-`.
+- `return &x;` returned `x` - `load_into_di()`/`load_into_si()` now load
+  an address with `lea`, as `OP_ASSIGN` and `gen_call()` already did.
+
+**4. `02_bubsort`: four comparison and subscript shapes.**
+
+```
+L7:mov di,*6.(bp) / dec di / cmp di,*-6.(bp) / ble L8     i < n - 1
+mov di,*-8.(bp) / sal di,*1 / add di,*4.(bp) / mov di,(di) a[j] ...
+mov si,*-8.(bp) / sal si,*1 / add si,*4.(bp)                ... > a[j + 1]
+cmp di,*2.(si) / ble L13
+mov di,*-8.(bp) / sal di,*1 / add di,*4.(bp) / add di,*2. / push di    &a[j + 1]
+```
+
+- **The relational operand swap by degree.** `c12.c`'s `optim()`
+  exchanges a relational's operands (mirroring the operator through
+  `maprel[]`) when `degree(left) < degree(right)`, or when the degrees
+  are equal and the left one is a NAME and the right one is not.
+  `degree()` is -3 for a constant, -2 for `&x`, 0 for a leaf (1 for a
+  char or float leaf), and for `n - 1` `max(0, max(-3, 0))` = 0 - so a
+  variable compared with anything computed from one register always
+  ends up on the right: `i < n - 1` is `n - 1 > i`, branching on `ble`
+  when false. `mutos_c1` did this only for a constant left operand; now
+  also for a NAME (`VK_MEM`/`VK_STATIC`, or a `register` local - new
+  `Val.regvar` flag) against a computed value (`VK_REG`, `VK_IND`). The
+  NAME has no code, so only the comparison's direction changes, never
+  the order of any code. Two NAMEs (`lo >= hi` - `04_strrev`) stay.
+- **A register left operand is compared directly.** `emit_cmp_and_
+  branch()` used to load any memory right operand into DI (`mov di,hi` /
+  `cmp *6.(bp),di` - still right for a memory left operand); with the
+  left one already in a register it is now `cmp di,*-6.(bp)` - v7's
+  template computes the left operand into a register and compares it
+  with an addressable right one. A dereference on the left is loaded in
+  place first (`mov di,(di)`), except against a constant, where the real
+  compiler compares the memory operand directly (`cmp *16.(di),*0` in
+  `kernel_nonopt/lp_AC.s`).
+- **The left operand is loaded before the right one's code.** `a[j]` as
+  the left operand of a comparison whose right operand has code of its
+  own is loaded at the `STAR` (`mov di,(di)`), and the right operand's
+  index takes SI because DI is busy - `di_busy()`, which generalizes
+  `ITOP`'s old "DI on top of the value stack" test to any pending value
+  in DI (not a `register` local's own NAME).
+- **`a[j + 1]`: the constant goes into the displacement.** v7's
+  `distrib()` rewrites `(j + 1) * 2` as `j * 2 + 2`, so the index `j + 1`
+  is never computed: `OP_PLUS` of a variable and a constant whose
+  consumer is an `ITOP` stays uncomputed (`VK_IDXOFF`), the `ITOP` scales
+  the variable into a register and carries `N * size` as a pending
+  offset (`VK_REGOFF`, the kind `argv[1]`'s displacement already used),
+  the pointer `PLUS` adds the pointer variable, and the `STAR` makes the
+  offset its displacement (`*2.(si)`); a cancelled `&*` - or any other
+  consumer - adds it last instead (`add di,*2.`). On an ARRAY base v7
+  would fold the constant into the `lea` (`lea di,<a + 2>`) instead, a
+  shape no golden shows, so that is refused.
+- The last line of `main()`, `v[0] + v[5] * 10`, already compiled right
+  (`mov ax,*-6.(bp)` / `mov cx,*10.` / `imul cx` / `add ax,*-16.(bp)`),
+  and `swap(&a[j], &a[j + 1])` is the new right-to-left call order.
+
+**`x86sim.py`** now also executes `movb`/`cbw` (a register operand
+meaning its low byte, as `mutos_as` spells it), calls of functions in
+the same file (with `cret`: `lea sp,-4(bp)` / `pop si` / `pop di` / `pop
+bp` / `ret`) and `chkstk` (`sp -= ax`, `docs/MUTOS_C_ABI.md` sect. 1.9),
+and a `#`-marked displacement. That makes 47 of the 62 goldens
+executable (up from 30), every one returning its C source's value -
+`09_abiprobe`'s six frames 3 each (through `chkstk` from 128 bytes up),
+`04_funcs/03_recfact` 720, `02_bubsort` 91, `06_union` 3, `02_long/
+04_params` 24468 (90000 truncated to int, plus 4).
+
+**Verification.**
+
+- `make test` (clean build): 46/62 byte-exact, 0 genuine mismatches,
+  zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build: `mutos_c0` on the 62 golden `.i` files
+  changed exactly the eight files, all from a refusal to the golden
+  `.1`/`.2`; `mutos_c1` alone on the 62 golden pairs changed eleven:
+  nine from a refusal to their `.s.golden` - the eight plus
+  `06_struct/06_union` (whose `c0` side still needs structs) - and two
+  struct files (`03_starray`, `05_nestst`) that still refuse, at a later
+  point, with identical output before it.
+- `fuzz_c.py` against the previous build, 18000 programs (six seeds, two
+  scalar-only): 0 WRONG, 0 BAD, 0 regressions; 1426 refused -> correct,
+  292 changed and still correct. Every changed output differs only in
+  the two comparison changes above (`cmp *N.(bp),di` / `bXX` becoming
+  `cmp di,*N.(bp)` / the mirrored `bXX`; `mov di,<mem>` / `cmp <reg>,di`
+  becoming `cmp <reg>,<mem>`); the fuzzer generates no chars and no
+  calls.
+- 36 hand-written programs (chars: element and variable loads and stores,
+  sign extension, char through pointers, `swapch()`/`reverse()` without
+  libc, `(int) c`, `l = c`; calls with computed, nested and comparison
+  arguments; `bsort()` on seven values including duplicates and
+  negatives; `p[k + 2]`; `a[i] < a[i + 1]`; pointer arithmetic and
+  comparisons), executed with `x86sim.py` and compared with the host C
+  compiler: all 26 that compile and return a value are correct, a 27th
+  (`return &x;`) returns its frame address; 9 are explicit refusals (a
+  char comparison, a char plus an int, `char *` `++`, `&s[i + 5]` on an
+  array, `p++;` as a statement, the four pointer shapes above).
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden pairs,
+  the hand-written programs and 2400 fuzzed programs: clean.
+- All of the above re-run after the pointer refusals and the `lea` fix:
+  the same results (the fuzzed outputs identical to the first run).
+
+**Evidence for the next char steps, recorded here.** A char compared
+with a small constant is a byte compare: `10_integ/01_wordcount.s.golden`
+has `mov dx,*-6.(bp)` / `mov bx,dx` / `cmpb _text(bx),*10.`, and `c12.c`'s
+`optim()` retypes a `CON` in 0..127 compared with a char operand as a
+char (`tree->tr2->type = CHAR`) - with `ITOC` of a NAME already folded to
+a char NAME, that is `cmpb`. `kernel_nonopt/lp_AC.s` has `cmpb *-8.(bp),
+*122.` / `bgt` and `addb *-8.(bp),*-32.` (a char compound assignment),
+`amx.s` `cmpb *1.(si),*0` and a char argument as `movb ax,*-10.(bp)` /
+`cbw` / `push ax`.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

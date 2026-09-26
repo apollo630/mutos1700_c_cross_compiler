@@ -14,17 +14,23 @@ directly, on random programs:
   runs it through the real pipeline (`mutos_cpp -P`, `mutos_c0`,
   `mutos_c1`, `mutos_as`) and executes the result.
 - `x86sim.py` is the executor: an interpreter for the subset of 8086
-  code `mutos_c1` emits for a call-free `main()`. It reports `main()`'s
-  return value and every local's final value (found through `c1`'s own
-  `| _name=-N.` frame comments). Anything outside its subset - a call, a
-  byte operation, a branch on flags not set by a `cmp` or an `or r,r` -
-  stops it with an error, never a guess.
+  code `mutos_c1` emits - `main()` plus calls of other functions in the
+  same file (with the shared `cret` epilogue and the `chkstk` large-frame
+  helper built in), and `movb`/`cbw` byte operations. It reports
+  `main()`'s return value and every local's final value (found through
+  `c1`'s own `| _name=-N.` frame comments). Anything outside its subset -
+  a libc or indirect call, a static label operand, a branch on flags not
+  set by a `cmp` or an `or r,r` - stops it with an error, never a guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
-`tests/mutos_cc` `.s.golden` it can execute (30 of the 62; the others
-call functions or use byte operations) returns the value its C source
-computes, including struct and bit-field programs `mutos_c1` cannot
-produce yet.
+`tests/mutos_cc` `.s.golden` it can execute (47 of the 62; the others
+call libc or runtime helpers, or use statics, `long` carries or a jump
+table) returns the value its C source computes, including struct,
+union and bit-field programs `mutos_c1` cannot produce yet, the six
+`09_abiprobe` frames (through `chkstk` from 128 bytes up) and
+`10_integ/02_bubsort` (91). `fuzz_c.py` itself generates neither chars
+nor calls; hand-written programs of that kind can be run through the
+same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s `char` section).
 
 Nothing here is part of the corpus: the scripts write only to a
 temporary directory, and `run_goldens.sh`, `gen_mutos.sh` and the
