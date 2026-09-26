@@ -86,7 +86,7 @@ mapping from short name to intent.
 |---|---|---|
 | `00_smoke` | Absolute minimum programs | `01_emptymain`, `02_retconst`, `03_retexpr` |
 | `01_expr` | Every scalar operator | `01_intarith`, `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary`, `08_castsize` |
-| `02_long` | `long`: locals, `*`/`/`/`%` (→ `almul`/`aldiv`/`alrem`), return value, parameter passing | `01_addsub`, `02_muldiv`, `03_retval`, `04_params` |
+| `02_long` | `long`: locals, `*`/`/`/`%` (→ the `lmul`/`ldiv`/`lrem` runtime helpers), return value, parameter passing | `01_addsub`, `02_muldiv`, `03_retval`, `04_params` |
 | `03_ctrlflow` | `if`/`while`/`do`/`for`/`switch`/`goto` | `01_ifelse`, `02_while`, `03_dowhile`, `04_for`, `05_breakcont`, `06_switch`, `07_goto` |
 | `04_funcs` | K&R old-style definitions, >4 args, recursion, `static`/`register`, function pointers | `01_call`, `02_manyargs`, `03_recfact`, `04_mutrec`, `05_staticvar`, `06_regclass`, `07_funcptr` |
 | `05_arrptr` | Arrays, pointers, strings via libc | `01_arrbasic`, `02_array2d`, `03_ptrbasic`, `04_ptrarreq`, `05_arrofptr`, `06_ptrptr`, `07_strlibc` |

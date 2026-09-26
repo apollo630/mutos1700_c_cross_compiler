@@ -54,9 +54,7 @@ local declarations without initializers:
 .BR int ,
 .BR char ,
 .BR long ,
-pointers to
-.BR int
-of any degree, one- and two-dimensional
+pointers of any degree, one-dimensional arrays, two-dimensional
 .B int
 arrays, function pointers
 .RB ( "int (*f)()" ),
@@ -85,20 +83,39 @@ postfix
 .BR ++ / \-\- ,
 unary
 .B &
-and
+(of a variable or of an array element) and
 .BR * ,
-array subscripts, direct and indirect function calls, a narrow set of
-casts, and
+array subscripts, string literals, direct and indirect function calls,
+a narrow set of casts, and
 .B sizeof
-(folded at compile time).
+(folded at compile time);
+.IP \(bu 2
+.B char
+values, with the explicit conversions the MUTOS 1700 front end writes
+(opcode 109 in both directions, its type argument the result type): a
+.B char
+operand of an arithmetic, shift, bitwise, relational or equality
+operator is widened to
+.BR int ,
+and an assignment or
+.B return
+converts its value to the target's type.
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
 constant folding. Not yet supported, among others: external
-(file-scope) variables, string literals, structures, unions,
-enumerations,
+(file-scope) variables, structures, unions, enumerations,
 .BR typedef ,
-floating point, and arrays of three or more dimensions.
+floating point, arrays of three or more dimensions, pointer
+subtraction, an ordered comparison of pointers, and a
+.B char
+value used as a condition, a call argument or an operand of
+.BR && ,
+.BR || ,
+.BR ! ,
+.B ~
+or
+.BR ?: .
 .PP
 Anything outside the supported scope is rejected with a clear
 diagnostic and a non-zero exit status, never silently miscompiled.
@@ -109,9 +126,8 @@ items, each either a single-byte operator code (immediately followed
 by the fixed sentinel byte 0xFE), a little-endian 16-bit data word, or
 a NUL-terminated symbol name.
 .I temp2
-receives only string-literal text (not used by any construct in the
-current grammar scope, so it is presently always empty apart from its
-own terminating marker). This exactly mirrors the real MUTOS 1700
+receives only string-literal data: one labelled block of byte values
+per literal, then its own terminating marker. This exactly mirrors the real MUTOS 1700
 compiler's own
 .IR /lib/c0 ,
 which
