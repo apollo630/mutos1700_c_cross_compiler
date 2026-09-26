@@ -6,8 +6,9 @@
  *
  * (This summary shows the expression core; parse_extdef(),
  * parse_param_decls(), parse_statement() and each parse_*_stmt() carry
- * their own, fuller productions - prototypes, parameters, control flow,
- * calls.)
+ * their own, fuller productions - prototypes, file-scope variables
+ * (parse_global_var()), parameters, nested blocks with their own scope
+ * (parse_nested_block()), control flow, calls.)
  *
  *   translation-unit  := extdef*
  *   extdef            := IDENT '(' ')' compound-stmt
@@ -183,8 +184,13 @@ typedef struct {
     int    isn;    /* next free intermediate-code label number - v7/cc/
                      * c00.c's global `isn`, initialized to 1 per
                      * translation unit. */
-    SymTab syms;    /* current function's local (AUTO) variables -
-                      * reset at the start of each cfunc(). */
+    SymTab syms;    /* current function's parameters and locals
+                      * (block-structured - see c0_sym.h) - reset at
+                      * the start of each cfunc(). */
+    SymTab globals; /* the translation unit's file-scope variables
+                      * (hclass SC_EXTERN - see parse_global_var()),
+                      * searched after `syms`, so a local shadows a
+                      * global of the same name (lookup_var()). */
     int    brklab;  /* v7/cc/c02.c's global `brklab`: the label a bare
                       * 'break;' branches to - the innermost enclosing
                       * loop's or switch's end label, 0 (never a valid
@@ -414,6 +420,32 @@ static int expect(Parser *p, TokKind k, const char *what)
     }
     advance(p);
     return 1;
+}
+
+/* A variable name as an expression sees it: the innermost local
+ * declaration, else a file-scope one (07_scope/02_shadow.c's inner "x"
+ * hides the outer one; 07_scope/01_globstat.c's "counter" is found
+ * among the globals). NULL if neither declares it. */
+static SymEntry *lookup_var(Parser *p, const char *name)
+{
+    SymEntry *e = symtab_lookup(&p->syms, name);
+    return e ? e : symtab_lookup(&p->globals, name);
+}
+
+/* A variable reference - treeout()'s NAME case (v7/cc/c04.c): a
+ * file-scope variable (SC_EXTERN) is named by its symbol ("BNNS" -
+ * outcode()'s 'S' adds the leading '_'), every other class carries its
+ * numeric "offset" (a frame offset, a static's label, a register slot)
+ * - "BNNN". `type` is usually the symbol's own; a 2-D array's NAME
+ * carries its element type instead (see emit_subscript_2d()).
+ * Confirmed for SC_EXTERN against 07_scope/01_globstat.1.golden
+ * (NAME(12, 0, "_counter")) and 03_externdef.1.golden ("_total"). */
+static void emit_name(FILE *t1, const SymEntry *sym, int type)
+{
+    if (sym->hclass == SC_EXTERN)
+        outcode(t1, "BNNS", OP_NAME, SC_EXTERN, type, sym->name);
+    else
+        outcode(t1, "BNNN", OP_NAME, sym->hclass, type, sym->offset);
 }
 
 static void branch_op(FILE *t1, int lab) { outcode(t1, "BN", OP_BRANCH, lab); }
@@ -749,6 +781,7 @@ static void putstr(Parser *p, int lab, const char *str, size_t len)
 static ExprVal parse_expr(Parser *p, FILE *t1);
 static void parse_statement(Parser *p, FILE *t1, int retlab);
 static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
+static void parse_nested_block(Parser *p, FILE *t1, int retlab);
 
 /*
  * The 2-D case of emit_subscript() below: "m[i][j]" on a local
@@ -786,7 +819,7 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
 static int emit_subscript_2d(Parser *p, FILE *t1, SymEntry *sym)
 {
     int rowptr = ty_ptr_of(ty_ary_of(TY_INT)); /* 104 */
-    outcode(t1, "BNNN", OP_NAME, sym->hclass, TY_INT, sym->offset);
+    emit_name(t1, sym, TY_INT);
     outcode(t1, "BN", OP_AMPER, TY_PTR_INT);
     ExprVal row = parse_expr(p, t1);
     expect(p, T_RBRACK, "']'");
@@ -857,12 +890,12 @@ static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
     if (sym->is_array && sym->dim2 > 0)
         return emit_subscript_2d(p, t1, sym);
     if (sym->is_array) {
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
         elemtype = sym->type;
         ptrtype = ty_ptr_of(elemtype);
         outcode(t1, "BN", OP_AMPER, ptrtype);
     } else {
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
         ptrtype = sym->type;
         elemtype = ty_decref(ptrtype);
     }
@@ -904,14 +937,14 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
         strncpy(name, p->cur.ident, sizeof name - 1);
         name[sizeof name - 1] = '\0';
         int line = p->cur.line;
-        SymEntry *sym = symtab_lookup(&p->syms, name);
+        SymEntry *sym = lookup_var(p, name);
         advance(p); /* consume IDENT */
         advance(p); /* consume '=' */
 
         if (!sym) {
             c0_error_at(line, "'%s' undeclared", name);
         } else {
-            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            emit_name(t1, sym, sym->type);
         }
 
         ExprVal rhs = parse_expr(p, t1);
@@ -1095,7 +1128,7 @@ static ExprVal parse_indirect_call(Parser *p, FILE *t1)
         return ev_dynamic();
     }
     int line = p->cur.line;
-    SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+    SymEntry *sym = lookup_var(p, p->cur.ident);
     if (!sym) {
         c0_error_at(line, "'%s' undeclared", p->cur.ident);
         advance(p);
@@ -1112,7 +1145,7 @@ static ExprVal parse_indirect_call(Parser *p, FILE *t1)
             "src/mutos_cc/README.md", sym->name);
         return ev_dynamic();
     }
-    outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+    emit_name(t1, sym, sym->type);
     outcode(t1, "BN", OP_STAR, TY_FUNC_INT);
 
     if (!expect(p, T_LPAREN, "'('"))
@@ -1194,7 +1227,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
     if (p->cur.kind == T_IDENT) {
         if (peek2_kind(p) == T_LPAREN)
             return parse_call(p, t1);
-        SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+        SymEntry *sym = lookup_var(p, p->cur.ident);
         if (!sym) {
             if (is_known_func(p, p->cur.ident)) {
                 /* A bare function name used as a value (not called) -
@@ -1232,11 +1265,8 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             return ev_dynamic_typed(elemtype);
         }
 
-        /* treeout()'s NAME case: outcode("BNN", NAME, hclass, type)
-         * then, since hclass is always SC_AUTO (never SC_EXTERN) in
-         * this scope, outcode("N", hoffset) rather than a symbol
-         * name - merged into one "BNNN" call here since the byte
-         * output is identical either way. */
+        /* treeout()'s NAME case - see emit_name(): a numeric offset
+         * for a local, the symbol itself for a file-scope variable. */
 
         if (sym->is_array && sym->dim2 > 0) {
             /* A bare 2-D array name decays to "pointer to a row"
@@ -1262,12 +1292,12 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * arithmetic). An array is never a modifiable lvalue, so no
              * postfix '++'/'--' check follows. */
             int pt = ty_ptr_of(sym->type);
-            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            emit_name(t1, sym, sym->type);
             outcode(t1, "BN", OP_AMPER, pt);
             return ev_dynamic_typed(pt);
         }
 
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
 
         if (p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
             /* Postfix '++'/'--' - INCAFT/DECAFT. See emit_incdec()'s
@@ -1317,7 +1347,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 return ev_const(0);
             }
             int line = p->cur.line;
-            SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+            SymEntry *sym = lookup_var(p, p->cur.ident);
             if (!sym) {
                 c0_error_at(line, "'%s' undeclared", p->cur.ident);
                 advance(p);
@@ -1329,7 +1359,7 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                                    "supported - see src/mutos_cc/README.md");
                 return ev_dynamic();
             }
-            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            emit_name(t1, sym, sym->type);
             int optag;
             if (sym->type == TY_LONG && target == TY_INT)
                 optag = OP_LTOI;
@@ -1412,7 +1442,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
                                "src/mutos_cc/README.md");
             return ev_dynamic();
         }
-        SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+        SymEntry *sym = lookup_var(p, p->cur.ident);
         if (!sym) {
             c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
             advance(p);
@@ -1454,7 +1484,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             return ev_dynamic();
         }
         advance(p);
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
         int rt = ty_ptr_of(sym->type);
         outcode(t1, "BN", OP_AMPER, rt);
         return ev_dynamic_typed(rt);
@@ -1519,7 +1549,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             size = MCC_SZLONG;
             advance(p);
         } else if (p->cur.kind == T_IDENT) {
-            SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+            SymEntry *sym = lookup_var(p, p->cur.ident);
             if (!sym) {
                 c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
                 size = 0;
@@ -1558,7 +1588,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
                                "src/mutos_cc/README.md");
             return ev_dynamic();
         }
-        SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+        SymEntry *sym = lookup_var(p, p->cur.ident);
         if (!sym) {
             c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
             advance(p);
@@ -1572,7 +1602,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             return ev_dynamic();
         }
         advance(p);
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
         emit_incdec(t1, optag, sym->type, sym->is_ptr);
         return ev_dynamic();
     }
@@ -2545,7 +2575,7 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     name[sizeof name - 1] = '\0';
     int line = p->cur.line;
 
-    SymEntry *sym = symtab_lookup(&p->syms, name);
+    SymEntry *sym = lookup_var(p, name);
     advance(p); /* consume IDENT */
 
     /* "IDENT[expr] = ..." - an array/pointer subscript used as the
@@ -2607,7 +2637,7 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
         if (!sym) {
             c0_error_at(line, "'%s' undeclared", name);
         } else {
-            outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+            emit_name(t1, sym, sym->type);
         }
     }
     /* else: the "IDENT[expr]" subscript above already emitted the
@@ -2706,7 +2736,7 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
         return;
     }
 
-    SymEntry *sym = symtab_lookup(&p->syms, p->cur.ident);
+    SymEntry *sym = lookup_var(p, p->cur.ident);
     if (!sym) {
         c0_error_at(line, "'%s' undeclared", p->cur.ident);
     } else if (!sym->is_ptr) {
@@ -2724,7 +2754,7 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
 
     int curtype = TY_INT;
     if (sym) {
-        outcode(t1, "BNNN", OP_NAME, sym->hclass, sym->type, sym->offset);
+        emit_name(t1, sym, sym->type);
         curtype = sym->type;
         if (optag)
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
@@ -3337,7 +3367,7 @@ static void parse_default_stmt(Parser *p, FILE *t1, int retlab)
 static void parse_statement(Parser *p, FILE *t1, int retlab)
 {
     if (p->cur.kind == T_LBRACE) {
-        parse_compound_stmt(p, t1, retlab);
+        parse_nested_block(p, t1, retlab);
     } else if (p->cur.kind == T_KW_RETURN) {
         do_return_stmt(p, t1, retlab);
     } else if (p->cur.kind == T_KW_IF) {
@@ -3394,11 +3424,12 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
      * 'register int'/'char'/'long' - see parse_decl()'s own comment)
      * are recognized as such right now, so the loop condition doubles
      * as "have we reached the first statement yet". A nested compound-
-     * stmt (a loop/if body written as "{ ... }") re-enters here too;
-     * none of the current corpus's nested blocks declare their own
-     * locals, so this decl-loop simply finds none and falls straight
-     * through - a block-scoped declaration is not yet supported (see
-     * src/mutos_cc/README.md). */
+     * stmt (a loop/if body written as "{ ... }") re-enters here through
+     * parse_nested_block(), which gives its declarations their own
+     * scope; each one's ANAME is written right here, where the block's
+     * declaration list is - after whatever code precedes the block
+     * (07_scope/02_shadow.1.golden: the inner "x"'s ANAME follows the
+     * outer "x = 1;" statement's EXPR). */
     while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
            p->cur.kind == T_KW_LONG || p->cur.kind == T_KW_STATIC ||
            p->cur.kind == T_KW_REGISTER) {
@@ -3412,6 +3443,44 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
         parse_statement(p, t1, retlab);
 
     expect(p, T_RBRACE, "'}'");
+}
+
+/*
+ * A compound statement nested inside a function body - v7/cc/c02.c's
+ * statement() LBRACE case around blockhead()/blkend(): the block's own
+ * declarations get a scope of their own (a name may shadow an outer
+ * one and disappears again at the '}'), their AUTO slots continue below
+ * the enclosing block's, and the allocation point goes back at the '}'
+ * ("sauto = autolen; ... autolen = sauto;"), so a sibling block reuses
+ * the same slots while SETSTK still covers the deepest one (maxauto).
+ * Confirmed against 07_scope/02_shadow.1.golden: outer "x" at -6, the
+ * inner block's "x" at -8 (ANAME "_x" -8, "x = 2;" -> NAME offset -8),
+ * "return x;" after the block back at -6, SETSTK 8. A 'register' local
+ * claimed inside the block gives its slot back at the '}' too, with the
+ * SETREG v7 writes there ("if (sreg!=regvar) outcode("BN", SETREG,
+ * sreg);") - the same restore cfunc() writes for the function body's
+ * own block (04_funcs/06_regclass.1.golden); no golden has a register
+ * local in a nested block. The function body itself is not parsed
+ * through here: its declarations share the parameters' scope (v7
+ * declares both at blklev 1), so a body local named like a parameter
+ * stays a redeclaration error.
+ *
+ * Before this, a nested block's declarations went into the function's
+ * one flat scope: a shadowing declaration was refused ("'x'
+ * redeclared"), a new name stayed visible after the '}', and sibling
+ * blocks each got fresh slots (a larger frame than the real compiler's).
+ */
+static void parse_nested_block(Parser *p, FILE *t1, int retlab)
+{
+    SymBlock saved;
+    int sreg = p->regvar;
+    symtab_block_enter(&p->syms, &saved);
+    parse_compound_stmt(p, t1, retlab);
+    if (p->regvar != sreg) {
+        outcode(t1, "BN", OP_SETREG, sreg);
+        p->regvar = sreg;
+    }
+    symtab_block_exit(&p->syms, &saved);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3675,46 +3744,132 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
 }
 
 /*
- * external definition:
- *   (('int'|'char'|'long') '*'* IDENT '(' ')'
- *                          (',' '*'* IDENT '(' ')')* ';')      |
- *   (('int'|'char'|'long')? IDENT '(' (IDENT (',' IDENT)*)? ')'
- *      ('int'|'char'|'long' IDENT (',' IDENT)* ';')* '{' ... '}')
+ * One file-scope variable declarator - the name already consumed, the
+ * declaration's storage class (`sclass`: 0 for none, T_KW_STATIC or
+ * T_KW_EXTERN) and type known. v7/cc/c02.c's extdef() for a non-
+ * function declarator followed by ',' or ';':
  *
- * The first form is a K&R forward-declaration PROTOTYPE (04_mutrec.c's
- * "int iseven();", needed before "isodd" calls "iseven" so real K&R
- * source has SOME declaration preceding the use) - parsed and
- * entirely discarded (register_func() only), confirmed against
- * 04_mutrec.1.golden, which contains no additional wire output at all
- * for this line: an int-returning callee's NAME is the same
- * NAME(SC_EXTERN, TY_FUNC_INT, name) leaf whether or not a prototype
- * preceded it (see parse_call()). What a prototype DOES change is a
- * call's types when the function returns something else - "long
- * addlong();"/"char *strcpy();" (02_long/03_retval.c, 05_arrptr/
- * 07_strlibc.c). A prototype may declare a pointer result ('*'s
- * before the name) and may be one of a comma-separated list ("int
- * strlen(), strcmp();"); only an EMPTY parameter list is supported -
- * not exercised by any golden otherwise.
+ *   no class ("int counter;")  DEFXTRN: CSPACE(name, size) - a common
+ *                                block, ".comm _counter,2"
+ *   'static'                    BSS, NLABEL(name), SSPACE(size) -
+ *                                ".bss" / "_hidden:.blkb 2."
+ *   'extern'                    nothing at all
+ *
+ * size = the object's length rounded up to a whole word ("(length(ds)+
+ * ALIGN) & ~ALIGN" - rlength()). Confirmed byte-for-byte against
+ * 07_scope/01_globstat.1.golden (CSPACE "_counter" 2, then BSS NLABEL
+ * "_hidden" SSPACE 2, both ahead of bump()'s SYMDEF) and 03_externdef.
+ * 1.golden ("extern int total;" writes nothing; the later "int total;"
+ * writes CSPACE "_total" 2 between addto() and main()). One MUTOS delta
+ * from v7: v7 writes SYMDEF("") in front of a static's BSS (outcode(
+ * "BSBBSBN", SYMDEF, "", BSS, NLABEL, ...) - an empty 'S' is a lone NUL
+ * byte on the wire), the MUTOS front end does not: 01_globstat's
+ * SSPACE argument is followed directly by bump()'s SYMDEF, and nothing
+ * sits between CSPACE's size and BSS (see mutos_cc.h's delta 5).
+ *
+ * Every file-scope name is declared hclass SC_EXTERN whatever its
+ * storage class (v7's decl1(EXTERN, ...)) and referenced by its symbol
+ * - see emit_name(). A second declaration of the same name is accepted
+ * when its type and linkage agree ("extern int total;" ... "int
+ * total;"), and writes what its own class calls for (CSPACE again for
+ * a second tentative definition, as v7 does). Only a plain IDENT of
+ * type int, char or long is supported - a pointer, an array, an
+ * initializer, a 'static' function: no golden shows their shapes (a
+ * local 'static' has the same restriction - see parse_static_decl()).
+ */
+static void parse_global_var(Parser *p, FILE *t1, int sclass, int type,
+                             int ptr_degree, const char *name, int line)
+{
+    if (ptr_degree > 0 || p->cur.kind == T_LBRACK || p->cur.kind == T_ASSIGN) {
+        c0_error_at(line, "a file-scope pointer, array or initialized "
+                          "variable ('%s') is not yet supported - only "
+                          "plain 'int'/'char'/'long' variables are - see "
+                          "src/mutos_cc/README.md", name);
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_COMMA &&
+               p->cur.kind != T_EOF)
+            advance(p);
+        return;
+    }
+    if (is_known_func(p, name)) {
+        c0_error_at(line, "'%s' redeclared (already a function)", name);
+        return;
+    }
+
+    int is_static = (sclass == T_KW_STATIC);
+    SymEntry *sym = symtab_lookup(&p->globals, name);
+    if (sym) {
+        if (sym->type != type || sym->is_static != is_static) {
+            /* A different type is an error; 'static' and a non-static
+             * declaration of one name are either undefined ("static int
+             * x;" then "int x;") or, for a later 'extern', legal C that
+             * no golden shows - refused either way. */
+            c0_error_at(line, "'%s' redeclared with a different type or "
+                              "storage class - not supported", name);
+            return;
+        }
+    } else {
+        sym = symtab_declare_global(&p->globals, name, type, is_static);
+    }
+
+    int size = rlength(size_of_type(type));
+    if (sclass == 0)
+        outcode(t1, "BSN", OP_CSPACE, sym->name, size);
+    else if (is_static)
+        outcode(t1, "BBSBN", OP_BSS, OP_NLABEL, sym->name, OP_SSPACE, size);
+    /* 'extern': a declaration only - no wire output. */
+}
+
+/*
+ * external definition:
+ *   sclass? type? declarator (',' declarator)* ';'
+ *   sclass? type? IDENT '(' (IDENT (',' IDENT)*)? ')' param-decls
+ *                                                    compound-stmt
+ *   sclass     := 'static' | 'extern'
+ *   type       := 'int' | 'char' | 'long'
+ *   declarator := '*'* IDENT ( '(' ')' )?
+ *
+ * A declarator with an empty '()' is a K&R forward-declaration
+ * PROTOTYPE (04_mutrec.c's "int iseven();", needed before "isodd"
+ * calls "iseven" so real K&R source has SOME declaration preceding the
+ * use) - parsed and entirely discarded (register_func() only),
+ * confirmed against 04_mutrec.1.golden, which contains no additional
+ * wire output at all for this line: an int-returning callee's NAME is
+ * the same NAME(SC_EXTERN, TY_FUNC_INT, name) leaf whether or not a
+ * prototype preceded it (see parse_call()). What a prototype DOES
+ * change is a call's types when the function returns something else -
+ * "long addlong();"/"char *strcpy();" (02_long/03_retval.c, 05_arrptr/
+ * 07_strlibc.c). A prototype may declare a pointer result ('*'s before
+ * the name) and may be one of a comma-separated list ("int strlen(),
+ * strcmp();"); only an EMPTY parameter list is supported - not
+ * exercised by any golden otherwise. A declarator WITHOUT '(' is a
+ * file-scope variable - see parse_global_var() (07_scope).
  *
  * The second form is an actual function DEFINITION (a body follows) -
  * an implicit-int K&R definition ("name(params) paramdecls { ... }",
- * this grammar's original, only-supported shape) or, since
- * 02_long/03_retval.c, one with an explicit return-type prefix
- * ("long addlong(a, b) long a, b; { ... }" - confirmed byte-for-byte
- * against its own goldens). Distinguishing the two forms needs no
- * lookahead beyond ordinary one-token-at-a-time parsing: both start
- * identically (an optional type keyword, IDENT, '(', an optional
- * K&R-style bare-identifier parameter-NAME list, ')'), and only once
- * that's all been consumed does the next token decide - ';' (only
- * when an explicit type was given and the parameter list was empty,
- * matching the ORIGINAL parse_top_prototype()'s own restriction)
- * means a prototype, anything else (the param-type declarations
- * and/or the body's own '{') means a definition, so cfunc() is
- * entered having already fully parsed the K&R parameter-NAME list
- * either way.
+ * this grammar's original shape) or one with an explicit return-type
+ * prefix ("long addlong(a, b) long a, b; { ... }" - 02_long/03_retval.
+ * c). Both forms start identically (an optional class/type, IDENT,
+ * '(', an optional K&R-style bare-identifier parameter-NAME list,
+ * ')'), and only once that's all been consumed does the next token
+ * decide - ';' or ',' (only after an explicit class or type and an
+ * empty parameter list - v7's getkeywords() "isadecl") means a
+ * prototype, anything else (the param-type declarations and/or the
+ * body's own '{') means a definition, so cfunc() is entered having
+ * already fully parsed the K&R parameter-NAME list either way.
+ *
+ * 'extern' on a function changes nothing (v7 treats it exactly like no
+ * class). 'static' on a function is refused: v7 writes SYMDEF("") for
+ * it, and 01_globstat.1.golden shows the MUTOS front end drops that
+ * for a static variable - what it writes for a static function no
+ * golden shows.
  */
 static void parse_extdef(Parser *p, FILE *t1)
 {
+    int sclass = 0;
+    if (p->cur.kind == T_KW_STATIC || p->cur.kind == T_KW_EXTERN) {
+        sclass = p->cur.kind;
+        advance(p); /* consume 'static'/'extern' */
+    }
     int ret_type = TY_INT;
     int has_type = 0;
     if (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
@@ -3724,6 +3879,9 @@ static void parse_extdef(Parser *p, FILE *t1)
         has_type = 1;
         advance(p); /* consume 'int'/'char'/'long' */
     }
+    /* v7/cc/c03.c's getkeywords() "isadecl": a class or a type keyword
+     * was seen, so what follows is a declaration list. */
+    int is_decl = has_type || sclass != 0;
     int base_type = ret_type;
 
     for (int ndecl = 0; ; ndecl++) {
@@ -3731,7 +3889,7 @@ static void parse_extdef(Parser *p, FILE *t1)
          * *strcpy();" (05_arrptr/07_strlibc.c, 10_integ/04_strrev.c) -
          * the same incref() chaining a local's declarator uses. */
         int ptr_degree = 0;
-        while (has_type && p->cur.kind == T_STAR) {
+        while (is_decl && p->cur.kind == T_STAR) {
             ptr_degree++;
             advance(p);
         }
@@ -3740,14 +3898,15 @@ static void parse_extdef(Parser *p, FILE *t1)
             ret_type = ty_ptr_of(ret_type);
 
         if (p->cur.kind != T_IDENT) {
-            if (has_type)
+            if (is_decl)
                 c0_error_at(p->cur.line,
                     "expected an identifier in top-level declaration");
             else
                 c0_error_at(p->cur.line,
                     "external definition syntax (expected a function name - "
-                    "mutos_c0's current grammar coverage only handles `name() "
-                    "{ ... }` function definitions - see src/mutos_cc/README.md)");
+                    "mutos_c0's current grammar coverage only handles function "
+                    "definitions, prototypes and plain file-scope variables - "
+                    "see src/mutos_cc/README.md)");
             advance(p);
             return;
         }
@@ -3757,22 +3916,20 @@ static void parse_extdef(Parser *p, FILE *t1)
         advance(p); /* consume IDENT */
 
         if (p->cur.kind != T_LPAREN) {
-            if (has_type) {
-                /* Matches the original parse_top_prototype()'s own
-                 * diagnostic exactly - a typed top-level declaration with
-                 * no '(' at all (e.g. "int x;") is a global VARIABLE
-                 * declaration, not yet supported. */
-                c0_error_at(p->cur.line,
-                    "a top-level declaration must be a function prototype "
-                    "('name();') - a global variable declaration is not yet "
-                    "supported - see src/mutos_cc/README.md");
-                while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
-                    advance(p);
-                if (p->cur.kind == T_SEMI)
-                    advance(p);
+            if (!is_decl) {
+                /* "x;" at file scope with no class or type: v7 takes it
+                 * as an extern declaration and writes nothing - not
+                 * exercised, and more likely a typo. */
+                expect(p, T_LPAREN, "'('");
                 return;
             }
-            expect(p, T_LPAREN, "'('");
+            parse_global_var(p, t1, sclass, base_type, ptr_degree,
+                             name_tok.ident, name_tok.line);
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            expect(p, T_SEMI, "';'");
             return;
         }
         advance(p); /* consume '(' */
@@ -3808,7 +3965,16 @@ static void parse_extdef(Parser *p, FILE *t1)
         if (!expect(p, T_RPAREN, "')'"))
             return;
 
-        if (has_type && nparams == 0 &&
+        if (sclass == T_KW_STATIC) {
+            c0_error_at(name_tok.line, "a 'static' function ('%s') is not yet "
+                                       "supported - see src/mutos_cc/README.md",
+                        name_tok.ident);
+        }
+        if (symtab_lookup(&p->globals, name_tok.ident))
+            c0_error_at(name_tok.line, "'%s' redeclared (already a file-scope "
+                                       "variable)", name_tok.ident);
+
+        if (is_decl && nparams == 0 &&
             (p->cur.kind == T_SEMI || p->cur.kind == T_COMMA)) {
             /* "TYPE name();" - a prototype-only declaration, no body,
              * possibly one of a comma-separated list ("int strlen(),
@@ -3848,7 +4014,8 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     p.t2 = temp2;
     p.isn = 1;
     p.have_la = 0;
-    p.syms.head = NULL;
+    symtab_init(&p.syms);
+    symtab_init(&p.globals);
     p.nfuncnames = 0;
     advance(&p);
 
@@ -3858,6 +4025,7 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     outcode(temp1, "B", OP_EOFC);
     outcode(temp2, "B", OP_EOFC);
 
+    symtab_clear(&p.globals);
     free(p.cur.sval);
     if (p.have_la)
         free(p.la.sval);

@@ -26,7 +26,7 @@ declining a shape it has no golden for; refusals are tallied by reason.
 
 Usage:
     fuzz_c.py [-n COUNT] [-s SEED] [-j JOBS] [--baseline DIR]
-              [--no-arrays] [--keep DIR] [--reasons]
+              [--no-arrays] [--scope] [--keep DIR] [--reasons]
 
 See README.md in this directory for what is generated and why.
 """
@@ -153,6 +153,13 @@ def evaluate(n, env):
 # u and n are never read otherwise and at most one of those side
 # effects occurs per statement, so no statement's value depends on C's
 # unspecified operand evaluation order.
+#
+# With --scope, some of x, y, s, t are file-scope variables instead
+# ("int y;", "static int y;", or "extern int y;" before main() and "int
+# y;" after it - the 07_scope shapes), and a statement may be a nested
+# block that declares a local of a global's name, shadowing it for the
+# block's own statements ("{ int y; y = 3; x = y + 1; }"). The globals'
+# final and per-statement values are checked at their fixed addresses.
 # ---------------------------------------------------------------------
 
 BINOPS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>",
@@ -161,11 +168,19 @@ SCALARS = ["x", "y", "s", "t"]
 INDEXES = ["i", "j", "k"]
 
 
+GLOBAL_KINDS = ["plain", "static", "extern"]
+
+
 class Gen:
-    def __init__(self, rnd, arrays):
+    def __init__(self, rnd, arrays, scope=False):
         self.r = rnd
         self.a2 = {}
         self.a1 = {}
+        # name -> "plain" | "static" | "extern" (see the comment above)
+        self.globals = {}
+        if scope:
+            names = [n for n in SCALARS if rnd.random() < 0.5] or [rnd.choice(SCALARS)]
+            self.globals = {n: rnd.choice(GLOBAL_KINDS) for n in names}
         if arrays:
             # Locals beyond the scalars' 20 bytes: at most 60, so the frame
             # stays within the confirmed "sub sp,N" range (N <= 80) - N in
@@ -262,8 +277,14 @@ class Gen:
             e = self.expr(depth)   # "x = y;" and the like are refused
         return e
 
-    def statement(self):
+    def statement(self, nested=False):
         self.side_effect_used = False
+        if self.globals and not nested and self.r.random() < 0.2:
+            # A block shadowing one global with a local of its name.
+            var = self.r.choice(list(self.globals))
+            inner = [self.statement(nested=True)
+                     for _ in range(self.r.randint(1, 2))]
+            return ("block", var, self.r.randint(-5, 9), inner)
         if self.r.random() < 0.2:
             cond = self.expr(self.r.randint(1, 2), truth=True)
             then = ("assign", self.target(), self.rhs_in_cond())
@@ -296,7 +317,7 @@ class Gen:
         # so every intermediate state is checked, not only the final one
         # (a wrong value a later statement overwrites is still caught).
         names = INDEXES + SCALARS + ["u", "n", "m"]
-        decl.append("\tint " + ", ".join(names) + ";")
+        decl.append("\tint " + ", ".join(n for n in names if n not in self.globals) + ";")
         for name in names[:-1]:            # not m: its first store is a marker
             env[name] = self.r.randint(0, 1) if name in INDEXES else self.r.randint(-5, 9)
             init.append(f"\t{name} = {env[name]};")
@@ -318,7 +339,12 @@ class Gen:
         self.ret_node = ret
         retval = evaluate(ret, env)
         body.append(f"\treturn {render(ret)};")
-        src = "main()\n{\n" + "\n".join(decl) + "\n\n" + "\n".join(init + body) + "\n}\n"
+        before = "".join({"plain": f"int {n};\n", "static": f"static int {n};\n",
+                          "extern": f"extern int {n};\n"}[k]
+                         for n, k in self.globals.items())
+        after = "".join(f"int {n};\n" for n, k in self.globals.items() if k == "extern")
+        src = (before + "main()\n{\n" + "\n".join(decl) + "\n\n" +
+               "\n".join(init + body) + "\n}\n" + after)
         return src, env, retval
 
     def store(self, tgt, val, env):
@@ -332,6 +358,14 @@ class Gen:
     def execute(self, st, env):
         if st[0] == "assign":
             self.store(st[1], evaluate(st[2], env), env)
+        elif st[0] == "block":
+            # The inner local hides the global for the block's duration;
+            # the global's own value is untouched by the block.
+            saved = env[st[1]]
+            env[st[1]] = st[2]
+            for inner in st[3]:
+                self.execute(inner, env)
+            env[st[1]] = saved
         elif evaluate(st[1], env):
             self.execute(st[2], env)
         elif st[3]:
@@ -340,15 +374,20 @@ class Gen:
     def render_stmt(self, st):
         if st[0] == "assign":
             return f"\t{render(st[1])} = {render(st[2])};"
+        if st[0] == "block":
+            inner = "\n".join("\t" + line for line in
+                               "\n".join(self.render_stmt(x) for x in st[3]).split("\n"))
+            return (f"\t{{\n\t\tint {st[1]};\n\n\t\t{st[1]} = {st[2]};\n"
+                    f"{inner}\n\t}}")
         s = f"\tif ({render(st[1])})\n\t\t{self.render_stmt(st[2]).strip()}"
         if st[3]:
             s += f"\n\telse\n\t\t{self.render_stmt(st[3]).strip()}"
         return s
 
 
-def generate(rnd, arrays):
+def generate(rnd, arrays, scope=False):
     while True:
-        g = Gen(rnd, arrays)
+        g = Gen(rnd, arrays, scope)
         try:
             src, env, ret = g.program()
         except Skip:
@@ -422,6 +461,14 @@ def state_diffs(r, env, g):
             else:
                 off = r.locals[name] + 2 * key[1]
             label = f"{name}{''.join(f'[{x}]' for x in key[1:])}"
+        elif key in g.globals:
+            # A file-scope variable: its fixed address, not a frame slot
+            # (a block's shadowing local of the same name registers
+            # "| _y=-N." too, so r.locals[key] is not it).
+            got = r.word_at(r.data["_" + key])
+            if got != val:
+                diffs.append(f"{key} (global) = {got}, expected {val}")
+            continue
         else:
             off, label = r.locals[key], key
         if r.word(off) != val:
@@ -455,6 +502,8 @@ def main():
                     help="directory with an earlier build's mutos_c0 and mutos_c1")
     ap.add_argument("--no-arrays", action="store_true",
                     help="scalars only (no 1-D/2-D arrays)")
+    ap.add_argument("--scope", action="store_true",
+                    help="file-scope variables and shadowing nested blocks")
     ap.add_argument("--keep", metavar="DIR", help="where to save BAD programs "
                     "(default: a new directory under /tmp)")
     ap.add_argument("--reasons", action="store_true",
@@ -466,7 +515,7 @@ def main():
             sys.exit(f"fuzz_c: {path} not found - build first (make) or set "
                      f"MUTOS_{name.upper()}")
     rnd = random.Random(args.seed)
-    progs = [generate(rnd, not args.no_arrays) for _ in range(args.count)]
+    progs = [generate(rnd, not args.no_arrays, args.scope) for _ in range(args.count)]
 
     counts, reasons, bad, cmp = {}, {}, [], {}
     with tempfile.TemporaryDirectory(prefix="fuzz_c.") as workroot:
@@ -497,7 +546,8 @@ def main():
 
     n = args.count
     print(f"fuzz_c: {n} programs, seed {args.seed}"
-          f"{', scalars only' if args.no_arrays else ''}")
+          f"{', scalars only' if args.no_arrays else ''}"
+          f"{', file scope' if args.scope else ''}")
     print(f"  correct {counts.get('ok', 0)}, refused {counts.get('refused', 0)}, "
           f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}")
     if args.baseline:

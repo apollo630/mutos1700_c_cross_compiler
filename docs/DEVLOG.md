@@ -3907,7 +3907,7 @@ non-optimized shape is unknown.
 
 ### `char` element access, call arguments right to left, and `02_bubsort`'s comparison shapes (`mutos_c0`/`mutos_c1` extended and verified this session)
 
-Eight more corpus files byte-exact end-to-end (46/62, up from 38 of
+Eight more corpus files byte-exact end-to-end (46 of 62, up from 38 of
 62): the six `09_abiprobe/0N_frameNNN` files, `10_integ/04_strrev` and
 `10_integ/02_bubsort`. Three pieces of work, each derived from the
 goldens before any code was written, plus two pre-existing silent
@@ -4142,7 +4142,7 @@ executable (up from 30), every one returning its C source's value -
 
 **Verification.**
 
-- `make test` (clean build): 46/62 byte-exact, 0 genuine mismatches,
+- `make test` (clean build): 46 of 62 byte-exact, 0 genuine mismatches,
   zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   changed exactly the eight files, all from a refusal to the golden
@@ -4182,6 +4182,220 @@ a char NAME, that is `cmpb`. `kernel_nonopt/lp_AC.s` has `cmpb *-8.(bp),
 *122.` / `bgt` and `addb *-8.(bp),*-32.` (a char compound assignment),
 `amx.s` `cmpb *1.(si),*0` and a char argument as `movb ax,*-10.(bp)` /
 `cbw` / `push ax`.
+
+### `07_scope` - file-scope variables and block scope (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+All three `07_scope` files byte-exact end-to-end (49/62, up from 46 of
+62). The shapes were read off the goldens first (`dump_temp.py` stopped at
+the first new opcode, `CSPACE`, so `01_globstat.1.golden` was decoded by
+hand with `od`), then matched against `v7/cc/c02.c`'s `extdef()` and
+statement() LBRACE case.
+
+**1. The wire format of a file-scope variable.** `01_globstat.1.golden`
+begins, before `bump()`'s `SYMDEF`:
+
+```
+205 254  '_counter' 0  2 0         CSPACE "_counter" 2       int counter;
+204 254                            BSS
+113 254  '_hidden' 0               NLABEL "_hidden"          static int hidden;
+206 254  2 0                       SSPACE 2
+207 254  '_bump' 0 ...             SYMDEF "_bump"            bump() ...
+```
+
+and `03_externdef.1.golden` has nothing for `extern int total;` and
+`CSPACE "_total" 2` between `addto()`'s `SETSTK`/`BRANCH` and `main()`'s
+`SYMDEF` - where `int total;` is in the source. This is `extdef()` for a
+declarator followed by `,` or `;`: `getkeywords()` gives a top-level
+declaration without a storage class the class `DEFXTRN` ("blklev==0?
+DEFXTRN: AUTO"), which `extdef()` turns into `EXTERN` plus `scflag`, and
+then
+
+```c
+o = (length(ds)+ALIGN) & ~ALIGN;
+if (sclass==STATIC) {
+        setinit(ds);
+        outcode("BSBBSBN", SYMDEF, "", BSS, NLABEL, ds->name, SSPACE, o);
+} else if (scflag)
+        outcode("BSN", CSPACE, ds->name, o);
+```
+
+- so a plain `extern` writes nothing at all. One byte-level difference:
+v7 writes `SYMDEF("")` in front of the static's block - an empty 'S' is
+the lone NUL byte `outcode()` writes after the tag - and the golden has
+nothing between `CSPACE`'s size word (`2 0`) and `BSS`'s tag (`204 254`).
+The MUTOS front end drops it (`mutos_cc.h` delta 5); it would have had
+no effect anyway (v7's `c1` writes no `.globl` for an empty name).
+
+References: `NAME(12, 0, "_counter")` - `SC_EXTERN` and the symbol, the
+`BNNS` shape a callee's `NAME` already has - for the static `hidden` too.
+v7 declares every file-scope name through `decl1(EXTERN, ...)`, whatever
+its storage class, and `treeout()`'s NAME case writes the symbol for
+class `EXTERN`; the storage class only decides what `extdef()` writes.
+`mutos_c0` therefore keeps a second, file-wide symbol table
+(`Parser.globals`, `symtab_declare_global()`), consulted after the
+function's own (`lookup_var()` - a local shadows a global), and
+`emit_name()` writes either `NAME` shape; the twelve places that wrote a
+symbol's `NAME` with `sym->offset` now go through it. `parse_extdef()` accepts a
+leading `static`/`extern` and hands a declarator without `(` to
+`parse_global_var()`. A redeclaration with the same type and linkage is
+accepted (`03_externdef`'s `extern` then `int`), writing what its own
+class calls for. Refused, with no golden for their shapes: a file-scope
+pointer, array or initializer (`10_integ/01_wordcount`'s `char text[] =
+"..."` - its golden shows `SYMDEF`, `DATA`, `NLABEL` and `BDATA` runs in
+temp1), and a `static` function (v7's `SYMDEF("")` again - whether MUTOS
+drops it there too no golden shows).
+
+**2. Block scope.** `02_shadow.1.golden`:
+
+```
+LABEL 2
+ANAME "_x" -6   NAME(11,0,-6) CON 1 ASSIGN EXPR 12      int x; x = 1;
+ANAME "_x" -8   NAME(11,0,-8) CON 2 ASSIGN EXPR 16      { int x; x = 2; }
+NAME(11,0,-6) RFORCE EXPR 18                            return x;
+... SETSTK 8
+```
+
+The inner `x` takes the next slot below the outer one, its `ANAME` sits
+where the block's declarations are (after the preceding statement's
+`EXPR`), and after the `}` the name means the outer `x` again. v7's
+statement() LBRACE case saves `autolen` and `regvar` on entry
+(`blockhead()` raises `blklev`, so `decl1()` pushes an outer declaration
+of the same name down instead of reporting a redeclaration) and on exit
+restores both (`SETREG` if `regvar` changed) and calls `blkend()`, which
+removes the block's names and brings the pushed-down ones back.
+`mutos_c0` had one flat scope per function - "'x' redeclared".
+`c0_sym` is now block-structured: `SymTab.scope` marks the first entry
+of the current block (the redeclaration check stops there),
+`symtab_block_enter()`/`symtab_block_exit()` save and restore the head,
+the scope mark and `autolen`, and `parse_nested_block()` wraps every
+compound statement except the function body, which - as in v7, where
+parameters and body are both declared at `blklev` 1 - shares the
+parameters' scope. Restoring `autolen` means sibling blocks reuse the
+same slots while `maxauto` (`SETSTK`) covers the deepest one. That part
+is v7's algorithm only: no corpus file has two sibling blocks with
+declarations, the non-optimized kernel output has no mid-body
+declaration at all (no `| _name=N.` comment after a function's first
+statement), and neither kernel corpus gives one frame offset to two
+names. The old flat scope gave each
+sibling block fresh slots - `{ int b, c; ... } { int d; ... } { int e,
+f, g; ... }` after `int a;` compiled to `sub sp,*14.`, v7's layout needs
+8.
+
+**3. `mutos_c1`: a memory operand named by its symbol.** The `.s` goldens
+use a global exactly where a local static's `L<n>` would stand:
+
+```
+.comm   _counter,2
+.bss
+_hidden:.blkb   2.
+...
+L2:mov  di,_counter          counter = counter + 1;
+inc     di
+mov     _counter,di
+...
+mov     di,_counter          return counter;
+mov     ax,di
+```
+
+(`04_funcs/05_staticvar.s.golden`: `mov di,L4` / `inc di` / `mov L4,di`
+for `n = n + 1;`). So a `NAME(SC_EXTERN)` of a non-function type is a
+`VK_STATIC` value with the new `Val.sym` set (and copied through
+`SimpleVal`, so it survives a deferred comparison, a `VK_CHARX`, a plan
+step); `render_operand()` writes the symbol instead of `L<n>`, and `&x`
+(`VK_STATICADDR`) the immediate `#_counter` - `mov di,#_proc` and `mov
+dx,#_swapmap` in `tests/mutos_as/kernel_nonopt/`. `Val` is copied freely,
+so it does not own the text: `intern_name()` pools each distinct name in
+`GenState` until `c1_generate()` returns. Everything a local static can
+do, a global now can, and nothing more: `gen_incdec()` and the compound-
+assignment handlers take `VK_MEM` only, and every `long` handler a
+bp-relative operand only, so those stay refusals for both. `CSPACE`
+renders `.comm\t_counter,2` - no trailing `.`, unlike `.blkb`'s, and
+decimal: v7's `c1` prints the size in octal, but the kernel output has
+`.comm\t_msgbuf,1024` and `.comm\t_dk_time,128` (no octal 8). `NLABEL`
+renders `_hidden:` with no newline, glued onto the `.blkb` line like an
+`L<n>:` label (`put_name_label()`) - and `01_wordcount.s.golden`'s
+`_text:.byte ...` shows the same for a data label.
+
+**Found on the way (pre-existing, `mutos_c1`): a static right-hand side
+of a memory-to-memory assignment.** `OP_ASSIGN` refused a bare `VK_MEM`
+right-hand side ("x = y;" - 8086 `MOV` cannot take two memory operands,
+and no golden shows the register the real compiler routes it through)
+but not a `VK_STATIC` one: `static int a, b; ... a = b;` compiled to `mov
+L4,L5`, exit status 0, and `mutos_as` rejects the line. With globals the
+same shape would have been `mov _x,_y`. A static or global right-hand
+side is now refused unless the target is a register (`mov di,_y` into a
+`register` local is an ordinary instruction). The kernel shows the shape
+a later session will need: `_amxpeek` in `kernel_nonopt/amx.s` - a
+function whose register variables hold DI and SI - stores a local into a
+global through DX, `mov dx,*-6.(bp)` / `mov _cfreeli,dx`; which register
+a function without register variables uses needs a golden. The same
+file has in-place operations on global memory (`inc _amxslee`, `orb
+_amxscd(bx),*4.`), the evidence for `++`/`--` and compound assignment on
+a global.
+
+**Tooling.** `dump_temp.py` decodes `CSPACE` (`S`, `N`) and `NLABEL`
+(`S`); over all 124 golden `.1`/`.2` files its output changed only for
+`01_globstat` and `03_externdef`, which used to stop at `CSPACE`.
+`x86sim.py` allocates a zero-initialized word block for every `.comm`
+and `.blkb` and executes `L4`, `_counter` and `#_counter` operands, so
+50 of the 62 goldens now run (up from 47: `04_funcs/05_staticvar` 3,
+`07_scope/01_globstat` 3, `03_externdef` 12), each returning its C
+source's value; its `Result` exposes the addresses (`data`,
+`word_at()`). `fuzz_c.py --scope` makes each of `x`, `y`, `s`, `t` a
+file-scope variable with probability 1/2 (at least one) - `int y;`,
+`static int y;`, or `extern int y;` before `main()` and `int y;` after
+it - and adds block statements `{ int y; y = c; ... }` that shadow a
+global for one or two inner statements; globals are checked at their
+fixed addresses at every statement marker, the block's own local not at
+all (it is out of scope there).
+
+**Verification.**
+
+- `make test` (clean build): 49/62 byte-exact, 0 genuine mismatches,
+  zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build: `mutos_c0` on the 62 golden `.i` files
+  produced the `.1`/`.2` goldens for the three `07_scope` files (before:
+  refusals); among the files that still fail, eleven (the nine
+  `06_struct` files, `01_wordcount`, `03_linklist`) have different
+  partial output or messages - the error recovery reaches file-scope
+  declarations differently - and the same exit status; the 46 passing
+  files are byte-identical. `mutos_c1` alone on the 62 golden pairs:
+  `01_globstat` and `03_externdef` changed from a refusal to their
+  `.s.golden` (`02_shadow` already matched - it only needed `c0`),
+  nothing else changed; 53 of 62 now match through `c1` alone.
+- `fuzz_c.py` against the previous build: 18000 programs (seeds 11-16,
+  two scalar-only), all identical - it generates no global and no block.
+  With `--scope`: 18000 programs (seeds 21-26, three scalar-only), 0
+  WRONG, 0 BAD, 9774 compiled and correct at every statement (the
+  previous build refused every one of them), the rest refused, most by
+  the register-occupancy guard as without `--scope`; 505 are the
+  memory-to-memory refusal - a comma whose value is a bare variable,
+  `y = (u = 19, y);`, which the generator writes with locals just as
+  often (121 of 3000 scalar-only programs of seed 15 without
+  `--scope`). A mutation check on the checker itself: deleting
+  the last store into a global from 408 compiled `--scope` programs was
+  flagged in 355; in the other 53 the deleted store did not change the
+  global's value (a store in an untaken branch, or of the value already
+  there).
+- 22 hand-written programs, run through `mutos_cpp`, both passes,
+  `mutos_as` and `x86sim.py` and compared with the host C compiler's exit
+  status: globals shared by several functions, `static` and `extern`
+  forms, a definition after `main()`, shadowing at two levels with a
+  `return` inside a block, a parameter shadowing a global, three sibling
+  blocks, a global loop counter with a block local in the body, `&global`
+  passed to a function and stored through a local pointer, a `register`
+  local stored into and read back from a global, char globals copied
+  through a char local (`movb dx,_b` / `movb *-6.(bp),dx`, the local
+  char shape), a `static char` read as an int, recursion counting its
+  calls in a global - all 22 correct. 11 refusal cases (`x = y;` between
+  globals, local statics, or a global loop counter's `count = lo`
+  initialization, a `long`/array/initialized global, a `static`
+  function, `n++` on a global, a conflicting redeclaration, a
+  redeclaration in one block, a block local used after its `}`) stop
+  with their diagnostic.
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden inputs,
+  the hand-written programs and 3000 fuzzed programs (half `--scope`):
+  clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -4380,6 +4594,13 @@ These apply to *every* milestone, not just the one where they were first learned
   with uncommitted changes the check now expects today's date (the date the
   pending commit will carry); for an unchanged file - e.g. CI's clean
   checkout - still the last commit's date.
+- **Key a refusal on the rule it enforces, not on one operand kind.**
+  `OP_ASSIGN` refused `x = y;` by testing for `VK_MEM`, but the rule behind
+  it - the 8086 has no memory-to-memory `MOV` - holds for every memory
+  operand; two local statics (`VK_STATIC`) slipped through as `mov L4,L5`
+  for as long as statics existed, found only when file-scope variables
+  joined that kind (`07_scope`). When a new kind of value joins an old one,
+  re-read every test of the old kind by name.
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.

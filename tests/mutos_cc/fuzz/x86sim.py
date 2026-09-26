@@ -4,19 +4,24 @@
 Runs the subset of mutos_as-syntax 8086 code that mutos_c1 emits - the
 shape fuzz_c.py generates, a parameterless main(), plus calls of other
 functions defined in the same file (with the shared "cret" epilogue and
-the "chkstk" large-frame helper built in) and "movb"/"cbw" byte
-operations - and reports the final state: main()'s return value (AX at
-main's "jmp cret") and every local variable's word(s), located through
-c1's own "| _name=-N." frame comments. It is a checker, not an
-emulator: anything outside the subset (a libc or indirect call, a
-static label operand, a branch on flags not set by a cmp or an "or
-r,r", ...) stops it with exit status 2 and a message, never with a
-guess.
+the "chkstk" large-frame helper built in), "movb"/"cbw" byte
+operations and variables at a fixed address (a local static's "L4:.blkb
+2.", a file-scope "static" one's "_hidden:.blkb 2.", a common block's
+".comm _counter,2" - each zero-initialized, referenced as "L4",
+"_counter" or, for its address, "#_counter") - and reports the final
+state: main()'s return value (AX at main's "jmp cret") and every local
+variable's word(s), located through c1's own "| _name=-N." frame
+comments. It is a checker, not an emulator: anything outside the subset
+(a libc or indirect call, a string literal's data, a branch on flags not
+set by a cmp or an "or r,r", ...) stops it with exit status 2 and a
+message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
-.s.golden it can execute (47 of the 62 - the rest call libc or runtime
-helpers, or use statics, 'long' carries or a jump table) returns the
-value its C source computes, among them 01_expr/06_compasgn (33),
+.s.golden it can execute (50 of the 62 - the rest call libc or runtime
+helpers, or use string literals, 'long' carries or a jump table)
+returns the value its C source computes, among them 01_expr/06_compasgn
+(33), 04_funcs/05_staticvar (3), 07_scope/01_globstat (3) and
+03_externdef (12),
 03_ctrlflow/05_breakcont (12), 04_funcs/03_recfact (720), 05_arrptr/
 02_array2d (138), 09_abiprobe/03_frame128 (3, through chkstk),
 10_integ/02_bubsort (91) and 05_matmul (134), and even 06_struct/
@@ -25,7 +30,8 @@ yet.
 
 Usage:
     x86sim.py file.s        prints "ret=<n>", then "<name>=<off>" per
-                            local and "w<off>=<n>" per frame word
+                            local, "<sym>@<addr>=<n>" per fixed-address
+                            variable and "w<off>=<n>" per frame word
 As a module:
     r = x86sim.run(text)    -> Result (r.ret, r.locals, r.word(off))
 """
@@ -34,6 +40,7 @@ import sys
 
 M16 = 0xFFFF
 SP0 = 0xF000          # initial stack pointer; the frame lives below it
+DATA0 = 0x1000        # where fixed-address variables (.blkb, .comm) start
 STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 
 # Instructions that change the flags. A conditional branch is only
@@ -56,10 +63,11 @@ def s16(v):
 
 
 class Result:
-    def __init__(self, ret, bp, locals_, mem, snapshots=()):
+    def __init__(self, ret, bp, locals_, mem, snapshots=(), data=None):
         self.ret = ret
         self.bp = bp
         self.locals = locals_       # name -> bp-relative offset
+        self.data = data or {}      # fixed-address variable -> address
         self._mem = mem
         # (value written, Result of that moment) per write to the watched
         # local - see run()'s `watch`
@@ -67,7 +75,11 @@ class Result:
 
     def word(self, off):
         """Signed word at bp+off."""
-        a = (self.bp + off) & M16
+        return self.word_at(self.bp + off)
+
+    def word_at(self, addr):
+        """Signed word at an absolute address (see `data`)."""
+        a = addr & M16
         return s16(self._mem.get(a, 0) | (self._mem.get((a + 1) & M16, 0) << 8))
 
 
@@ -84,6 +96,8 @@ class Sim:
         self.prog = []             # (mnemonic, [operands])
         self.labels = {}
         self.locals = {}
+        self.data = {}             # fixed-address variable -> address
+        self.next_data = DATA0
         for raw in text.splitlines():
             self._parse_line(raw)
 
@@ -92,22 +106,41 @@ class Sim:
         if m:
             self.locals[m.group(1)] = int(m.group(2))
 
+    def _alloc(self, name, size):
+        """A zero-initialized variable at a fixed address (first
+        definition wins - ".comm" may repeat)."""
+        if name not in self.data:
+            self.data[name] = self.next_data
+            self.next_data += (size + 1) & ~1
+
     def _parse_line(self, line):
         # Labels glue onto whatever follows them ("L4:cmp ...",
-        # "L8:L6:mov ...", "L2:| _a=-12.").
+        # "L8:L6:mov ...", "L2:| _a=-12.", "_hidden:.blkb\t2.").
+        names = []
         while True:
             m = re.match(r"^(L\d+|_\w+):", line)
             if not m:
                 break
-            self.labels[m.group(1)] = len(self.prog)
+            names.append(m.group(1))
             line = line[m.end():]
+        m = re.match(r"^\.blkb\t(\d+)\.$", line)
+        if m:                       # a static's own BSS block
+            for name in names:
+                self._alloc(name, int(m.group(1)))
+            return
+        for name in names:
+            self.labels[name] = len(self.prog)
         if not line:
             return
         if line.startswith("|"):
             self._note_local(line)
             return
+        m = re.match(r"^\.comm\t(_\w+),(\d+)$", line)
+        if m:                       # a file-scope common block
+            self._alloc(m.group(1), int(m.group(2)))
+            return
         if line.startswith("."):
-            return                  # .globl/.text/.even/.data: no effect
+            return                  # .globl/.text/.even/.data/.bss
         mnem, _, rest = line.partition("\t")
         ops = rest.split(",") if rest else []
         if mnem == "pop cx":        # c1's literal-space quirk
@@ -125,6 +158,8 @@ class Sim:
         self.mem[(a + 1) & M16] = (v >> 8) & 0xFF
 
     def _ea(self, op):
+        if op in self.data:         # "L4", "_counter"
+            return self.data[op]
         m = re.match(r"^(?:[*#](-?\d+)\.)?\((\w+)\)$", op)
         if not m or m.group(2) not in self.regs:
             return None
@@ -142,6 +177,8 @@ class Sim:
         m = re.match(r"^[*#]/([0-9a-f]+)$", op)
         if m:
             return int(m.group(1), 16) & M16
+        if op.startswith("#") and op[1:] in self.data:
+            return self.data[op[1:]]    # "#_counter": its address
         a = self._ea(op)
         if a is not None:
             return self._rd(a)
@@ -158,7 +195,8 @@ class Sim:
         if self.watch in self.locals and \
                 a == (self.regs["bp"] + self.locals[self.watch]) & M16:
             self.snapshots.append((s16(v), Result(None, self.regs["bp"],
-                                                  dict(self.locals), dict(self.mem))))
+                                                  dict(self.locals), dict(self.mem),
+                                                  data=self.data)))
 
     # Byte operands ("movb"): mutos_as spells a byte register by its word
     # register's name - "movb ax,*-84.(bp)" loads AL, "movb *-6.(bp),dx"
@@ -190,7 +228,8 @@ class Sim:
         if self.watch in self.locals and \
                 a == (self.regs["bp"] + self.locals[self.watch]) & M16:
             self.snapshots.append((s16(self._rd(a)), Result(None, self.regs["bp"],
-                                                            dict(self.locals), dict(self.mem))))
+                                                            dict(self.locals), dict(self.mem),
+                                                            data=self.data)))
 
     # -- execution ------------------------------------------------------
     def run(self):
@@ -220,7 +259,8 @@ class Sim:
                     continue
                 if ops[0] == "cret":
                     return Result(s16(self.regs["ax"]), self.regs["bp"],
-                                  dict(self.locals), self.mem, self.snapshots)
+                                  dict(self.locals), self.mem, self.snapshots,
+                                  data=self.data)
                 if ops[0] not in self.labels:
                     raise SimError(f"jump target '{ops[0]}' not supported")
                 pc = self.labels[ops[0]]
@@ -330,6 +370,8 @@ def main():
     print(f"ret={r.ret}")
     for name, off in sorted(r.locals.items(), key=lambda kv: kv[1]):
         print(f"{name}={off}")
+    for name, addr in sorted(r.data.items(), key=lambda kv: kv[1]):
+        print(f"{name}@{addr:#06x}={r.word_at(addr)}")
     for off in range(-2, -1024, -2):
         a = (r.bp + off) & M16
         if a in r._mem or ((a + 1) & M16) in r._mem:

@@ -165,11 +165,24 @@ OPCODES = {
                                                  # NAME reference too (hclass
                                                  # SC_REG=14).
 
+    # -- file-scope variables (07_scope - v7/cc/c02.c's extdef() for a
+    # non-function declarator; c0_parser.c's parse_global_var()):
+    # "int counter;" is CSPACE("_counter", 2); "static int hidden;" is
+    # BSS, NLABEL("_hidden"), SSPACE(2) - no SYMDEF("") in front, unlike
+    # v7 - confirmed byte-for-byte against 07_scope/01_globstat.1.golden
+    # and 03_externdef.1.golden; "extern int total;" writes nothing --
+    205: ("CSPACE", [S("name"), N("bytes")]),   # a common block of N bytes
+    113: ("NLABEL", [S("name")]),               # a named label - here the
+                                                 # static's own BSS block,
+                                                 # which the SSPACE that
+                                                 # follows reserves
+
     # -- expression-tree leaves/operators (treeout()) --
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name
                                # (hclass == SC_EXTERN - a called function's
-                               # own name, or a bare function name used as
-                               # a value, per parse_call()/parse_primary())
+                               # own name, a bare function name used as a
+                               # value, per parse_call()/parse_primary(),
+                               # or a file-scope variable - 07_scope)
                                # OR a numeric offset (hclass == SC_AUTO, a
                                # bp-relative stack offset, OR hclass ==
                                # SC_STATIC, an internal BSS label number -

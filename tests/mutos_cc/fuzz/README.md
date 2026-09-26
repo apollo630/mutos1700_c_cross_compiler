@@ -16,21 +16,27 @@ directly, on random programs:
 - `x86sim.py` is the executor: an interpreter for the subset of 8086
   code `mutos_c1` emits - `main()` plus calls of other functions in the
   same file (with the shared `cret` epilogue and the `chkstk` large-frame
-  helper built in), and `movb`/`cbw` byte operations. It reports
-  `main()`'s return value and every local's final value (found through
-  `c1`'s own `| _name=-N.` frame comments). Anything outside its subset -
-  a libc or indirect call, a static label operand, a branch on flags not
-  set by a `cmp` or an `or r,r` - stops it with an error, never a guess.
+  helper built in), `movb`/`cbw` byte operations, and variables at a
+  fixed address - a local or file-scope `static`'s `.blkb` block and a
+  file-scope common block (`.comm _counter,2`), zero-initialized. It
+  reports `main()`'s return value and every local's final value (found
+  through `c1`'s own `| _name=-N.` frame comments). Anything outside its
+  subset - a libc or indirect call, a string literal's data, a branch on
+  flags not set by a `cmp` or an `or r,r` - stops it with an error, never
+  a guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
-`tests/mutos_cc` `.s.golden` it can execute (47 of the 62; the others
-call libc or runtime helpers, or use statics, `long` carries or a jump
-table) returns the value its C source computes, including struct,
+`tests/mutos_cc` `.s.golden` it can execute (50 of the 62; the others
+call libc or runtime helpers, or use string literals, `long` carries or
+a jump table) returns the value its C source computes, including struct,
 union and bit-field programs `mutos_c1` cannot produce yet, the six
 `09_abiprobe` frames (through `chkstk` from 128 bytes up) and
-`10_integ/02_bubsort` (91). `fuzz_c.py` itself generates neither chars
-nor calls; hand-written programs of that kind can be run through the
-same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s `char` section).
+`10_integ/02_bubsort` (91), and `04_funcs/05_staticvar` and all three
+`07_scope` files (globals, a file-scope `static`, a shadowing block).
+`fuzz_c.py` itself generates neither chars, calls nor globals;
+hand-written programs of that kind can be run through the same pipeline
+and `x86sim.py` (see `docs/DEVLOG.md`'s `char` and `07_scope`
+sections).
 
 Nothing here is part of the corpus: the scripts write only to a
 temporary directory, and `run_goldens.sh`, `gen_mutos.sh` and the
@@ -51,6 +57,7 @@ tests/mutos_cc/fuzz/fuzz_c.py --baseline /tmp/base   # compare with an earlier b
 | `-j JOBS` | parallel jobs (default: CPU count) |
 | `--baseline DIR` | also run the `mutos_c0`/`mutos_c1` found in `DIR` (an earlier build) and compare |
 | `--no-arrays` | scalars only |
+| `--scope` | some of `x`/`y`/`s`/`t` become file-scope variables (plain, `static`, or `extern` before `main()` and defined after it), and some statements become nested blocks declaring a local that shadows one - checked at the globals' fixed addresses |
 | `--reasons` | list every refusal reason with its count - a map of what `c1` does not support yet |
 | `--keep DIR` | where to save problem programs (default: a new directory under `/tmp`) |
 
@@ -104,6 +111,15 @@ C evaluates the operand. A program that would divide by zero is dropped;
 a division C does not evaluate (in an untaken `?:` arm, a skipped
 `&&`/`||` operand) is kept, since the compiled code must not execute it
 either - on an 8086 that is a divide-error trap.
+
+With `--scope` (the `07_scope` constructs), each of `x`, `y`, `s`, `t`
+is a file-scope variable with probability 1/2 (at least one is): `int
+y;`, `static int y;`, or `extern int y;` before `main()` with `int y;`
+after it. A statement may then be a block `{ int y; y = 3; ... }` whose
+one or two statements see a local that shadows the global; the global
+keeps its value across the block. Globals are compared at their fixed
+addresses at every statement marker; the block's local is out of scope
+there and not compared.
 
 Some choices only raise the share of programs `c1` accepts (a single
 refused statement discards the whole program): no constant in a truth
