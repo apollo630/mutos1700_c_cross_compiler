@@ -195,8 +195,10 @@ enum {
 
 /* ------------------------------------------------------------------ */
 /* Storage classes (v7/cc/c0.h) - transcribed for forward
- * compatibility; mutos_c0's current grammar coverage only ever
- * assigns EXTERN (to file-scope function names). */
+ * compatibility; mutos_c0 writes AUTO (locals and parameters), STATIC
+ * (a local 'static', a string literal), REG (a claimed 'register'
+ * local) and EXTERN (every file-scope name - a function or, since
+ * 07_scope, a variable, whatever its own storage class). */
 enum {
     SC_TYPEDEF = 9,
     SC_MOS     = 10,
@@ -244,6 +246,15 @@ enum {
  *      SETREG's emitted value (4) immediately after SAVE, for a
  *      function with no register-class parameters/locals to consume
  *      any of the budget.
+ *   5. A file-scope 'static' variable has no SYMDEF("") in front of its
+ *      BSS block: v7's extdef() writes outcode("BSBBSBN", SYMDEF, "",
+ *      BSS, NLABEL, name, SSPACE, size) - an empty symbol being a lone
+ *      NUL byte after SYMDEF's tag - while tests/mutos_cc/07_scope/
+ *      01_globstat.1.golden has "static int hidden;" as BSS, NLABEL
+ *      "_hidden", SSPACE 2 with nothing between the preceding CSPACE's
+ *      size and BSS's tag (confirmed later than 1-4, against
+ *      07_scope's goldens rather than 00_smoke's - see c0_parser.c's
+ *      parse_global_var()).
  */
 #define MCC_STAUTO         (-4)
 #define MCC_STARG          4   /* offset of the 1st parameter, bp+4 -

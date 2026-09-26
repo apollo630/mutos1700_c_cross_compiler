@@ -11,7 +11,7 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 46/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 49/62 of the full corpus:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -23,7 +23,9 @@ of `04_funcs`: `01_call.c`, `02_manyargs.c`, `03_recfact.c`,
 all 7 of `05_arrptr`: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
 `04_ptrarreq.c`, `05_arrofptr.c`, `06_ptrptr.c` and `07_strlibc.c`, plus
 all 7 of `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c`
-large-frame probes), plus `10_integ/02_bubsort.c`, `04_strrev.c` and
+large-frame probes), plus all 3 of `07_scope`: `01_globstat.c`,
+`02_shadow.c` and `03_externdef.c` (file-scope variables and block
+scope), plus `10_integ/02_bubsort.c`, `04_strrev.c` and
 `05_matmul.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
@@ -625,7 +627,9 @@ assignment operator inside a comma-list, a cast combination other
 than the three confirmed ones, `sizeof` on an array or a general
 expression, any `long` operand outside a bare `NAME` or a directly-
 confirmed constant shape, a `char`/`long` pointer or array, a sparse
-(non-contiguous) `switch`, block-scoped declarations,
+(non-contiguous) `switch`, a file-scope pointer, array or initialized
+variable, a `static` function, `++`/`--` or a compound assignment on a
+static or file-scope variable,
 a second simultaneously-live `register` variable (or one of a type
 other than plain `int`), a function pointer with a non-empty
 parameter signature, memory-to-memory
@@ -967,6 +971,61 @@ operand. Each of these used to compile silently wrong; `==`/`!=` of two
 pointers is unaffected, and an address is loaded with `lea` wherever it
 is used as a value (`p = &x;`, `f(&x)`, `return &x;`).
 
+**File-scope variables and block scope (confirmed via `07_scope`).** A
+top-level declaration without `(` is a variable (`c0_parser.c`'s
+`parse_global_var()`), written the way v7's `extdef()` writes it:
+
+```
+int counter;          CSPACE "_counter" 2           .comm   _counter,2
+static int hidden;    BSS NLABEL "_hidden" SSPACE 2 .bss / _hidden:.blkb 2.
+extern int total;     (nothing)
+```
+
+(the size rounded up to a word, `rlength()`), at the declaration's own
+position in the stream - `03_externdef`'s `int total;` sits between
+`addto()` and `main()`, after an `extern int total;` that wrote nothing.
+One MUTOS delta: v7 writes `SYMDEF("")` in front of a static's `BSS`, the
+MUTOS front end does not (`mutos_cc.h` delta 5). Every file-scope name is
+`hclass SC_EXTERN` whatever its storage class (v7 declares it through
+`decl1(EXTERN, ...)`) and is referenced by its symbol - `NAME(12, type,
+"_counter")`, the shape a callee's `NAME` already had - so `c0_sym`
+keeps a second, file-wide table (`Parser.globals`, searched after the
+function's own by `lookup_var()`), and `emit_name()` writes either shape.
+A redeclaration is accepted when type and linkage agree. Only a plain
+`int`/`char`/`long` name is supported; a file-scope pointer, array or
+initializer (`10_integ/01_wordcount`'s `char text[] = "..."`) and a
+`static` function are refused.
+
+`mutos_c1` reads such a `NAME` as a memory operand named by its symbol:
+the `VK_STATIC` kind a local `static` already used, with a new `Val.sym`
+(the text pooled by `intern_name()`, so a `Val` stays freely copyable)
+in place of the label number - so a global goes through exactly the
+code paths a local static does (`mov di,_counter` / `inc di` / `mov
+_counter,di`, as `mov di,L4` / `inc di` / `mov L4,di`), and `&x` is the
+immediate `#_counter` (`mov di,#_proc` in the non-optimized kernel
+output). `CSPACE` renders `.comm\t_counter,2` - no trailing `.`, and
+decimal, as the kernel's `.comm\t_msgbuf,1024` shows - and `NLABEL` a
+`_hidden:` label glued onto the `.blkb` line like an `L<n>:`. What a
+local static cannot do, a global cannot either: `++`/`--` and compound
+assignment on it, and a `long` one (the long handlers take a
+bp-relative operand only), are refused. A static or global right-hand
+side of `x = y;` is now refused like a local one - for two local
+statics `c1` used to write `mov L4,L5`, which `mutos_as` rejects.
+
+A compound statement nested in a function body has a scope of its own
+(`parse_nested_block()`, v7's `statement()` LBRACE case with
+`blockhead()`/`blkend()`): its declarations may shadow an outer name
+and vanish at the `}`; their slots continue below the enclosing
+block's (`02_shadow`: outer `x` at -6, inner `x` at -8, `SETSTK 8`) and
+the allocation point goes back at the `}`, so sibling blocks share
+slots (v7's `sauto = autolen; ... autolen = sauto;` - the corpus has no
+sibling blocks with declarations, and the kernel corpus no mid-body
+declaration at all, so this part is v7's algorithm, not golden-
+confirmed); a `register` local claimed inside gives its slot back with
+a `SETREG` at the `}`. The function body itself shares the parameters'
+scope, as in v7. Before, a nested declaration went into the function's
+single flat scope: shadowing was refused ("'x' redeclared"), and each
+sibling block got fresh slots (a larger frame than the real compiler's).
 
 ## `SETSTK` / local-frame handling
 
@@ -1162,15 +1221,17 @@ first (0/1 in DI, `push di`).
 5. **`char` element access and `09_abiprobe/frame*`: done** (see
    "Current scope"); with call arguments right to left and the degree
    swap of a comparison's operands, `10_integ/04_strrev` and `02_bubsort`
-   pass too. Next: `07_scope` (file-scope variables - `int counter;`, a
-   file-scope `static`, `extern` before the definition - and a nested
-   block's own declarations shadowing an outer one), then the further
-   `char` shapes whose evidence `docs/DEVLOG.md`'s `char` section records
-   - a char compared with a constant (`cmpb`, `10_integ/01_wordcount`), a
-   char with one int operand (computed in AX), char call arguments and
-   conditions - which with a global char-array initializer and `else if`
-   bring `10_integ/01_wordcount`. The 81..127-byte `chkstk` gap stays
-   "not yet supported" until a golden lands in it.
+   pass too. **`07_scope`: done** (file-scope variables and block scope -
+   see "Current scope"). Next: the further `char` shapes whose evidence
+   `docs/DEVLOG.md`'s `char` section records - a char compared with a
+   constant (`cmpb`, `10_integ/01_wordcount`), a char with one int
+   operand (computed in AX), char call arguments and conditions - which
+   with a file-scope char array and its initializer (`SYMDEF`, `DATA`,
+   `NLABEL` and `BDATA` runs in temp1 - `01_wordcount.1.golden` starts
+   with them, `.s.golden` has `_text:.byte ...`; the elements are
+   addressed `_text(bx)`/`#_text(bx)`) and `else if` bring
+   `10_integ/01_wordcount`. The 81..127-byte `chkstk` gap stays "not yet
+   supported" until a golden lands in it.
 6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
@@ -1186,9 +1247,12 @@ first (0/1 in DI, `push di`).
 - `c0_lex.h`/`c0_lex.c` - tokenizer.
 - `c0_diag.h`/`c0_diag.c` - error/warning reporting.
 - `c0_outcode.h`/`c0_outcode.c` - the `temp1`/`temp2` stream writer.
-- `c0_sym.h`/`c0_sym.c` - local (`AUTO`) symbol table: name → {storage
-  class, type, `bp`-relative offset}, with `MCC_NCPS`-truncated name
-  comparison and `v7/cc/c03.c`-matching offset assignment.
+- `c0_sym.h`/`c0_sym.c` - symbol tables: a function's (parameters and
+  locals, name → {storage class, type, `bp`-relative offset / label /
+  register slot}, block-structured - `symtab_block_enter()`/
+  `symtab_block_exit()`) and the file's (file-scope variables,
+  `SC_EXTERN`), with `MCC_NCPS`-truncated name comparison and
+  `v7/cc/c03.c`-matching offset assignment.
 - `c0_parser.h`/`c0_parser.c` - front-end driver (current grammar
   scope above).
 - `c0_main.c` - CLI entry point (`mutos_c0 source temp1 temp2 [-P]`,
@@ -1219,9 +1283,11 @@ runs it through the real pipeline, and executes the output with
 `x86sim.py`, comparing every variable at every statement boundary; with
 `--baseline` it also classifies every difference against an earlier
 build. It found the constant-left-operand bug and two `mutos_c1`
-wrong-code bugs (all three fixed) - see its README. The generator
-produces neither chars nor calls; `x86sim.py` itself executes both (byte
-moves, calls of functions in the same file, `chkstk`), so hand-written
+wrong-code bugs (all three fixed) - see its README. With `--scope` it
+also makes some variables file-scope ones and wraps statements in
+blocks that shadow them. The generator produces neither chars nor
+calls; `x86sim.py` itself executes both (byte moves, calls of functions
+in the same file, `chkstk`) and fixed-address variables, so hand-written
 programs of that kind can be checked the same way.
 
 ## Tooling

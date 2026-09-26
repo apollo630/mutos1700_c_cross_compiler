@@ -4,7 +4,7 @@
  * Current opcode coverage (matches mutos_c0's current grammar
  * coverage - see c0_parser.c and src/mutos_cc/README.md): SYMDEF,
  * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, RNAME, BSS,
- * SSPACE, SNAME, NAME, CON, LCON, LTOI, ITOC, CTOL, ITOL, PLUS, MINUS,
+ * SSPACE, SNAME, CSPACE, NLABEL, NAME, CON, LCON, LTOI, ITOC, CTOL, ITOL, PLUS, MINUS,
  * TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT, RSHIFT, AMPER,
  * ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, LESS, LESSEQ, GREAT,
  * GREATEQ, EQUAL, NEQUAL, CBRANCH, LOGAND, LOGOR, EXCLA, COLON, QUEST,
@@ -266,19 +266,27 @@ typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK
  * (bp)", the memory operand used directly with no intervening move
  * at all) treats VK_MEM_CVT exactly like VK_MEM, needing no special
  * handling of its own. */
-/* VK_STATIC - a local STATIC variable's own dedicated-label memory
- * reference (`offset` holds the internal LABEL number, not a
- * bp-relative stack offset - see OP_NAME's SC_STATIC case below and
- * c0_sym.h's symtab_declare_static() comment). Renders as a bare
- * "L<n>" operand (render_operand()) - confirmed against
- * 04_funcs/05_staticvar.s.golden's "mov di,L4"/"mov L4,di": a
- * different SOURCE-TEXT shape from VK_MEM's "*N.(bp)" but otherwise
- * usable identically (both are just an addressable memory operand -
- * so unlike VK_MEM_CVT, no OP_ASSIGN special-casing is needed: an
- * ordinary MOV between two real memory operands is still illegal
- * either way, but that restriction is orthogonal to which of VK_MEM/
- * VK_STATIC is involved and is not exercised by any golden for
- * VK_STATIC specifically). */
+/* VK_STATIC - a variable at a fixed, link-time address: a local
+ * STATIC variable's own dedicated-label memory reference (`offset`
+ * holds the internal LABEL number, not a bp-relative stack offset -
+ * see OP_NAME's SC_STATIC case below and c0_sym.h's
+ * symtab_declare_static() comment), or - `sym` set - a FILE-SCOPE
+ * variable, named by its symbol (OP_NAME's SC_EXTERN case for a non-
+ * function type). Renders as a bare "L<n>" or "_name" operand
+ * (render_operand()) - confirmed against 04_funcs/05_staticvar.
+ * s.golden's "mov di,L4"/"mov L4,di" and 07_scope/01_globstat.s.
+ * golden's "mov di,_counter"/"mov _counter,di" (03_externdef: "mov
+ * di,_total"): a different SOURCE-TEXT shape from VK_MEM's "*N.(bp)"
+ * but otherwise usable identically - both are just an addressable
+ * memory operand, and every golden shows the file-scope variable in
+ * exactly the instruction shapes the local one gets ("counter =
+ * counter + 1;" -> "mov di,_counter" / "inc di" / "mov _counter,di",
+ * as "n = n + 1;" -> "mov di,L4" / "inc di" / "mov L4,di"). The real
+ * non-optimized kernel output has the same operand in further shapes
+ * ("cmp _amxdebu,*2.", "mov dx,_namx", "mov _cfreeli,dx" in tests/
+ * mutos_as/kernel_nonopt/). A memory-to-memory MOV is illegal for it
+ * as for VK_MEM, so OP_ASSIGN refuses one as a right-hand side unless
+ * the target is a register (see there). */
 /* VK_FUNCADDR - "the address of a function", OP_AMPER applied to a
  * VK_FUNC operand (a bare function name used as a value - see
  * c0_parser.c's parse_primary() T_IDENT fallback). `reg` holds the
@@ -366,6 +374,7 @@ typedef struct {
     long    imm;
     int     offset;
     const char *reg;
+    const char *sym;  /* see Val's own field of the same name */
     int     postfix;  /* see Val's own field of the same name */
 } SimpleVal;
 
@@ -381,6 +390,14 @@ typedef struct {
     const char *reg;  /* VK_REG: a static string ("ax", "di", "dx");
                         * VK_FUNC: the callee's own malloc'd symbol
                         * text (owned - see OP_NAME's SC_EXTERN case) */
+    const char *sym;  /* VK_STATIC/VK_STATICADDR: a file-scope
+                        * variable's symbol ("_counter") - NULL for a
+                        * label-numbered local static or string
+                        * literal (`offset` is the label then). Never
+                        * owned by the Val: the text lives in
+                        * GenState's name pool (intern_name()) until
+                        * c1_generate() returns, so a Val can be copied
+                        * freely. */
     ArgList *arglist; /* VK_ARGLIST only - see its own typedef comment
                         * above (owned - see ArgList's own comment
                         * just below Val) */
@@ -541,6 +558,12 @@ typedef struct {
     Seg  seg[PLAN_MAX];
 } Plan;
 
+/* One pooled symbol name - see intern_name(). */
+struct NameNode {
+    struct NameNode *next;
+    char            *name;   /* owned */
+};
+
 typedef struct {
     FILE *out;                /* the .s output stream - see the emission
                                 * layer (put_insn() and friends) */
@@ -625,6 +648,8 @@ typedef struct {
     Plan plan;                 /* the current expression's evaluation-
                                  * order plan, while one is active - see
                                  * the "Evaluation order" section */
+    struct NameNode *names;    /* file-scope symbol names referenced so
+                                 * far - see intern_name() */
 } GenState;
 
 _Noreturn static void gen_fatal(const char *fmt, ...)
@@ -636,6 +661,39 @@ _Noreturn static void gen_fatal(const char *fmt, ...)
     va_end(ap);
     fprintf(stderr, "\n");
     exit(1);
+}
+
+/* Takes over `name` (malloc'd - c1_read_sym()'s result) and returns a
+ * pooled copy that stays valid until c1_generate() returns: a file-
+ * scope variable's VK_STATIC Val (see Val's `sym`) is copied onto the
+ * value stack, into VK_COND/VK_CHARX sub-operands, plan steps, ..., so
+ * it must not own its text the way VK_FUNC does. A name seen before is
+ * shared (the pool stays as small as the number of distinct globals a
+ * file references). */
+static const char *intern_name(GenState *g, char *name)
+{
+    for (struct NameNode *n = g->names; n; n = n->next)
+        if (strcmp(n->name, name) == 0) {
+            free(name);
+            return n->name;
+        }
+    struct NameNode *n = malloc(sizeof *n);
+    if (!n)
+        gen_fatal("out of memory");
+    n->name = name;
+    n->next = g->names;
+    g->names = n;
+    return n->name;
+}
+
+static void free_names(GenState *g)
+{
+    while (g->names) {
+        struct NameNode *n = g->names;
+        g->names = n->next;
+        free(n->name);
+        free(n);
+    }
 }
 
 static void push_val(GenState *g, Val v)
@@ -801,6 +859,7 @@ static SimpleVal simple_of(Val v)
     s.imm = v.imm;
     s.offset = v.offset;
     s.reg = v.reg;
+    s.sym = v.sym;
     s.postfix = v.postfix;
     return s;
 }
@@ -814,6 +873,7 @@ static Val val_from_simple(SimpleVal s)
     v.imm = s.imm;
     v.offset = s.offset;
     v.reg = s.reg;
+    v.sym = s.sym;
     v.postfix = s.postfix;
     return v;
 }
@@ -870,9 +930,22 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_MEM_CVT:
         snprintf(buf, n, "%c%d.(bp)", disp_marker(v.offset), v.offset);
         break;
-    case VK_STATIC: snprintf(buf, n, "L%d", v.offset); break;
+    case VK_STATIC:
+        if (v.sym)
+            snprintf(buf, n, "%s", v.sym);
+        else
+            snprintf(buf, n, "L%d", v.offset);
+        break;
     case VK_FUNCADDR: snprintf(buf, n, "#%s", v.reg); break;
-    case VK_STATICADDR: snprintf(buf, n, "#L%d", v.offset); break;
+    case VK_STATICADDR:
+        /* A file-scope variable's address: "#_proc" - "mov di,#_proc"
+         * in tests/mutos_as/kernel_nonopt/ (no corpus golden takes
+         * one's address). */
+        if (v.sym)
+            snprintf(buf, n, "#%s", v.sym);
+        else
+            snprintf(buf, n, "#L%d", v.offset);
+        break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
     case VK_IND:
         /* A displacement, when there is one, takes its marker like
@@ -1171,6 +1244,7 @@ static const InsnFx INSN_FX[] = {
     { "beq",  0, 0 }, { "bne", 0, 0 }, { "blos", 0, 0 }, { "bhi", 0, 0 },
     { ".globl", 0, 0 }, { ".text", 0, 0 }, { ".even", 0, 0 },
     { ".bss",   0, 0 }, { ".data", 0, 0 }, { ".blkb", 0, 0 },
+    { ".comm",  0, 0 },
 };
 
 static unsigned insn_writes(const Insn *in)
@@ -1280,6 +1354,14 @@ static void put_seq(GenState *g, const Insn *seq)
 static void put_label(GenState *g, int lab)
 {
     fprintf(g->out, "L%d:", lab);
+}
+/* "_name:" - a named data label (OP_NLABEL), glued onto what follows
+ * like put_label()'s: 07_scope/01_globstat.s.golden's "_hidden:.blkb
+ * 2.". A function's own entry label (OP_RLABEL) is a line of its own
+ * instead ("_bump:" - put_line()). */
+static void put_name_label(GenState *g, const char *name)
+{
+    fprintf(g->out, "%s:", name);
 }
 /* A free-form, newline-terminated line: "|"-comments ("| _a=-6.",
  * "|NREG 3", "|RTYP 0"), a label definition ("_main:"), or a jump-
@@ -3501,6 +3583,37 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_CSPACE: {
+            /* A file-scope variable with no storage class ("int
+             * counter;" - v7/cc's DEFXTRN): a common block of `size`
+             * bytes - confirmed against 07_scope/01_globstat.s.golden's
+             * ".comm\t_counter,2" and 03_externdef.s.golden's
+             * ".comm\t_total,2" (between two functions, where the
+             * declaration is). The size has NO trailing "." - unlike
+             * .blkb's - and is decimal: the kernel sources' own
+             * ".comm\t_msgbuf,1024" / ".comm\t_dk_time,128" (tests/
+             * mutos_as/kernel_nonopt/'s .s files) rule out v7's
+             * octal. */
+            char *name = c1_read_sym(temp1, "temp1");
+            int size = c1_read_num(temp1, "temp1");
+            ins2(&g, ".comm", o_sym(name), o_fmt("%d", size));
+            free(name);
+            break;
+        }
+
+        case OP_NLABEL: {
+            /* A named data label - a file-scope 'static' variable's
+             * BSS block ("static int hidden;": BSS, NLABEL "_hidden",
+             * SSPACE 2 -> ".bss" / "_hidden:.blkb\t2." - 07_scope/
+             * 01_globstat.s.golden). Glued onto the .blkb line like an
+             * "L<n>:" label (put_name_label()); no ".globl" - the
+             * variable is internal to the file. */
+            char *name = c1_read_sym(temp1, "temp1");
+            put_name_label(&g, name);
+            free(name);
+            break;
+        }
+
         case OP_SNAME: {
             char *name = c1_read_sym(temp1, "temp1");
             int label = c1_read_num(temp1, "temp1");
@@ -3520,6 +3633,29 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_NAME: {
             int hclass = c1_read_num(temp1, "temp1");
             int type   = c1_read_num(temp1, "temp1");
+            if (hclass == SC_EXTERN && !ty_is_func(type)) {
+                /* A file-scope variable ("int counter;", "static int
+                 * hidden;", "extern int total;" - every file-scope name
+                 * is EXTERN on the wire, whatever its storage class):
+                 * a memory operand named by its symbol, VK_STATIC with
+                 * `sym` set - see VK_STATIC's comment. Confirmed for
+                 * int against 07_scope/01_globstat.s.golden and
+                 * 03_externdef.s.golden; a char one is a byte operand
+                 * like a char local ("movb dx,#_amxcmd(bx)" - a char
+                 * array element - in kernel_nonopt/amx.s), and a long
+                 * one is refused by every long consumer (they take a
+                 * bp-relative VK_MEM only, as for a local static). */
+                if (!ty_is_word(type) && type != TY_CHAR && type != TY_LONG)
+                    gen_fatal("NAME of type %d not yet supported (only "
+                              "int/char/long/pointer file-scope variables "
+                              "are covered so far)", type);
+                Val gv = {0};
+                gv.kind = VK_STATIC;
+                gv.sym = intern_name(&g, c1_read_sym(temp1, "temp1"));
+                gv.bytev = (type == TY_CHAR); /* see Val's `bytev` */
+                push_val(&g, gv);
+                break;
+            }
             if (hclass == SC_EXTERN) {
                 /* A called function's own name - c0_outcode's 'S'
                  * shape (a symbol name), not the numeric bp-relative
@@ -3534,8 +3670,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * *strcpy();" - type 49, "function returning pointer
                  * to char"); the result's own type is checked again by
                  * OP_CALL. */
-                if (!ty_is_func(type) ||
-                    !(ty_is_word(ty_decref(type)) || ty_decref(type) == TY_LONG))
+                if (!(ty_is_word(ty_decref(type)) || ty_decref(type) == TY_LONG))
                     gen_fatal("NAME with storage class SC_EXTERN and "
                               "type %d not yet supported (only a called "
                               "function returning an int, a long or a "
@@ -3595,8 +3730,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (hclass != SC_AUTO)
                 gen_fatal("NAME with storage class %d not yet supported "
                           "(only AUTO locals, a local STATIC, a "
-                          "'register' local, and a called function's own "
-                          "SC_EXTERN name are covered so far)", hclass);
+                          "'register' local, a file-scope variable and a "
+                          "called function's own SC_EXTERN name are "
+                          "covered so far)", hclass);
             /* Any pointer is accepted (it is just a word in memory - see
              * ty_is_word()): an int/char/pointer array's own NAME carries
              * the element type (05_arrptr/05_arrofptr.1.golden's "char
@@ -4294,6 +4430,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 Val r = {0};
                 r.kind = VK_STATICADDR;
                 r.offset = v.offset;
+                r.sym = v.sym; /* a file-scope variable's "&x" */
                 push_val(&g, r);
                 break;
             }
@@ -5493,7 +5630,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 require_free(lhs, RB_DI, "ASSIGN");
                 load_into_di(&g, rhs);
                 rhs = val_reg("di");
-            } else if (rhs.kind == VK_MEM) {
+            } else if (rhs.kind == VK_MEM ||
+                       (rhs.kind == VK_STATIC && lhs.kind != VK_REG)) {
+                /* A static or file-scope right-hand side is the same
+                 * memory operand to MOV: "x = y;" with either one would
+                 * be "mov _x,_y" - which, for two local statics
+                 * ("mov L4,L5"), this used to emit silently (mutos_as
+                 * rejects it). Into a 'register' local it is a plain
+                 * "mov di,_y". */
                 gen_fatal("direct memory-to-memory assignment (\"x = y;\") "
                           "is not yet supported - 8086 MOV cannot take two "
                           "memory operands, and no golden reference "
@@ -5759,5 +5903,6 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
      * string file follows. */
     ins0(&g, ".data");
     gen_strings(&g, temp2);
+    free_names(&g);
     return 0;
 }

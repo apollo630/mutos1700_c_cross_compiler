@@ -226,7 +226,7 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 46/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 49/62 of the full corpus: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -241,7 +241,9 @@ plus all 7 of
 two-dimensional array subscripting, multi-level pointers, explicit `&`/`*`,
 pointer/array-parameter equivalence, and string literals), plus all 7 of
 `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c` large-frame
-probes - `char` element access), plus `10_integ/02_bubsort.c`,
+probes - `char` element access), plus all 3 of `07_scope`:
+`01_globstat.c`, `02_shadow.c` and `03_externdef.c` (file-scope variables
+and block scope), plus `10_integ/02_bubsort.c`,
 `04_strrev.c` and `05_matmul.c` (evaluation-order codegen: a right
 operand computed first and spilled, call arguments right to left, a
 relational's operands swapped by degree) - see the sections below. ABI/
@@ -252,9 +254,82 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c0`/`mutos_c1`: verified this session (`07_scope` - file-scope variables and block scope)
+
+**49/62 byte-exact end-to-end, up from 46 of 62** - all three `07_scope`
+files. Full derivation in `docs/DEVLOG.md`'s section of the same name.
+
+- **File-scope variables (`mutos_c0`).** A top-level declarator without
+  `(` is a variable, written where it is declared, as v7's `extdef()`
+  writes it: `int counter;` -> `CSPACE("_counter", 2)`, `static int
+  hidden;` -> `BSS`, `NLABEL("_hidden")`, `SSPACE(2)`, `extern int
+  total;` -> nothing (`03_externdef`'s later `int total;` writes its
+  `CSPACE` between `addto()` and `main()`). New MUTOS delta: no
+  `SYMDEF("")` in front of a static's `BSS`, which v7 writes
+  (`mutos_cc.h` delta 5). Every file-scope name is `SC_EXTERN` and is
+  referenced as `NAME(12, type, "_counter")` - a second, file-wide symbol
+  table searched after the function's own (`lookup_var()`), and
+  `emit_name()` for the two `NAME` shapes. A compatible redeclaration is
+  accepted; a file-scope pointer, array or initializer and a `static`
+  function are explicit refusals.
+- **Block scope (`mutos_c0`).** A nested compound statement has its own
+  scope (`parse_nested_block()`, v7's LBRACE case with `blockhead()`/
+  `blkend()`): a declaration may shadow an outer one (`02_shadow`: inner
+  `x` at -8 below the outer one at -6, `SETSTK 8`; before: "'x'
+  redeclared") and disappears at the `}`, where the allocation point and
+  a claimed `register` slot are restored. Slot reuse by sibling blocks
+  is v7's algorithm; no golden has one (before, each sibling block got
+  fresh slots - a larger frame than the real compiler's, e.g. `sub
+  sp,*14.` where v7 reserves 8 bytes).
+- **`mutos_c1`.** Such a `NAME` is a `VK_STATIC` memory operand named by
+  its symbol (new `Val.sym`, pooled by `intern_name()`), so a global
+  takes exactly the code paths a local static takes (`mov di,_counter` /
+  `inc di` / `mov _counter,di`), `&x` is `#_counter`; `CSPACE` renders
+  `.comm\t_counter,2` (decimal, no `.`), `NLABEL` a `_hidden:` label
+  glued onto the `.blkb` line. `++`/`--`, compound assignment and `long`
+  on a global are refused, as on a local static.
+- **Pre-existing silent wrong code fixed (refused):** `a = b;` with two
+  local statics was `mov L4,L5` (no 8086 instruction - `mutos_as`
+  rejects it), exit status 0. A static or global right-hand side into a
+  memory target is now refused like a local one.
+- **`dump_temp.py`** decodes `CSPACE` and `NLABEL` (both goldens used to
+  stop there); **`x86sim.py`** executes fixed-address variables (`.comm`,
+  `.blkb`), so 50 of the 62 goldens now run (up from 47), each returning
+  its C source's value; **`fuzz_c.py --scope`** generates file-scope
+  variables (plain, `static`, `extern` first) and shadowing blocks,
+  checking the globals at their addresses.
+
+**Verification (this session):**
+
+- `make test` (clean build): 49/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build: `mutos_c0` on the 62 golden `.i` files
+  changed exactly the three `07_scope` files to their `.1`/`.2` goldens,
+  plus partial output and messages of eleven files that still fail; the 46
+  passing files are unchanged. `mutos_c1` alone on the 62 golden pairs:
+  only `01_globstat`/`03_externdef` changed (refusal -> `.s.golden`) - 53
+  of 62 now match through `c1` alone.
+- `fuzz_c.py` against the previous build, 18000 programs (six seeds, two
+  scalar-only): all 18000 identical. With `--scope`, 18000 more (six
+  seeds, three scalar-only): 0 WRONG, 0 BAD, 9774 compiled and correct at
+  every statement (the previous build refused them all), the rest
+  refused as before. A mutation check (the last store into a global
+  dropped from the output) was caught by the checker in 355 of 408
+  programs - the other 53 dropped a store that changes nothing.
+- 22 hand-written programs (globals across functions, `static` and
+  `extern` forms, shadowing at two levels, a parameter shadowing a
+  global, `return` inside a block, sibling blocks, `&global` through a
+  pointer, a global loop counter, a `register` local next to globals,
+  char globals copied through a char local, recursion counting calls in
+  a global), executed with `x86sim.py` and compared with the host C
+  compiler: all 22 correct, all assemble with `mutos_as`; 11 refusal
+  cases behave as documented.
+- ASan/UBSan builds of both passes over the 62 golden inputs, the
+  hand-written programs and 3000 fuzzed programs: clean.
+
 ### `mutos_c0`/`mutos_c1`: verified this session (`char` element access - all six `09_abiprobe` frame files; call arguments right to left - `10_integ/04_strrev`; `10_integ/02_bubsort`)
 
-**46/62 byte-exact end-to-end, up from 38 of 62** - eight more corpus
+**46 of 62 byte-exact end-to-end, up from 38 of 62** - eight more corpus
 files: the six `09_abiprobe/0N_frameNNN` files, `10_integ/04_strrev` and
 `10_integ/02_bubsort`. Full derivation in `docs/DEVLOG.md`'s section of
 the same name.
@@ -326,7 +401,7 @@ unaffected (it already decoded `ITOC`/`CTOL` with either type).
 
 **Verification (this session):**
 
-- `make test` (clean build): 46/62 byte-exact, 0 genuine mismatches, zero
+- `make test` (clean build): 46 of 62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   changed exactly the eight files, each from a refusal to its golden
@@ -1913,23 +1988,27 @@ section; headline findings:
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
-`02_long`, `03_ctrlflow`, `04_funcs`, `05_arrptr` and `09_abiprobe` are
-all fully covered, and `10_integ` has three of its five files. The 16
-files left: `06_struct` (9), `07_scope` (3), `08_float` (2), `10_integ/
+`02_long`, `03_ctrlflow`, `04_funcs`, `05_arrptr`, `07_scope` and
+`09_abiprobe` are all fully covered, and `10_integ` has three of its five
+files. The 13 files left: `06_struct` (9), `08_float` (2), `10_integ/
 01_wordcount` and `03_linklist`. In order:
 
-1. **`07_scope`** - file-scope variables (`int counter;`, a file-scope
-   `static`, `extern int total;` declared before its definition) and a
-   nested block's own declarations shadowing an outer one (`02_shadow`,
-   refused today as "'x' redeclared"). The goldens show every shape
-   (`01_globstat.s.golden` addresses `_counter` directly).
-2. **More `char`**, each shape with its evidence already recorded in
+1. **More `char`**, each shape with its evidence already recorded in
    `docs/DEVLOG.md`'s `char` section: a char compared with a constant
    (`cmpb`, `10_integ/01_wordcount.s.golden` and v7 `optim()`'s CHAR
    retyping of the constant), a char with one int operand (computed in
    AX, `kernel_nonopt/amx.s`), char call arguments (`movb ax,...` /
-   `cbw` / `push ax`) and conditions; with a global char-array
-   initializer and `else if`, that is `10_integ/01_wordcount`.
+   `cbw` / `push ax`) and conditions; with a file-scope char array and
+   its initializer (`SYMDEF`/`DATA`/`NLABEL`/`BDATA` in temp1; `.s.golden`
+   `_text:.byte ...`, elements `_text(bx)`/`#_text(bx)`) and `else if`,
+   that is `10_integ/01_wordcount`.
+2. **Globals beyond `07_scope`**, each with kernel evidence (see
+   `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
+   assignment on a global or local static (`inc _amxslee`, `orb
+   _amxscd(bx),*4.` in `kernel_nonopt/amx.s`); `x = y;` between two
+   memory operands goes through a register (`mov dx,*-6.(bp)` / `mov
+   _cfreeli,dx` there - DX in a function with register variables, so
+   which register it is elsewhere still needs a golden).
 3. **Two shape follow-ups from the conditional-evaluation work** (both
    currently correct code, just not the real compiler's bytes; see
    `docs/DEVLOG.md`'s "Conditional evaluation" section): a call result

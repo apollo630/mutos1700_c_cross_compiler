@@ -75,7 +75,17 @@ is loaded into AL and sign-extended by
 .BR cbw ,
 stored from DL with
 .BR movb ,
-and read through a pointer variable via DX and BX). A constant shift count of 1 or
+and read through a pointer variable via DX and BX). A local
+.B static
+variable is addressed by its label, a file-scope one by its symbol
+.RB ( "mov di,_counter" );
+file-scope storage is reserved with
+.B .comm
+or, for a
+.B static
+one, a labelled
+.B .bss
+block. A constant shift count of 1 or
 2 is a repeated single-bit shift, a larger one is loaded into CX and
 shifted by CL. A call's arguments are evaluated from the last to the
 first, each pushed as soon as it is computed, as the real compiler does.

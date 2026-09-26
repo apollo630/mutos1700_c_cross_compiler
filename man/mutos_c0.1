@@ -62,7 +62,23 @@ and
 .B static
 and
 .B register
-locals;
+locals; a nested block may declare its own locals, which shadow an
+outer declaration of the same name until the block's closing brace;
+.IP \(bu 2
+file-scope
+.BR int ,
+.B char
+and
+.B long
+variables without initializers \(en plain (a common block),
+.B static
+(a block of the file's own) or
+.B extern
+(a declaration only), a compatible redeclaration included
+.RB ( mutos_c1 (1)
+does not yet generate code that uses a
+.B long
+one);
 .IP \(bu 2
 assignment statements (\(oq=\(cq and the ten compound-assignment
 operators, including subscripted and dereferenced targets),
@@ -103,8 +119,10 @@ converts its value to the target's type.
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
-constant folding. Not yet supported, among others: external
-(file-scope) variables, structures, unions, enumerations,
+constant folding. Not yet supported, among others: file-scope
+pointers, arrays and initializers,
+.B static
+functions, structures, unions, enumerations,
 .BR typedef ,
 floating point, arrays of three or more dimensions, pointer
 subtraction, an ordered comparison of pointers, and a
