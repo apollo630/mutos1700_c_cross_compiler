@@ -78,7 +78,12 @@ variables without initializers \(en plain (a common block),
 .RB ( mutos_c1 (1)
 does not yet generate code that uses a
 .B long
-one);
+one), and a
+.B char
+array with a string-literal initializer and no size,
+.BR "char text[] = \(dq...\(dq;" ,
+plain or
+.BR static ;
 .IP \(bu 2
 assignment statements (\(oq=\(cq and the ten compound-assignment
 operators, including subscripted and dereferenced targets),
@@ -101,7 +106,8 @@ unary
 .B &
 (of a variable or of an array element) and
 .BR * ,
-array subscripts, string literals, direct and indirect function calls,
+array subscripts, string literals, character constants, direct and
+indirect function calls,
 a narrow set of casts, and
 .B sizeof
 (folded at compile time);
@@ -115,12 +121,17 @@ operator is widened to
 .BR int ,
 and an assignment or
 .B return
-converts its value to the target's type.
+converts its value to the target's type \(en except that a
+.B char
+variable, element or dereference compared with a constant from 0 to
+127 is not widened: the constant is typed
+.B char
+instead.
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
 constant folding. Not yet supported, among others: file-scope
-pointers, arrays and initializers,
+pointers, other arrays and other initializers,
 .B static
 functions, structures, unions, enumerations,
 .BR typedef ,
@@ -145,7 +156,11 @@ by the fixed sentinel byte 0xFE), a little-endian 16-bit data word, or
 a NUL-terminated symbol name.
 .I temp2
 receives only string-literal data: one labelled block of byte values
-per literal, then its own terminating marker. This exactly mirrors the real MUTOS 1700
+per literal, then its own terminating marker (a
+.B char
+array's initializer is written into
+.I temp1
+instead, unlabelled, where the declaration is). This exactly mirrors the real MUTOS 1700
 compiler's own
 .IR /lib/c0 ,
 which

@@ -4185,7 +4185,7 @@ a char NAME, that is `cmpb`. `kernel_nonopt/lp_AC.s` has `cmpb *-8.(bp),
 
 ### `07_scope` - file-scope variables and block scope (`mutos_c0`/`mutos_c1` extended and verified this session)
 
-All three `07_scope` files byte-exact end-to-end (49/62, up from 46 of
+All three `07_scope` files byte-exact end-to-end (49 of 62, up from 46 of
 62). The shapes were read off the goldens first (`dump_temp.py` stopped at
 the first new opcode, `CSPACE`, so `01_globstat.1.golden` was decoded by
 hand with `od`), then matched against `v7/cc/c02.c`'s `extdef()` and
@@ -4351,7 +4351,7 @@ all (it is out of scope there).
 
 **Verification.**
 
-- `make test` (clean build): 49/62 byte-exact, 0 genuine mismatches,
+- `make test` (clean build): 49 of 62 byte-exact, 0 genuine mismatches,
   zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   produced the `.1`/`.2` goldens for the three `07_scope` files (before:
@@ -4396,6 +4396,220 @@ all (it is out of scope there).
 - ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden inputs,
   the hand-written programs and 3000 fuzzed programs (half `--scope`):
   clean.
+
+### `10_integ/01_wordcount` - a file-scope char array, character constants, a char compared with a constant (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+`10_integ/01_wordcount` byte-exact end-to-end (50/62, up from 49 of 62) -
+the last `10_integ` file that needs no structs. `dump_temp.py` stopped at
+`DATA`, so `01_wordcount.1.golden` was decoded with a scratch copy that
+knew `DATA` has no arguments (then added for real, see Tooling); the
+`.s.golden` and the kernel corpus settled the codegen. Three front-end
+pieces, one back-end piece, and a pre-existing bug.
+
+**1. The wire format of `char text[] = "...";`.** The golden starts
+
+```
+207 254 '_text' 0             SYMDEF "_text"
+203 254                       DATA
+113 254 '_text' 0             NLABEL "_text"
+200 254  1 0 116 0 ... 0 0    BDATA  14 bytes "the quick brow"
+200 254  ...           0 0    BDATA  15 bytes "n fox\njumps ove"
+200 254  ... 1 0 0 0   0 0    BDATA  16 bytes "r the lazy dog\n" + NUL
+210 254                       EVEN
+207 254 '_main' 0 ...         SYMDEF "_main" - main() follows
+```
+
+which is v7 `c02.c` `extdef()` for a declarator followed by `=`:
+`setinit(ds); if (sclass==EXTERN) outcode("BS", SYMDEF, ds->name);
+outcode("BBS", DATA, NLABEL, ds->name); if (cinit(ds, 1, sclass) & ALIGN)
+outcode("B", EVEN);` - and `cinit()`'s string case, `putstr(0, flex ?
+10000 : nel)`: the label-less `putstr()` writes to the current output,
+temp1 (only a labelled string sets `strflg`). `cinit()` returns the
+array's size, the string's 44 characters plus the NUL - odd, hence
+`EVEN`. The runs are v7's `if (nchstr%15 == 0) outcode("0B", BDATA);`:
+before the 15th and the 30th byte a new run starts, and the NUL is
+appended without that check - 14 + 15 + (15 + NUL). Until now this split
+was taken from v7's source and confirmed only indirectly (the `.byte`
+line layout of the kernel corpus's 208 literals); this is the first
+golden with a string of 15 or more characters. No MUTOS delta here, unlike
+the static `BSS` case (`mutos_cc.h` delta 5): for `static` v7 writes no
+`SYMDEF` at all, not an empty one. `mutos_c0`'s `putstr()` now takes the
+output stream and returns the byte count, and `parse_global_chararray()`
+writes the above. Only the flexible `[]` form with a string is accepted:
+a sized array would need `SSPACE` padding, a brace list `INIT` per
+element (the kernel's `_partab:.byte /1` / `.byte /ff81` - one value per
+line, sign-extended - is that path, a different format), and neither has
+a golden.
+
+**The first attempt was off by one label.** With the data in place,
+`main()`'s labels came out as `BRANCH 1` / `LABEL 2`, the golden's are
+`BRANCH 2` / `LABEL 3`. Nothing in the golden's temp1 uses label 1: v7's
+lexer takes a label number for every string token as it reads it (`c00.c`
+`symbol()`: `cval = isn++` in the string case), whether the string then
+becomes a literal (`putstr(cval, 0)`) or an initializer (`putstr(0,
+...)`, which never writes it). `parse_primary()` already noted that v7
+numbers a literal at lex time; the initializer now takes its number too.
+
+**2. Character constants** were not parsed at all - `'\n'` reached
+`parse_primary()` as a `T_CCON` token and stopped with "expected an
+expression". v7's `getcc()` returns `CON` with the character's value -
+an int constant like any other, sign-extended from a byte for a
+one-character constant (`realc = cval; cval = realc;`, so `'\377'` is -1;
+no golden has one). The lexer reads one character or escape; v7 packs up
+to two into a word, which stays "Malformed character constant".
+
+**3. A char compared with a constant.** The loop condition and both
+`if`s:
+
+```
+text[i] != '\0'    NAME(12,1,_text) AMPER(9) NAME(-6) CON(1) ITOP(9) PLUS(9) STAR(1)  CON(1, 0)   NEQUAL(0)
+text[i] == '\n'    ... STAR(1)  CON(1, 10)  EQUAL(0)
+text[i] == ' '     ... STAR(1)  CON(1, 32)  EQUAL(0)
+```
+
+No `ITOC` on the char, and the constant typed char (1) - against `buf[0]
++ buf[79]`'s `ITOC(0)` on both operands. This is v7 `c12.c` `optim()`'s
+
+```c
+if (tree->tr1->type==CHAR && tree->tr2->op==CON
+ && (dcalc(tree->tr1, 0) <= 12 || tree->tr1->op==STAR)
+ && tree->tr2->value <= 127 && tree->tr2->value >= 0)
+        tree->tr2->type = CHAR;
+```
+
+for any relational, which the MUTOS front end - converting chars in c0,
+unlike v7 - does itself. `mutos_c0`'s `char_compare_rhs()` (shared by
+`parse_relational()` and `parse_equality()`): when the left operand is a
+char object as written (`ExprVal.char_obj` - a char variable's NAME, a
+char element's or dereference's STAR, nothing on top), the right operand
+is parsed into a buffer (`capture_begin()`); a constant in 0..127 has
+written nothing, so `CON(TY_CHAR, v)` and the node follow directly;
+anything else gets the left operand's `ITOC` first and then the buffered
+bytes - the previous output, byte for byte. Only a STAR operand has a
+golden; a variable is taken the same way (`optim()`'s rule does not
+distinguish them in c0's terms, and its code is in the kernel - see
+below). A constant on the left, a negative or larger constant, and a
+non-constant keep the promotion (and `mutos_c1` keeps refusing them: v7's
+own order is swap first, then retype, which no golden shows for MUTOS).
+
+**4. `mutos_c1`: data, the element, the byte compare.** The `.s.golden`:
+
+```
+.globl _text / .data / _text:.byte /74,/68,/65,/20,/71,/75,/69,/63,/6b
+.byte /20,/62,/72,/6f,/77 / .byte /6e,... / ... / .even
+...
+L5:mov dx,*-6.(bp) / mov bx,dx / movb dx,#_text(bx) / orb dx,dx / beq L6    text[i] != '\0'
+mov dx,*-6.(bp) / mov bx,dx / cmpb _text(bx),*10. / bne L8                 text[i] == '\n'
+mov dx,*-6.(bp) / mov bx,dx / cmpb _text(bx),*32. / beq L10000             text[i] == ' ' ||
+mov dx,*-6.(bp) / mov bx,dx / cmpb _text(bx),*10. / bne L9                 text[i] == '\n'
+L10000:mov *-14.(bp),*0. / jmp L10 / L9:cmp *-14.(bp),*0 / bne L11 / ...   ... } else if (inword == 0)
+```
+
+- `DATA` is `.data`; a temp1 `BDATA` run renders exactly like a string
+  literal's (`put_bdata_run()`, factored out of `gen_strings()`); `NLABEL`
+  glues `_text:` onto the first `.byte` line as it did onto `.blkb`.
+- The element. `&text` is a link-time constant (`VK_STATICADDR` with the
+  symbol - what `&global` already was), and the `ITOP` by 1 leaves the
+  index variable itself (v7 drops the multiplication), so the pointer
+  `PLUS` has nothing to compute: it becomes `VK_SYMIDX` (symbol + index
+  operand) when a `STAR` follows, and the `STAR` does v7's `F*` for
+  `*(&text + i)` - the index into DX, the byte working register, then into
+  BX, since DX cannot address - `mov dx,*-6.(bp)` / `mov bx,dx` - and the
+  element is `VK_IND` BX with the symbol as displacement. The kernel does
+  the same for every char array element (`mov dx,*-10.(bp)` / `mov bx,dx`
+  / `movb dx,#_amxcmd(bx)` in `kernel_nonopt/amx.s`).
+- The two compare shapes are v7 `table.s`'s `cctab`: `%a,z` ([move1],
+  `tstB1 A1`) and `%nb*,ab` ([move6], `F*` / `cmpB1 #1(R),A2` on the
+  PDP-11) compare in memory - MUTOS `cmpb A1,A2`: `cmpb _text(bx),*10.`
+  here, `cmpb *-8.(bp),*97.` / `blt` for a char local in
+  `kernel_nonopt/lp_AC.s`, `cmpb *1.(si),*0`, `cmpb (di),*0` and `cmpb
+  111.+_u,*0` in `amx.s`/`sys1.s` for addressable operands against 0.
+  `%n*,z` ([move2], `F*` / `tstB1 #1(R)`) - an operand whose address had
+  to be computed, against 0 - is, with no memory TST on the 8086, the
+  byte loaded and tested: `movb dx,#_text(bx)` / `orb dx,dx`.
+  `emit_byte_cmp_and_branch()` implements these for a char in memory
+  (`VK_MEM`, `VK_STATIC`) and an element addressed through BX (the F*
+  cases); an element through DI/SI (a local char array's runtime
+  subscript, `lea di` / `add di`) has no golden in either shape and is
+  refused. `ORB` clears OF and sets SF/ZF from the byte, so every signed
+  branch reads it as a compare with 0.
+- The `#`. `_text(bx)` takes no marker as an instruction operand
+  (`cmpb`), and `#` when loaded into a register: v7's `#1` template
+  operand (`c10.c`'s `'#'` case prints the address's constant part - a
+  number, or the name of an `AMPER`) is what the real compiler marks, while
+  `A1` (`pname()`) prints a symbol displacement bare. The kernel is
+  consistent with that: `movb dx,#_amxcmd(bx)`, `mov dx,#_amxladd(bx)`,
+  `mov ax,#4.+_amxobuf(bx)` (loads), but `orb _amxscd(bx),*4.`, `mov
+  _amxaliv(bx),dx` (operands) and `movb ax,_amxscd(bx)` / `cbw` (MUTOS's
+  own char-to-int template, not `#1`); with no symbol and no offset there
+  is nothing to print (`movb dx,(bx)`, `04_strrev`; the kernel has no
+  `#(`). `o_load()` renders the `#1` form; it is used for the zero test
+  and for a char element loaded into DX by a char assignment (`movb
+  dx,#_amxi_bu(bx)` / `movb *-10.(bp),dx` in `amx.s`); `load_charx()`
+  keeps the bare form.
+- The char-typed constant is accepted by `OP_CON` only as a relational's
+  right operand (`scan_consumer()`), flagged `Val.charcon`; the relational
+  handler, seeing one on top, pops a byte left operand and builds a
+  `VK_COND` with `cond_is_byte` (the `SimpleVal` inside does not keep
+  `bytev`). As a condition, in `||`/`&&` (the plan's `SEG_BRANCH`) and as a
+  value (`materialize_cond()`) it goes through `emit_cmp_and_branch()`,
+  which hands it to the byte shapes. The rest of the function was already
+  supported - `else if`, `cmp *-14.(bp),*0`, the `||` jumping code
+  (`L10000`) that the conditional-evaluation work had reproduced with an
+  int version of this very condition.
+
+**Found on the way (pre-existing, `mutos_c1`): `!` of a `long`
+comparison.** `OP_EXCLA` built its inverted `VK_COND` field by field and
+left out `cond_is_long`, so `if (!(l > 0L))` became an ordinary 16-bit
+compare of the high word with an operand placeholder - `cmp *-8.(bp),
+<unmaterialized-long-const>` - exit status 0 (checked with the previous
+build). It now carries both width flags; `gen_long_cmp()` then refuses the
+inverted operator (`<=`), as it refuses every long comparison but the
+confirmed `l > 0L`.
+
+**Tooling.** `dump_temp.py` decodes `DATA` (no arguments); over all 124
+golden `.1`/`.2` files only `01_wordcount.1.golden`'s dump changed (it
+used to stop at `DATA`); four still stop, at `STRASG`, `FSEL`, `FCON` and
+`ITOF` (structs, floats). `x86sim.py` lays down `.byte` lines at fixed
+addresses (consecutive lines contiguous, `.even` aligning), executes
+`_text(bx)`/`#_text(bx)` operands, `cmpb` (both bytes sign-extended, which
+keeps signed and unsigned order) and `orb` (`orb dx,dx` sets the flags of
+`cmpb dl,0`): 51 of the 62 goldens run (up from 50), `01_wordcount`
+returning 55 = 44 characters + 9 words + 2 lines. Mutations of its output
+(a branch after a `cmpb` flipped, the `orb` test broken, the base
+register changed) are all caught.
+
+**Verification.**
+
+- `make test` (clean build): 50/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build: `mutos_c0` on the 62 golden `.i` files
+  changed only `01_wordcount` (a refusal -> its goldens; 50 of 62 match
+  through `c0` alone); `mutos_c1` alone on the 62 golden pairs changed
+  only `01_wordcount` (a refusal at opcode 203 -> its `.s.golden`; 54 of
+  62 match through `c1` alone).
+- `fuzz_c.py` against the previous build: 36000 programs (seeds 11-16 and,
+  with `--scope`, 21-26; five scalar-only): all byte-identical, 0 WRONG,
+  0 BAD. The generator makes no chars, so this checks that nothing else
+  moved.
+- 10 hand-written programs through `mutos_cpp`, both passes, `mutos_as`
+  and `x86sim.py`, against the host C compiler on `short`/`signed char`:
+  all six relational operators on a char local and a global against
+  constants and 0 (`cmpb *-12.(bp),*120.`, `cmpb _g,*113.`), vowel
+  counting with `||` and `&&` over a global array, `c = s[i]` (`movb
+  dx,#_s(bx)` / `movb *-6.(bp),dx`), `n = s[i]` (`movb ax,_s(bx)` / `cbw`),
+  `return s[i]`, a `static` array walked with `else if`, byte comparisons
+  as values and under `!`, three initializers of odd and even size plus
+  a string literal walked through a `char *` against 0 (`movb dx,(bx)` /
+  `orb dx,dx`), `*p == 'h'` (`cmpb (bx),*104.`), character constants
+  (`'\377'` = -1), and `01_wordcount` itself - all correct, all assemble.
+  17 refusal cases stop with their diagnostic (see `STATUS.md`). Two
+  first drafts of these programs hit older, unrelated refusals (`k = n;`
+  between memory operands, `(c == 'x') + (c == 'y')` - the same register
+  guard refusal as `(a == 1) + (a == 2)` with ints in the previous build)
+  and were rewritten around them.
+- ASan/UBSan builds of both passes over the 62 golden inputs, the
+  hand-written programs and 3000 fuzzed programs (half `--scope`): clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -4584,6 +4798,14 @@ These apply to *every* milestone, not just the one where they were first learned
   initial values: that turned 31 of 51 "both correct" differences into
   proven fixes. Conversely, a "regression" from right-by-luck to an
   honest refusal is not one - read each before believing it.
+- **A label number off by one is evidence of something that writes
+  nothing.** v7 hands out intermediate-code label numbers from one counter
+  (`isn`) at places that leave no trace in the stream - the lexer numbers
+  every string token, even a char array's initializer, which is written
+  without a label (`10_integ/01_wordcount`: `main()`'s labels start at 2).
+  When a stream matches a golden except for a constant shift of its
+  labels, look for such a consumer in v7's source before the one that
+  writes the label.
 - **A consistency check must agree with the moment it runs at.**
   `check_docs.py`'s Check 5 compared a "Last updated" stamp with the file's
   last commit in `git log`. Run from the pre-commit hook, that is the

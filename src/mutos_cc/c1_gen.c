@@ -4,7 +4,8 @@
  * Current opcode coverage (matches mutos_c0's current grammar
  * coverage - see c0_parser.c and src/mutos_cc/README.md): SYMDEF,
  * PROG, EVEN, RLABEL, SAVE, SETREG, BRANCH, LABEL, ANAME, RNAME, BSS,
- * SSPACE, SNAME, CSPACE, NLABEL, NAME, CON, LCON, LTOI, ITOC, CTOL, ITOL, PLUS, MINUS,
+ * SSPACE, SNAME, CSPACE, NLABEL, DATA, BDATA, NAME, CON, LCON, LTOI,
+ * ITOC, CTOL, ITOL, PLUS, MINUS,
  * TIMES, DIVIDE, MOD, AND, OR, EXOR, COMPL, LSHIFT, RSHIFT, AMPER,
  * ITOP, STAR, INCBEF, DECBEF, INCAFT, DECAFT, LESS, LESSEQ, GREAT,
  * GREATEQ, EQUAL, NEQUAL, CBRANCH, LOGAND, LOGOR, EXCLA, COLON, QUEST,
@@ -148,7 +149,23 @@ static int ty_is_word(int t) { return t == TY_INT || t == TY_UNSIGN || ty_is_ptr
 typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_LONG, VK_LCON,
                VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR,
                VK_STATICADDR, VK_REGOFF, VK_SCALED, VK_ROWADDR,
-               VK_STACKED, VK_CHARX, VK_IDXOFF } ValKind;
+               VK_STACKED, VK_CHARX, VK_IDXOFF, VK_SYMIDX } ValKind;
+/* VK_SYMIDX - "the file-scope char array `sym`, indexed by the plain
+ * int variable `cl` (VK_MEM or VK_STATIC)", NOT computed yet: OP_PLUS's
+ * result for "text[i]" (NAME(SC_EXTERN, TY_CHAR, "_text") AMPER(9)
+ * NAME(i) CON(1) ITOP(9) PLUS(9) - the ITOP by 1 leaves `i` itself),
+ * produced only when the OP_STAR that dereferences it comes next.
+ * OP_STAR then loads the index - the real compiler's F* for an
+ * operand "*(&text + i)": the index into DX, the byte working
+ * register, and on into BX, since DX can address nothing - and makes
+ * the element the byte operand "_text(bx)" (VK_IND, `sym` set):
+ * 10_integ/01_wordcount.s.golden's "mov dx,*-6.(bp)" / "mov bx,dx" /
+ * "cmpb _text(bx),*10.", and tests/mutos_as/kernel_nonopt/amx.s's
+ * "mov dx,*-10.(bp)" / "mov bx,dx" / "movb dx,#_amxcmd(bx)". The
+ * address is a link-time constant plus a register, which is why no
+ * "lea" or "add" appears at all - unlike a local array's "lea di,
+ * <base>" / "add di,<index>". Only OP_STAR accepts one (pop_val()
+ * refuses it). */
 /* VK_IDXOFF - an int subscript "var + N" (`cl` the variable - VK_MEM or
  * VK_STATIC - `imm` the constant N), NOT computed: produced by OP_PLUS
  * only when an OP_ITOP scales it next, because the real compiler never
@@ -420,6 +437,11 @@ typedef struct {
      * "if (c > 0L)" - gen_cond_branch()); every other consumer
      * (materialize(), via emit_cmp_and_branch()) gen_fatal()s on it
      * rather than guessing a shape no golden confirms. */
+    int       cond_is_byte; /* VK_COND only: a char in memory (cl - a
+     * `bytev` operand, whose flag the SimpleVal does not keep) compared
+     * with a char-typed constant (cr - CON(TY_CHAR, 0..127), which
+     * mutos_c0 writes for "text[i] == '\n'"; see OP_CON): a BYTE
+     * compare, emit_cmp_and_branch()'s "cmpb" / "movb"+"orb" shapes. */
     int       clobbered; /* set by the register-occupancy guard (see
      * note_writes()) when an instruction overwrote a register this
      * still-pending value lives in; pop_val() then refuses to hand it
@@ -450,6 +472,9 @@ typedef struct {
      * NAME (OP_NAME's SC_REG case), not a computed value - v7's
      * degree() treats it as the NAME leaf it is, which decides a
      * relational's operand order (see OP_LESS...). */
+    int       charcon;   /* VK_IMM only: a CON typed TY_CHAR - the
+     * right operand of a char compared with a small constant (see
+     * cond_is_byte); OP_CON checks that it is consumed exactly there. */
 } Val;
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
@@ -775,6 +800,9 @@ static Val pop_val_ex(GenState *g, int allow)
     if (v.kind == VK_IDXOFF)
         gen_fatal("internal: an uncomputed \"var + N\" subscript reached a "
                   "consumer other than OP_ITOP");
+    if (v.kind == VK_SYMIDX)
+        gen_fatal("internal: an unloaded file-scope array element address "
+                  "reached a consumer other than OP_STAR");
     return v;
 }
 
@@ -948,6 +976,21 @@ static void render_operand(char *buf, size_t n, Val v)
         break;
     case VK_REG: snprintf(buf, n, "%s", v.reg); break;
     case VK_IND:
+        /* A file-scope array's element, "_text(bx)" (VK_SYMIDX): the
+         * symbol is the displacement, with no size marker - 10_integ/
+         * 01_wordcount.s.golden's "cmpb _text(bx),*10.", and "orb
+         * _amxscd(bx),*4.", "movb ax,_amxscd(bx)" / "cbw" in tests/
+         * mutos_as/kernel_nonopt/amx.s. This is v7's operand text
+         * (pname(), template "A1"); where the real compiler loads such
+         * an element into a register through its "#1" template instead,
+         * the symbol does take the '#' marker - see o_load(). */
+        if (v.sym) {
+            if (v.imm != 0)
+                gen_fatal("internal: a file-scope array element with a "
+                          "constant displacement as well");
+            snprintf(buf, n, "%s(%s)", v.sym, v.reg);
+            break;
+        }
         /* A displacement, when there is one, takes its marker like
          * every bp-relative displacement ("*2.(di)" - 09_abiprobe/
          * 01_argvmain.s.golden; the kernel_nonopt corpus has "*1.(si)",
@@ -969,6 +1012,7 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_STACKED: snprintf(buf, n, "<spilled-operand>"); break;
     case VK_CHARX: snprintf(buf, n, "<unloaded-char>"); break;
     case VK_IDXOFF: snprintf(buf, n, "<uncomputed-index>"); break;
+    case VK_SYMIDX: snprintf(buf, n, "<unloaded-array-element-address>"); break;
     }
 }
 
@@ -1075,6 +1119,26 @@ static Opnd o_val(Val v)
     Opnd o;
     render_operand(o.s, sizeof o.s, v);
     return o;
+}
+/* The source operand of an element LOADED into a register by v7's "F*"
+ * code template ("F*" computes the address, then "mov R,#1(R)" loads
+ * through it): o_val()'s text, except that a file-scope array element's
+ * symbol takes the '#' marker - v7/cc/c10.c's '#' case prints the
+ * address's constant part there, and the real compiler writes it with
+ * the word-size marker: 10_integ/01_wordcount.s.golden's "movb dx,
+ * #_text(bx)" (its "text[i] != '\0'"), and tests/mutos_as/kernel_nonopt/
+ * amx.s's "movb dx,#_amxi_bu(bx)" / "movb *-10.(bp),dx" (a char element
+ * stored into a char local) and "mov dx,#_amxladd(bx)". Without a symbol
+ * nothing differs: "movb dx,(bx)" (10_integ/04_strrev.s.golden) - the
+ * kernel output has no "#(". Where the element is instead an operand of
+ * the instruction itself ("cmpb _text(bx),*10.") or converted to an int
+ * ("movb ax,_amxscd(bx)" / "cbw"), o_val()'s plain "_text(bx)" is
+ * right. */
+static Opnd o_load(Val v)
+{
+    if (v.kind == VK_IND && v.sym && v.imm == 0)
+        return o_fmt("#%s(%s)", v.sym, v.reg);
+    return o_val(v);
 }
 /* An ordinary immediate ("*5.", "#240.") - render_operand()'s rule. */
 static Opnd o_imm(long v) { return o_val(val_imm(v)); }
@@ -1205,6 +1269,7 @@ static unsigned val_regs(const Val *v)
     case VK_SCALED:  return simple_regs(v->cl);
     case VK_CHARX:   return simple_regs(v->cl); /* "(bx)" etc. */
     case VK_IDXOFF:  return simple_regs(v->cl);
+    case VK_SYMIDX:  return simple_regs(v->cl);
     case VK_ROWADDR: return reg_bit(v->reg) | simple_regs(v->cl);
     default:      return 0;
     }
@@ -1226,6 +1291,7 @@ static const InsnFx INSN_FX[] = {
     { "mov",  0, 1 }, { "movb", 0, 1 }, { "lea", 0, 1 },
     { "add",  0, 1 }, { "sub",  0, 1 }, { "adc", 0, 1 }, { "sbb", 0, 1 },
     { "and",  0, 1 }, { "or",   0, 1 }, { "xor", 0, 1 }, { "not", 0, 1 },
+    { "orb",  0, 1 },
     { "sal",  0, 1 }, { "sar",  0, 1 }, { "shl", 0, 1 },
     { "inc",  0, 1 }, { "dec",  0, 1 }, { "pop", 0, 1 },
     { "pop cx", RB_CX, 0 },        /* the literal-space quirk - OP_PLUS */
@@ -1239,7 +1305,8 @@ static const InsnFx INSN_FX[] = {
      * MUTOS_C_ABI.md sect. 1.2), which is what lets a 'register'
      * local live in DI across calls. */
     { "call", RB_AX | RB_BX | RB_CX | RB_DX, 0 },
-    { "push", 0, 0 }, { "cmp", 0, 0 }, { "jmp", 0, 0 }, { "seg", 0, 0 },
+    { "push", 0, 0 }, { "cmp", 0, 0 }, { "cmpb", 0, 0 }, { "jmp", 0, 0 },
+    { "seg", 0, 0 },
     { "blt",  0, 0 }, { "ble", 0, 0 }, { "bgt", 0, 0 }, { "bge", 0, 0 },
     { "beq",  0, 0 }, { "bne", 0, 0 }, { "blos", 0, 0 }, { "bhi", 0, 0 },
     { ".globl", 0, 0 }, { ".text", 0, 0 }, { ".even", 0, 0 },
@@ -1570,6 +1637,50 @@ static int cond_invert(int op)
     return r->inverse;
 }
 
+/* A char in memory compared with a char-typed constant - a VK_COND with
+ * cond_is_byte (see OP_LESS...). v7/cc/table.s's cctab has two
+ * templates for a byte operand and a constant, and the real compiler
+ * keeps them apart:
+ *
+ * - "%a,z" / "%nb*,ab" ([move1]/[move6]): the operand is compared in
+ *   memory, "cmpb <char>,<constant>" - an addressable char (a local, a
+ *   global) as it stands: "cmpb *-8.(bp),*97." (tests/mutos_as/
+ *   kernel_nonopt/lp_AC.s), "cmpb 111.+_u,*0" (sys1.s), "cmpb *1.(si),
+ *   *0" (amx.s); an element whose address the operand's own code put in
+ *   BX (OP_STAR's F*) likewise, whatever the constant is not 0:
+ *   10_integ/01_wordcount.s.golden's "mov dx,*-6.(bp)" / "mov bx,dx" /
+ *   "cmpb _text(bx),*10." for "text[i] == '\n'". A constant 0 renders
+ *   as "*0", CMP's own rule (render_cmp_imm()).
+ * - "%n*,z" ([move2]: "F*" / "tstb #1(R)" on the PDP-11): such a
+ *   computed element compared with 0 is loaded into DX through the "#1"
+ *   operand and tested there, the 8086 having no memory TST: "movb
+ *   dx,#_text(bx)" / "orb dx,dx" (01_wordcount.s.golden's "text[i] !=
+ *   '\0'"; see o_load() for the '#'). ORB leaves OF clear and sets SF/ZF
+ *   from the byte, so every signed branch reads it as a compare with 0.
+ *
+ * A char element addressed through DI or SI (a runtime subscript on a
+ * local char array, "lea di,..." / "add di,...") has no golden in
+ * either shape and is refused. */
+static void emit_byte_cmp_and_branch(GenState *g, Val l, Val r,
+                                     int branch_op_code, int target_lab)
+{
+    if (r.kind != VK_IMM)
+        gen_fatal("internal: a byte comparison without a constant right "
+                  "operand");
+    int in_bx = (l.kind == VK_IND && strcmp(l.reg, "bx") == 0);
+    if (l.kind != VK_MEM && l.kind != VK_STATIC && !in_bx)
+        gen_fatal("comparing a 'char' reached through this address shape "
+                  "with a constant is not yet supported - see "
+                  "src/mutos_cc/README.md");
+    if (in_bx && r.imm == 0) {
+        ins2(g, "movb", o_reg("dx"), o_load(l));
+        ins2(g, "orb", o_reg("dx"), o_reg("dx"));
+    } else {
+        ins2(g, "cmpb", o_val(l), o_cmpimm(r.imm));
+    }
+    ins1(g, cond_true_mnem(branch_op_code), o_lab(target_lab));
+}
+
 /* Emits "cmp\t<cl>,<cr-or-di>\n" followed by a branch to L<target>
  * using `branch_op_code`'s mnemonic (the caller passes either
  * cond.true_op directly, for a "branch if true" site, or
@@ -1578,7 +1689,9 @@ static int cond_invert(int op)
  * it is itself a memory operand (8086 CMP cannot take two memory
  * operands); an immediate right-hand side is rendered directly via
  * render_cmp_imm(), matching 03_rellogic's "cmp *-6.(bp),di" (memory
- * rhs) vs. "cmp *-6.(bp),*0" (immediate rhs) shapes exactly. */
+ * rhs) vs. "cmp *-6.(bp),*0" (immediate rhs) shapes exactly. A byte
+ * comparison (cond_is_byte) has its own shapes - see
+ * emit_byte_cmp_and_branch(). */
 static void emit_cmp_and_branch(GenState *g, Val cond, int branch_op_code, int target_lab)
 {
     Val l = val_from_simple(cond.cl);
@@ -1592,6 +1705,10 @@ static void emit_cmp_and_branch(GenState *g, Val cond, int branch_op_code, int t
         gen_fatal("a 'long' comparison used as a value (not as an 'if'/"
                   "'while'/'for' condition) is not yet supported - see "
                   "src/mutos_cc/README.md");
+    if (cond.cond_is_byte) {
+        emit_byte_cmp_and_branch(g, l, r, branch_op_code, target_lab);
+        return;
+    }
     /* An ADDRESS operand ("p == &x", VK_MEM_DIRECT - OP_AMPER's deferred
      * "lea") has no golden; rendered as a memory operand it compared the
      * variable's CONTENTS instead ("mov di,*-6.(bp)" / "cmp *-10.(bp),di"
@@ -3370,11 +3487,69 @@ static void plan_step(GenState *g, FILE *t1)
 }
 
 /* -------------------------------------------------------------- */
-/* temp2 - the string-literal data file (see gen_strings()). */
+/* Byte data: string literals (temp2 - see gen_strings()) and a file-
+ * scope char array's string initializer (temp1 - OP_BDATA in
+ * c1_generate()). mutos_c0's putstr() writes both the same way. */
 
 /* The most values the real compiler puts on one ".byte" line of a
- * string literal - see gen_strings(). */
+ * BDATA run - see put_bdata_run(). */
 #define MCC_BYTES_PER_LINE 9
+
+/*
+ * One BDATA run, its tag already read from `f` ("temp1" or "temp2" in
+ * `what`, for diagnostics): (1, value) pairs ended by a word that is
+ * not 1 - putstr()'s lone 0 - rendered as
+ *
+ *     ".byte\t/<v>,/<v>,..."
+ *
+ * v7/cc/c11.c's BDATA case reads the same pairs, but prints them all on
+ * one line in octal; the real MUTOS c1 prints them in hex with
+ * mutos_as's '/' prefix (lower case, no leading zeros: "/6f", "/a",
+ * "/0") and starts a new ".byte" line after every 9th value. Confirmed
+ * byte-for-byte for string literals against 05_arrptr/05_arrofptr.s.
+ * golden ("L4:.byte\t/6f,/6e,/65,/0" - one short line per literal) and
+ * 07_strlibc.s.golden ("hello, mutos", 13 values: a line of 9, then
+ * ".byte\t/74,/6f,/73,/0"), plus 10_integ/04_strrev.s.golden (10
+ * values: 9, then ".byte\t/0"); and for a char array's initializer
+ * against 10_integ/01_wordcount.s.golden ("_text:.byte\t/74,/68,..."
+ * - three runs of 14, 15 and 16 values, each broken 9 + rest).
+ * mutos_c0 starts a new BDATA run before every 15th byte (v7's
+ * putstr()); each run starts a new line too. The 9-per-line rule and
+ * that split together reproduce the line layout of all 208 string
+ * literals in the real compiler's output in tests/mutos_as/
+ * kernel_nonopt/ and kernel_opt/ (runs of 14, 15, 15, ... values, each
+ * broken 9 + rest).
+ *
+ * A byte value of 0x80 or above is printed as its 8-bit value
+ * ("/e4"): mutos_c0 masks every byte to 0..255 like v7's putstr(), and
+ * this renders the word as read. No golden string holds such a byte, so
+ * that is derived, not confirmed. (The sign-extended "/ff81" values in
+ * kernel_nonopt/amx.s are a char array's BRACE-LIST initializer's -
+ * "_partab:.byte /1", a space, one value per line - a different code
+ * path (v7's INIT, one per element) that mutos_c0 does not produce.)
+ */
+static void put_bdata_run(GenState *g, FILE *f, const char *what)
+{
+    char line[OPND_MAX * 4];
+    int nvals = 0;
+    size_t len = 0;
+    while (c1_read_num(f, what) == 1) {
+        unsigned v = (unsigned)c1_read_num(f, what) & 0xFFFFu;
+        if (nvals == MCC_BYTES_PER_LINE) {
+            put_line(g, ".byte\t%s", line);
+            nvals = 0;
+            len = 0;
+        }
+        int w = snprintf(line + len, sizeof line - len, "%s/%x",
+                         nvals ? "," : "", v);
+        if (w < 0 || (size_t)w >= sizeof line - len)
+            gen_fatal("internal: .byte line buffer too small");
+        len += (size_t)w;
+        nvals++;
+    }
+    if (nvals > 0)
+        put_line(g, ".byte\t%s", line);
+}
 
 /*
  * Renders temp2 - written by mutos_c0's putstr(), one run per string
@@ -3385,31 +3560,7 @@ static void plan_step(GenState *g, FILE *t1)
  *     LABEL <n>     -> "L<n>:" (no newline - the data glues on, as
  *                      every label does; put_label())
  *     BDATA (1 v)... 0
- *                   -> ".byte\t/<v>,/<v>,..." - v7/cc/c11.c's BDATA
- *                      case reads the same pairs, but prints them all on
- *                      one line in octal; the real MUTOS c1 prints them
- *                      in hex with mutos_as's '/' prefix (lower case, no
- *                      leading zeros: "/6f", "/a", "/0") and starts a
- *                      new ".byte" line after every 9th value
- *
- * confirmed byte-for-byte against 05_arrptr/05_arrofptr.s.golden
- * ("L4:.byte\t/6f,/6e,/65,/0" - one short line per literal) and
- * 07_strlibc.s.golden ("hello, mutos", 13 values: a line of 9, then
- * ".byte\t/74,/6f,/73,/0"), plus 10_integ/04_strrev.s.golden (10
- * values: 9, then ".byte\t/0"). mutos_c0 starts a new BDATA run
- * before every 15th byte (v7's putstr()); each run starts a new line
- * too. The 9-per-line rule and that split together reproduce the line
- * layout of all 208 string literals in the real compiler's output in
- * tests/mutos_as/kernel_nonopt/ and kernel_opt/ (runs of 14, 15, 15,
- * ... values, each broken 9 + rest).
- *
- * A byte value of 0x80 or above is printed as its 8-bit value
- * ("/e4"): mutos_c0 masks every byte to 0..255 like v7's putstr(), and
- * this renders the word as read. No golden string literal holds such a
- * byte, so that is derived, not confirmed. (The sign-extended "/ff81"
- * values in kernel_nonopt/amx.s are a char-array INITIALIZER's, a
- * different code path with a different format - ".byte /ff81", a space,
- * one value per line - that mutos_c0 does not produce.)
+ *                   -> ".byte\t/<v>,/<v>,..." - see put_bdata_run()
  */
 static void gen_strings(GenState *g, FILE *t2)
 {
@@ -3424,27 +3575,7 @@ static void gen_strings(GenState *g, FILE *t2)
         if (op != OP_BDATA)
             gen_fatal("unsupported temp2 opcode %d (0x%02x) - only string "
                       "literals (LABEL/BDATA) are covered so far", op, op);
-        /* v7/cc/c11.c: "if (geti() == 1) { ... }" - a run is (1, value)
-         * pairs ended by a word that is not 1 (putstr()'s lone 0). */
-        char line[OPND_MAX * 4];
-        int nvals = 0;
-        size_t len = 0;
-        while (c1_read_num(t2, "temp2") == 1) {
-            unsigned v = (unsigned)c1_read_num(t2, "temp2") & 0xFFFFu;
-            if (nvals == MCC_BYTES_PER_LINE) {
-                put_line(g, ".byte\t%s", line);
-                nvals = 0;
-                len = 0;
-            }
-            int w = snprintf(line + len, sizeof line - len, "%s/%x",
-                             nvals ? "," : "", v);
-            if (w < 0 || (size_t)w >= sizeof line - len)
-                gen_fatal("internal: .byte line buffer too small");
-            len += (size_t)w;
-            nvals++;
-        }
-        if (nvals > 0)
-            put_line(g, ".byte\t%s", line);
+        put_bdata_run(g, t2, "temp2");
     }
 }
 
@@ -3560,6 +3691,23 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_DATA:
+            /* Opens a file-scope variable's initialized data - v7/cc/
+             * c02.c's extdef() writes DATA, NLABEL <name> and the
+             * initializer (for "char name[] = \"...\"", putstr()'s BDATA
+             * runs - see OP_BDATA). Confirmed against 10_integ/
+             * 01_wordcount.s.golden's ".data" / "_text:.byte\t/74,...":
+             * no arguments of its own on the wire. */
+            ins0(&g, ".data");
+            break;
+
+        case OP_BDATA:
+            /* A run of an initializer's bytes, in temp1 - see
+             * put_bdata_run(); temp2's string literals use the same
+             * renderer (gen_strings()). */
+            put_bdata_run(&g, temp1, "temp1");
+            break;
+
         case OP_BSS:
             /* Opens a local STATIC variable's own dedicated BSS
              * block - confirmed against 04_funcs/05_staticvar.s.
@@ -3605,9 +3753,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* A named data label - a file-scope 'static' variable's
              * BSS block ("static int hidden;": BSS, NLABEL "_hidden",
              * SSPACE 2 -> ".bss" / "_hidden:.blkb\t2." - 07_scope/
-             * 01_globstat.s.golden). Glued onto the .blkb line like an
-             * "L<n>:" label (put_name_label()); no ".globl" - the
-             * variable is internal to the file. */
+             * 01_globstat.s.golden), or an initialized array's DATA
+             * block ("_text:.byte\t/74,..." - 10_integ/01_wordcount.s.
+             * golden). Glued onto the .blkb/.byte line like an "L<n>:"
+             * label (put_name_label()); a ".globl" comes from the
+             * SYMDEF a non-static definition writes first. */
             char *name = c1_read_sym(temp1, "temp1");
             put_name_label(&g, name);
             free(name);
@@ -3758,10 +3908,28 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_CON: {
             int type = c1_read_num(temp1, "temp1");
             int value = c1_read_num(temp1, "temp1");
+            if (type == TY_CHAR) {
+                /* A constant typed char: mutos_c0 writes one only as the
+                 * right operand of a char compared with a constant in
+                 * 0..127 (c0_parser.c's char_compare_rhs() - v7/cc/
+                 * c12.c optim()'s CHAR retyping; 10_integ/01_wordcount.
+                 * 1.golden's "text[i] != '\0'"). Accepted only there -
+                 * consumed as a relational's RIGHT operand - so the
+                 * relational handler can tell a byte compare apart. */
+                Consumer cons = scan_consumer(temp1);
+                if (!find_relop(cons.op) || cons.as_left ||
+                    value < 0 || value > 127)
+                    gen_fatal("a char-typed constant (CON of type 1) outside "
+                              "a comparison with a char is not yet supported");
+                Val cv = val_imm(value);
+                cv.charcon = 1;
+                push_val(&g, cv);
+                break;
+            }
             if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("CON of type %d not yet supported (only "
-                          "TY_INT/TY_UNSIGN constants are covered so "
-                          "far)", type);
+                          "TY_INT/TY_UNSIGN constants, and a char one "
+                          "compared with a char, are covered so far)", type);
             push_val(&g, val_imm(value));
             break;
         }
@@ -3952,10 +4120,35 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * load needed. */
                 Val r = pop_any(&g);
                 Val l = pop_any(&g);
+                if (type == TY_PTR_CHAR && l.kind == VK_STATICADDR && l.sym &&
+                    (r.kind == VK_MEM || r.kind == VK_STATIC) && !r.bytev) {
+                    /* "text[i]" on a file-scope char array (the ITOP by 1
+                     * left the index variable itself - see OP_ITOP): kept
+                     * as VK_SYMIDX for the dereference - see its comment.
+                     * Confirmed only as an OP_STAR's operand; any other
+                     * consumer ("&text[i]", "text + i") and any other
+                     * index or element type has no golden. */
+                    long pos = ftell(temp1);
+                    int next = c1_read_op(temp1, "temp1");
+                    fseek(temp1, pos, SEEK_SET);
+                    if (next != OP_STAR)
+                        gen_fatal("the address of a file-scope array element, "
+                                  "or pointer arithmetic on a file-scope "
+                                  "array, is not yet supported - see "
+                                  "src/mutos_cc/README.md");
+                    Val si = {0};
+                    si.kind = VK_SYMIDX;
+                    si.sym = l.sym;
+                    si.cl = simple_of(r);
+                    push_val(&g, si);
+                    break;
+                }
                 if (l.kind == VK_STATICADDR || r.kind == VK_STATICADDR ||
                     l.kind == VK_FUNCADDR || r.kind == VK_FUNCADDR)
                     gen_fatal("pointer arithmetic on the address of a string "
-                              "literal or function is not yet supported - see "
+                              "literal, file-scope variable or function "
+                              "(other than a char array subscripted by a "
+                              "variable) is not yet supported - see "
                               "src/mutos_cc/README.md");
                 if (l.kind == VK_REGOFF || r.kind == VK_REGOFF) {
                     /* A scaled "var + N" index (OP_ITOP's VK_REGOFF, the
@@ -4790,6 +4983,15 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  *   1]"): that stack location itself - 09_abiprobe/
                  *   02_frame080.s.golden's "movb *-84.(bp),*1." / "movb
                  *   ax,*-5.(bp)";
+                 * - an element of a file-scope array indexed by a
+                 *   variable ("text[i]" - VK_SYMIDX): the index loaded
+                 *   into DX and moved to BX, the element "_text(bx)" -
+                 *   10_integ/01_wordcount.s.golden's "mov dx,*-6.(bp)" /
+                 *   "mov bx,dx" / "cmpb _text(bx),*10."; as the target of
+                 *   an assignment it has no golden (the kernel pushes the
+                 *   index there - "push *-34.(bp)" ... "pop bx" / "movb
+                 *   _amxscd(bx),dx" in kernel_nonopt/amx.s) and is
+                 *   refused;
                  * - a pointer VARIABLE ("*a"): loaded into DX, then moved
                  *   to BX, the byte addressed as "(bx)" - 10_integ/
                  *   04_strrev.s.golden's swapch(): "mov dx,*4.(bp)" /
@@ -4813,6 +5015,20 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     Val m = val_mem(ptr.offset);
                     m.bytev = 1;
                     push_val(&g, m);
+                    break;
+                }
+                if (ptr.kind == VK_SYMIDX) {
+                    if (cons.op == OP_ASSIGN && cons.as_left)
+                        gen_fatal("storing into an element of a file-scope "
+                                  "array is not yet supported - see "
+                                  "src/mutos_cc/README.md");
+                    Val idx = val_from_simple(ptr.cl);
+                    ins2(&g, "mov", o_reg("dx"), o_val(idx));
+                    ins2(&g, "mov", o_reg("bx"), o_reg("dx"));
+                    Val el = val_ind("bx");
+                    el.sym = ptr.sym;
+                    el.bytev = 1;
+                    push_val(&g, el);
                     break;
                 }
                 int basereg = (ptr.kind == VK_REG &&
@@ -4847,6 +5063,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, ind);
                 break;
             }
+            if (ptr.kind == VK_SYMIDX)
+                gen_fatal("internal: a file-scope char array element "
+                          "dereferenced as type %d", type);
             if (ptr.kind == VK_REGOFF) {
                 /* See VK_REGOFF. The pointer operand is loaded (or, as a
                  * non-trivial assignment target, pushed) only here, so
@@ -5001,6 +5220,28 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * edge case "a < b < c", where a nested comparison could
              * otherwise flow in here as an operand. */
             Val l, r;
+            /* A char compared with a small constant - mutos_c0 writes
+             * the constant typed char and the char operand unconverted
+             * (10_integ/01_wordcount.1.golden: STAR(1) CON(1, 10)
+             * EQUAL(0)): a byte compare, whose two shapes live in
+             * emit_byte_cmp_and_branch(). Nothing is swapped - the
+             * constant is already on the right, as v7's optim() puts it
+             * before its own CHAR retyping. */
+            if (g.valsp >= 2 && g.valstack[g.valsp - 1].charcon) {
+                pop_operands_ex(&g, &l, &r, POP_BYTE);
+                if (!l.bytev || r.bytev || r.kind != VK_IMM)
+                    gen_fatal("internal: a char-typed constant compared with "
+                              "something other than a char in memory");
+                l.bytev = 0;
+                Val c = {0};
+                c.kind = VK_COND;
+                c.true_op = op;
+                c.cl = simple_of(l);
+                c.cr = simple_of(r);
+                c.cond_is_byte = 1;
+                push_val(&g, c);
+                break;
+            }
             pop_operands(&g, &l, &r);
             int relop = op;
             if (is_const_val(&l) && !is_const_val(&r)) {
@@ -5113,6 +5354,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             neg.true_op = cond_invert(c.true_op);
             neg.cl = c.cl;
             neg.cr = c.cr;
+            /* The operand width goes with the comparison. Dropping
+             * cond_is_long made "if (!(l > 0L))" a 16-bit compare with
+             * an operand placeholder as its text ("cmp *-8.(bp),
+             * <unmaterialized-long-const>"), exit status 0 - found
+             * 2026-09-26; now gen_long_cmp() refuses the inverted
+             * operator, as it refuses any other unconfirmed shape. */
+            neg.cond_is_long = c.cond_is_long;
+            neg.cond_is_byte = c.cond_is_byte;
             push_val(&g, neg);
             break;
         }
@@ -5546,9 +5795,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * s.golden's swapch(), "t = *a;" -> ... "movb dx,(bx)" /
                  * "movb *-6.(bp),dx", "*a = *b;" -> ... "movb dx,(bx)" /
                  * "pop bx" / "movb (bx),dx", "*b = t;" -> "push *6.(bp)" /
-                 * "movb dx,*-6.(bp)" / "pop bx" / "movb (bx),dx". */
+                 * "movb dx,*-6.(bp)" / "pop bx" / "movb (bx),dx". A file-
+                 * scope array element is loaded through v7's "#1" operand,
+                 * "movb dx,#_amxi_bu(bx)" / "movb *-10.(bp),dx" in tests/
+                 * mutos_as/kernel_nonopt/amx.s - see o_load(). */
                 rhs.bytev = 0;
-                ins2(&g, "movb", o_reg("dx"), o_val(rhs));
+                ins2(&g, "movb", o_reg("dx"), o_load(rhs));
                 rhs = val_reg("dx");
             }
             rhs = materialize(&g, rhs);

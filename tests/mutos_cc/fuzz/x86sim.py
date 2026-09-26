@@ -4,27 +4,30 @@
 Runs the subset of mutos_as-syntax 8086 code that mutos_c1 emits - the
 shape fuzz_c.py generates, a parameterless main(), plus calls of other
 functions defined in the same file (with the shared "cret" epilogue and
-the "chkstk" large-frame helper built in), "movb"/"cbw" byte
-operations and variables at a fixed address (a local static's "L4:.blkb
+the "chkstk" large-frame helper built in), "movb"/"cbw"/"cmpb"/"orb"
+byte operations, variables at a fixed address (a local static's "L4:.blkb
 2.", a file-scope "static" one's "_hidden:.blkb 2.", a common block's
 ".comm _counter,2" - each zero-initialized, referenced as "L4",
-"_counter" or, for its address, "#_counter") - and reports the final
-state: main()'s return value (AX at main's "jmp cret") and every local
-variable's word(s), located through c1's own "| _name=-N." frame
+"_counter" or, for its address, "#_counter") and initialized bytes (a
+char array's "_text:.byte /74,..." or a string literal's "L4:.byte ...",
+its elements addressed "_text(bx)" or "#_text(bx)") - and reports the
+final state: main()'s return value (AX at main's "jmp cret") and every
+local variable's word(s), located through c1's own "| _name=-N." frame
 comments. It is a checker, not an emulator: anything outside the subset
-(a libc or indirect call, a string literal's data, a branch on flags not
-set by a cmp or an "or r,r", ...) stops it with exit status 2 and a
-message, never with a guess.
+(a libc or indirect call, a branch on flags not set by a cmp, a cmpb or
+an "or r,r"/"orb r,r", ...) stops it with exit status 2 and a message,
+never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
-.s.golden it can execute (50 of the 62 - the rest call libc or runtime
-helpers, or use string literals, 'long' carries or a jump table)
+.s.golden it can execute (51 of the 62 - the rest call libc or runtime
+helpers, or use 'long' carries, a jump table or a function's address)
 returns the value its C source computes, among them 01_expr/06_compasgn
 (33), 04_funcs/05_staticvar (3), 07_scope/01_globstat (3) and
 03_externdef (12),
 03_ctrlflow/05_breakcont (12), 04_funcs/03_recfact (720), 05_arrptr/
 02_array2d (138), 09_abiprobe/03_frame128 (3, through chkstk),
-10_integ/02_bubsort (91) and 05_matmul (134), and even 06_struct/
+10_integ/01_wordcount (55 - "cmpb _text(bx),*10.", "orb dx,dx"),
+02_bubsort (91) and 05_matmul (134), and even 06_struct/
 07_bitfield (12) and 06_union (3), whose code mutos_c1 cannot produce
 yet.
 
@@ -47,9 +50,10 @@ STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 # accepted while the flags still come from the most recent cmp - or
 # from "or r,r" (same register twice), mutos_c1's truth test of a
 # register value: it leaves r unchanged, clears CF and OF and sets ZF/SF
-# from r, exactly the flags of "cmp r,0".
+# from r, exactly the flags of "cmp r,0" - or from their byte forms,
+# "cmpb" and "orb dx,dx" (a char loaded into DL and tested).
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
-                "dec", "sal", "shl", "sar", "imul", "idiv", "neg"}
+                "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi"}
 
 
@@ -60,6 +64,12 @@ class SimError(Exception):
 def s16(v):
     v &= M16
     return v - 0x10000 if v & 0x8000 else v
+
+
+def sx8(v):
+    """A byte sign-extended to a 16-bit word (as CBW does)."""
+    v &= 0xFF
+    return (v | 0xFF00) if v & 0x80 else v
 
 
 class Result:
@@ -113,6 +123,19 @@ class Sim:
             self.data[name] = self.next_data
             self.next_data += (size + 1) & ~1
 
+    def _put_bytes(self, names, values):
+        """Initialized data - a ".byte" line: its labels name the next
+        free address, and its values are laid down there. The lines of
+        one object follow each other ("_text:.byte ..." then ".byte
+        ..." - a string literal's or a char array's initializer, split
+        9 values to a line), so consecutive ".byte" lines stay
+        contiguous; ".even" rounds the next address up."""
+        for name in names:
+            self.data[name] = self.next_data
+        for v in values:
+            self.mem[self.next_data & M16] = v & 0xFF
+            self.next_data += 1
+
     def _parse_line(self, line):
         # Labels glue onto whatever follows them ("L4:cmp ...",
         # "L8:L6:mov ...", "L2:| _a=-12.", "_hidden:.blkb\t2.").
@@ -127,6 +150,14 @@ class Sim:
         if m:                       # a static's own BSS block
             for name in names:
                 self._alloc(name, int(m.group(1)))
+            return
+        m = re.match(r"^\.byte\t(/[0-9a-f]+(?:,/[0-9a-f]+)*)$", line)
+        if m:                       # initialized bytes
+            self._put_bytes(names, [int(v[1:], 16)
+                                    for v in m.group(1).split(",")])
+            return
+        if line == ".even":
+            self.next_data = (self.next_data + 1) & ~1
             return
         for name in names:
             self.labels[name] = len(self.prog)
@@ -160,11 +191,19 @@ class Sim:
     def _ea(self, op):
         if op in self.data:         # "L4", "_counter"
             return self.data[op]
-        m = re.match(r"^(?:[*#](-?\d+)\.)?\((\w+)\)$", op)
-        if not m or m.group(2) not in self.regs:
+        # "(bx)", "*2.(si)", "#-132.(bp)", and an array element with a
+        # symbol for its displacement: "_text(bx)", "#_text(bx)" (the
+        # marker a load through v7's "#1" template writes)
+        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+))?\((\w+)\)$", op)
+        if not m or m.group(3) not in self.regs:
             return None
-        disp = int(m.group(1)) if m.group(1) else 0
-        return (self.regs[m.group(2)] + disp) & M16
+        if m.group(2):
+            if m.group(2) not in self.data:
+                return None
+            disp = self.data[m.group(2)]
+        else:
+            disp = int(m.group(1)) if m.group(1) else 0
+        return (self.regs[m.group(3)] + disp) & M16
 
     def get(self, op):
         if op in self.regs:
@@ -266,8 +305,8 @@ class Sim:
                 pc = self.labels[ops[0]]
             elif mnem in BRANCHES:
                 if self.cmp is None:
-                    raise SimError(f"'{mnem}' on flags not set by a cmp "
-                                   "or an 'or r,r'")
+                    raise SimError(f"'{mnem}' on flags not set by a cmp, a "
+                                   "cmpb or an 'or r,r'/'orb r,r'")
                 a, b = self.cmp
                 take = {"blt": s16(a) < s16(b), "ble": s16(a) <= s16(b),
                         "bgt": s16(a) > s16(b), "bge": s16(a) >= s16(b),
@@ -277,6 +316,18 @@ class Sim:
                     pc = self.labels[ops[0]]
             elif mnem == "cmp":
                 self.cmp = (self.get(ops[0]), self.get(ops[1]))
+            elif mnem == "cmpb":
+                # A byte compare: both bytes sign-extended, which keeps
+                # the signed order and (0x80.. -> 0xff80..) the unsigned
+                # one too, so the branches read it like a word "cmp".
+                self.cmp = (sx8(self.get_byte(ops[0])), sx8(self.get_byte(ops[1])))
+            elif mnem == "orb":
+                a, b = self.get_byte(ops[0]), self.get_byte(ops[1])
+                self.put_byte(ops[0], a | b)
+                if ops[0] == ops[1] and ops[0] in self.BYTE_REGS:
+                    # "orb dx,dx": mutos_c1's test of a byte loaded into DL
+                    # - OF/CF cleared, SF/ZF from the byte: "cmpb dl,0"
+                    self.cmp = (sx8(a), 0)
             elif mnem == "mov":
                 self.put(ops[0], self.get(ops[1]))
             elif mnem == "lea":
