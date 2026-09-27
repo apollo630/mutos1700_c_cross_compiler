@@ -257,8 +257,34 @@ calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
-working end-to-end.**
+working end-to-end. A further, separate golden corpus - `11_kernel/`, nine
+real MUTOS kernel driver source files with their own real-hardware-verified
+goldens already present - was added this session; `mutos_c0`/`mutos_c1`
+coverage against it is 0/9 so far (each refusal diagnosed, none silent),
+tracked apart from the 60/62 figure above - see "Next up" below and
+`docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### Test corpus: `11_kernel/` added (nine real kernel driver files, own real-hardware goldens); `mutos_c0`/`mutos_c1` coverage assessed at 0/9
+
+Not a change to `mutos_c0`/`mutos_c1` themselves. `tests/mutos_cc/11_kernel/`
+(commit `dd5dd73`) adds a second, separate golden corpus - nine real,
+unmodified MUTOS kernel driver source files (`01_delay.c` … `09_amx.c`)
+plus their header tree, with real-hardware-verified goldens already
+present, mirroring what `tests/mutos_cpp/c/` already does for `mutos_cpp`.
+Running `tests/mutos_cc/run_goldens.sh` against this session's build shows
+all nine still refused at the `mutos_c0` stage, each with a diagnosed
+error: one genuinely new gap confirmed with a minimal reproduction (a bare
+expression-statement, e.g. `i++;` on its own - `01_delay.c` - which the
+"Current scope" grammar has no production for at all, since every prior
+`++`/`--` use in the corpus is inside an assignment); two hits on
+already-documented gaps (`05_nami.c`'s untyped `register c;` local, and
+`06_fio.c`'s file-scope struct/`unsigned` variable); and six
+("external definition syntax", `02_prim.c`/`03_mem.c`/`04_pipe.c`/
+`07_v24.c`/`08_tty.c`/`09_amx.c`) not yet root-caused to a specific
+construct. See `docs/DEVLOG.md`'s Milestone 4 section for the full
+per-file breakdown. The construct-coverage corpus's own 60/62 pass
+fraction (below) is unaffected - `11_kernel` is tracked separately.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (`06_struct` - structs, unions, bit-fields, enums, typedefs - and `10_integ/03_linklist`; `char` with an int operand, as a call argument, as a condition, stored into a file-scope array)
 
@@ -2225,8 +2251,15 @@ but `08_float` is now fully covered (60/62). In order:
    variables, functions returning a struct or a struct pointer, block
    copies, a computed value stored into a bit-field, a struct size that is
    not a power of two in a subscript - each needs evidence of the real
-   compiler's shape first. Then the remaining 81..127-byte `chkstk` gap
-   and the `mutos_cc` driver itself.
+   compiler's shape first. Then the remaining 81..127-byte `chkstk` gap.
+5. **`tests/mutos_cc/11_kernel`** (9 real kernel driver files, currently
+   0/9): grow coverage into it once the categories above are done. One
+   concrete, confirmed gap to start from - a bare expression-statement
+   (`i++;` on its own, `01_delay.c`) has no grammar production yet; the
+   six files refusing with "external definition syntax" still need their
+   specific construct isolated first. See `docs/DEVLOG.md`'s Milestone 4
+   section for the full per-file breakdown.
+6. **The `mutos_cc` driver itself.**
 
 The register-occupancy guard's refusals (see the `c1_gen.c` review section
 above) mark where further spill/reordering codegen - and an SI-scratch
@@ -2422,7 +2455,9 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 60/62 of the corpus
-   byte-exact): `08_float` and the `mutos_cc` driver - see its "Next up".
+   byte-exact): `08_float`, the remaining `chkstk` gap, growing coverage
+   into the new `tests/mutos_cc/11_kernel` real-kernel corpus (0/9 so
+   far), and the `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string

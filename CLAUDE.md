@@ -66,11 +66,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   own `README.md` for full methodology, results, and open caveats.
 * `/tests/mutos_cc/`: K&R C construct-coverage corpus for the future `mutos_cc`/
   `mutos_c0`/`mutos_c1` (62 small `.c` files across 11 numbered categories,
-  `00_smoke/` … `10_integ/`). Source-only for now — golden references
+  `00_smoke/` … `10_integ/`, plus a further `11_kernel/` real-kernel-source
+  golden corpus described below — 71 `.c` files across 12 directories in
+  total). Golden references
   (`*.s.golden` for the final assembly, **and** `*.i.golden`/`*.1.golden`/
   `*.2.golden` for `cpp`'s output and `c0`'s raw `temp1`/`temp2`
   intermediate-code streams, captured directly via `/lib/cpp`+`/lib/c0`,
-  not just derived from the final `.s`) are added per-category as they're
+  not just derived from the final `.s`) are captured per-category as they're
   generated on real MUTOS 1700 hardware (same golden methodology as
   `/tests/mutos_cpp/`; see `docs/DEVLOG.md`'s Milestone 4 section for the
   corpus's design rationale, including the deliberately targeted
@@ -116,6 +118,18 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `mutos_c1`'s output with `x86sim.py`; `--baseline` classifies every
   difference against an earlier build. It holds no `.c` files, so nothing
   that walks the corpus sees it.
+  `11_kernel/` is a second, separate golden corpus alongside the 62-file
+  construct table above — nine real, unmodified MUTOS 1700 kernel driver
+  source files (`01_delay.c` … `09_amx.c`, ordered easy to hard) plus the
+  local header tree they `#include`, mirroring what `/tests/mutos_cpp/c/`
+  below already does for `mutos_cpp`. Its own real-hardware-verified
+  goldens (`.s`/`.i`/`.1`/`.2` plus base64 companions) and `Makefile.mutos`
+  are already present in this checkout; `mutos_c0`/`mutos_c1` verification
+  against it is separate, not-yet-started work, tracked apart from the
+  62-file corpus's own N/62 pass fraction — see `STATUS.md`'s "Next up"
+  and `docs/DEVLOG.md`'s Milestone 4 section for the initial coverage
+  assessment (all nine currently refuse at the front end, each with a
+  diagnosed reason, never silent wrong output).
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -511,11 +525,14 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: the remaining 81..127-byte `chkstk` gap (the
-  `09_abiprobe` goldens narrowed the threshold to `(80,128]`), `08_float`
-  (the last two corpus files), then the `mutos_cc` driver itself; the
-  shapes still refused (see `src/mutos_cc/README.md`'s "Current scope")
-  each wait for evidence of the real compiler's output.
+  dependency-ordered list: `08_float` (the last two files of the 62-file
+  corpus), the remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
+  goldens narrowed the threshold to `(80,128]`), then growing coverage
+  into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
+  0/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
+  Milestone 4 section for the initial assessment), then the `mutos_cc`
+  driver itself; the shapes still refused (see `src/mutos_cc/README.md`'s
+  "Current scope") each wait for evidence of the real compiler's output.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.
