@@ -1,0 +1,71 @@
+# Makefile.mutos -- per-category (directory contains selected kernel files).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory (no "cd" needed in the recipes below, unlike the old
+# top-level version):
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+CC  = cc
+CPP = /lib/cpp
+C0  = /lib/c0
+
+all: 01_delay.s 01_delay.1 02_prim.s 02_prim.1 03_mem.s 03_mem.1 04_pipe.s 04_pipe.1 05_nami.s 05_nami.1 06_fio.s 06_fio.1 07_v24.s 07_v24.1 08_tty.s 08_tty.1 09_amx.s 09_amx.1
+
+01_delay.s: 01_delay.c
+	$(CC) -S 01_delay.c
+
+01_delay.1: 01_delay.c
+	$(CPP) -P 01_delay.c > 01_delay.i; $(C0) 01_delay.i 01_delay.1 01_delay.2
+
+02_prim.s: 02_prim.c
+	$(CC) -S 02_prim.c
+
+02_prim.1: 02_prim.c
+	$(CPP) -P 02_prim.c > 02_prim.i; $(C0) 02_prim.i 02_prim.1 02_prim.2
+
+03_mem.s: 03_mem.c
+	$(CC) -S 03_mem.c
+
+03_mem.1: 03_mem.c
+	$(CPP) -P 03_mem.c > 03_mem.i; $(C0) 03_mem.i 03_mem.1 03_mem.2
+
+04_pipe.s: 04_pipe.c
+	$(CC) -S 04_pipe.c
+
+04_pipe.1: 04_pipe.c
+	$(CPP) -P 04_pipe.c > 04_pipe.i; $(C0) 04_pipe.i 04_pipe.1 04_pipe.2
+
+05_nami.s: 05_nami.c
+	$(CC) -S 05_nami.c
+
+05_nami.1: 05_nami.c
+	$(CPP) -P 05_nami.c > 05_nami.i; $(C0) 05_nami.i 05_nami.1 05_nami.2
+
+06_fio.s: 06_fio.c
+	$(CC) -S 06_fio.c
+
+06_fio.1: 06_fio.c
+	$(CPP) -P 06_fio.c > 06_fio.i; $(C0) 06_fio.i 06_fio.1 06_fio.2
+
+07_v24.s: 07_v24.c
+	$(CC) -S 07_v24.c
+
+07_v24.1: 07_v24.c
+	$(CPP) -P 07_v24.c > 07_v24.i; $(C0) 07_v24.i 07_v24.1 07_v24.2
+
+08_tty.s: 08_tty.c
+	$(CC) -S 08_tty.c
+
+08_tty.1: 08_tty.c
+	$(CPP) -P 08_tty.c > 08_tty.i; $(C0) 08_tty.i 08_tty.1 08_tty.2
+
+09_amx.s: 09_amx.c
+	$(CC) -S 09_amx.c
+
+09_amx.1: 09_amx.c
+	$(CPP) -P 09_amx.c > 09_amx.i; $(C0) 09_amx.i 09_amx.1 09_amx.2
+
+clean:
+	rm -f *.s *.i *.1 *.2
