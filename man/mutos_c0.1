@@ -154,7 +154,27 @@ enumerations (their constants plain
 constants),
 .B typedef
 names, and pointer casts of a call such as
-.BR "(struct node *) malloc(n)" .
+.BR "(struct node *) malloc(n)" ;
+.IP \(bu 2
+floating point:
+.B float
+and
+.B double
+local variables, floating constants (written with their source text,
+never folded),
+.BR + ,
+.BR \- ,
+.B *
+and
+.B /
+(always computed in
+.BR double ),
+assignment, casts and
+.BR return ,
+with the real front end's conversions between
+.BR int ,
+.B long
+and the floating types.
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
@@ -164,7 +184,9 @@ pointers, other arrays and other initializers, file-scope structures,
 functions, a function returning a structure or a pointer to one, a
 structure passed by value,
 .B unsigned
-variables, floating point, arrays of three or more dimensions, pointer
+variables, floating parameters, globals, arrays, pointers, structure
+members and return types, floating comparisons and conditions, other
+operators on a floating value, arrays of three or more dimensions, pointer
 subtraction, an ordered comparison of pointers, division, a right shift
 or an ordered comparison of an
 .B unsigned

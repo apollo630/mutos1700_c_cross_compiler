@@ -177,6 +177,24 @@ static void handle_directive(AsmState *as, const Statement *s)
         (d->len == 5 && strncmp(d->text, ".byte", 5) == 0))
         return;
 
+    /* .float/.double - initialized floating-point data
+     * (MUTOS1700_Assembler_as.pdf sect. 7.2.1) - are not implemented.
+     * Unlike the directives ignored below, skipping one is never
+     * harmless: its label would name whatever follows, and every later
+     * address in the segment would be short by the value's size. Since
+     * mutos_c1 writes a ".float" for every floating constant (tests/
+     * mutos_cc/08_float - "L10000:<TAB>.float 3.50000000000000000e+00"),
+     * this is an explicit error until it is implemented (see STATUS.md's
+     * Milestone 2 section). A Pass 1 error stops before Pass 2, so this
+     * is reported once. */
+    if ((d->len == 6 && strncmp(d->text, ".float", 6) == 0) ||
+        (d->len == 7 && strncmp(d->text, ".double", 7) == 0)) {
+        fprintf(stderr, "error: %.*s is not yet supported at line %d\n",
+                (int)d->len, d->text, s->line);
+        as->errors++;
+        return;
+    }
+
     /* .asciz / .end etc.: not needed by the current corpus subset this
      * driver targets - silently ignored so it degrades gracefully
      * rather than erroring on files outside its scope. */

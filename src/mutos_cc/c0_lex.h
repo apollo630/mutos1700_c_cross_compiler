@@ -51,7 +51,10 @@ typedef enum {
 typedef struct {
     TokKind kind;
     int     line;              /* physical line the token STARTED on */
-    char    ident[LEX_IDENT_MAX]; /* T_IDENT text, NUL-terminated */
+    char    ident[LEX_IDENT_MAX]; /* T_IDENT text, NUL-terminated; for
+                                   * T_FCON the constant's source text
+                                   * ("3.5"), which FCON carries to
+                                   * mutos_c1 unchanged */
     long    ival;               /* T_ICON / T_LCON / T_CCON value */
     int     is_long;            /* T_ICON: had an 'l'/'L' suffix */
     int     is_unsigned;        /* T_ICON: had a 'u'/'U' suffix */

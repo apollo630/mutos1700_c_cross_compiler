@@ -11,8 +11,8 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 60/62 of the full corpus - all but
-`08_float`'s two files:**
+`mutos_c0` → `mutos_c1` → `.s`), for 62/62 of the full corpus - every
+file:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -28,7 +28,9 @@ large-frame probes), plus all 3 of `07_scope`: `01_globstat.c`,
 `02_shadow.c` and `03_externdef.c` (file-scope variables and block
 scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
-`03_linklist.c`, `04_strrev.c` and `05_matmul.c`. See
+`03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
+`08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
+"Floating point" under "Current scope"). See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -52,6 +54,7 @@ the original's raw varargs-pointer-walk):
 | `N` | one 16-bit word | little-endian `(low, high)` |
 | `S` | one symbol name | `'_'` (iff non-empty) + up to `MCC_NCPS` (8) significant chars, 7-bit-masked + a terminating `NUL` |
 | `1` / `0` | the literal word 1 / 0 | shorthand constants |
+| `F` | a floating constant's text (`FCON` only) | up to 1000 characters, 7-bit-masked, then a `NUL` - no `_` |
 
 `temp1` carries everything but string-literal data, which goes to `temp2`
 (v7's `putstr()` switches `outcode()`'s destination with `strflg`), one
@@ -198,7 +201,7 @@ exactly `tests/mutos_cc/00_smoke`'s three programs plus all of
 translation-unit  := extdef*
 extdef            := IDENT '(' ')' compound-stmt
 compound-stmt     := '{' decl* stmt* '}'
-decl              := ('int'|'char'|'long') declarator (',' declarator)* ';'
+decl              := ('int'|'char'|'long'|'float'|'double') declarator (',' declarator)* ';'
 declarator        := '*'* IDENT ('[' ICON ']' ('[' ICON ']')?)?
 stmt              := assign-stmt | star-assign-stmt | call-stmt | return-stmt
 call-stmt         := IDENT '(' ... ')' ... ';'
@@ -220,9 +223,9 @@ ADD               := MUL (('+'|'-') MUL)*
 MUL               := UNARY (('*'|'/'|'%') UNARY)*
 UNARY             := ('-'|'+'|'~'|'!') UNARY | ('++'|'--') IDENT | POSTFIX
 POSTFIX           := PRIMARY ('++'|'--')?
-PRIMARY           := ICON | IDENT | STRING | cast-expr | sizeof-expr
+PRIMARY           := ICON | CCON | FCON | IDENT | STRING | cast-expr | sizeof-expr
                     | '(' comma-item (',' comma-item)* ')'
-cast-expr         := '(' ('int'|'char'|'long') ')' IDENT
+cast-expr         := '(' ('int'|'char'|'long'|'float'|'double') ')' IDENT
 sizeof-expr       := 'sizeof' '(' ('int'|'char'|'long'|IDENT) ')'
 comma-item        := (IDENT '=' expr) | expr
 ```
@@ -1145,6 +1148,53 @@ power of two subscripted, a computed or out-of-range value stored into a
 bit-field, `&`, `++`/`--` or a compound assignment on a bit-field, and a
 char member reached through a pointer plus an offset.
 
+**Floating point (confirmed via `08_float`).** `mutos_c0` takes `float`
+and `double` locals (frame slots of 4 and 8 bytes - `float a, b, c;` at
+`-8`/`-12`/`-16`), floating constants and `+ - * /`, assignment, casts
+and `return`, as v7's `build()` writes them (`c0_parser.c`'s "Floating
+point"): a constant is `FCON(DOUBLE, "<its source text>")` (opcode 23,
+"BNF" - `c0_outcode.h`'s `F`, no `_`), never folded; every operator and
+assignment is typed `DOUBLE` (3), even between floats and into a float -
+only a `NAME` keeps `FLOAT` (2), and float/double convert with no node;
+the conversions are `cvtab[]`'s: `ITOF` (51) and `LTOF` (57) to floating,
+typed with the target's type (`d = i;` - `ITOF(DOUBLE)`; into a float,
+`ITOF(FLOAT)`) or, inside `+ - * /`, the floating operand's, and `FTOI`
+(52) / `FTOL` (56) from it (`(int) c`, `(long) d`, `(int) d`). `return c;`
+in an int function is `FTOI RFORCE` (`doret()` returns through an
+assignment). An integer left operand is converted right after its own
+bytes, so the right operand is buffered until its type is known
+(`arith_rhs_begin()`/`float_arith()`).
+
+`mutos_c1` generates calls into libc.a's software floating-point runtime
+(`tests/mutos1700_libc/`: `stacks.o`, `singles.o`, `doubles.o`,
+`convert.o`, `lconvert.o`), which works on a stack of doubles and takes a
+memory operand's ADDRESS in AX: `lea ax,<x>` / `call flds` (`fldd` for a
+double) loads, `lea ax,<y>` / `call fadds` (`fmuls`, `fdivs`; `fsubs`;
+`faddd`... for a double operand) combines the top with memory, `lea
+ax,<z>` / `call fstsp` (`fstdp`) stores and pops; an int goes `mov
+di,<i>` / `mov ax,di` / `call itof`, and `call ftoi` leaves an int in AX,
+`call ftol` a long in DX:AX (then `mov di,dx` / `mov si,ax`). A constant
+is written where it is read, `.data` / `L10000:<TAB>.float
+3.50000000000000000e+00` / `.text` (`%.17e`, the label from c1's own
+counter), and a file with floating code ends `.globl<TAB>fltused` before
+its `.data` (v7's `nfloat`). Only a constant exactly representable as a
+float is accepted - the real compiler keeps any other in 8 bytes, in a
+form no golden shows (libc.a's `ecvt.o` has `10.0` and `1.0` in 4 bytes
+but `.03` in 8) - and of those only non-zero ones below 2**24 with at
+most 18 significant digits, whose `%.17e` is exact. The golden-confirmed
+shapes are `flds`/`fldd`/`fstsp`/`fstdp`/`fadds`/`fmuls`/`fdivs`/`itof`/
+`ftoi`/`ftol`; the rest follow the same pattern and the runtime's entry
+points. Refused: comparisons and conditions, `%`, unary operators,
+`++`/`--`, compound assignment, `&&`/`||`/`?:`/`,` around a floating
+value, floating call arguments, parameters, return types, globals,
+statics, arrays, pointers and struct members, a `char` mixed with a
+floating value; in `mutos_c1` a computed right operand (hence `a + i`,
+the int on the right), a constant right operand of a computed value, a
+converted constant, an int in AX or a register variable converted, `LTOF`
+and an unused computed value. `mutos_as` cannot assemble the output yet
+(`.float` and `lea <reg>,<label>` - see `STATUS.md`). Full derivation in
+`docs/DEVLOG.md`'s `08_float` section.
+
 ## `SETSTK` / local-frame handling
 
 `c1_gen.c`'s `SETSTK` handler computes `extra = value - 4` (4 = the
@@ -1366,10 +1416,15 @@ di,*2.(si)`).
    compared with a constant - see "Current scope"). **The further `char`
    shapes are done** (a char with one int operand, char call arguments
    and conditions, a store into a file-scope array element - see "More
-   `char`"), and so is `10_integ/03_linklist`: 60 of 62. Left in the
-   corpus: `08_float` (floating point - `FCON`, `ITOF`, the FP runtime).
-   The 81..127-byte `chkstk` gap stays "not yet supported" until a golden
-   lands in it.
+   `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
+   "Floating point" under "Current scope") - all 62 of 62. Left: `mutos_as`
+   support for the floating output (`.float`, `lea <reg>,<label>` - see
+   `STATUS.md`'s "Next up"), the floating shapes still refused (an int
+   right operand - libc's `fsubrs`/`fdivrs`... "reversed" entry points
+   suggest how the real compiler does it - comparisons, a zero or
+   non-float constant, floating parameters, globals and returns), each
+   waiting for a golden. The 81..127-byte `chkstk` gap stays "not yet
+   supported" until a golden lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
    already present, currently 0/9 through `mutos_c0`): a second, separate
@@ -1438,9 +1493,11 @@ build. It found the constant-left-operand bug and two `mutos_c1`
 wrong-code bugs (all three fixed) - see its README. With `--scope` it
 also makes some variables file-scope ones and wraps statements in
 blocks that shadow them. The generator produces neither chars nor
-calls; `x86sim.py` itself executes both (byte moves, calls of functions
-in the same file, `chkstk`) and fixed-address variables, so hand-written
-programs of that kind can be checked the same way.
+calls nor floating code; `x86sim.py` itself executes all three (byte
+moves, calls of functions in the same file, `chkstk`, and the floating-
+point runtime's entry points against a model of it) and fixed-address
+variables, so hand-written programs of that kind can be checked the same
+way.
 
 ## Tooling
 
@@ -1466,8 +1523,8 @@ handling `OP_SWIT`'s variable-length case table and `OP_NAME`'s
 `SC_EXTERN`-vs-otherwise conditional shape (a symbol name vs. a
 numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. An
 opcode it has no confirmed argument shape for (a construct outside
-`mutos_c0`'s current grammar/opcode scope, e.g. a floating-point
-constant in `08_float`'s goldens) stops the dump cleanly with a clear message rather than
+`mutos_c0`'s current grammar/opcode scope, e.g. the `LESSEQP` pointer
+comparison in `11_kernel/02_prim.1.golden`) stops the dump cleanly with a clear message rather than
 guessing and silently desyncing the rest of the file - the same
 "explicit not yet supported, never silently wrong" rule this project
 applies everywhere else.

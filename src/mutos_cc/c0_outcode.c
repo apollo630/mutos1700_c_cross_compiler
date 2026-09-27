@@ -38,6 +38,16 @@ void outcode(FILE *dst, const char *fmt, ...)
             putc(0, dst);
             break;
         }
+        case 'F': {
+            /* A floating constant's text - v7's 'F' (up to 1000
+             * characters, no '_', NUL-terminated). */
+            const char *np = va_arg(ap, const char *);
+            int n = 1000;
+            while (n-- && *np)
+                putc((*np++) & 0x7F, dst);
+            putc(0, dst);
+            break;
+        }
         case '1':
             putc(1, dst);
             putc(0, dst);

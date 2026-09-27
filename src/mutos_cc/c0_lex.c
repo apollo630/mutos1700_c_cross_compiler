@@ -168,16 +168,26 @@ static Token lex_ident(Lexer *lx, int first, int line)
 
 /* Integer constant: K&R lexical rules - 0x/0X hex, leading 0 octal,
  * otherwise decimal; optional trailing l/L and u/U suffixes (order-
- * independent, at most one of each). */
+ * independent, at most one of each).
+ *
+ * Floating constant (T_FCON): v7/cc/c00.c's getnum() - a '.' or an
+ * 'e'/'E' exponent (optionally signed) makes the number a floating
+ * one, decimal whatever its leading digit; a leading '.' is only a
+ * number when a digit follows (lex_next()). The token keeps the
+ * constant's source text exactly as written, in Token.ident - what
+ * v7 copies into numbuf and writes to temp1 behind FCON ("3.5",
+ * "2.0" in tests/mutos_cc/08_float's .1.goldens); its value is
+ * mutos_c1's business (atof(), there as in v7's c1). */
 static Token lex_number(Lexer *lx, int first, int line)
 {
     Token t = {0};
     t.line = line;
-    char buf[64];
+    char buf[LEX_IDENT_MAX];
     size_t n = 0;
+    int too_long = 0;
     buf[n++] = (char)first;
 
-    int is_float = 0;
+    int is_float = (first == '.');
     int base = 10;
     if (first == '0') {
         int c2 = lex_rawgetc(lx);
@@ -195,17 +205,43 @@ static Token lex_number(Lexer *lx, int first, int line)
         }
     }
     if (base != 16) {
+        int seen_dot = is_float;
         for (;;) {
             int c = lex_rawgetc(lx);
             if (isdigit(c)) {
-                if (n < sizeof buf - 1) buf[n++] = (char)c;
+                if (n < sizeof buf - 1) buf[n++] = (char)c; else too_long = 1;
                 continue;
             }
-            if (c == '.' && !is_float) {
-                is_float = 1;
+            if (c == '.' && !seen_dot) {
+                seen_dot = is_float = 1;
                 base = 10; /* a leading-0 float like 0.5 is decimal */
-                if (n < sizeof buf - 1) buf[n++] = (char)c;
+                if (n < sizeof buf - 1) buf[n++] = (char)c; else too_long = 1;
                 continue;
+            }
+            if (c == 'e' || c == 'E') {
+                /* The exponent: v7's getnum() takes the character after
+                 * the 'e' unconditionally, and reports "Number syntax"
+                 * unless it and what follows form [+-]digits. */
+                is_float = 1;
+                base = 10;
+                if (n < sizeof buf - 1) buf[n++] = (char)c; else too_long = 1;
+                int s = lex_rawgetc(lx);
+                if (s == '+' || s == '-') {
+                    if (n < sizeof buf - 1) buf[n++] = (char)s; else too_long = 1;
+                    s = lex_rawgetc(lx);
+                }
+                if (!isdigit(s)) {
+                    lex_ungetc(lx, s);
+                    c0_error_at(line, "Number syntax (a floating constant's "
+                                      "exponent needs digits)");
+                    break;
+                }
+                while (isdigit(s)) {
+                    if (n < sizeof buf - 1) buf[n++] = (char)s; else too_long = 1;
+                    s = lex_rawgetc(lx);
+                }
+                lex_ungetc(lx, s);
+                break;
             }
             lex_ungetc(lx, c);
             break;
@@ -214,9 +250,13 @@ static Token lex_number(Lexer *lx, int first, int line)
     buf[n] = '\0';
 
     if (is_float) {
-        /* Float constants are lexed (so the token stream stays well-
-         * formed for 08_float's corpus), but mutos_c0's current
-         * grammar coverage does not yet consume T_FCON anywhere. */
+        /* The source text, for FCON (see this function's comment). A
+         * longer constant cannot be kept whole, and a shortened one
+         * would be a different number - an error, not a truncation. */
+        if (too_long)
+            c0_error_at(line, "floating constant longer than %d characters",
+                        LEX_IDENT_MAX - 1);
+        memcpy(t.ident, buf, n + 1);
         t.kind = T_FCON;
         return t;
     }
@@ -462,6 +502,14 @@ Token lex_next(Lexer *lx)
         return lex_ident(lx, c, line);
     if (isdigit(c))
         return lex_number(lx, c, line);
+    if (c == '.') {
+        /* ".5" - a floating constant (v7's getnum() is entered for a
+         * PERIOD too, and gives back DOT when no digit follows). */
+        int c2 = lex_rawgetc(lx);
+        lex_ungetc(lx, c2);
+        if (isdigit(c2))
+            return lex_number(lx, c, line);
+    }
     if (c == '"')
         return lex_string(lx, line);
     if (c == '\'')

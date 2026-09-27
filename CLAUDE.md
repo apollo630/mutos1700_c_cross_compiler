@@ -31,7 +31,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
   and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
-  60/62 of `tests/mutos_cc/`'s goldens - all but `08_float` (`00_smoke` plus all of `01_expr`:
+  62/62 of `tests/mutos_cc/`'s goldens - all of them (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
   `08_castsize`, plus all 4 of `02_long`: `01_addsub`/`02_muldiv`/`03_retval`/`04_params`,
@@ -39,7 +39,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `03_ctrlflow`, plus all 7 of `04_funcs`, plus all 7 of `05_arrptr` (string
   literals included), plus all 7 of `09_abiprobe` (`char` element access), plus
   all 3 of `07_scope` (file-scope variables, block scope), plus all 9 of `06_struct`
-  (structs, unions, bit-fields, enums, typedefs), plus all 5 of `10_integ`) — see
+  (structs, unions, bit-fields, enums, typedefs), plus all 5 of `10_integ`, plus both
+  of `08_float` (floating point through libc's software floating-point runtime)) — see
   `src/mutos_cc/README.md` for the confirmed
   `temp1`/`temp2` wire format, current grammar/opcode scope, and expansion plan. Also
   contains `dump_temp.py`, a standalone human-readable decoder for any `.1`/`.2` file
@@ -245,6 +246,12 @@ You act as an expert systems programmer, compiler architect, and operating syste
      return values and `+`/`-`/`*`/`/`/`%` (all of `tests/mutos_cc/02_long`, byte-exact);
      a `long` read or written through a pointer or subscript is still refused (see
      `src/mutos_cc/README.md`'s "Current scope").
+   * **`float`/`double` values do NOT follow it either**: MUTOS 1700's floating
+     format keeps the whole value little-endian, the excess-128 exponent in the
+     HIGHEST byte and the sign in the top bit of the byte below it (v7's
+     "0.1xxx" mantissa otherwise) - read off real `libc.a` data bytes
+     (`atof.o`'s `2**56` is `00 00 00 b9`, `ecvt.o`'s `10.0` is `00 00 20 84`),
+     not PDP-11 word order. See `docs/DEVLOG.md`'s `08_float` section.
    * *Example (for the `ar`-archive and future-`mutos_cc` cases only)* — storing
      `0x0A0B0C0D`:
      ```text
@@ -411,7 +418,7 @@ scope and intent, not a snapshot of what's done.
   "MUTOS 1700 host-tooling findings" section. Full-corpus goldens (all 62
   files across all 11 categories) are now present in this checkout.
 * **`mutos_c0`/`mutos_c1`: implemented and verified byte-exact, end-to-end,
-  for 60/62 of the full corpus - all but `08_float`** (`tests/mutos_cc/00_smoke`'s 3 files, plus
+  for 62/62 of the full corpus - every file** (`tests/mutos_cc/00_smoke`'s 3 files, plus
   all of `01_expr`: `01_intarith.c`, `02_bitwise.c`, `03_rellogic.c`,
   `04_shift.c`, `05_incdec.c`, `06_compasgn.c`, `07_ternary.c` and
   `08_castsize.c`, plus `02_long/01_addsub.c` and `02_muldiv.c` (`long`
@@ -504,7 +511,15 @@ scope and intent, not a snapshot of what's done.
   decisions - with registers handed out in order (DI, SI, DX); the
   remaining `char` shapes (a char with an int operand, as a call argument
   or condition, stored into a file-scope array element) came first, from
-  kernel evidence.**
+  kernel evidence. Both `08_float` files completed the corpus
+  (2026-09-27): `float`/`double` locals, floating constants (`FCON`,
+  the source text), `+ - * /` and the `ITOF`/`FTOI`/`FTOL` conversions
+  in `mutos_c0`, and in `mutos_c1` calls into libc.a's software
+  floating-point runtime - an operand's address in AX (`lea ax,<x>` /
+  `call flds`, `fadds`, `fstsp`, `itof`, `ftoi`, `ftol`, ...), each
+  constant a `.float` in `.data`, `.globl fltused` at the end; the
+  floating format itself read off real `libc.a` data bytes (see
+  `STATUS.md`/`docs/DEVLOG.md`).**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -525,8 +540,9 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: `08_float` (the last two files of the 62-file
-  corpus), the remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
+  dependency-ordered list: `mutos_as` support for `mutos_c1`'s floating
+  output (`.float` and `lea <reg>,<label>` - see `STATUS.md`), the
+  remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
   goldens narrowed the threshold to `(80,128]`), then growing coverage
   into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
   0/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s

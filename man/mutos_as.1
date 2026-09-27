@@ -251,6 +251,14 @@ resolved at assembly time.
 Advances the current location counter by
 .I N
 bytes, zero-filling the reserved span in the output.
+.PP
+The floating-point data directives
+.B .float
+and
+.B .double
+are not implemented yet and are rejected with an error (rather than
+skipped, which would leave the following addresses wrong); other
+directives this assembler does not implement are ignored.
 .SS "Branches and jumps"
 The real conditional jump mnemonics
 .RI ( "e.g." " je" ", " jne ", " jb ", " jae ", " jg ", " jle ,
