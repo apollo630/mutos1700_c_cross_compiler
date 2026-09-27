@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-26.
+Last updated: 2026-09-27.
 
 ---
 
@@ -226,7 +226,8 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 50/62 of the full corpus: `tests/mutos_cc/
+byte-exact, end-to-end, for 60/62 of the full corpus - everything but
+`08_float`'s two files: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -243,12 +244,15 @@ pointer/array-parameter equivalence, and string literals), plus all 7 of
 `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c` large-frame
 probes - `char` element access), plus all 3 of `07_scope`:
 `01_globstat.c`, `02_shadow.c` and `03_externdef.c` (file-scope variables
-and block scope), plus `10_integ/01_wordcount.c` (a file-scope char
-array with a string initializer, a char compared with a constant),
-`02_bubsort.c`, `04_strrev.c` and `05_matmul.c` (evaluation-order
-codegen: a right operand computed first and spilled, call arguments
-right to left, a relational's operands swapped by degree) - see the
-sections below. ABI/
+and block scope), plus all 9 of `06_struct` (structs, unions, nested
+structs, arrays of structs, struct assignment, bit-fields, enums,
+typedefs), plus all 5 of `10_integ`: `01_wordcount.c` (a file-scope
+char array with a string initializer, a char compared with a constant),
+`02_bubsort.c`, `03_linklist.c`, `04_strrev.c` and `05_matmul.c`
+(evaluation-order codegen: a right operand computed first and spilled,
+call arguments right to left, a relational's operands swapped by
+degree, a store's right-hand side computed first) - see the sections
+below. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -256,9 +260,126 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### `mutos_c0`/`mutos_c1`: verified this session (`06_struct` - structs, unions, bit-fields, enums, typedefs - and `10_integ/03_linklist`; `char` with an int operand, as a call argument, as a condition, stored into a file-scope array)
+
+**60/62 byte-exact end-to-end, up from 50 of 62** - all nine `06_struct`
+files and `10_integ/03_linklist`; only `08_float`'s two files are left.
+Full derivation in `docs/DEVLOG.md`'s section of the same name.
+
+- **Structs, unions, enums and typedefs (`mutos_c0`).** Declarations are
+  laid out as v7's `c03.c` does (`align()`: a non-char member on a word
+  boundary; bit-fields packed into words, a field that does not fit
+  starting the next; a union's members all at offset 0; the size rounded
+  to a word), and write nothing to temp1 themselves. A member reference
+  is v7's `build()` - `a.b` as `(&a)->b`, `p->b` as `*(p + offset)` -
+  including `setype()`/`disarray()`'s retyping of the whole
+  NAME/AMPER/PLUS/STAR spine to the member's type (`p.x` is `NAME(p,
+  INT) AMPER(8) CON 0 PLUS(8) STAR(0)`; a subscript's `ITOP` keeps its
+  pointer-to-struct type), so a chain is collected and written once its
+  last member is known. A bit-field's `STAR` is followed by the new
+  `FSEL(UNSIGN, bitoffs, flen)` (opcode 10), a whole-struct assignment
+  is `ASSIGN(4)` plus the new `STRASG(4, size)` (115). Enum constants
+  are int `CON`s, a typedef name stands for its type, `sizeof` takes a
+  type name, and a pointer cast of a call (`(struct node *) malloc(...)`)
+  types the `CALL`. Unsigned arithmetic (a bit-field's value) is typed
+  `UNSIGN`; `/`, `%`, `>>` and ordered comparisons on it are refused.
+  All ten files' `.1`/`.2` goldens match through `mutos_c0` alone.
+- **Struct code (`mutos_c1`).** A store through "pointer + constant" (a
+  member other than the first) computes its right-hand side FIRST - a
+  new evaluation-order plan - and then the pointer into the next free
+  register: `mov di,*-6.(bp)` / `mov si,*-8.(bp)` / `mov *2.(si),di`
+  (`cur->next = head;`); the first member keeps the push/`pop bx` shape.
+  An address or pointer goes into DI, or SI while DI holds a value; a
+  subscript index into DI, SI or - both taken - DX (`lea si,*-16.(bp)` /
+  `mov dx,*-18.(bp)` / `sal dx,*1` / `sal dx,*1` / `add si,dx`). Member
+  offsets become one displacement (`rp->botright.y` -> `*6.(di)`, `&*`
+  pairs and `+0`s folded). A dereference that is the left operand of
+  `+`/`-`/a comparison with code on the right is loaded first, and the
+  right one then added from memory (`add di,*2.(si)`). `x - *p` with a
+  computed left operand pushes `p` first (`push *4.(bp)` ... `pop bx` /
+  `sub di,(bx)`), and an int `+` chain is reordered as v7's `acommute()`
+  does (`sum + pts[i].x + pts[i].y` adds `sum` last). A bit-field is
+  read as `mov` / `sar` / `and` and stored from a constant as `and`
+  (complemented mask - in hex, `*/fff3`, `#/ff0f`, when the value is not
+  0) plus `or`; a 4-byte struct is assigned as a long, a 2-byte one as an
+  int. `x = y;` between two memory operands now goes through DI
+  (`03_linklist`'s `head = cur;`), and `i * 2` is `sal di,*1`.
+- **More `char` (`mutos_c0`/`mutos_c1`).** A char with one int leaf
+  operand is computed in AX (`movb ax,...` / `cbw` / `add ax,*-48.` for
+  `c - '0'`, `inc`/`dec` for 1, `imul`, shifts), a char AND a constant
+  0..127 in DX without the `cbw` (`movb dx,#_amxscd(bx)` / `and dx,*12.`
+  / `beq` - the flags of the AND tested directly), a char compared with an
+  int leaf goes left and is widened into AX; a char object as a call
+  argument is `movb ax,...` / `cbw` / `push ax`, as a condition a byte
+  compare with 0; a store into a file-scope char array element pushes the
+  index (`push *-8.(bp)` ... `pop bx` / `movb _t(bx),dx`). Evidence: the
+  real compiler's non-optimized kernel output (`kernel_nonopt/amx.s`,
+  `lp_AC.s`) and `kernel_opt/genio.s`, `ifss.s`, `cons_NOBIOS.s` - no
+  golden has these shapes.
+- **`dump_temp.py`** decodes `STRASG` and `FSEL`; **`x86sim.py`** takes
+  the flags of `and`/`or`/`xor` (as `cmp <result>,0`), for a masked char
+  or bit-field tested directly. **`mutos_c0`** no longer misreads the
+  body of a refused function definition (a function returning a struct
+  pointer) as further external definitions.
+- **Refused (explicitly)**: file-scope struct/union/unsigned variables,
+  functions returning a struct or union or a pointer to one, a struct
+  parameter by value, `unsigned` variables, `long` members, char and
+  union bit-fields, arrays of arrays as members, a struct larger than 4
+  bytes assigned as a whole, a struct size that is not a power of two in
+  a subscript, a computed value or an out-of-range constant stored into
+  a bit-field, `&` of a bit-field, compound assignment or `++`/`--` on
+  one, a char member reached through a pointer plus an offset, an address
+  needed while DI and SI both hold values, and the shapes the
+  register-occupancy guard stops (a store through a pointer from a
+  `register` variable in DI, ...).
+
+**Verification (this session):**
+
+- `make test` (clean build): 60/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build (`84d6548`): `mutos_c0` on the 62 golden
+  `.i` files changed exactly the ten struct files (refusals -> their
+  `.1`/`.2` goldens; 60 of 62 now match through `c0` alone); `mutos_c1`
+  alone on the 62 golden pairs changed `02_stptr`, `03_starray`,
+  `04_stassign`, `05_nestst`, `07_bitfield` and `03_linklist` (refusals
+  -> their `.s.golden`; 60 of 62 now match through `c1` alone, up from
+  54).
+- `dump_temp.py` over all 124 golden `.1`/`.2` files: output changed for
+  `04_stassign.1.golden` and `07_bitfield.1.golden` only (both decoded to
+  the end now); only `08_float`'s two `.1` goldens still stop.
+- `fuzz_c.py` against the previous build: 42000 programs (18000
+  arrays and scalars, seed 11; 18000 `--scope`, seed 21; 6000 scalar-only,
+  seed 31): 0 WRONG, 0 BAD; 324 changed and still correct, 1261 correct
+  that the previous build refused, the rest byte-identical. The changes
+  are the two intended ones: an AND/OR/XOR whose left operand is already
+  in AX or DX (a product, a quotient, a call's result) is done there
+  (`and ax,*10.` / `mov *-26.(bp),ax`, no `mov di,ax`), and a dereference
+  on the left of `+`/`-` is loaded before the right operand's code. The
+  generator makes no chars and no structs.
+- 18 hand-written programs run through `mutos_cpp`, both passes,
+  `mutos_as` and `x86sim.py`, compared with the host C compiler (`short`/
+  `signed char`): ten `char` programs (a char with `+`/`-`/`&`/`|`/`^`/
+  `*`/shifts and an int constant or variable, on either side where the
+  operator commutes, relational operators against an int, chars as call
+  arguments and
+  conditions under `&&`/`||`/`!`/`?:`, masks tested directly, stores into
+  a global array element) and eight struct programs (stores through a
+  pointer at every offset from a char, a call, a comparison, a
+  dereference and a subtraction; arrays of structs through `a[i]` and
+  `p[i + 1]`; nested structs through a pointer, `&r.b` passed on;
+  bit-fields of 1 to 8 bits set to 0, to all ones and in between, read in
+  conditions and sums, through a pointer too; a linked list in a local
+  array) - all correct, all assemble. Five refusal cases stop with their
+  diagnostic.
+- `x86sim.py`: 51 of the 62 goldens run, as before - all nine `06_struct`
+  ones among them (`07_bitfield` 12, `05_nestst` 40).
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 62 golden inputs,
+  the hand-written programs and 6000 fuzzed programs (a quarter
+  `--scope`): clean.
+
 ### `mutos_c0`/`mutos_c1`: verified this session (`10_integ/01_wordcount` - a file-scope char array, character constants, a char compared with a constant)
 
-**50/62 byte-exact end-to-end, up from 49 of 62** - `10_integ/
+**50 of 62 byte-exact end-to-end, up from 49 of 62** - `10_integ/
 01_wordcount`, the last `10_integ` file that needs no structs. Full
 derivation in `docs/DEVLOG.md`'s section of the same name.
 
@@ -311,7 +432,7 @@ derivation in `docs/DEVLOG.md`'s section of the same name.
 
 **Verification (this session):**
 
-- `make test` (clean build): 50/62 byte-exact, 0 genuine mismatches, zero
+- `make test` (clean build): 50 of 62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   changed exactly `01_wordcount` (a refusal -> its `.1`/`.2` goldens); 50
@@ -2078,25 +2199,19 @@ section; headline findings:
 ### Next up
 
 Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — `01_expr`,
-`02_long`, `03_ctrlflow`, `04_funcs`, `05_arrptr`, `07_scope` and
-`09_abiprobe` are all fully covered, and `10_integ` has four of its five
-files. The 12 files left: `06_struct` (9), `08_float` (2) and `10_integ/
-03_linklist`. In order:
+per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
+but `08_float` is now fully covered (60/62). In order:
 
-1. **More `char`**, each shape with its evidence already recorded in
-   `docs/DEVLOG.md`'s `char` section: a char with one int operand
-   (computed in AX, `kernel_nonopt/amx.s`), char call arguments (`movb
-   ax,...` / `cbw` / `push ax`) and conditions, and a store into a
-   file-scope array element (`push *-34.(bp)` ... `pop bx` / `movb
-   _amxscd(bx),dx` in `amx.s` - the index pushed, not an address).
+1. **`08_float`** (2 files): floating point - `FCON`/`ITOF` and the MUTOS
+   floating-point runtime, nothing of which exists in either pass yet.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
    _amxscd(bx),*4.` in `kernel_nonopt/amx.s`); `x = y;` between two
-   memory operands goes through a register (`mov dx,*-6.(bp)` / `mov
-   _cfreeli,dx` there - DX in a function with register variables, so
-   which register it is elsewhere still needs a golden).
+   memory operands goes through DI now (`03_linklist`'s `head = cur;`),
+   but in a function with a register variable in DI the kernel uses DX
+   (`mov dx,*-6.(bp)` / `mov _cfreeli,dx`, a function with two) - which
+   register with one still needs a golden.
 3. **Two shape follow-ups from the conditional-evaluation work** (both
    currently correct code, just not the real compiler's bytes; see
    `docs/DEVLOG.md`'s "Conditional evaluation" section): a call result
@@ -2105,18 +2220,21 @@ files. The 12 files left: `06_struct` (9), `08_float` (2) and `10_integ/
    emits so far only for a postfix operand; and a postfix call argument is
    `mov di,a / push di / inc a` where the kernel pushes the memory operand
    directly (`push *-56.(bp) / inc *-56.(bp) / call _clearse`).
-4. **`06_struct`** (structs/unions/enums - real type-system work the current
-   `SymEntry`/`ExprVal` model doesn't fully have yet; `06_union`'s `c1`
-   half already matches), then `10_integ/03_linklist` (its right-hand-
-   side-first store is one more decision on `c1`'s plan mechanism), the
-   remaining 81..127-byte `chkstk` gap, `08_float`, and the `mutos_cc`
-   driver itself.
+4. **Struct shapes still refused** (see `src/mutos_cc/README.md`'s
+   "Structs, unions, bit-fields, enums and typedefs"): file-scope struct
+   variables, functions returning a struct or a struct pointer, block
+   copies, a computed value stored into a bit-field, a struct size that is
+   not a power of two in a subscript - each needs evidence of the real
+   compiler's shape first. Then the remaining 81..127-byte `chkstk` gap
+   and the `mutos_cc` driver itself.
 
 The register-occupancy guard's refusals (see the `c1_gen.c` review section
 above) mark where further spill/reordering codegen - and an SI-scratch
 generalization for functions with a `register` local - will be needed; each
-needs its own golden before it can be implemented. See
-`src/mutos_cc/README.md`'s "Next steps" for the full plan.
+needs its own golden before it can be implemented. The largest group in the
+fuzzer's refusals is now a 2-D subscript while DI holds another value
+(`x + m[i][j]`), which needs the base address in a register other than DI.
+See `src/mutos_cc/README.md`'s "Next steps" for the full plan.
 
 ---
 
@@ -2303,8 +2421,9 @@ far.
 3. `esc`/`escb`, `ret`/`reti` with an immediate, and the dedicated `int 3` encoding
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
-4. Begin Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`) on top of the now-complete
-   `mutos_cpp`. `v7/cc/` is the reference source tree.
+4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 60/62 of the corpus
+   byte-exact): `08_float` and the `mutos_cc` driver - see its "Next up".
+   `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string
    literal, a function-like macro name not immediately followed by `(`, or a macro

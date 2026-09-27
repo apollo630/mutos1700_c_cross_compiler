@@ -24,6 +24,35 @@
 
 #include "mutos_cc.h"
 
+/* A struct or union type - v7/cc's "struct str" hung off a STRTAG symbol
+ * (c0.h), built by strdec()/declist() (c03.c). Every struct/union type
+ * code in the wire format is TY_STRUCT (4) with derived-type degrees on
+ * top (v7 folds UNION into STRUCT - c0.h's "adjusted later to struct"),
+ * so WHICH struct a type code means travels separately, as this. */
+typedef struct Member {
+    char   name[MCC_NCPS + 1];
+    int    type;          /* v7 type code: TY_INT, TY_CHAR, TY_LONG,
+                           * TY_UNSIGN (a bit-field), TY_STRUCT, or one of
+                           * those with PTR/ARRAY degrees - an array member
+                           * ("char b[2]") has one ARRAY (030) degree, as
+                           * v7's getype() gives it */
+    struct StructDef *sdef; /* the struct when `type`'s base is TY_STRUCT */
+    int    offset;        /* byte offset within the struct */
+    int    nelem;         /* an array member's element count, else 0 */
+    int    is_field;      /* a bit-field: `bitoffs`/`flen` below */
+    int    bitoffs, flen;
+    struct Member *next;
+} Member;
+
+typedef struct StructDef {
+    char   tag[MCC_NCPS + 1]; /* "" for an anonymous struct */
+    int    is_union;
+    int    complete;      /* its member list has been read */
+    int    size;          /* bytes, rounded to a whole word (v7 declist()) */
+    Member *members;      /* in declaration order */
+    struct StructDef *next;
+} StructDef;
+
 typedef struct SymEntry {
     char name[MCC_NCPS + 1];  /* truncated to MCC_NCPS significant
                                 * chars, NUL-terminated - see
@@ -77,6 +106,11 @@ typedef struct SymEntry {
                                     * Arrays of three or more
                                     * dimensions are rejected by
                                     * parse_decl(). */
+    StructDef *sdef;              /* the struct/union when `type`'s base
+                                    * is TY_STRUCT - a struct variable
+                                    * (type 4), an array of them (type 4,
+                                    * is_array) or a pointer to one (12, 44,
+                                    * ...); NULL otherwise */
     struct SymEntry *next;
 } SymEntry;
 

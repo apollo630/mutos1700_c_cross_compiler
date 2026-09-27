@@ -4399,7 +4399,7 @@ all (it is out of scope there).
 
 ### `10_integ/01_wordcount` - a file-scope char array, character constants, a char compared with a constant (`mutos_c0`/`mutos_c1` extended and verified this session)
 
-`10_integ/01_wordcount` byte-exact end-to-end (50/62, up from 49 of 62) -
+`10_integ/01_wordcount` byte-exact end-to-end (50 of 62, up from 49 of 62) -
 the last `10_integ` file that needs no structs. `dump_temp.py` stopped at
 `DATA`, so `01_wordcount.1.golden` was decoded with a scratch copy that
 knew `DATA` has no arguments (then added for real, see Tooling); the
@@ -4581,7 +4581,7 @@ register changed) are all caught.
 
 **Verification.**
 
-- `make test` (clean build): 50/62 byte-exact, 0 genuine mismatches, zero
+- `make test` (clean build): 50 of 62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
 - Against the previous build: `mutos_c0` on the 62 golden `.i` files
   changed only `01_wordcount` (a refusal -> its goldens; 50 of 62 match
@@ -4610,6 +4610,290 @@ register changed) are all caught.
   and were rewritten around them.
 - ASan/UBSan builds of both passes over the 62 golden inputs, the
   hand-written programs and 3000 fuzzed programs (half `--scope`): clean.
+
+### `06_struct` and `10_integ/03_linklist` - structs, unions, bit-fields, enums, typedefs; more `char` (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+60/62 byte-exact end-to-end, up from 50 of 62: all nine `06_struct` files
+and `10_integ/03_linklist`. Two sessions' work (2026-09-26/27), in the
+roadmap's order: the remaining `char` forms first, then the struct front
+end, then the struct back end.
+
+#### 1. `char` with an int operand, as an argument, as a condition, stored into a global array
+
+No golden has any of these; every shape comes from the real compiler's
+own output in `tests/mutos_as/` (non-optimized kernel sources unless
+noted).
+
+- **A char with one int leaf operand is computed in AX.** `mutos_c0`
+  already wrote `ITOC(0)` on it (`VK_CHARX`); CBW exists for AL/AX only,
+  so the value arrives in AX and the operator works there in place:
+  `movb ax,*23.(bx)` / `cbw` / `and ax,*-2.` / `or ax,*16.` / `pop bx` /
+  `movb *23.(bx),ax` (3x in `amx.s`), `movb ax,*52.(di)` / `cbw` / `mov
+  ax,ax` / `mov cx,*20.` / `imul cx` (5x - OP_TIMES's own `mov ax,<left>`,
+  as in `03_recfact`), `cbw` / `sal ax,*1` and `sal ax,cl`
+  (`kernel_opt`). `c - '0'` is `add ax,*-48.` (`kernel_opt/genio.s`) -
+  v7 `optim()`'s `x - c` -> `x + -c`; `+ 1`/`- 1` are `inc`/`dec`, `+ 0`
+  nothing. A commutative operator puts the char left (a char leaf's
+  `degree()` is 1, an int leaf's 0); `x - c` and a char shift count have
+  no example and are refused, as is a computed int operand (where the
+  real compiler evaluates it relative to the char load is not shown).
+- **AND with 0..127 skips the CBW**, loading the byte into DX (the mask
+  clears what `movb` leaves in the high byte): `movb dx,#_amxscd(bx)` /
+  `and dx,*12.` / `beq L144`, `movb dx,(bx)` / `and dx,*127.` / `pop bx`
+  / `movb 4.+_amxtout(bx),dx`. The branch reads the AND's own flags - no
+  `cmp` - also after `call _inb` / `add sp,*2.` / `and ax,*9.` / `bne`
+  (`lp_AC.s`): `Val.flagsv`/`flags_at` mark a register value whose flags
+  are still the AND's (`GenState.ninsn` counts instructions), and
+  `gen_cond_branch()` branches directly on them. An int AND/OR/XOR whose
+  left operand is already in AX or DX is done in place the same way
+  (`and ax,*9.`), where it used to be moved to DI first.
+- **A char compared with an int leaf** goes left (the relational is
+  mirrored) and is compared as an int: `movb ax,*22.(di)` / `cbw` / `cmp
+  ax,*-6.(bp)` (`kernel_opt/ifss.s`), `movb ax,_kennung(bx)` / `cbw` / `cmp
+  ax,*-8.(bp)` (`cons_NOBIOS.s`). Two chars compared: refused.
+- **Char objects where v7 converts nothing** - a call argument, a
+  condition, an operand of `&&`/`||`/`!`, a `?:` condition - are written
+  unconverted by `mutos_c0` (as v7 does) when they are a char variable,
+  element or dereference (`char_nonobj_refused()`; a `(char)` cast's or
+  a char assignment's value stays refused - it would be a byte in a
+  register). `mutos_c1` pushes an argument as `movb ax,*-8.(bp)` / `cbw` /
+  `push ax`, and tests a condition as a byte against 0 - `cmpb
+  *1.(si),*0`, `cmpb (di),*0` (`amx.s`), or `movb dx,#_t(bx)` / `orb
+  dx,dx` for an element addressed through BX (`as_cond()` sets
+  `cond_is_byte`).
+- **A store into a file-scope char array element** pushes the INDEX (the
+  symbol is the store's displacement), computes the right-hand side into
+  DX and pops the index into BX: `push *-34.(bp)` / `mov dx,*-30.(bp)` /
+  `pop bx` / `movb _amxscd(bx),dx` (`amx.s`). A constant right-hand side
+  has no example and is refused. `ITOC(1)` of a value already in AX or
+  DX leaves it there (no `mov dx,ax`).
+
+#### 2. The struct front end (`mutos_c0`)
+
+Everything here is v7's algorithm, checked against the ten files' `.1`
+goldens, all of which now match through `mutos_c0` alone.
+
+- **Types.** One wire base type for every struct and union, `TY_STRUCT`
+  (4) - v7's `c0.h`: UNION is "adjusted later to struct" - with the usual
+  degrees on top (`struct point *` 12, `struct node **` 44); which struct
+  a code means travels beside it, as a `StructDef` (`c0_sym.h`), like
+  v7's `strp`. Declarations write nothing to temp1 (06_struct's goldens
+  start with `main()`'s `SYMDEF`).
+- **Layout** - `c03.c`'s `declist()`/`align()`: a non-char member on a
+  word boundary; a bit-field packed after the previous one in the same
+  word, the next word when it does not fit, and a non-field member
+  moving past the bytes the fields used; union members at offset 0; the
+  size rounded up to a word. Only int/unsigned fields (v7 also packs char
+  fields into bytes; no golden has one).
+- **Member chains** - `c01.c`'s `build()`: `a.b` is `(&a)->b`, `p->b` is
+  `*(p + CON offset)`, and ARROW first retypes the left operand's spine
+  with `setype()` - every AMPER/STAR/PLUS node down `tr1` (AMPER passing
+  `decref(t)` on, STAR `incref(t)`) and the NAME below. So `p.x` is
+  `NAME(p, INT) AMPER(8) CON 0 PLUS(8) STAR(0)` (`01_stbasic.1.golden`),
+  and `pts[i].x` retypes the subscript's spine too while its `ITOP` - a
+  PLUS's right operand, never visited - keeps `PTR.STRUCT` (12):
+  `NAME(pts, 0) AMPER(8) NAME(i) CON 4 ITOP(12) PLUS(8) STAR(0) AMPER(8)
+  CON 0 PLUS(8) STAR(0)` (`03_starray.1.golden`). Since the types are
+  known only once the chain's last member is, `mutos_c0` collects a chain
+  (its spine nodes, each PLUS's right operand as its bytes) and writes
+  it at the end. `disarray()` (an array member decaying) retypes the
+  same way: `n.b[0]` on `char b[2]` is `NAME(n, CHAR) AMPER(9) CON 0
+  PLUS(9) STAR(1) AMPER(9) CON 0 CON 1 ITOP(9) PLUS(9) STAR(1)`
+  (`06_union.1.golden`). A member's member through a pointer keeps the
+  intermediate STAR/AMPER pair: `rp->botright.x` is `NAME(rp) CON 4
+  PLUS(8) STAR(0) AMPER(8) CON 0 PLUS(8) STAR(0)` (`05_nestst.1.golden`).
+- **Two new opcodes.** A bit-field member's STAR is followed by
+  `FSEL(UNSIGN, bitoffs, flen)` - opcode 10, `treeout()`'s "BNNN" - and
+  the member's own type is unsigned (07_bitfield: `STAR(7) FSEL(7, 2,
+  2)`). A whole-struct assignment is `NAME(p2, 4) NAME(p1, 4) ASSIGN(4)
+  STRASG(4, 4)` - opcode 115, "BNN", the struct's size
+  (`04_stassign.1.golden`).
+- **The rest.** Enum constants are int `CON`s counting from 0 or from an
+  `=` value (`c = GREEN;` is `CON 1`, `08_enum`); `(int) x` on an int is
+  just the NAME; a typedef name stands for its type (a typedef name
+  followed by an identifier or `*` starts a declaration); `sizeof` takes
+  a struct/union/enum/typedef/`unsigned` type name or a struct variable;
+  `(struct node *) malloc(sizeof(struct node))` writes the CALL typed
+  `PTR.STRUCT` (v7's `build(CAST)` of a pointer to a pointer retypes the
+  top node, `03_linklist.1.golden`); `return` of an unsigned value in an
+  int function is `RFORCE(7)` (`doret()` - `07_bitfield`). An arithmetic
+  operator with an unsigned operand is typed `UNSIGN`; `/`, `%`, `>>` and
+  ordered comparisons on unsigned (v7's `UDIV`/`ULSH`/`LESSP`...) are
+  refused.
+
+#### 3. The struct back end (`mutos_c1`)
+
+`04_stassign`'s `STRASG` and a struct NAME were the easy part: a 4-byte
+struct is assigned as a long (v7's `strasg()` retypes a struct of at most
+4 bytes as a long - `mov si,*-6.(bp)` / `mov di,*-8.(bp)` / `mov
+*-10.(bp),si` / `mov *-12.(bp),di`), a 2-byte one as an int; a larger one
+(a block copy) has no golden. `01_stbasic`, `06_union`, `08_enum` and
+`09_typedef` then already matched. The other five needed six decisions,
+each read off the goldens:
+
+**3a. A store through "pointer + constant" computes its right-hand side
+first.** `03_linklist`:
+
+```
+cur->val = i;     push *-8.(bp) / mov di,*-10.(bp) / pop bx / mov (bx),di     offset 0
+cur->next = head; mov di,*-6.(bp) / mov si,*-8.(bp) / mov *2.(si),di          offset 2
+```
+
+and `02_stptr`'s `pp->y = pp->y + dy;` -> `mov di,*4.(bp)` / `mov
+di,*2.(di)` / `add di,*8.(bp)` / `mov si,*4.(bp)` / `mov *2.(si),di`, and
+`03_starray`'s `pts[i].x = i;` (push/pop) against `pts[i].y = i * 2;`
+(`mov di,*-18.(bp)` / `sal di,*1` / `lea si,*-16.(bp)` / `mov
+dx,*-18.(bp)` / `sal dx,*1` / `sal dx,*1` / `add si,dx` / `mov
+*2.(si),di`). The deciding difference is the offset, not the right-hand
+side: on the PDP-11, `*p` is an addressable operand (`@-8(r5)`), `*(p +
+2)` is not - so v7's table takes a different template, and the MUTOS
+port's x86 version of the first pushes the pointer, of the second
+computes the value first. `is_disp_store()` recognizes an ASSIGN whose
+target is a STAR of a pointer that folds (`ptr_fold()`: through `+
+constant`s and `&*` pairs) to a base plus a non-zero offset, with a
+right-hand side that is not a constant; the plan (`ORD_DISPSTORE`)
+streams the right-hand side, puts it into a register (`SEG_RHSREG`),
+streams the target - which, with a value below it, is no longer taken
+for a pushed target - swaps the two (`SEG_SWAP2`) and replays the
+ASSIGN.
+
+**3b. The next free register.** In those stores DI already holds the
+value, so the pointer goes to SI and a subscript index to DX: the real
+compiler allocates registers in order, R then R+1. `pick_addr_reg()`
+takes DI, or SI while a pending value holds DI (an eager `lea`, a
+pointer loaded for a STAR); an `ITOP`'s index takes DI, SI, then DX
+(it is only ever added to the base register). Both DI and SI taken is
+refused - DX cannot address memory, and no golden shows the spill.
+
+**3c. Offsets become one displacement.** `05_nestst`'s `rp->botright.x`
+(`CON 4 PLUS STAR AMPER CON 0 PLUS STAR`) is `mov di,*4.(bp)` / `mov
+di,*4.(di)`, `.y` `*6.(di)` - v7's `optim()` cancels the `&*` pair and
+`acommute()` merges the constants (tossing a `+0`). `OP_STAR`'s `&*`
+cancel now keeps a pending "pointer + offset" (`VK_REGOFF`) when another
+constant is about to be added (`next_is_con_plus()`), and the pointer
+`PLUS` folds that constant into it; for any other consumer the address is
+computed (`mov di,<p>` / `add di,*N.`). The same applies to an element
+address `p[i + 1]` followed by a member offset (`*6.(si)`, not `add
+si,*4.` / `*2.(si)`).
+
+**3d. A left dereference is loaded before the right operand's code.**
+`05_nestst`'s `h = rp->botright.y - rp->topleft.y;`: `mov di,*4.(bp)` /
+`mov di,*6.(di)` / `mov si,*4.(bp)` / `sub di,*2.(si)`, and
+`03_starray`'s sum: `... add di,si` / `mov di,(di)` / `lea si,*-16.(bp)`
+/ ... / `add di,*2.(si)`. v7's templates compute the left operand into R
+(`F`), then the right into R+1 (`S1`). `load_now()` extends the
+existing relational rule (`02_bubsort`) to an int `+`/`-`: a
+dereference whose consumer takes it as the LEFT operand, with more than
+one opcode on the right, is loaded at once; the `+` then adds a
+dereference to a value already in DI/SI straight from memory.
+
+**3e. `x - *p`: the pointer pushed first.** `w = rp->botright.x -
+rp->topleft.x;` -> `push *4.(bp)` / `mov di,*4.(bp)` / `mov di,*4.(di)` /
+`pop bx` / `sub di,(bx)` - the same PDP-11 addressability of `*p` as in
+3a, for an operand. `is_deferred_ptr()`: an int MINUS whose right operand
+reads through a pointer variable with total offset 0 and whose left one
+has code; the plan (`ORD_DEFPTR`) streams only the pointer's NAME,
+pushes it (`SEG_DEFPUSH`), streams the left operand, pops the pointer
+into BX (`SEG_DEFPOP`) and replays the MINUS - the right operand's other
+opcodes are never streamed. A leaf left operand and `+` have no golden.
+
+**3f. `acommute()` reorders an int `+` chain.** `sum = sum + pts[i].x +
+pts[i].y;` adds `sum` LAST: `(pts[i].x + pts[i].y) + sum`. v7's
+`insert()` places each term before the first one of strictly lower
+`degree()` (carrying the displaced one on the same way) and the chain is
+rebuilt left-deep in that order. But v7's PDP-11 `optim()` gives every
+int expression degree 0 (`d1==d2 ? d1+islong : max(d1,d2)`), which would
+keep the source order - the MUTOS compiler evidently counts: something
+computed ranks above a variable. `enode_degree()` models that with a
+Sethi-Ullman count (constant -3, a named object's address -2, a leaf 0 -
+a char 1 -, anything computed at least 1, two equal operands one more);
+only the relative order matters. `acommute_order()` applies it only
+where the order changes, to a chain of at least three terms with two of
+them computed, no constant term (v7 folds those) and no side effect,
+and not to two constant multiples (`distrib()`'s factoring). The plan
+(`ORD_ACOMMUTE`) streams the terms in the new order, loads a dereference
+before a computed next term (`SEG_LOADIND`), and replays the chain's
+own PLUS opcodes between them, the outermost last - so the one handler
+whose lookahead matters sees what really follows.
+
+**3g. Bit-fields.** `07_bitfield`:
+
+```
+f.ready = 1;    or  *-6.(bp),*1.                          1 bit at 0
+f.error = 0;    and *-6.(bp),*-3.                         1 bit at 1
+f.mode = 2;     and *-6.(bp),*/fff3 / or *-6.(bp),*8.     2 bits at 2
+f.count = 9;    and *-6.(bp),#/ff0f / or *-6.(bp),#144.   4 bits at 4
+f.ready + f.mode + f.count:
+    mov di,*-6.(bp) / and di,*1.
+    mov si,*-6.(bp) / sar si,*1 / sar si,*1 / and si,*3. / add di,si
+    mov si,*-6.(bp) / mov cx,*4. / sar si,cl / and si,*15. / add di,si
+```
+
+The value is `unoptim()`'s FSEL -> `(word >> bitoffs) & ((1 << flen) -
+1)`, the shift by the constant-shift rule; SAR drags the sign bit in, the
+mask removes it. The stores are `c12.c`'s `lvfield()`/FSELA: 0 is
+`ASAND` with `~mask` (a CON, printed in decimal, -3), a value equal to the
+mask is `ASOR` with the value - v7 compares the unshifted value with the
+SHIFTED mask, so for a field above bit 0 a value that fits never matches
+(and one that matches does not fit: refused, as is any value outside the
+field) - and anything else is the FSELA template, which prints the
+complemented mask in hex (`/fff3`, `/ff0f`: `/` and lower-case digits,
+with the operand's `*`/`#` marker) and ORs the shifted value in decimal
+(a signed 16-bit constant, like every decimal immediate). A value read
+ends in its AND, whose flags are the value's (`flagsv`), so `while (f.a)`
+is `mov di,*-6.(bp)` / `and di,*7.` / `beq`. A computed value stored into
+a field has no golden and is refused.
+
+**Found on the way.**
+
+- `mutos_c0`, recovering from a refused function returning a struct
+  pointer, skipped to the first `;` - inside the K&R parameter
+  declarations - and read the body as further external definitions (a
+  cascade of bogus errors after the real one). It now skips a function
+  definition's parameter declarations and body whole.
+- The 2-D subscript code's "internal: row step without its base in di"
+  was reachable once an eager `lea` could land in SI: now an explicit
+  refusal.
+
+**Tooling.** `dump_temp.py` decodes `STRASG` and `FSEL`: over all 124
+golden `.1`/`.2` files only `04_stassign.1.golden`'s and
+`07_bitfield.1.golden`'s dumps changed (both decoded to the end now);
+`08_float`'s two still stop, at `FCON`/`ITOF`. `x86sim.py` takes the
+flags of `and`/`or`/`xor` (as `cmp <result>,0`, which is what they are:
+CF/OF cleared, SF/ZF from the result) for a mask tested directly; it
+already ran all nine `06_struct` goldens.
+
+**Verification.**
+
+- `make test` (clean build): 60/62 byte-exact, 0 genuine mismatches, zero
+  warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
+- Against the previous build (`84d6548`): `mutos_c0` on the 62 golden
+  `.i` files changed exactly the ten struct files (60 of 62 match through
+  `c0` alone); `mutos_c1` alone on the 62 golden pairs changed exactly
+  `02_stptr`, `03_starray`, `04_stassign`, `05_nestst`, `07_bitfield` and
+  `03_linklist` (60 of 62, up from 54).
+- `fuzz_c.py` against the previous build: 42000 programs (seed 11;
+  seed 21 with `--scope`; seed 31 scalar-only): 0 WRONG, 0 BAD, 324
+  changed and still correct, 1261 now correct (refused before). Every
+  change is one of two: an AND/OR/XOR of a value already in AX or DX done
+  in place, and a left dereference loaded before its right sibling's
+  code. The refusals' largest group is now "a 2-D subscript while DI
+  holds another value" (formerly counted under the generic
+  register-overwrite refusal).
+- 18 hand-written programs through `mutos_cpp`, both passes, `mutos_as`
+  and `x86sim.py`, against the host C compiler (`short`/`signed char`):
+  ten `char` programs and eight struct programs (see `STATUS.md`) - all
+  correct, all assemble. Five refusal cases stop with their diagnostic:
+  `p = &a;` while a `register` int holds DI (the `lea` goes through DI),
+  a char plus a computed int, a function returning a struct pointer, file-scope
+  struct and `unsigned` variables, and two chars compared. Drafts hit
+  older limits (a struct of 6 bytes subscripted - a non-power-of-two
+  scale; `a[i + 1]` on a local array, where v7 would fold the constant
+  into the `lea`; `k * 100 + f()`, a product in AX across a call) and
+  were rewritten around them.
+- ASan/UBSan builds of both passes over the 62 golden inputs, the
+  hand-written programs and 6000 fuzzed programs (a quarter `--scope`):
+  clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

@@ -82,6 +82,7 @@ static SymEntry *new_entry(SymTab *st, const char *name, int hclass, int type)
     e->is_ptr = 0;
     e->is_array = 0;
     e->dim2 = 0;
+    e->sdef = NULL;
 
     e->next = st->head;
     st->head = e;

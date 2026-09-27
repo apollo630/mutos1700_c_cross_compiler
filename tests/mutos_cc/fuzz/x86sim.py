@@ -14,9 +14,9 @@ its elements addressed "_text(bx)" or "#_text(bx)") - and reports the
 final state: main()'s return value (AX at main's "jmp cret") and every
 local variable's word(s), located through c1's own "| _name=-N." frame
 comments. It is a checker, not an emulator: anything outside the subset
-(a libc or indirect call, a branch on flags not set by a cmp, a cmpb or
-an "or r,r"/"orb r,r", ...) stops it with exit status 2 and a message,
-never with a guess.
+(a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
+"and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
+message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
 .s.golden it can execute (51 of the 62 - the rest call libc or runtime
@@ -27,9 +27,9 @@ returns the value its C source computes, among them 01_expr/06_compasgn
 03_ctrlflow/05_breakcont (12), 04_funcs/03_recfact (720), 05_arrptr/
 02_array2d (138), 09_abiprobe/03_frame128 (3, through chkstk),
 10_integ/01_wordcount (55 - "cmpb _text(bx),*10.", "orb dx,dx"),
-02_bubsort (91) and 05_matmul (134), and even 06_struct/
-07_bitfield (12) and 06_union (3), whose code mutos_c1 cannot produce
-yet.
+02_bubsort (91) and 05_matmul (134), and all nine of 06_struct - among
+them 05_nestst (40), 06_union (3) and 07_bitfield (12: "and *-6.(bp),
+#/ff0f", "sar si,cl").
 
 Usage:
     x86sim.py file.s        prints "ret=<n>", then "<name>=<off>" per
@@ -48,10 +48,12 @@ STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 
 # Instructions that change the flags. A conditional branch is only
 # accepted while the flags still come from the most recent cmp - or
-# from "or r,r" (same register twice), mutos_c1's truth test of a
-# register value: it leaves r unchanged, clears CF and OF and sets ZF/SF
-# from r, exactly the flags of "cmp r,0" - or from their byte forms,
-# "cmpb" and "orb dx,dx" (a char loaded into DL and tested).
+# from a logical operation, "and"/"or"/"xor", which clears CF and OF and
+# sets ZF/SF from its result, exactly the flags of "cmp <result>,0"
+# ("or r,r" - same register twice - is mutos_c1's truth test of a
+# register value; "and dx,*12." / "beq" an AND tested directly) - or from
+# the byte forms, "cmpb" and "orb dx,dx" (a char loaded into DL and
+# tested).
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
                 "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi"}
@@ -306,7 +308,7 @@ class Sim:
             elif mnem in BRANCHES:
                 if self.cmp is None:
                     raise SimError(f"'{mnem}' on flags not set by a cmp, a "
-                                   "cmpb or an 'or r,r'/'orb r,r'")
+                                   "cmpb, an and/or/xor or an 'orb r,r'")
                 a, b = self.cmp
                 take = {"blt": s16(a) < s16(b), "ble": s16(a) <= s16(b),
                         "bgt": s16(a) > s16(b), "bge": s16(a) >= s16(b),
@@ -337,10 +339,16 @@ class Sim:
                 self.put(ops[0], a)
             elif mnem in ("add", "sub", "and", "or", "xor"):
                 a, b = self.get(ops[0]), self.get(ops[1])
-                self.put(ops[0], {"add": a + b, "sub": a - b, "and": a & b,
-                                  "or": a | b, "xor": a ^ b}[mnem])
-                if mnem == "or" and ops[0] == ops[1] and ops[0] in self.regs:
-                    self.cmp = (a, 0)
+                res = {"add": a + b, "sub": a - b, "and": a & b,
+                       "or": a | b, "xor": a ^ b}[mnem] & M16
+                self.put(ops[0], res)
+                if mnem in ("and", "or", "xor"):
+                    # OF/CF cleared, SF/ZF from the result: exactly the
+                    # flags of "cmp <result>,0" - "or r,r" (mutos_c1's truth
+                    # test of a register) and an AND tested directly ("and
+                    # dx,*12." / "beq" - a masked char, see Val's flagsv in
+                    # c1_gen.c)
+                    self.cmp = (res, 0)
             elif mnem == "inc":
                 self.put(ops[0], self.get(ops[0]) + 1)
             elif mnem == "dec":

@@ -291,6 +291,20 @@ OPCODES = {
                                                 # treeout(NULL) shape - a
                                                 # zero-argument call's
                                                 # empty argument tree
+    # -- structs (06_struct, 10_integ/03_linklist - c0_parser.c's "Member
+    # and subscript chains" and parse_struct_assign()); confirmed byte-for-
+    # byte against 06_struct/04_stassign.1.golden and 07_bitfield.1.golden: --
+    115: ("STRASG", [N("type", decode_type), N("size")]),
+                                                # after a struct-typed
+                                                # ASSIGN - treeout()'s
+                                                # "BNN", STRASG, STRUCT,
+                                                # the struct's size in bytes
+    10:  ("FSEL", [N("type", decode_type), N("bitoffs"), N("flen")]),
+                                                # a bit-field member, after
+                                                # the STAR of the word it
+                                                # lives in - treeout()'s
+                                                # "BNNN", FSEL, type,
+                                                # bitoffs, flen
 }
 
 

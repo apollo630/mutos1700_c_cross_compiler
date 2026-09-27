@@ -171,6 +171,24 @@ typedef struct {
  * 07_funcptr.c only ever registers 3. */
 #define MCC_MAXFUNCS 64
 
+/* A typedef name - v7/cc's TYPEDEF-class symbol (c03.c's getkeywords()
+ * takes one as the declaration's type): the type code it stands for and,
+ * for a struct type, which struct. */
+typedef struct TypedefEnt {
+    char   name[MCC_NCPS + 1];
+    int    type;
+    StructDef *sdef;
+    struct TypedefEnt *next;
+} TypedefEnt;
+
+/* An enumeration constant - v7's ENUMCON symbol (c03.c's decl1(), skw ==
+ * ENUM): a name for an int constant, file-wide in this front end. */
+typedef struct EnumCon {
+    char   name[MCC_NCPS + 1];
+    int    value;
+    struct EnumCon *next;
+} EnumCon;
+
 typedef struct {
     Lexer  lx;
     FILE  *t2;      /* the temp2 stream - string-literal data only (see
@@ -256,6 +274,17 @@ typedef struct {
                       * in the CURRENT function - reset to
                       * MCC_INIT_REGVAR at the start of each cfunc().
                       * See try_claim_register()/04_funcs/06_regclass.c. */
+    StructDef  *structs;   /* every struct/union tag (and anonymous
+                            * struct) of the translation unit - see
+                            * parse_type_spec(); tags are file-wide here
+                            * (v7 scopes them by block, which no corpus
+                            * file needs) */
+    TypedefEnt *typedefs;  /* typedef names, file-wide */
+    EnumCon    *enumcons;  /* enumeration constants, file-wide */
+    int    struct_value_ok; /* set while parsing the right-hand side of a
+                            * whole-struct assignment - the one place a
+                            * struct-typed value is accepted (see
+                            * parse_struct_assign()) */
 } Parser;
 
 /* One pointer-to-int degree, matching mutos_cc.h's XTYPE bit layout
@@ -359,13 +388,44 @@ static int ty_is_ptr(int t) { return (t & TY_XTYPE_MASK) == 010; }
  * MCC_SZINT, same as a plain int - see sizeof's own already-
  * established "a pointer is word-sized" rule above). Only int/char/
  * long/pointer element types are exercised by any current golden. */
+/* The line of the token most recently read - for a diagnostic from a
+ * helper that has no Parser at hand (size_of_type()). */
+static int diag_line;
+
 static int size_of_type(int t)
 {
     if (t == TY_CHAR)
         return MCC_SZCHAR;
     if (t == TY_LONG)
         return MCC_SZLONG;
+    if (t == TY_STRUCT) {
+        /* A struct's size is its StructDef's (type_size()); the paths
+         * that reach here - pointer arithmetic, "++" on a pointer, the
+         * plain subscript code - have none, and no golden shows pointer
+         * arithmetic on a struct pointer. */
+        c0_error_at(diag_line, "pointer arithmetic on a pointer to a struct is "
+                               "not yet supported - see src/mutos_cc/README.md");
+        return MCC_SZINT;
+    }
     return MCC_SZINT;
+}
+
+/* v7/cc/c04.c's length(): the size of an object of type `t` (any degree
+ * of reference) - `sdef` the struct when t's base is TY_STRUCT, `nelem`
+ * the element count when t's outermost degree is ARRAY. */
+static int type_size(int t, const StructDef *sdef, int nelem)
+{
+    if ((t & 030) == 030)                     /* ARRAY */
+        return nelem * type_size((t & 07) | ((t >> 2) & ~07), sdef, 0);
+    if (t & 030)                              /* PTR or FUNC */
+        return MCC_SZINT;
+    if (t == TY_STRUCT)
+        return sdef ? sdef->size : MCC_SZINT;
+    if (t == TY_CHAR)
+        return MCC_SZCHAR;
+    if (t == TY_LONG)
+        return MCC_SZLONG;
+    return MCC_SZINT;                         /* int, unsigned */
 }
 
 static void advance(Parser *p)
@@ -378,6 +438,7 @@ static void advance(Parser *p)
      * literal leaked (found by an ASan run over the corpus). */
     free(p->cur.sval);
     p->cur.sval = NULL;
+    diag_line = p->cur.line;
     p->prev_line = p->cur.line; /* the line of the token we're about
                                   * to move past - see the Parser
                                   * field's own comment (needed by
@@ -495,11 +556,15 @@ typedef struct {
                      * operator compares such an operand with a small
                      * constant as a char, with no ITOC - see
                      * char_const_compare(). */
+    StructDef *sdef; /* the struct when `type`'s base is TY_STRUCT - a
+                     * pointer to one ("cur"), or (only where
+                     * Parser.struct_value_ok allows it) a whole struct
+                     * value - see parse_postfix_chain(). */
 } ExprVal;
 
-static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; e.type = TY_INT; e.char_obj = 0; return e; }
-static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; e.type = TY_LONG; e.char_obj = 0; return e; }
-static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; e.type = TY_INT; e.char_obj = 0; return e; }
+static ExprVal ev_const(long v)  { ExprVal e; e.is_const = 1; e.is_long = 0; e.value = v; e.type = TY_INT; e.char_obj = 0; e.sdef = NULL; return e; }
+static ExprVal ev_const_long(long v) { ExprVal e; e.is_const = 1; e.is_long = 1; e.value = v; e.type = TY_LONG; e.char_obj = 0; e.sdef = NULL; return e; }
+static ExprVal ev_dynamic(void)  { ExprVal e; e.is_const = 0; e.is_long = 0; e.value = 0; e.type = TY_INT; e.char_obj = 0; e.sdef = NULL; return e; }
 static ExprVal ev_dynamic_typed(int ty) { ExprVal e = ev_dynamic(); e.type = ty; return e; }
 /* A value of type `ty` just emitted as a NAME or STAR leaf: marked as a
  * char object when `ty` is TY_CHAR (see ExprVal's char_obj). */
@@ -583,6 +648,32 @@ static ExprVal promote_char(FILE *t1, ExprVal v)
     return ev_dynamic();
 }
 
+/* The type of an int-class binary operator's result - v7/cc/c01.c's
+ * build(): long if either operand is, else unsigned if either operand is
+ * ("if ((t==INT||t==CHAR) && (t1==UNSIGN||t2==UNSIGN)) t = UNSIGN;"),
+ * else int. The only unsigned values this front end makes are bit-field
+ * members (06_struct/07_bitfield.1.golden: "f.ready + f.mode" is
+ * PLUS(7)); an operator whose code depends on the signedness - '/',
+ * '%', '>>', an ordered comparison (v7's LESSP...) - refuses one
+ * (unsigned_refused()). */
+static int arith_type(ExprVal a, ExprVal b)
+{
+    if (a.type == TY_LONG || b.type == TY_LONG)
+        return TY_LONG;
+    if (a.type == TY_UNSIGN || b.type == TY_UNSIGN)
+        return TY_UNSIGN;
+    return TY_INT;
+}
+
+static int unsigned_refused(ExprVal a, ExprVal b, int line, const char *op)
+{
+    if (a.type != TY_UNSIGN && b.type != TY_UNSIGN)
+        return 0;
+    c0_error_at(line, "'%s' with an unsigned operand is not yet supported - "
+                      "see src/mutos_cc/README.md", op);
+    return 1;
+}
+
 /* Reports a char value in a context whose conversion (if any) no golden
  * confirms - see this section's header. Returns 1 if it did. */
 static int char_value_refused(ExprVal v, int line, const char *ctx)
@@ -592,6 +683,24 @@ static int char_value_refused(ExprVal v, int line, const char *ctx)
     c0_error_at(line, "a 'char' value used as %s is not yet supported - see "
                       "src/mutos_cc/README.md", ctx);
     return 1;
+}
+
+/* A char used where v7's build() converts nothing - a condition, an
+ * operand of '&&'/'||'/'!', a call argument (COMMA and CALL are among
+ * build()'s "no-conversion operators"): written unconverted, as v7 does,
+ * when it is a char OBJECT as written (a char variable's NAME, a char
+ * element's or dereference's STAR - ExprVal's char_obj), which mutos_c1
+ * tests or widens as a byte from memory - "cmpb *1.(si),*0", "movb
+ * ax,*-8.(bp)" / "cbw" / "push ax" in tests/mutos_as/kernel_nonopt/ (the
+ * real compiler's output; no golden has either shape). Any other
+ * char-typed value - a "(char) i" cast's, a char assignment's - would be
+ * a byte in a register, whose high half a word test or push would read:
+ * still refused. Returns 1 if it reported one. */
+static int char_nonobj_refused(ExprVal v, int line, const char *ctx)
+{
+    if (v.char_obj)
+        return 0;
+    return char_value_refused(v, line, ctx);
 }
 
 /* Converts an already-emitted right-hand side to the type of the
@@ -829,6 +938,7 @@ static size_t putstr(FILE *dst, int lab, const char *str, size_t len)
 }
 
 static ExprVal parse_expr(Parser *p, FILE *t1);
+static ExprVal parse_unary(Parser *p, FILE *t1);
 static void parse_statement(Parser *p, FILE *t1, int retlab);
 static void parse_compound_stmt(Parser *p, FILE *t1, int retlab);
 static void parse_nested_block(Parser *p, FILE *t1, int retlab);
@@ -1106,18 +1216,21 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
         outcode(t1, "B", OP_NULLOP);
     } else {
         /* A char argument: v7 converts no call argument (the argument
-         * list is built with COMMA, a no-conversion operator), and no
-         * golden shows what MUTOS pushes for one - refused. */
+         * list is built with COMMA, a no-conversion operator), so a char
+         * object is written as is and mutos_c1 widens it as it pushes it
+         * ("movb ax,*-8.(bp)" / "cbw" / "push ax" - the real compiler's
+         * output in tests/mutos_as/kernel_nonopt/lp_AC.s); any other
+         * char-typed value is refused - see char_nonobj_refused(). */
         int line = p->cur.line;
         ExprVal v = parse_expr(p, t1);
         emit_materialize(t1, v);
-        (void)char_value_refused(v, line, "a call argument");
+        (void)char_nonobj_refused(v, line, "a call argument");
         while (p->cur.kind == T_COMMA) {
             advance(p);
             line = p->cur.line;
             ExprVal rhs = parse_expr(p, t1);
             emit_materialize(t1, rhs);
-            (void)char_value_refused(rhs, line, "a call argument");
+            (void)char_nonobj_refused(rhs, line, "a call argument");
             outcode(t1, "BN", OP_COMMA, TY_INT);
         }
     }
@@ -1125,7 +1238,13 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
     outcode(t1, "BN", OP_CALL, ret_type);
 }
 
-static ExprVal parse_call(Parser *p, FILE *t1)
+/* `cast_type` >= 0: the call is the operand of a cast to that pointer
+ * type, which v7's build(CAST) applies by retyping the operand's top
+ * node ("p2->type = t") - the CALL is written with it, the callee's NAME
+ * keeps the function's own type: 10_integ/03_linklist.1.golden's "(struct
+ * node *) malloc(...)" -> NAME(_malloc, FUNC.PTR.CHAR 49) ... CALL(12).
+ * -1: an ordinary call. */
+static ExprVal parse_call(Parser *p, FILE *t1, int cast_type)
 {
     char name[LEX_IDENT_MAX];
     strncpy(name, p->cur.ident, sizeof name - 1);
@@ -1146,8 +1265,9 @@ static ExprVal parse_call(Parser *p, FILE *t1)
      * "ret_type | 020" would get wrong (25). */
     outcode(t1, "BNNS", OP_NAME, SC_EXTERN, ty_incref_tag(ret_type, 020), name);
 
-    parse_call_args_and_emit(p, t1, ret_type);
-    return ev_dynamic_typed(ret_type);
+    int call_type = cast_type >= 0 ? cast_type : ret_type;
+    parse_call_args_and_emit(p, t1, call_type);
+    return ev_dynamic_typed(call_type);
 }
 
 /*
@@ -1206,6 +1326,830 @@ static ExprVal parse_indirect_call(Parser *p, FILE *t1)
                                                * this function's own
                                                * comment above. */
     return ev_dynamic();
+}
+
+/* ------------------------------------------------------------------ */
+/* Types beyond int/char/long: struct, union, enum, typedef, bit-fields
+ * (tests/mutos_cc/06_struct, 10_integ/03_linklist).
+ *
+ * The wire format has one base type for every struct and union,
+ * TY_STRUCT (4) - v7/cc/c0.h's UNION is "adjusted later to struct" - with
+ * the usual PTR/FUNC/ARRAY degrees on top (a "struct point *" is 12, a
+ * "struct node **" 44); WHICH struct a type code means travels beside
+ * it, as a StructDef (c0_sym.h), the way v7 keeps a tree node's `strp`.
+ * A union is a struct whose members all sit at offset 0. An enumeration
+ * is an int, its constants plain int constants; a typedef name stands for
+ * its type wherever a type keyword may. None of these writes anything of
+ * its own to temp1: a declaration only shapes the NAME/AMPER/PLUS/STAR
+ * trees that use it (see "Member and subscript chains" below). */
+
+typedef struct {
+    int        type;   /* base type code: TY_INT, TY_CHAR, TY_LONG,
+                        * TY_UNSIGN or TY_STRUCT - or, from a typedef,
+                        * one with pointer degrees on top */
+    StructDef *sdef;   /* the struct when the base is TY_STRUCT */
+} TypeSpec;
+
+static int name_eq(const char *a, const char *b)
+{
+    return strncmp(a, b, MCC_NCPS) == 0;
+}
+
+/* Copies `src` into a MCC_NCPS + 1 byte name field, truncated to its
+ * significant characters (CLAUDE.md's identifier-length rule). */
+static void copy_ncps(char *dst, const char *src)
+{
+    size_t n = strlen(src);
+    if (n > MCC_NCPS)
+        n = MCC_NCPS;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+static TypedefEnt *find_typedef(Parser *p, const char *name)
+{
+    for (TypedefEnt *t = p->typedefs; t; t = t->next)
+        if (name_eq(t->name, name))
+            return t;
+    return NULL;
+}
+
+static EnumCon *find_enumcon(Parser *p, const char *name)
+{
+    for (EnumCon *e = p->enumcons; e; e = e->next)
+        if (name_eq(e->name, name))
+            return e;
+    return NULL;
+}
+
+static StructDef *find_struct(Parser *p, const char *tag)
+{
+    for (StructDef *s = p->structs; s; s = s->next)
+        if (s->tag[0] && name_eq(s->tag, tag))
+            return s;
+    return NULL;
+}
+
+static void *xcalloc(size_t n)
+{
+    void *q = calloc(1, n);
+    if (!q)
+        abort(); /* out of memory - nothing sane left to report */
+    return q;
+}
+
+static StructDef *new_struct(Parser *p, const char *tag, int is_union)
+{
+    StructDef *s = xcalloc(sizeof *s);
+    copy_ncps(s->tag, tag);
+    s->is_union = is_union;
+    s->next = p->structs;
+    p->structs = s;
+    return s;
+}
+
+static void free_types(Parser *p)
+{
+    while (p->structs) {
+        StructDef *s = p->structs;
+        p->structs = s->next;
+        while (s->members) {
+            Member *m = s->members;
+            s->members = m->next;
+            free(m);
+        }
+        free(s);
+    }
+    while (p->typedefs) {
+        TypedefEnt *t = p->typedefs;
+        p->typedefs = t->next;
+        free(t);
+    }
+    while (p->enumcons) {
+        EnumCon *e = p->enumcons;
+        p->enumcons = e->next;
+        free(e);
+    }
+}
+
+/* Whether the current token begins a declaration's type - a type
+ * keyword, or a typedef name followed by a declarator (an identifier or
+ * '*': "POINT p;"), which is what tells "INTEGER n;" apart from an
+ * expression statement starting with a name. */
+static int at_type_spec(Parser *p)
+{
+    switch (p->cur.kind) {
+    case T_KW_INT: case T_KW_CHAR: case T_KW_LONG: case T_KW_UNSIGNED:
+    case T_KW_STRUCT: case T_KW_UNION: case T_KW_ENUM:
+        return 1;
+    case T_IDENT:
+        if (!find_typedef(p, p->cur.ident))
+            return 0;
+        return peek2_kind(p) == T_IDENT || peek2_kind(p) == T_STAR;
+    default:
+        return 0;
+    }
+}
+
+static TypeSpec parse_type_spec(Parser *p);
+
+/* v7/cc/c03.c's align(): the padding needed in front of a member of type
+ * `type` at byte offset `offset` - a field of `flen` bits, or 0 - and,
+ * through *bitoffs, the bits already used in the current word:
+ * anything but a char (or an array of chars) starts on a word boundary,
+ * a non-field member first moves past the bytes the preceding fields
+ * used, and a field that does not fit into the rest of the word starts
+ * the next one. Only int and unsigned fields are accepted (v7 also
+ * packs char fields into bytes; no golden has one). */
+static int st_align(int type, int offset, int flen, int *bitoffs, int line)
+{
+    int a = offset;
+    if (flen == 0) {
+        a += (8 + *bitoffs - 1) / 8;
+        *bitoffs = 0;
+    }
+    int t = type;
+    while ((t & 030) == 030)
+        t = ty_decref(t);
+    if (t != TY_CHAR) {
+        a = (a + 1) & ~1;
+        if (a > offset)
+            *bitoffs = 0;
+    }
+    if (flen) {
+        if (type != TY_INT && type != TY_UNSIGN) {
+            c0_error_at(line, "a bit-field of a type other than int or "
+                              "unsigned is not yet supported");
+        } else {
+            if (flen > 16)
+                c0_error_at(line, "Field too long");
+            if (flen + *bitoffs > 16) {
+                *bitoffs = 0;
+                a += 2;
+            }
+        }
+    }
+    return a - offset;
+}
+
+/* A struct or union body, '{' already current: the members, laid out as
+ * v7/cc/c03.c's declist()/declare()/decl1() lay out MOS/MOU members -
+ * a member at the aligned offset after the previous one (see
+ * st_align()), a bit-field in the word its predecessors' bits leave
+ * room in, every union member at 0 - and the size: the end, rounded up
+ * to a whole word ("offset+align(INT, offset, 0)"). Confirmed against
+ * the goldens' frames: "struct point { int x; int y; }" is 4 bytes
+ * (06_struct/01_stbasic.1.golden: p at -8), "struct rect" of two of them
+ * 8 (05_nestst: r at -12, "r.botright.x" at offset 4), "union number {
+ * int i; char b[2]; }" 2 (06_union: n at -6), and the four fields of
+ * 07_bitfield's "struct flags" (1+1+2+4 bits) one word, FSEL bit offsets
+ * 0, 1, 2 and 4. */
+static void parse_struct_body(Parser *p, StructDef *sd)
+{
+    int line = p->cur.line;
+    advance(p); /* '{' */
+    int offset = 0, bitoffs = 0;
+    Member **tail = &sd->members;
+    while (p->cur.kind != T_RBRACE && p->cur.kind != T_EOF) {
+        if (!at_type_spec(p) && p->cur.kind != T_IDENT) {
+            c0_error_at(p->cur.line, "expected a member declaration");
+            advance(p);
+            continue;
+        }
+        TypeSpec ts = parse_type_spec(p);
+        for (;;) {
+            int ptr_degree = 0;
+            while (p->cur.kind == T_STAR) {
+                ptr_degree++;
+                advance(p);
+            }
+            if (p->cur.kind != T_IDENT) {
+                c0_error_at(p->cur.line, "expected a member name (an unnamed "
+                                          "filler field is not yet supported)");
+                break;
+            }
+            Member *m = xcalloc(sizeof *m);
+            copy_ncps(m->name, p->cur.ident);
+            int mline = p->cur.line;
+            advance(p);
+            for (Member *o = sd->members; o; o = o->next)
+                if (name_eq(o->name, m->name))
+                    c0_error_at(mline, "member '%s' redeclared", m->name);
+            int t = ts.type;
+            for (int k = 0; k < ptr_degree; k++)
+                t = ty_ptr_of(t);
+            m->sdef = ts.sdef;
+            if (p->cur.kind == T_LBRACK) {
+                advance(p);
+                if (p->cur.kind != T_ICON || p->cur.ival <= 0) {
+                    c0_error_at(p->cur.line, "expected a positive array size");
+                    m->nelem = 1;
+                } else {
+                    m->nelem = (int)p->cur.ival;
+                    advance(p);
+                }
+                expect(p, T_RBRACK, "']'");
+                if (p->cur.kind == T_LBRACK)
+                    c0_error_at(mline, "a member array of more than one "
+                                       "dimension is not yet supported");
+                t = ty_ary_of(t);
+            }
+            if (t == TY_STRUCT && (!ts.sdef || !ts.sdef->complete))
+                c0_error_at(mline, "member '%s' has an incomplete struct type",
+                            m->name);
+            if (t == TY_LONG || (t & 07) == TY_LONG)
+                c0_error_at(mline, "a 'long' struct member is not yet supported "
+                                   "- see src/mutos_cc/README.md");
+            int flen = 0;
+            if (p->cur.kind == T_COLON) {
+                advance(p);
+                if (p->cur.kind != T_ICON || p->cur.ival <= 0) {
+                    c0_error_at(p->cur.line, "expected a field width");
+                } else {
+                    flen = (int)p->cur.ival;
+                    advance(p);
+                }
+                if (sd->is_union)
+                    c0_error_at(mline, "a bit-field in a union is not yet "
+                                       "supported");
+                m->is_field = (flen > 0);
+            }
+            m->type = t;
+            int base = sd->is_union ? 0 : offset;
+            int a = st_align(t, base, flen, &bitoffs, mline);
+            m->offset = base + a;
+            int elsize;
+            if (m->is_field) {
+                m->bitoffs = bitoffs;
+                m->flen = flen;
+                bitoffs += flen;
+                elsize = a;
+            } else {
+                elsize = type_size(t, m->sdef, m->nelem) + a;
+            }
+            if (sd->is_union) {
+                int o = elsize;
+                o += st_align(TY_CHAR, o, 0, &bitoffs, mline);
+                if (o > offset)
+                    offset = o;
+            } else {
+                offset += elsize;
+            }
+            *tail = m;
+            tail = &m->next;
+            if (p->cur.kind == T_COMMA) {
+                advance(p);
+                continue;
+            }
+            break;
+        }
+        expect(p, T_SEMI, "';'");
+    }
+    if (!sd->members)
+        c0_error_at(line, "a struct or union without members");
+    sd->size = offset + st_align(TY_INT, offset, 0, &bitoffs, line);
+    sd->complete = 1;
+    expect(p, T_RBRACE, "'}'");
+}
+
+/* "struct" or "union", an optional tag, an optional body - v7/cc/c03.c's
+ * strdec(). A tag seen for the first time is registered before its body
+ * is read, so a member may point to the struct being defined ("struct
+ * node *next;" - 10_integ/03_linklist). */
+static TypeSpec parse_struct_spec(Parser *p)
+{
+    int is_union = (p->cur.kind == T_KW_UNION);
+    int line = p->cur.line;
+    advance(p); /* 'struct'/'union' */
+    StructDef *sd = NULL;
+    if (p->cur.kind == T_IDENT) {
+        sd = find_struct(p, p->cur.ident);
+        if (sd && sd->is_union != is_union)
+            c0_error_at(line, "'%s' redeclared as a different kind of tag",
+                        p->cur.ident);
+        if (!sd)
+            sd = new_struct(p, p->cur.ident, is_union);
+        advance(p);
+    } else if (p->cur.kind != T_LBRACE) {
+        c0_error_at(line, "expected a struct/union tag or '{'");
+    }
+    if (p->cur.kind == T_LBRACE) {
+        if (!sd)
+            sd = new_struct(p, "", is_union);
+        if (sd->complete)
+            c0_error_at(line, "'%s' redeclared", sd->tag);
+        parse_struct_body(p, sd);
+    }
+    TypeSpec ts = { TY_STRUCT, sd };
+    return ts;
+}
+
+/* "enum", an optional tag (not kept - an enum type is int), an optional
+ * list of constants - v7/cc/c03.c's strdec() for ENUM, then decl1() per
+ * constant: each one's value is the previous one's plus 1, from 0, or
+ * the constant expression after '=' ("hoffset = offset; ... elsize =
+ * hoffset-offset+1"). Confirmed against 06_struct/08_enum.1.golden:
+ * "c = GREEN;" is CON 1. */
+static TypeSpec parse_enum_spec(Parser *p)
+{
+    advance(p); /* 'enum' */
+    if (p->cur.kind == T_IDENT)
+        advance(p); /* the tag */
+    if (p->cur.kind == T_LBRACE) {
+        advance(p);
+        long value = 0;
+        while (p->cur.kind == T_IDENT) {
+            char name[LEX_IDENT_MAX];
+            snprintf(name, sizeof name, "%s", p->cur.ident);
+            int line = p->cur.line;
+            advance(p);
+            if (p->cur.kind == T_ASSIGN) {
+                advance(p);
+                /* A constant writes nothing; anything else is refused,
+                 * and whatever it wrote is dropped with the buffer. */
+                char *junk = NULL;
+                size_t jlen = 0;
+                FILE *mem = open_memstream(&junk, &jlen);
+                if (!mem)
+                    abort();
+                ExprVal v = parse_expr(p, mem);
+                fclose(mem);
+                free(junk);
+                if (!v.is_const || v.is_long)
+                    c0_error_at(line, "an enumeration constant's value must be "
+                                      "an int constant");
+                else
+                    value = v.value;
+            }
+            if (find_enumcon(p, name))
+                c0_error_at(line, "'%s' redeclared", name);
+            EnumCon *e = xcalloc(sizeof *e);
+            copy_ncps(e->name, name);
+            e->value = (int)trunc16(value);
+            e->next = p->enumcons;
+            p->enumcons = e;
+            value++;
+            if (p->cur.kind != T_COMMA)
+                break;
+            advance(p);
+        }
+        expect(p, T_RBRACE, "'}'");
+    }
+    TypeSpec ts = { TY_INT, NULL };
+    return ts;
+}
+
+/* A declaration's type: a type keyword ("long int" and "unsigned int"
+ * included), a struct/union/enum specifier, or a typedef name - v7/cc/
+ * c03.c's getkeywords(). */
+static TypeSpec parse_type_spec(Parser *p)
+{
+    TypeSpec ts = { TY_INT, NULL };
+    switch (p->cur.kind) {
+    case T_KW_INT:
+        advance(p);
+        return ts;
+    case T_KW_CHAR:
+        advance(p);
+        ts.type = TY_CHAR;
+        return ts;
+    case T_KW_LONG:
+        advance(p);
+        if (p->cur.kind == T_KW_INT)
+            advance(p);
+        ts.type = TY_LONG;
+        return ts;
+    case T_KW_UNSIGNED:
+        advance(p);
+        if (p->cur.kind == T_KW_INT)
+            advance(p);
+        ts.type = TY_UNSIGN;
+        return ts;
+    case T_KW_STRUCT:
+    case T_KW_UNION:
+        return parse_struct_spec(p);
+    case T_KW_ENUM:
+        return parse_enum_spec(p);
+    case T_IDENT: {
+        TypedefEnt *td = find_typedef(p, p->cur.ident);
+        if (td) {
+            advance(p);
+            ts.type = td->type;
+            ts.sdef = td->sdef;
+            return ts;
+        }
+    }
+    /* fall through */
+    default:
+        c0_error_at(p->cur.line, "expected a type");
+        return ts;
+    }
+}
+
+/* "typedef" type declarator (',' declarator)* ';' at file scope: each
+ * name stands for the type from then on - v7's TYPEDEF class. Pointer
+ * declarators ('*'s) are accepted, array and function ones are not (no
+ * golden has one). 06_struct/09_typedef.c: "typedef struct point { ... }
+ * POINT; typedef int INTEGER;". */
+static void parse_typedef(Parser *p)
+{
+    advance(p); /* 'typedef' */
+    TypeSpec ts = parse_type_spec(p);
+    for (;;) {
+        int t = ts.type;
+        while (p->cur.kind == T_STAR) {
+            t = ty_ptr_of(t);
+            advance(p);
+        }
+        if (p->cur.kind != T_IDENT) {
+            c0_error_at(p->cur.line, "expected a typedef name");
+            break;
+        }
+        if (find_typedef(p, p->cur.ident))
+            c0_error_at(p->cur.line, "typedef '%s' redeclared", p->cur.ident);
+        TypedefEnt *td = xcalloc(sizeof *td);
+        copy_ncps(td->name, p->cur.ident);
+        td->type = t;
+        td->sdef = ts.sdef;
+        td->next = p->typedefs;
+        p->typedefs = td;
+        advance(p);
+        if (p->cur.kind == T_LBRACK || p->cur.kind == T_LPAREN)
+            c0_error_at(p->cur.line, "an array or function typedef is not yet "
+                                      "supported");
+        if (p->cur.kind != T_COMMA)
+            break;
+        advance(p);
+    }
+    expect(p, T_SEMI, "';'");
+}
+
+/* ------------------------------------------------------------------ */
+/* Member and subscript chains.
+ *
+ * A struct member reference is built by v7/cc/c01.c's build() as
+ *
+ *   a.b   ->  (&a)->b                       (DOT: *cp++ = p1; build(AMPER))
+ *   p->b  ->  *(p + offsetof(b))            (ARROW: setype(p1, incref(t2));
+ *                                            PLUS(t, p1, CON off); STAR)
+ *
+ * and ARROW first RETYPES the left operand's spine with setype(): the
+ * node it is given and every node below it through tr1, as long as they
+ * are AMPER/STAR/PLUS (AMPER passing decref(t) on, STAR incref(t)), the
+ * first other node (the NAME) included. So "p.x" on "struct point p" is
+ * NOT NAME(p, struct) AMPER(12) ... but
+ *
+ *   NAME(p, INT) AMPER(8) CON 0 PLUS(8) STAR(INT)      (01_stbasic.1.golden)
+ *
+ * and "pts[i].x" retypes the subscript's whole spine too - while the
+ * subscript's ITOP (PLUS's RIGHT operand, never visited) keeps the type
+ * it was built with, PTR.STRUCT:
+ *
+ *   NAME(pts, 0) AMPER(8) NAME(i) CON 4 ITOP(12) PLUS(8) STAR(0)
+ *   AMPER(8) CON 0 PLUS(8) STAR(0)                     (03_starray.1.golden)
+ *
+ * mutos_c0 writes temp1 as it parses, but these types are only known once
+ * the chain's LAST member is: so a chain starting at a variable is
+ * collected first - its spine nodes with their types, each PLUS's right
+ * operand (a subscript's index, already parsed, or a member's offset
+ * constant) as the bytes it will write - retyped as build() would, and
+ * written out when it ends. disarray() (an array value decaying to a
+ * pointer: setype() to the element type, then AMPER) retypes the same
+ * way, which is how "n.b[0]" on a "char b[2]" member becomes NAME(n,
+ * CHAR) AMPER(9) CON 0 PLUS(9) STAR(1) AMPER(9) CON 0 CON 1 ITOP(9)
+ * PLUS(9) STAR(1) (06_union.1.golden). A bit-field member's STAR is
+ * followed by FSEL(UNSIGN, bitoffs, flen) - treeout()'s FSEL case, the
+ * "unsigned" of build()'s ARROW for a field - 07_bitfield.1.golden. */
+
+#define MCC_CHAINMAX 32
+
+typedef struct {
+    int    op;       /* OP_NAME (always n[0]), OP_AMPER, OP_PLUS, OP_STAR */
+    int    type;
+    char  *rbuf;     /* OP_PLUS: its right operand's bytes */
+    size_t rlen;
+} CNode;
+
+typedef struct {
+    CNode  n[MCC_CHAINMAX];
+    int    len;
+    const SymEntry *sym;
+    int    type;           /* the value's type (the top node's) */
+    StructDef *sdef;       /* the struct when `type`'s base is TY_STRUCT */
+    int    nelem;          /* an array member's size, when `type` has an
+                            * ARRAY degree (it is decayed before use) */
+    const Member *field;   /* the bit-field the last member step selected */
+} Chain;
+
+static void chain_push(Chain *c, int op, int type, char *rbuf, size_t rlen)
+{
+    if (c->len >= MCC_CHAINMAX) {
+        c0_error_at(diag_line, "member/subscript chain too long (internal "
+                               "limit %d)", MCC_CHAINMAX);
+        free(rbuf);
+        return;
+    }
+    CNode *nd = &c->n[c->len++];
+    nd->op = op;
+    nd->type = type;
+    nd->rbuf = rbuf;
+    nd->rlen = rlen;
+}
+
+/* v7/cc/c01.c's setype() on the chain's top node - see above. */
+static void chain_setype(Chain *c, int t)
+{
+    for (int j = c->len - 1; j >= 0; j--) {
+        c->n[j].type = t;
+        if (c->n[j].op == OP_AMPER)
+            t = ty_decref(t);
+        else if (c->n[j].op == OP_STAR)
+            t = ty_ptr_of(t);
+        else if (c->n[j].op != OP_PLUS)
+            break;
+    }
+}
+
+/* v7's disarray() for a chain whose value is an array (an array member):
+ * the spine retyped to the element type, then its address taken. */
+static void chain_disarray(Chain *c)
+{
+    if ((c->type & 030) != 030)
+        return;
+    int elem = ty_decref(c->type);
+    chain_setype(c, elem);
+    chain_push(c, OP_AMPER, ty_ptr_of(elem), NULL, 0);
+    c->type = ty_ptr_of(elem);
+    c->nelem = 0;
+}
+
+/* The bytes of a PLUS node's constant right operand, CON(INT, v). */
+static char *chain_con(long v, size_t *len)
+{
+    char *buf = NULL;
+    FILE *mem = open_memstream(&buf, len);
+    if (!mem)
+        abort();
+    outcode(mem, "BNN", OP_CON, TY_INT, (int)v);
+    fclose(mem);
+    return buf;
+}
+
+static void chain_start(Chain *c, const SymEntry *sym)
+{
+    c->len = 0;
+    c->sym = sym;
+    c->sdef = sym->sdef;
+    c->nelem = 0;
+    c->field = NULL;
+    chain_push(c, OP_NAME, sym->type, NULL, 0);
+    c->type = sym->type;
+    if (sym->is_array) {
+        /* An array variable is its NAME typed as the element, and the
+         * AMPER that decays it (disarray() on a NAME - the array
+         * decay parse_primary() already writes for "int a[4]") */
+        c->type = ty_ptr_of(sym->type);
+        chain_push(c, OP_AMPER, c->type, NULL, 0);
+    }
+}
+
+/* '[' index ']' on the chain - v7's build(LBRACK): build(PLUS) of the
+ * (decayed) pointer and the index scaled by the element's size (ITOP,
+ * typed as the pointer), then STAR. */
+static void chain_subscript(Parser *p, Chain *c)
+{
+    int line = p->cur.line;
+    advance(p); /* '[' */
+    chain_disarray(c);
+    if (!ty_is_ptr(c->type)) {
+        c0_error_at(line, "a subscript of something that is not an array or "
+                          "pointer");
+        c->type = TY_INT;
+    }
+    int ptype = c->type;
+    int elem = ty_decref(ptype);
+    if ((elem & 030) == 030 || (elem & 030) == 020)
+        c0_error_at(line, "this subscript's element type is not yet supported "
+                          "- see src/mutos_cc/README.md");
+    if (elem == TY_LONG)
+        refuse_long_access(p);
+    if (elem == TY_STRUCT && (!c->sdef || !c->sdef->complete))
+        c0_error_at(line, "a subscript of a pointer to an incomplete struct");
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mem = open_memstream(&buf, &len);
+    if (!mem)
+        abort();
+    ExprVal ix = parse_expr(p, mem);
+    expect(p, T_RBRACK, "']'");
+    emit_materialize(mem, ix);
+    (void)promote_char(mem, ix);
+    if (ix.type == TY_LONG || ty_is_ptr(ix.type) || ix.type == TY_STRUCT)
+        c0_error_at(line, "this subscript's index type is not yet supported");
+    outcode(mem, "BNN", OP_CON, TY_INT, type_size(elem, c->sdef, 0));
+    outcode(mem, "BN", OP_ITOP, ptype);
+    fclose(mem);
+    chain_push(c, OP_PLUS, ptype, buf, len);
+    chain_push(c, OP_STAR, elem, NULL, 0);
+    c->type = elem;
+}
+
+/* '.' member or '->' member on the chain - v7's build(DOT)/build(ARROW)
+ * (see above). */
+static void chain_member(Parser *p, Chain *c)
+{
+    int line = p->cur.line;
+    int arrow = (p->cur.kind == T_ARROW);
+    advance(p); /* '.'/'->' */
+    if (c->field) {
+        c0_error_at(line, "a member of a bit-field");
+        return;
+    }
+    if (!arrow) {
+        if (c->type != TY_STRUCT) {
+            c0_error_at(line, "'.' applied to something that is not a struct");
+            return;
+        }
+        c->type = ty_ptr_of(TY_STRUCT);
+        chain_push(c, OP_AMPER, c->type, NULL, 0);
+    } else if (!ty_is_ptr(c->type) || ty_decref(c->type) != TY_STRUCT) {
+        c0_error_at(line, "'->' applied to something that is not a pointer to "
+                          "a struct");
+        return;
+    }
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line, "expected a member name");
+        return;
+    }
+    const Member *m = NULL;
+    if (!c->sdef || !c->sdef->complete)
+        c0_error_at(line, "a member of an incomplete struct");
+    else
+        for (m = c->sdef->members; m && !name_eq(m->name, p->cur.ident); m = m->next)
+            ;
+    if (!m) {
+        if (c->sdef && c->sdef->complete)
+            c0_error_at(p->cur.line, "'%s' is not a member of this struct",
+                        p->cur.ident);
+        advance(p);
+        return;
+    }
+    advance(p); /* the member name */
+    int t2 = m->type;
+    if (m->is_field && t2 == TY_INT)
+        t2 = TY_UNSIGN;                   /* build(ARROW): "t2 = UNSIGN" */
+    int t = ty_ptr_of(t2);
+    chain_setype(c, t);
+    size_t len = 0;
+    char *buf = chain_con(m->offset, &len);
+    chain_push(c, OP_PLUS, t, buf, len);
+    chain_push(c, OP_STAR, t2, NULL, 0);
+    c->type = t2;
+    c->sdef = m->sdef;
+    c->nelem = m->nelem;
+    c->field = m->is_field ? m : NULL;
+}
+
+/* Writes the finished chain: the spine in postfix order, each PLUS
+ * after its right operand's bytes, FSEL after a bit-field's STAR. An
+ * array value decays first. Returns the value it leaves. */
+static ExprVal chain_emit(Chain *c, FILE *t1, int *is_field)
+{
+    if (is_field)
+        *is_field = (c->field != NULL);
+    chain_disarray(c);
+    emit_name(t1, c->sym, c->n[0].type);
+    for (int j = 1; j < c->len; j++) {
+        CNode *nd = &c->n[j];
+        if (nd->op == OP_PLUS) {
+            fwrite(nd->rbuf, 1, nd->rlen, t1);
+            free(nd->rbuf);
+            nd->rbuf = NULL;
+        }
+        outcode(t1, "BN", nd->op, nd->type);
+    }
+    int type = c->type;
+    if (c->field) {
+        outcode(t1, "BNNN", OP_FSEL, TY_UNSIGN, c->field->bitoffs,
+                c->field->flen);
+        type = TY_UNSIGN;
+    }
+    ExprVal v = ev_dynamic_typed(type);
+    v.char_obj = (type == TY_CHAR);
+    v.sdef = c->sdef;
+    return v;
+}
+
+/* Whether a variable reference must be parsed as a chain: a member
+ * access follows, or a subscript of an array of (or pointer to) structs
+ * - every other subscript keeps emit_subscript()'s own shapes. */
+static int starts_chain(Parser *p, const SymEntry *sym)
+{
+    TokKind k = p->cur.kind;
+    return k == T_DOT || k == T_ARROW ||
+           (k == T_LBRACK && sym->sdef && !sym->dim2);
+}
+
+/* A variable reference with its member accesses and subscripts, the
+ * variable's name already consumed - written to t1 once complete (see
+ * above). *is_field (if not NULL): whether it selects a bit-field. */
+static ExprVal parse_postfix_chain(Parser *p, FILE *t1, const SymEntry *sym,
+                                   int *is_field)
+{
+    Chain c;
+    chain_start(&c, sym);
+    for (;;) {
+        if (p->cur.kind == T_LBRACK)
+            chain_subscript(p, &c);
+        else if (p->cur.kind == T_DOT || p->cur.kind == T_ARROW)
+            chain_member(p, &c);
+        else
+            break;
+    }
+    return chain_emit(&c, t1, is_field);
+}
+
+/* The right-hand side of a whole-struct assignment, "p2 = p1;" - a
+ * struct variable, or a chain ending in a struct: v7's build(ASSIGN) for
+ * two operands of the same struct type (no conversion), and treeout()'s
+ * STRASG after the top node of a struct type - "BNN", STRASG, STRUCT,
+ * the struct's size:
+ *
+ *   NAME(p2, 4) NAME(p1, 4) ASSIGN(4) STRASG(4, 4)     (04_stassign.1.golden)
+ *
+ * Only such a variable or chain is accepted on the right (a struct-valued
+ * call or a '?:' has no golden). */
+static void parse_struct_assign(Parser *p, FILE *t1, const StructDef *sd,
+                                int line)
+{
+    if (p->cur.kind != T_IDENT) {
+        c0_error_at(p->cur.line, "the right-hand side of a struct assignment "
+                                  "must be a struct variable or member so far");
+        return;
+    }
+    SymEntry *rs = lookup_var(p, p->cur.ident);
+    if (!rs) {
+        c0_error_at(p->cur.line, "'%s' undeclared", p->cur.ident);
+        advance(p);
+        return;
+    }
+    advance(p);
+    ExprVal v;
+    if (starts_chain(p, rs)) {
+        v = parse_postfix_chain(p, t1, rs, NULL);
+    } else {
+        emit_name(t1, rs, rs->type);
+        v = ev_dynamic_typed(rs->is_array ? -1 : rs->type);
+        v.sdef = rs->sdef;
+    }
+    if (v.type != TY_STRUCT || v.sdef != sd)
+        c0_error_at(line, "assigning a value of a different type to a struct");
+    outcode(t1, "BN", OP_ASSIGN, TY_STRUCT);
+    outcode(t1, "BNN", OP_STRASG, TY_STRUCT, sd ? sd->size : 0);
+}
+
+/* '(' type-name ')' unary-expr with a pointer (or struct/typedef) type -
+ * v7's build(CAST) for pointer to pointer: no conversion, the operand's
+ * top node retyped ("p2->type = t"). Two operands are accepted: a call
+ * (its CALL written with the cast's type - see parse_call()), and a
+ * pointer variable (its NAME written with it). "(struct node *)
+ * malloc(sizeof(struct node))" - 10_integ/03_linklist.1.golden. */
+static ExprVal parse_pointer_cast(Parser *p, FILE *t1)
+{
+    int line = p->cur.line;
+    advance(p); /* '(' */
+    TypeSpec ts = parse_type_spec(p);
+    int t = ts.type;
+    while (p->cur.kind == T_STAR) {
+        t = ty_ptr_of(t);
+        advance(p);
+    }
+    if (!expect(p, T_RPAREN, "')'"))
+        return ev_dynamic();
+    ExprVal v;
+    if (!ty_is_ptr(t)) {
+        c0_error_at(line, "a cast to this type is not yet supported - see "
+                          "src/mutos_cc/README.md");
+        return parse_unary(p, t1);
+    }
+    if (p->cur.kind == T_IDENT && peek2_kind(p) == T_LPAREN) {
+        v = parse_call(p, t1, t);
+    } else if (p->cur.kind == T_IDENT && lookup_var(p, p->cur.ident) &&
+               lookup_var(p, p->cur.ident)->is_ptr &&
+               peek2_kind(p) != T_LBRACK && peek2_kind(p) != T_DOT &&
+               peek2_kind(p) != T_ARROW && peek2_kind(p) != T_INCR &&
+               peek2_kind(p) != T_DECR) {
+        emit_name(t1, lookup_var(p, p->cur.ident), t);
+        advance(p);
+        v = ev_dynamic_typed(t);
+    } else {
+        c0_error_at(line, "a pointer cast of anything but a call or a pointer "
+                          "variable is not yet supported - see "
+                          "src/mutos_cc/README.md");
+        return parse_unary(p, t1);
+    }
+    v.sdef = ts.sdef;
+    return v;
 }
 
 static ExprVal parse_primary(Parser *p, FILE *t1)
@@ -1293,9 +2237,17 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
     }
     if (p->cur.kind == T_IDENT) {
         if (peek2_kind(p) == T_LPAREN)
-            return parse_call(p, t1);
+            return parse_call(p, t1, -1);
         SymEntry *sym = lookup_var(p, p->cur.ident);
         if (!sym) {
+            EnumCon *ec = find_enumcon(p, p->cur.ident);
+            if (ec) {
+                /* An enumeration constant is an int constant (v7's
+                 * ENUMCON: "CON, INT, value") - 06_struct/08_enum.1.
+                 * golden's "c = GREEN;" -> CON 1. */
+                advance(p);
+                return ev_const(ec->value);
+            }
             if (is_known_func(p, p->cur.ident)) {
                 /* A bare function name used as a value (not called) -
                  * e.g. 07_funcptr.c's "fp = square;". K&R's implicit
@@ -1323,6 +2275,27 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             return ev_const(0);
         }
         advance(p);
+
+        if (starts_chain(p, sym)) {
+            /* A struct member or a subscript of a struct array - see
+             * "Member and subscript chains". */
+            int line = p->cur.line;
+            ExprVal v = parse_postfix_chain(p, t1, sym, NULL);
+            if (v.type == TY_STRUCT && !p->struct_value_ok)
+                c0_error_at(line, "a whole struct used as a value is not yet "
+                                  "supported (only assigned, or its address "
+                                  "taken) - see src/mutos_cc/README.md");
+            if (p->cur.kind == T_INCR || p->cur.kind == T_DECR)
+                c0_error_at(p->cur.line, "'++'/'--' on a struct member or "
+                                          "element is not yet supported - see "
+                                          "src/mutos_cc/README.md");
+            return v;
+        }
+        if (sym->type == TY_STRUCT && !sym->is_array && !p->struct_value_ok) {
+            c0_error_at(p->cur.line, "a whole struct used as a value is not yet "
+                                      "supported (only assigned, or its address "
+                                      "taken) - see src/mutos_cc/README.md");
+        }
 
         if (p->cur.kind == T_LBRACK && (sym->is_array || sym->is_ptr)) {
             /* Array/pointer subscript used as an rvalue ("sum = sum +
@@ -1376,11 +2349,19 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
             return ev_dynamic_typed(sym->type);
         }
-        return ev_char_obj(sym->type);
+        ExprVal nv = ev_char_obj(sym->type);
+        nv.sdef = sym->sdef;           /* a pointer to a struct ("cur") */
+        return nv;
     }
     if (p->cur.kind == T_LPAREN) {
         if (peek2_kind(p) == T_STAR)
             return parse_indirect_call(p, t1);
+        TokKind k2 = peek2_kind(p);
+        if (k2 == T_KW_STRUCT || k2 == T_KW_UNION || k2 == T_KW_UNSIGNED ||
+            k2 == T_KW_ENUM ||
+            (k2 == T_IDENT && find_typedef(p, p->la.ident) &&
+             !lookup_var(p, p->la.ident)))
+            return parse_pointer_cast(p, t1);
         if (peek2_kind(p) == T_KW_INT || peek2_kind(p) == T_KW_CHAR ||
             peek2_kind(p) == T_KW_LONG) {
             /* cast-expr := '(' ('int'|'char'|'long') ')' IDENT
@@ -1426,6 +2407,12 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 c0_error_at(line, "a cast of an array name is not yet "
                                    "supported - see src/mutos_cc/README.md");
                 return ev_dynamic();
+            }
+            if (sym->type == target && target == TY_INT) {
+                /* int to int (an enum variable's "(int) c" - 06_struct/
+                 * 08_enum.1.golden): no conversion, the NAME alone. */
+                emit_name(t1, sym, sym->type);
+                return ev_dynamic_typed(target);
             }
             emit_name(t1, sym, sym->type);
             int optag;
@@ -1516,6 +2503,27 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             advance(p);
             return ev_const(0);
         }
+        {
+            TokKind k2 = peek2_kind(p);
+            if (k2 == T_DOT || k2 == T_ARROW ||
+                (k2 == T_LBRACK && sym->sdef && !sym->dim2)) {
+                /* The address of a member or of a struct array's element -
+                 * v7's build(AMPER) of the chain's STAR: the chain, then
+                 * AMPER("pointer to" its type). No golden has one. */
+                advance(p); /* IDENT */
+                int is_field;
+                ExprVal v = parse_postfix_chain(p, t1, sym, &is_field);
+                if (is_field) {
+                    c0_error_at(line, "the address of a bit-field");
+                    return ev_dynamic();
+                }
+                int rt = ty_ptr_of(v.type);
+                outcode(t1, "BN", OP_AMPER, rt);
+                ExprVal r = ev_dynamic_typed(rt);
+                r.sdef = v.sdef;
+                return r;
+            }
+        }
         if (peek2_kind(p) == T_LBRACK && (sym->is_array || sym->is_ptr)) {
             /* '&' IDENT '[' expr ']' - the address of one element
              * ("swapch(&s[lo], &s[hi]);" - 10_integ/04_strrev.c): v7's
@@ -1555,7 +2563,11 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         emit_name(t1, sym, sym->type);
         int rt = ty_ptr_of(sym->type);
         outcode(t1, "BN", OP_AMPER, rt);
-        return ev_dynamic_typed(rt);
+        /* "&p" of a struct: NAME(p, STRUCT) AMPER(PTR.STRUCT) - 06_struct/
+         * 02_stptr.1.golden's "move(&p, 5, 7)" */
+        ExprVal r = ev_dynamic_typed(rt);
+        r.sdef = sym->sdef;
+        return r;
     }
     if (p->cur.kind == T_STAR) {
         /* '*' unary-expr - general pointer dereference used as an
@@ -1607,7 +2619,24 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         if (!expect(p, T_LPAREN, "'('"))
             return ev_const(0);
         long size;
-        if (p->cur.kind == T_KW_INT) {
+        if (p->cur.kind == T_KW_STRUCT || p->cur.kind == T_KW_UNION ||
+            p->cur.kind == T_KW_UNSIGNED || p->cur.kind == T_KW_ENUM ||
+            (p->cur.kind == T_IDENT && find_typedef(p, p->cur.ident) &&
+             !lookup_var(p, p->cur.ident))) {
+            /* A type name - v7's length() of it: a struct's size ("sizeof
+             * (struct node)" is CON(UNSIGN, 4) in 10_integ/03_linklist.
+             * 1.golden), a pointer's a word. */
+            int line = p->cur.line;
+            TypeSpec ts = parse_type_spec(p);
+            int t = ts.type;
+            while (p->cur.kind == T_STAR) {
+                t = ty_ptr_of(t);
+                advance(p);
+            }
+            if (t == TY_STRUCT && (!ts.sdef || !ts.sdef->complete))
+                c0_error_at(line, "sizeof an incomplete struct");
+            size = type_size(t, ts.sdef, 0);
+        } else if (p->cur.kind == T_KW_INT) {
             size = MCC_SZINT;
             advance(p);
         } else if (p->cur.kind == T_KW_CHAR) {
@@ -1627,6 +2656,8 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
                 size = 0;
             } else if (sym->is_ptr) {
                 size = MCC_SZINT; /* a pointer is word-sized, same as int */
+            } else if (sym->type == TY_STRUCT) {
+                size = type_size(TY_STRUCT, sym->sdef, 0);
             } else switch (sym->type) {
                 case TY_CHAR: size = MCC_SZCHAR; break;
                 case TY_LONG: size = MCC_SZLONG; break;
@@ -1709,7 +2740,7 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         ExprVal v = parse_unary(p, t1);
         if (v.is_const)
             return ev_const(v.value == 0 ? 1 : 0);
-        (void)char_value_refused(v, line, "the operand of '!'");
+        (void)char_nonobj_refused(v, line, "the operand of '!'");
         emit_materialize(t1, v); /* no-op, same as COMPL above */
         outcode(t1, "BN", OP_EXCLA, TY_INT);
         return ev_dynamic();
@@ -1739,7 +2770,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
              * both 'long' -> OP_TIMES(TY_LONG)); a mixed long/int
              * case is not exercised by any golden but follows the
              * same ordinary-C-promotion reasoning. */
-            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            int optype = arith_type(v, r);
             outcode(t1, "BN", OP_TIMES, optype);
             v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_SLASH) {
@@ -1761,7 +2792,8 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            (void)unsigned_refused(v, r, line, "/");
+            int optype = arith_type(v, r);
             outcode(t1, "BN", OP_DIVIDE, optype);
             v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_PERCENT) {
@@ -1783,7 +2815,8 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            (void)unsigned_refused(v, r, line, "%");
+            int optype = arith_type(v, r);
             outcode(t1, "BN", OP_MOD, optype);
             v = ev_dynamic_typed(optype);
         } else {
@@ -1843,7 +2876,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
              * against 02_long/01_addsub.1.golden's "c = a + b;" (a, b
              * both 'long' -> OP_PLUS(TY_LONG)), same rule already
              * confirmed for '*'/'/' /'%' in parse_mul() above. */
-            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            int optype = arith_type(v, r);
             outcode(t1, "BN", OP_PLUS, optype);
             v = ev_dynamic_typed(optype);
         } else if (p->cur.kind == T_MINUS) {
@@ -1870,7 +2903,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
-            int optype = (v.type == TY_LONG || r.type == TY_LONG) ? TY_LONG : TY_INT;
+            int optype = arith_type(v, r);
             outcode(t1, "BN", OP_MINUS, optype);
             v = ev_dynamic_typed(optype);
         } else {
@@ -1923,8 +2956,11 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        outcode(t1, "BN", op, TY_INT);
-        v = ev_dynamic();
+        if (op == OP_RSHIFT)
+            (void)unsigned_refused(v, r, p->cur.line, ">>");
+        int stype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        outcode(t1, "BN", op, stype);
+        v = ev_dynamic_typed(stype);
     }
     return v;
 }
@@ -2010,6 +3046,7 @@ static ExprVal parse_relational(Parser *p, FILE *t1)
             v = ev_dynamic();
             continue;
         }
+        (void)unsigned_refused(v, r, p->cur.line, "an ordered comparison");
         if (ty_is_ptr(v.type) || ty_is_ptr(r.type)) {
             /* v7 orders pointers UNSIGNED - build() turns the operator
              * into LESSP/LESSEQP/GREATP/GREATEQP ("op =+ LESSEQP-LESSEQ")
@@ -2083,8 +3120,9 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        outcode(t1, "BN", OP_AND, TY_INT);
-        v = ev_dynamic();
+        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        outcode(t1, "BN", OP_AND, btype);
+        v = ev_dynamic_typed(btype);
     }
     return v;
 }
@@ -2105,8 +3143,9 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        outcode(t1, "BN", OP_EXOR, TY_INT);
-        v = ev_dynamic();
+        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        outcode(t1, "BN", OP_EXOR, btype);
+        v = ev_dynamic_typed(btype);
     }
     return v;
 }
@@ -2127,8 +3166,9 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        outcode(t1, "BN", OP_OR, TY_INT);
-        v = ev_dynamic();
+        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        outcode(t1, "BN", OP_OR, btype);
+        v = ev_dynamic_typed(btype);
     }
     return v;
 }
@@ -2145,11 +3185,11 @@ static ExprVal parse_logand(Parser *p, FILE *t1)
     ExprVal v = parse_bitor(p, t1);
     while (p->cur.kind == T_ANDAND) {
         advance(p);
-        (void)char_value_refused(v, p->cur.line, "an operand of '&&'/'||'");
+        (void)char_nonobj_refused(v, p->cur.line, "an operand of '&&'/'||'");
         RhsCapture cap;
         ExprVal r = parse_bitor(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
-        (void)char_value_refused(r, p->cur.line, "an operand of '&&'/'||'");
+        (void)char_nonobj_refused(r, p->cur.line, "an operand of '&&'/'||'");
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) && (r.value != 0));
             continue;
@@ -2167,11 +3207,11 @@ static ExprVal parse_logor(Parser *p, FILE *t1)
     ExprVal v = parse_logand(p, t1);
     while (p->cur.kind == T_OROR) {
         advance(p);
-        (void)char_value_refused(v, p->cur.line, "an operand of '&&'/'||'");
+        (void)char_nonobj_refused(v, p->cur.line, "an operand of '&&'/'||'");
         RhsCapture cap;
         ExprVal r = parse_logand(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
-        (void)char_value_refused(r, p->cur.line, "an operand of '&&'/'||'");
+        (void)char_nonobj_refused(r, p->cur.line, "an operand of '&&'/'||'");
         if (v.is_const && r.is_const) {
             v = ev_const((v.value != 0) || (r.value != 0));
             continue;
@@ -2222,7 +3262,7 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
     ExprVal f = parse_logor(p, rhs_begin(&fcap, p, t1, pending));
     /* v7's QUEST/COLON convert nothing (COLON only balances int/pointer
      * types); a char condition or arm has no golden - refused. */
-    (void)(char_value_refused(cond, p->cur.line, "a '?:' condition") ||
+    (void)(char_nonobj_refused(cond, p->cur.line, "a '?:' condition") ||
            char_value_refused(t, p->cur.line, "a '?:' result") ||
            char_value_refused(f, p->cur.line, "a '?:' result"));
 
@@ -2341,24 +3381,33 @@ static void parse_decl(Parser *p, FILE *t1)
         advance(p); /* consume 'register' */
     }
 
-    int basetype;
-    if (p->cur.kind == T_KW_INT) {
-        basetype = TY_INT;
-    } else if (p->cur.kind == T_KW_CHAR) {
-        basetype = TY_CHAR;
-    } else if (p->cur.kind == T_KW_LONG) {
-        basetype = TY_LONG;
-    } else {
+    if (!at_type_spec(p)) {
         c0_error_at(p->cur.line,
-            "only 'int'/'char'/'long' local declarations are supported "
-            "so far - see src/mutos_cc/README.md");
+            "only 'int'/'char'/'long', struct, union, enum and typedef'd "
+            "local declarations are supported so far - see "
+            "src/mutos_cc/README.md");
         while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
             advance(p);
         if (p->cur.kind == T_SEMI)
             advance(p);
         return;
     }
-    advance(p); /* consume 'int'/'char'/'long' */
+    /* The type: a keyword, or (06_struct) a struct/union/enum specifier
+     * or a typedef name - see parse_type_spec(). */
+    int tline = p->cur.line;
+    TypeSpec ts = parse_type_spec(p);
+    int basetype = ts.type;
+    StructDef *bsdef = ts.sdef;
+    if (basetype == TY_UNSIGN)
+        c0_error_at(tline, "an 'unsigned' variable is not yet supported (only "
+                           "an unsigned bit-field member) - see "
+                           "src/mutos_cc/README.md");
+    if (p->cur.kind == T_SEMI) {
+        /* A struct/union/enum declared inside a function, no variable -
+         * nothing to allocate or write. */
+        advance(p);
+        return;
+    }
 
     for (;;) {
         if (p->cur.kind == T_LPAREN) {
@@ -2509,8 +3558,10 @@ static void parse_decl(Parser *p, FILE *t1)
         /* The frame slot: rlength() of the whole object - one element
          * (a 'char' still takes a whole word, a 'long' two, any pointer
          * one), or N (x M) elements of the element's own size. */
+        if (decltype == TY_STRUCT && (!bsdef || !bsdef->complete))
+            c0_error_at(line, "'%s' has an incomplete struct type", name);
         int size = rlength((is_array ? arraylen * (dim2 ? dim2 : 1) : 1) *
-                           (long)size_of_type(decltype));
+                           (long)type_size(decltype, bsdef, 0));
 
         /* 'register' is only attempted for a plain 'int' scalar - see
          * this function's own comment above; a pointer, an array, or a
@@ -2538,9 +3589,11 @@ static void parse_decl(Parser *p, FILE *t1)
             if (!sym) {
                 c0_error_at(line, "'%s' redeclared", name);
             } else {
-                sym->is_ptr = (ptr_degree > 0 && !is_array);
+                sym->is_ptr = (ty_is_ptr(decltype) && !is_array);
                 sym->is_array = is_array;
                 sym->dim2 = (int)dim2;
+                if ((decltype & TY_TYPE_MASK) == TY_STRUCT)
+                    sym->sdef = bsdef;
                 outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
             }
         }
@@ -2670,10 +3723,18 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
      * ... STAR(1) ITOC(0) RFORCE(0). (A char- or long-returning
      * function's conversions are not confirmed; mutos_c1 refuses a
      * char RFORCE either way.) */
-    if (p->cur_ret_type == TY_INT)
+    int rtype = p->cur_ret_type;
+    if (rtype == TY_INT) {
         (void)promote_char(t1, v);
+        /* doret()'s RFORCE takes the converted value's own type, and an
+         * unsigned value is not converted to int: 06_struct/
+         * 07_bitfield.1.golden's "return f.ready + f.mode + f.count;" ->
+         * ... PLUS(7) RFORCE(7). */
+        if (v.type == TY_UNSIGN)
+            rtype = TY_UNSIGN;
+    }
 
-    outcode(t1, "BN", OP_RFORCE, p->cur_ret_type);
+    outcode(t1, "BN", OP_RFORCE, rtype);
     outcode(t1, "BN", OP_EXPR, stmt_line);
     branch_op(t1, retlab);
 }
@@ -2716,7 +3777,17 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
      * emitted again (the subscript already emitted the full lvalue
      * tree, ending in a STAR). */
     int subtype = -1;
-    if (p->cur.kind == T_LBRACK) {
+    int is_field = 0;
+    const StructDef *target_sdef = NULL;
+    if (sym && starts_chain(p, sym)) {
+        /* A struct member or struct array element as the target
+         * ("p.x = 3;", "pp->y = ...", "pts[i].x = i;", "f.ready = 1;") -
+         * written now, like a subscripted target: see "Member and
+         * subscript chains". */
+        ExprVal tv = parse_postfix_chain(p, t1, sym, &is_field);
+        subtype = tv.type;
+        target_sdef = tv.sdef;
+    } else if (p->cur.kind == T_LBRACK) {
         if (!sym) {
             c0_error_at(line, "'%s' undeclared", name);
         } else if (!sym->is_array && !sym->is_ptr) {
@@ -2760,13 +3831,29 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     }
     advance(p); /* consume the assignment operator */
 
-    if (subtype < 0) {
+    if (subtype < 0 && sym && sym->type == TY_STRUCT && !sym->is_array) {
+        target_sdef = sym->sdef;
+        subtype = TY_STRUCT;
+        emit_name(t1, sym, sym->type);
+    } else if (subtype < 0) {
         if (!sym) {
             c0_error_at(line, "'%s' undeclared", name);
         } else {
             emit_name(t1, sym, sym->type);
         }
     }
+    if (subtype == TY_STRUCT) {
+        /* A whole struct: "p2 = p1;" - see parse_struct_assign(). */
+        if (optag != OP_ASSIGN)
+            c0_error_at(line, "a compound assignment to a struct");
+        parse_struct_assign(p, t1, target_sdef, line);
+        expect(p, T_SEMI, "';'");
+        outcode(t1, "BN", OP_EXPR, line);
+        return;
+    }
+    if (is_field && optag != OP_ASSIGN)
+        c0_error_at(line, "a compound assignment to a bit-field is not yet "
+                          "supported - see src/mutos_cc/README.md");
     /* else: the "IDENT[expr]" subscript above already emitted the
      * full lvalue tree - nothing more to emit here. */
 
@@ -3080,7 +4167,7 @@ static void parse_if_stmt(Parser *p, FILE *t1, int retlab)
     advance(p); /* consume 'if' */
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
-    (void)char_value_refused(cond, p->cur.line, "a condition");
+    (void)char_nonobj_refused(cond, p->cur.line, "a condition");
     expect(p, T_RPAREN, "')'");
     emit_materialize(t1, cond);
     int line = p->cur.line;
@@ -3171,7 +4258,7 @@ static void parse_while_stmt(Parser *p, FILE *t1, int retlab)
 
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
-    (void)char_value_refused(cond, p->cur.line, "a condition");
+    (void)char_nonobj_refused(cond, p->cur.line, "a condition");
     emit_materialize(t1, cond);
     int line = p->cur.line; /* p->cur is still ')' here */
     expect(p, T_RPAREN, "')'");
@@ -3220,7 +4307,7 @@ static void parse_do_stmt(Parser *p, FILE *t1, int retlab)
     }
     expect(p, T_LPAREN, "'('");
     ExprVal cond = parse_expr(p, t1);
-    (void)char_value_refused(cond, p->cur.line, "a condition");
+    (void)char_nonobj_refused(cond, p->cur.line, "a condition");
     emit_materialize(t1, cond);
     int line = p->cur.line; /* p->cur is still ')' here - same
                               * last-consumed-token convention as
@@ -3289,7 +4376,7 @@ static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
 
     if (p->cur.kind != T_SEMI) {
         ExprVal cond = parse_expr(p, t1);
-        (void)char_value_refused(cond, p->cur.line, "a condition");
+        (void)char_nonobj_refused(cond, p->cur.line, "a condition");
         emit_materialize(t1, cond);
         int line = p->cur.line; /* p->cur is still ';' here */
         outcode(t1, "BNNN", OP_CBRANCH, brk_lab, 0, line);
@@ -3557,10 +4644,16 @@ static void parse_compound_stmt(Parser *p, FILE *t1, int retlab)
      * declaration list is - after whatever code precedes the block
      * (07_scope/02_shadow.1.golden: the inner "x"'s ANAME follows the
      * outer "x = 1;" statement's EXPR). */
-    while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
-           p->cur.kind == T_KW_LONG || p->cur.kind == T_KW_STATIC ||
-           p->cur.kind == T_KW_REGISTER) {
-        if (p->cur.kind == T_KW_STATIC)
+    while (at_type_spec(p) || p->cur.kind == T_KW_STATIC ||
+           p->cur.kind == T_KW_REGISTER || p->cur.kind == T_KW_TYPEDEF) {
+        if (p->cur.kind == T_KW_TYPEDEF) {
+            c0_error_at(p->cur.line, "a typedef inside a function is not yet "
+                                      "supported - see src/mutos_cc/README.md");
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
+                advance(p);
+            if (p->cur.kind == T_SEMI)
+                advance(p);
+        } else if (p->cur.kind == T_KW_STATIC)
             parse_static_decl(p, t1);
         else
             parse_decl(p, t1);
@@ -3649,18 +4742,25 @@ static void parse_param_decls(Parser *p, FILE *t1,
                                 * variable declarator for the wire
                                 * shape this mirrors. */
     int pdeclared[MCC_MAXPARAMS];
+    StructDef *psdef[MCC_MAXPARAMS];
     for (int i = 0; i < nparams; i++) {
         ptype[i] = TY_INT;
         pptr[i] = 0;
         pfunc[i] = 0;
         pdeclared[i] = 0;
+        psdef[i] = NULL;
     }
 
-    while (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
-           p->cur.kind == T_KW_LONG) {
-        int symtype = (p->cur.kind == T_KW_INT) ? TY_INT
-                    : (p->cur.kind == T_KW_CHAR) ? TY_CHAR : TY_LONG;
-        advance(p);
+    while (at_type_spec(p)) {
+        /* A keyword type, or a struct/union/enum/typedef one - "struct
+         * point *pp;" (06_struct/02_stptr.c), "struct rect *rp;"
+         * (05_nestst.c). */
+        int tline = p->cur.line;
+        TypeSpec ts = parse_type_spec(p);
+        int symtype = ts.type;
+        if (symtype == TY_UNSIGN)
+            c0_error_at(tline, "an 'unsigned' parameter is not yet supported - "
+                               "see src/mutos_cc/README.md");
         for (;;) {
             if (symtype == TY_INT && p->cur.kind == T_LPAREN) {
                 advance(p); /* consume '(' */
@@ -3728,9 +4828,15 @@ static void parse_param_decls(Parser *p, FILE *t1,
                     "'%s' is not one of this function's declared "
                     "parameters", p->cur.ident);
             } else {
+                if (ptype_full == TY_STRUCT)
+                    c0_error_at(p->cur.line, "a struct parameter passed by "
+                                              "value is not yet supported - see "
+                                              "src/mutos_cc/README.md");
                 ptype[idx] = ptype_full;
-                pptr[idx] = (ptr_degree > 0);
+                pptr[idx] = ty_is_ptr(ptype_full);
                 pdeclared[idx] = 1;
+                if ((ptype_full & TY_TYPE_MASK) == TY_STRUCT)
+                    psdef[idx] = ts.sdef;
             }
             advance(p); /* consume IDENT */
 
@@ -3787,6 +4893,7 @@ static void parse_param_decls(Parser *p, FILE *t1,
             continue;
         }
         sym->is_ptr = pptr[i];
+        sym->sdef = psdef[i];
         outcode(t1, "BSN", OP_ANAME, sym->name, sym->offset);
     }
 }
@@ -4083,6 +5190,10 @@ static void parse_global_chararray(Parser *p, FILE *t1, int sclass,
  */
 static void parse_extdef(Parser *p, FILE *t1)
 {
+    if (p->cur.kind == T_KW_TYPEDEF) {
+        parse_typedef(p);
+        return;
+    }
     int sclass = 0;
     if (p->cur.kind == T_KW_STATIC || p->cur.kind == T_KW_EXTERN) {
         sclass = p->cur.kind;
@@ -4090,12 +5201,61 @@ static void parse_extdef(Parser *p, FILE *t1)
     }
     int ret_type = TY_INT;
     int has_type = 0;
-    if (p->cur.kind == T_KW_INT || p->cur.kind == T_KW_CHAR ||
-        p->cur.kind == T_KW_LONG) {
-        ret_type = (p->cur.kind == T_KW_INT) ? TY_INT
-                 : (p->cur.kind == T_KW_CHAR) ? TY_CHAR : TY_LONG;
+    if (at_type_spec(p)) {
+        /* A type keyword, or a struct/union/enum specifier (with or
+         * without a body) or a typedef name - see parse_type_spec(). */
+        TypeSpec ts = parse_type_spec(p);
+        ret_type = ts.type;
         has_type = 1;
-        advance(p); /* consume 'int'/'char'/'long' */
+        if (p->cur.kind == T_SEMI) {
+            /* "struct point { int x; int y; };", "enum color { RED,
+             * GREEN, BLUE };" - a type declaration only: v7 writes
+             * nothing for one (06_struct's goldens start with main()'s
+             * SYMDEF). */
+            advance(p);
+            return;
+        }
+        if (ret_type == TY_STRUCT || ret_type == TY_UNSIGN) {
+            c0_error_at(p->cur.line, "a file-scope struct/union or 'unsigned' "
+                                      "variable, or a function returning a "
+                                      "struct/union (or a pointer to one) or "
+                                      "an unsigned value, is not yet "
+                                      "supported - see src/mutos_cc/README.md");
+            /* Skipped up to its ';' - or, for a function definition (a
+             * ')' followed by neither ';' nor ','), past its K&R
+             * parameter declarations and its whole body, so neither is
+             * misread as external definitions. */
+            int is_def = 0;
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_LBRACE &&
+                   p->cur.kind != T_EOF) {
+                int was_rparen = (p->cur.kind == T_RPAREN);
+                advance(p);
+                if (was_rparen && p->cur.kind != T_SEMI &&
+                    p->cur.kind != T_COMMA && p->cur.kind != T_LPAREN &&
+                    p->cur.kind != T_RPAREN)
+                    is_def = 1;
+                if (is_def)
+                    while (p->cur.kind != T_LBRACE && p->cur.kind != T_EOF)
+                        advance(p);
+            }
+            if (p->cur.kind == T_SEMI) {
+                advance(p);
+                return;
+            }
+            if (p->cur.kind == T_LBRACE) {
+                int depth = 0;
+                while (p->cur.kind != T_EOF) {
+                    if (p->cur.kind == T_LBRACE)
+                        depth++;
+                    else if (p->cur.kind == T_RBRACE && --depth == 0) {
+                        advance(p);
+                        break;
+                    }
+                    advance(p);
+                }
+            }
+            return;
+        }
     }
     /* v7/cc/c03.c's getkeywords() "isadecl": a class or a type keyword
      * was seen, so what follows is a declaration list. */
@@ -4244,6 +5404,7 @@ int c0_compile(FILE *in, FILE *temp1, FILE *temp2)
     outcode(temp2, "B", OP_EOFC);
 
     symtab_clear(&p.globals);
+    free_types(&p);
     free(p.cur.sval);
     if (p.have_la)
         free(p.la.sval);

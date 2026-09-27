@@ -11,7 +11,8 @@ used strictly as an algorithmic/structural reference (CLAUDE.md
 Workflow Guideline 3), not copied wholesale.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
-`mutos_c0` → `mutos_c1` → `.s`), for 50/62 of the full corpus:**
+`mutos_c0` → `mutos_c1` → `.s`), for 60/62 of the full corpus - all but
+`08_float`'s two files:**
 `tests/mutos_cc/00_smoke/`'s three files, plus all of `01_expr`:
 `01_intarith.c`, `02_bitwise.c`,
 `03_rellogic.c`, `04_shift.c`, `05_incdec.c`, `06_compasgn.c`,
@@ -25,8 +26,9 @@ all 7 of `05_arrptr`: `01_arrbasic.c`, `02_array2d.c`, `03_ptrbasic.c`,
 all 7 of `09_abiprobe` (`01_argvmain.c` and the six `0N_frameNNN.c`
 large-frame probes), plus all 3 of `07_scope`: `01_globstat.c`,
 `02_shadow.c` and `03_externdef.c` (file-scope variables and block
-scope), plus `10_integ/01_wordcount.c`, `02_bubsort.c`, `04_strrev.c`
-and `05_matmul.c`. See
+scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
+typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
+`03_linklist.c`, `04_strrev.c` and `05_matmul.c`. See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -285,7 +287,9 @@ above grammar can produce: `SYMDEF`, `PROG`, `EVEN`, `RLABEL`, `SAVE`,
 `ASRSH`, `ASSAND`, `ASOR`, `ASXOR`, `COLON`, `QUEST`, `SEQNC`,
 `LCON`, `LTOI`, `ITOC`, `CTOL`,
 `ASSIGN`, `RFORCE`, `EXPR`,
-`RETRN`, `SETSTK`, `EOFC`. Its
+`RETRN`, `SETSTK`, `EOFC` (the later categories added their own - calls,
+`SWIT`, the data and BSS opcodes, and for structs `STRASG` and `FSEL`,
+see the sections below). Its
 own value stack (`Val`/`push_val`/`pop_val` in `c1_gen.c`) tracks,
 for each pending intermediate value, whether it's an immediate, a
 `bp`-relative memory location, a value already in a specific
@@ -635,8 +639,7 @@ variable, a `static` function, `++`/`--` or a compound assignment on a
 static or file-scope variable,
 a second simultaneously-live `register` variable (or one of a type
 other than plain `int`), a function pointer with a non-empty
-parameter signature, memory-to-memory
-assignment, an immediate `IMUL`/`IDIV`
+parameter signature, an immediate `IMUL`/`IDIV`
 operand outside a confirmed compound-assignment shape, any opcode `c1` doesn't recognize - is a clear, explicit
 "not yet supported" diagnostic and a nonzero exit status, never
 silently-wrong output.** This is a deliberate design choice, not an
@@ -928,7 +931,10 @@ the target's type (`convert_assign()`: int → char `ITOC(1)`, char → int
 `return` in an int function converts like an assignment (v7's `doret()`),
 and `(int) c` is `ITOC(0)`. Where v7 converts nothing - a condition, an
 operand of `&&`/`||`/`!`/`~`/`?:`, a call argument, the last operand of
-a comma operator - a char is refused: no golden shows those. `&` of a
+a comma operator - a char OBJECT (a char variable, element or
+dereference) is written unconverted, as v7 does; any other char value
+there (a `(char)` cast's, a char assignment's) is refused - see "More
+`char`" below. `&` of a
 subscripted element (`&s[lo]`: the element reference plus `AMPER`) and
 the `if (...) return;` shortcut (`CBRANCH` straight to the return label,
 like `goto`/`break`/`continue`) came with `04_strrev`.
@@ -949,9 +955,9 @@ movb ax,*-84.(bp) / cbw / mov di,ax / movb ax,*-5.(bp) / cbw / add di,ax
 Confirmed consumers: int `+` of two chars (above), `return` (`movb
 ax,*-24.(bp)` / `cbw`, already in the return register), and an int
 assignment (`mov <lhs>,ax`, from the non-optimized kernel output in
-`tests/mutos_as/kernel_nonopt/amx.s`). A char with one int operand, `-`,
-a char compared with anything but a constant in 0..127 (see
-`10_integ/01_wordcount` below), and a char call argument are refused. A
+`tests/mutos_as/kernel_nonopt/amx.s`). A char with one int operand, a
+char compared with an int, a char call argument and condition are in
+"More `char`" below. A
 byte through
 a pointer variable goes through DX and BX (`mov dx,*4.(bp)` / `mov
 bx,dx` / `movb dx,(bx)` - the int case uses DI), through an address
@@ -1013,9 +1019,12 @@ decimal, as the kernel's `.comm\t_msgbuf,1024` shows - and `NLABEL` a
 `_hidden:` label glued onto the `.blkb` line like an `L<n>:`. What a
 local static cannot do, a global cannot either: `++`/`--` and compound
 assignment on it, and a `long` one (the long handlers take a
-bp-relative operand only), are refused. A static or global right-hand
-side of `x = y;` is now refused like a local one - for two local
-statics `c1` used to write `mov L4,L5`, which `mutos_as` rejects.
+bp-relative operand only), are refused. `x = y;` between two memory
+operands - local, static or global - goes through DI (`mov di,*-8.(bp)`
+/ `mov *-6.(bp),di` for `10_integ/03_linklist`'s `head = cur;`); with a
+`register` variable in DI it is refused (the kernel uses DX there, in a
+function with two). For two local statics `c1` once wrote `mov L4,L5`,
+which `mutos_as` rejects.
 
 A compound statement nested in a function body has a scope of its own
 (`parse_nested_block()`, v7's `statement()` LBRACE case with
@@ -1073,6 +1082,68 @@ array element with a runtime index (addressed through DI), a store into
 a file-scope array element, `&text[i]`, `text + i`, a constant index,
 and a char compared with a negative or larger constant, a non-constant
 or a constant on the left are refused.
+
+**More `char`: an int operand, call arguments, conditions, a store into
+a global array element.** No golden has these; each shape is the real
+compiler's own output in `tests/mutos_as/` (see `docs/DEVLOG.md`'s
+`06_struct` section, part 1). A char with one int LEAF operand (a
+constant, a variable, a `register` local) is computed in AX, the char
+moved left when the operator commutes: `movb ax,<c>` / `cbw` / `add
+ax,*-48.` (`c - '0'`: v7's `x - c` -> `x + -c`), `inc`/`dec` for 1,
+`and`/`or`/`xor ax,<int>`, `mov ax,ax` / `mov cx,*20.` / `imul cx`,
+shifts (`gen_charx_binop()`). A char AND a constant 0..127 skips the
+`cbw` and uses DX (`movb dx,#_amxscd(bx)` / `and dx,*12.`), and a branch
+on an AND's result reads its flags directly - `and dx,*12.` / `beq`, no
+`cmp` (`Val.flagsv`); an int AND/OR/XOR of a value already in AX or DX is
+done in place too. A char compared with an int leaf goes left and is
+compared as an int (`movb ax,*22.(di)` / `cbw` / `cmp ax,*-6.(bp)`). A
+char object as a call argument is `movb ax,...` / `cbw` / `push ax`, as a
+condition a byte compare with 0 (`cmpb *1.(si),*0`, or `movb dx,#_t(bx)`
+/ `orb dx,dx`). A store into a file-scope char array element pushes the
+index: `push *-34.(bp)` / `mov dx,*-30.(bp)` / `pop bx` / `movb
+_amxscd(bx),dx`. Refused: a computed int operand, `x - c`, a char shift
+count, two chars (except their sum), a constant stored into a global
+array element, and a char value that is not an object (a cast's, an
+assignment's) where v7 converts nothing.
+
+**Structs, unions, bit-fields, enums and typedefs (confirmed via
+`06_struct` and `10_integ/03_linklist`).** `mutos_c0` lays a struct out
+as v7's `declist()`/`align()` does (a non-char member on a word boundary,
+bit-fields packed into words, union members at offset 0, the size a
+whole number of words) and writes nothing for a declaration. Every struct
+and union is type `TY_STRUCT` (4) on the wire, with the usual degrees;
+which one travels beside the type code (`StructDef`, `c0_sym.h`). A member
+reference is v7's `build()`: `a.b` = `(&a)->b`, `p->b` = `*(p + CON
+offset)`, the whole NAME/AMPER/PLUS/STAR spine retyped to the member's
+type (`setype()`) - `p.x` is `NAME(p, INT) AMPER(8) CON 0 PLUS(8) STAR(0)`,
+and in `pts[i].x` only the `ITOP` keeps `PTR.STRUCT` (12) - so a chain is
+collected and written once its last member is known ("Member and
+subscript chains" in `c0_parser.c`). Two new opcodes: a bit-field's STAR
+is followed by `FSEL(UNSIGN, bitoffs, flen)` (10, "BNNN"), a whole-struct
+assignment is `ASSIGN(4)` + `STRASG(4, size)` (115, "BNN"). Enum
+constants are int `CON`s, a typedef name stands for its type, `sizeof`
+takes type names, a pointer cast of a call types the `CALL`
+(`(struct node *) malloc(...)`), and arithmetic on an unsigned (a
+bit-field's value) is typed `UNSIGN` - `/`, `%`, `>>` and ordered
+comparisons on it are refused.
+
+In `mutos_c1`, a 4-byte struct is assigned as a long (v7's `strasg()`),
+a 2-byte one as an int. A bit-field is read as `mov di,<word>` / `sar`
+(the constant-shift rule) / `and di,<mask>` and assigned from a constant
+the way v7's `lvfield()` does: 0 as `and <word>,<~mask>` (decimal), a
+value equal to the mask as `or <word>,<value>`, anything else as `and
+<word>,` + the complemented mask in hex (`*/fff3`, `#/ff0f`) + `or
+<word>,<value << bitoffs>` - `07_bitfield.s.golden`. Member offsets end up
+as one displacement (`rp->botright.y` -> `*6.(di)`), and a store through
+a pointer plus a non-zero offset computes its right-hand side first - see
+"Stores through a pointer plus an offset" below. Refused: file-scope
+struct/union/unsigned variables, a function returning a struct or union
+(or a pointer to one), a struct parameter by value, `unsigned` variables,
+`long` members, char and union bit-fields, an array of arrays as a member,
+a struct of more than 4 bytes assigned whole, a struct whose size is not a
+power of two subscripted, a computed or out-of-range value stored into a
+bit-field, `&`, `++`/`--` or a compound assignment on a bit-field, and a
+char member reached through a pointer plus an offset.
 
 ## `SETSTK` / local-frame handling
 
@@ -1195,6 +1266,26 @@ call streams as before; pushing its arguments right to left afterwards
 gives the same bytes. A comparison used as an argument is materialized
 first (0/1 in DI, `push di`).
 
+**Stores through a pointer plus an offset, `x - *p`, and reordered `+`
+chains.** Three more plan decisions, all read off the struct goldens (see
+`docs/DEVLOG.md`'s `06_struct` section, part 3). A store through a pointer
+plus a non-zero constant (`cur->next = head;`) computes its right-hand
+side first, into a register, and the pointer after it (`is_disp_store()`:
+`mov di,*-6.(bp)` / `mov si,*-8.(bp)` / `mov *2.(si),di`); with offset 0
+the target is pushed first as before (`push *-8.(bp)` ... `pop bx` / `mov
+(bx),di`) - on the PDP-11 `*p` is an addressable operand, `*(p + 2)` is
+not. An int `x - *p` with a computed left operand pushes the pointer
+first (`is_deferred_ptr()`: `push *4.(bp)` / ... / `pop bx` / `sub
+di,(bx)`). An int `+` chain is reordered like v7's `acommute()`, a
+computed term ahead of a variable (`acommute_order()`: `sum + pts[i].x +
+pts[i].y` adds `sum` last) - only where that changes the order, for
+three or more side-effect-free terms without constants. Registers are
+handed out in order: an address or pointer takes DI, or SI while DI holds
+a pending value (`pick_addr_reg()`), a subscript index DI, SI, then DX; a
+dereference on the left of an int `+`/`-` whose right operand has code is
+loaded first (`load_now()` - `mov di,*6.(di)` / `mov si,*4.(bp)` / `sub
+di,*2.(si)`).
+
 ## Next steps (roughly in dependency order)
 
 1. **All of `01_expr` and `03_ctrlflow` are now done.**
@@ -1249,17 +1340,18 @@ first (0/1 in DI, `push di`).
    String literals (`05_arrofptr.c`/`07_strlibc.c`) are done too, with
    `char`/`long` arrays and pointers, pointer-returning prototypes and call
    statements (see the `temp2` paragraph above and `docs/DEVLOG.md`) - so
-   all 7 of `05_arrptr` pass. Then `06_struct` (structs/unions/enums -
-   member layout, sizes beyond a flat "2 bytes") - real type-system work
-   the current `SymEntry`/`ExprVal` model doesn't fully have yet, untouched
-   so far.
+   all 7 of `05_arrptr` pass. **`06_struct` is done too** (all 9 - see
+   "Structs, unions, bit-fields, enums and typedefs" above); its refused
+   shapes (file-scope struct variables, functions returning structs or
+   struct pointers, block copies, computed bit-field stores, ...) each
+   wait for evidence of the real compiler's shape.
 4. **Evaluation order**: done for `10_integ/05_matmul` (see "Evaluation
    order" above), for call arguments (right to left) and for
    `02_bubsort`'s comparisons (v7's `optim()` swapping a relational's
-   operands by `degree()` - see "Two non-constant comparison operands");
-   `03_linklist`'s right-hand-side-first store is the same mechanism with
-   another decision - a new case in `order_right_first()`, once
-   `mutos_c0` can parse that file (structs). `&&`/`||`/`?:`/`,` are done
+   operands by `degree()` - see "Two non-constant comparison operands"),
+   and for the struct goldens' three shapes - `03_linklist`'s right-hand-
+   side-first store, `x - *p` and `acommute()`'s reordered `+` chain (see
+   "Stores through a pointer plus an offset" above). `&&`/`||`/`?:`/`,` are done
    too (see "Conditional evaluation"); one shape difference remains
    there: a tested call
    result is `cmp ax,*0` where the real compiler has `or ax,ax`
@@ -1271,13 +1363,13 @@ first (0/1 in DI, `push di`).
    pass too. **`07_scope`: done** (file-scope variables and block scope -
    see "Current scope"). **`10_integ/01_wordcount`: done** (a file-scope
    char array with a string initializer, character constants, a char
-   compared with a constant - see "Current scope"). Next: the further
-   `char` shapes whose kernel evidence `docs/DEVLOG.md`'s `char` section
-   records - a char with one int operand (computed in AX), char call
-   arguments (`movb ax,...` / `cbw` / `push ax`) and conditions - and a
-   store into a file-scope array element (the kernel pushes the index:
-   `push *-34.(bp)` ... `pop bx` / `movb _amxscd(bx),dx`). The 81..127-byte
-   `chkstk` gap stays "not yet supported" until a golden lands in it.
+   compared with a constant - see "Current scope"). **The further `char`
+   shapes are done** (a char with one int operand, char call arguments
+   and conditions, a store into a file-scope array element - see "More
+   `char`"), and so is `10_integ/03_linklist`: 60 of 62. Left in the
+   corpus: `08_float` (floating point - `FCON`, `ITOF`, the FP runtime).
+   The 81..127-byte `chkstk` gap stays "not yet supported" until a golden
+   lands in it.
 6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
@@ -1360,8 +1452,8 @@ handling `OP_SWIT`'s variable-length case table and `OP_NAME`'s
 `SC_EXTERN`-vs-otherwise conditional shape (a symbol name vs. a
 numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. An
 opcode it has no confirmed argument shape for (a construct outside
-`mutos_c0`'s current grammar/opcode scope, e.g. a struct or a function
-call) stops the dump cleanly with a clear message rather than
+`mutos_c0`'s current grammar/opcode scope, e.g. a floating-point
+constant in `08_float`'s goldens) stops the dump cleanly with a clear message rather than
 guessing and silently desyncing the rest of the file - the same
 "explicit not yet supported, never silently wrong" rule this project
 applies everywhere else.
