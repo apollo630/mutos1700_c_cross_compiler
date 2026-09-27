@@ -23,9 +23,13 @@
  *        (no leading '_').
  *   '1'  the literal word 1 (shorthand for a common constant).
  *   '0'  the literal word 0 (shorthand for a common constant).
+ *   'F'  a floating constant's source text (FCON - "BNF": type, then
+ *        this): up to 1000 characters, masked to 7 bits, then a
+ *        terminating NUL - no leading '_' (v7's own 'F'). Confirmed
+ *        against tests/mutos_cc/08_float's .1.goldens ("3.5", "2.0").
  *
  * Each format character consumes exactly one variadic argument:
- * 'B'/'N'/'1'/'0' consume an `int`; 'S' consumes a `const char *`.
+ * 'B'/'N'/'1'/'0' consume an `int`; 'S'/'F' consume a `const char *`.
  */
 
 #ifndef MUTOS_C0_OUTCODE_H

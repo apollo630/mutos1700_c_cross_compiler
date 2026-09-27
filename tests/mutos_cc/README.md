@@ -265,6 +265,8 @@ alone be verified well before `mutos_c1` is ready.
   since this compiler has no prototypes to catch the mistake for you.
 - `float`/`double` files are compile-only probes of the front end's type
   handling; nothing here assumes a working FPU emulation path end-to-end.
+  (The real compiler turns them into calls of `libc.a`'s software
+  floating-point runtime - see `src/mutos_cc/README.md`'s "Floating point".)
 - This corpus does not exercise the MUTOS **kernel-specific** macros
   (`M7100`/`ASK`/`IFSS`/`V24`/`V30IDE`) used by Milestone 3's kernel-source
   golden corpus (`tests/mutos_cpp/c/`) — those are board-configuration

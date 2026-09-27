@@ -20,6 +20,8 @@ Wire format (see c0_outcode.c/c0_outcode.h):
     S  - a symbol: '_' + up to MCC_NCPS name bytes + a NUL terminator
          (present only when the name is non-empty; c0 always writes
          non-empty names here, so this reader always expects '_' first)
+    F  - a floating constant's source text: its characters + a NUL
+         terminator, no '_' (FCON only - see OPCODES)
     0  - two raw zero bytes (OP_SWIT's table terminator - a single
          lone zero N-sized word, never a (0,0) pair - and the end of a
          BDATA run)
@@ -110,6 +112,7 @@ def decode_sc(v):
 
 N = lambda label, decoder=None: ("N", label, decoder)
 S = lambda label: ("S", label)
+F = lambda label: ("F", label)
 
 OPCODES = {
     # -- segment/pseudo-op tags (c0's function/decl driver, not treeout()) --
@@ -209,6 +212,19 @@ OPCODES = {
     59:  ("LTOI", [N("type", decode_type)]),
     107: ("CTOL", [N("type", decode_type)]),
     109: ("ITOC", [N("type", decode_type)]),
+    # -- floating point (08_float - c0_parser.c's "Floating point"
+    # section); confirmed byte-for-byte against 08_float/01_floatbas.
+    # 1.golden and 02_dblconv.1.golden (LTOF has the same unary "BN"
+    # shape, written for a long converted to float/double; no golden
+    # has one): --
+    23:  ("FCON", [N("type", decode_type), F("text")]),
+                                                # treeout()'s "BNF": the
+                                                # constant's source text,
+                                                # e.g. "3.5"
+    51:  ("ITOF", [N("type", decode_type)]),
+    52:  ("FTOI", [N("type", decode_type)]),
+    56:  ("FTOL", [N("type", decode_type)]),
+    57:  ("LTOF", [N("type", decode_type)]),
     35:  ("AMPER", [N("type", decode_type)]),
     36:  ("STAR", [N("type", decode_type)]),
     38:  ("COMPL", [N("type", decode_type)]),
@@ -371,6 +387,20 @@ class Reader:
             v -= 0x10000
         return v
 
+    def read_f(self):
+        """Reads one F field: characters up to a NUL, no leading '_'."""
+        start = self.pos
+        chars = []
+        while True:
+            if self.eof():
+                raise DecodeError("unterminated floating constant starting "
+                                  "at offset %d" % start)
+            b = self.read_byte()
+            if b == 0:
+                break
+            chars.append(chr(b))
+        return "".join(chars)
+
     def read_s(self):
         """Reads one S field: '_' + up to MCC_NCPS bytes + NUL."""
         start = self.pos
@@ -450,6 +480,10 @@ def dump(path):
                         parts.append("%s=%s(%d)" % (label, decoder(v), v))
                     else:
                         parts.append("%s=%d" % (label, v))
+                elif field[0] == "F":
+                    _, label = field
+                    v = r.read_f()
+                    parts.append('%s="%s"' % (label, v))
                 else:  # "S"
                     _, label = field
                     v = r.read_s()

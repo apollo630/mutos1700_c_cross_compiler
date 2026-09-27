@@ -4938,7 +4938,7 @@ The nine break down as:
   `'c' undeclared` on the following statements; `06_fio.c` hits the
   already-documented file-scope struct/union-or-`unsigned` variable
   refusal (see `src/mutos_cc/README.md`'s "Current scope" and
-  `STATUS.md`'s "Next up" item 4).
+  `STATUS.md`'s "Next up" item "Struct shapes still refused").
 - **Six not yet root-caused**: `02_prim.c`, `03_mem.c`, `04_pipe.c`,
   `07_v24.c`, `08_tty.c` and `09_amx.c` all refuse with the generic
   "external definition syntax (expected a function name...)" diagnostic -
@@ -4957,6 +4957,219 @@ unchanged by this addition): 60/62 byte-exact, 0 genuine mismatches,
 loop already discovers `11_kernel/*.c` without any script change; its nine
 files land entirely in the "grammar/opcode not yet supported" bucket, not
 in the genuine-mismatch buckets that would fail the run.
+
+### `08_float` — floating point through libc's software floating-point runtime (`mutos_c0`/`mutos_c1` extended and verified this session)
+
+The last two files of the 62-file corpus: `01_floatbas.c` (`float a, b,
+c;` - `a = 3.5; b = 2.0; c = a + b; c = a * b; return (int) c;`) and
+`02_dblconv.c` (`double d; int i; long l;` - `i = 7; d = i; d = d / 2.0;
+l = (long) d; i = (int) d; return i;`). **62/62 byte-exact end-to-end.**
+Same method as every earlier category - the goldens decoded byte by byte
+first (`dump_temp.py` stopped at `FCON`, so the first two `.1.golden`s were
+read by hand with `od`), `v7/cc` as the algorithmic reference - plus a new
+source of evidence: the real `libc.a`, whose objects are real MUTOS 1700
+compiler and assembler output and whose floating-point part is the runtime
+the goldens call.
+
+**The front end's stream** (`01_floatbas.1.golden`, from byte 55):
+
+```
+NAME(AUTO, FLOAT, -8)  FCON  17 fe 03 00 33 2e 35 00   ASSIGN(DOUBLE)
+                             op   DOUBLE  "3.5" NUL
+NAME(c) NAME(a) NAME(b) PLUS(DOUBLE) ASSIGN(DOUBLE)
+NAME(c, FLOAT) FTOI(INT) RFORCE(INT)
+```
+
+and `02_dblconv.1.golden`: `NAME(d, DOUBLE) NAME(i, INT) ITOF(DOUBLE)
+ASSIGN(DOUBLE)`, `... NAME(d) FCON(DOUBLE, "2.0") DIVIDE(DOUBLE)`, `NAME(l,
+LONG) NAME(d) FTOL(LONG) ASSIGN(LONG)`, `NAME(i) NAME(d) FTOI(INT)
+ASSIGN(INT)`. All of it is v7's `build()` unchanged:
+
+- `FCON` is `treeout()`'s `outcode("BNF", FCON, type, cstr)` - `F` is
+  `outcode()`'s string format without `S`'s leading `_` (up to 1000
+  characters). The text is the literal as written: v7's `getnum()` copies
+  every character into `numbuf` (`c00.c`), and `tree()` makes every
+  floating constant a `DOUBLE` `fblock()`. Nothing folds it - `fold()`
+  handles integer `CON`s only - so `FCON` is written the moment it is
+  parsed, like a `NAME`.
+- The frame: `float` 4 bytes, `double` 8 (`SZFLOAT`/`SZDOUB`), the usual
+  subtract-then-take offsets from `STAUTO` - `a`/`b`/`c` at `-8`/`-12`/`-16`,
+  `d` at `-12`, then `i` `-14`, `l` `-18`.
+- Every operator and assignment over floating values is `DOUBLE`, even
+  `float + float` and an assignment INTO a float: `build()` ends with "`if
+  (t==FLOAT) t = DOUBLE`". Only the `NAME` keeps `FLOAT` - the one place
+  `c1` learns the variable's size.
+- `cvtab[]` (`c05.c`) has one "double" row and column for both floating
+  types (`lintyp()`), so float <-> double needs no node; int -> floating is
+  `ITF` (`ITOF`), long -> floating `LTF` (`LTOF`), floating -> int `FTI`
+  (`FTOI`), floating -> long `FTL` (`FTOL`). The new node's type is
+  `convert()`'s `t`: for an assignment or cast `t1`, the target's type - so
+  `d = i;` is `ITOF(DOUBLE)` (the golden) but `a = i;` into a float is
+  `ITOF(FLOAT)` (no golden; straight from the code: `t = t1` happens before
+  `convert()`, the FLOAT->DOUBLE retyping after it) - and for `+ - * /`
+  the floating operand's type (`t = leftc ? t2 : t1`).
+- An int LEFT operand of `+ - * /` is converted too (`cvtab[int][double]`
+  carries `FTI<<4` - "leftc"): its `ITOF` must follow the left operand's
+  bytes and precede the right operand's, which `mutos_c0` has already
+  streamed out by the time it knows the right operand's type. So `+ - *
+  /` now buffer the right operand behind any non-floating left operand -
+  the `open_memstream()` capture `rhs_begin()` already used behind a
+  pending constant - and `float_arith()` writes the conversion and then the
+  buffer. For an all-integer expression the bytes are unchanged (the whole
+  fuzz run below is byte-identical).
+- `doret()` returns through an assignment to the function's type, so
+  `return c;` in an int function is the golden's `FTOI(INT) RFORCE(INT)`
+  exactly.
+
+**The back end's code** (`01_floatbas.s.golden`, abridged):
+
+```
+.data
+L10000:	.float 3.50000000000000000e+00
+.text
+lea	ax,L10000
+call	flds
+lea	ax,*-8.(bp)
+call	fstsp
+...
+lea	ax,*-8.(bp)          | c = a + b;
+call	flds
+lea	ax,*-12.(bp)
+call	fadds
+lea	ax,*-16.(bp)
+call	fstsp
+...
+lea	ax,*-16.(bp)         | return (int) c;
+call	flds
+call	ftoi
+jmp	L3
+...
+.globl	fltused
+.data
+```
+
+`02_dblconv.s.golden` adds `mov di,*-14.(bp)` / `mov ax,di` / `call itof`
+(`d = i;` - the int through DI, the working register, into AX), `fldd`/
+`fstdp` for the double, `lea ax,L10000` / `call fdivs` (`d / 2.0` - the
+constant is SINGLE precision even against a double), and `call ftol` /
+`mov di,dx` / `mov si,ax` (the long result moved into DI:SI like any long
+value). No FPU instruction anywhere: the 8086 machines had none.
+
+**The runtime, from `libc.a`** (symbol tables read with a small `a.out`
+reader, code with `objdump -D -b binary -m i8086` over each text segment -
+`tests/mutos1700_libc/`):
+
+| object | defines |
+|---|---|
+| `stacks.o` | `flds`, `fldd`, `fstsp`, `fstdp`, `fsts`, `fstd`, `fdup`, `fltused`, `fpsp` (+ `incfpsp`/`decfpsp`) |
+| `singles.o` | `fadds`, `fsubs`, `fsubrs`, `fmuls`, `fdivs`, `fdivrs`, `ftod` |
+| `doubles.o` | `faddd`, `fsubd`, `fsubrd`, `fmuld`, `fdivd`, `fdivrd` |
+| `stkmath.o` | `fadd`, `fsub`, `fmul`, `fdiv`, `fneg`, `fcmp`, `ftest` (stack with stack) |
+| `convert.o` | `itof`, `itod`, `ftoi`, `dtoi` |
+| `lconvert.o` | `ftol`, `ltof` |
+| `dmath.o` | `dadd`, `dsub`, `dmul`, `ddiv`, `dnorm`, `dround`, `fac` |
+
+A stack of 8-byte doubles (`fpstk`, 64 bytes, top at `fpsp`); every entry
+point is an ordinary function (`push bp` ... `jmp cret`, so DI/SI survive,
+AX/BX/CX/DX do not) that takes a memory operand's ADDRESS in AX. `flds`
+pushes a float by copying its 4 bytes into the new entry's HIGH half and
+zeroing the low half; `fstsp` stores the high 4 bytes of the top and pops
+(truncating a double's mantissa, not rounding); `fadds` widens its operand
+into a local double the same way and calls `dadd` with SI = the stack top,
+DI = the operand, then copies the result (`fac`) over the top - "top op
+memory". `fdivs` is the same with `ddiv`; `fdivrs` swaps SI and DI - the
+"reversed" form, memory op top. (`fsubrs`, oddly, has `mov di,si` where
+`fdivrs` has `mov si,di`, so it looks broken - irrelevant here, nothing
+generates it yet.) `itof` takes the int in AX; `ftoi` leaves its result in
+AX, `ftol` in DX:AX.
+
+**The floating format**, from data bytes the real compiler and assembler
+wrote. `atof.o`'s data segment begins `00 00 00 b9`: 2**56 = 0.1(binary) *
+2**57, excess-128 exponent 57+128 = 185 = `b9` - and 2**56 is exactly the
+`big` constant v7's own `atof()` uses (from memory of v7's `libc`; its
+source is not in this repo, and MUTOS's `atof.o` defines more than v7's
+did - `_fltrd`, `__fltu3`). The rest of it and `ecvt.o`'s agree: `00 00 20 84` = 0.101b * 2**4 = 10.0, `00 00 00 81` =
+1.0, `00 00 20 83` = 5.0. So: the value little-endian as a whole, the
+exponent in the highest byte, the sign in the top bit of the byte below,
+then the mantissa after v7's implicit leading 1 - the layout Microsoft
+later called MBF, NOT PDP-11 word order (`CLAUDE.md` rule 5 now says so).
+A double has the same exponent byte and 55 mantissa bits; `convert.o`'s
+`itof` builds exactly this (exponent `0x90` = 128+16 for a 16-bit integer,
+normalized by shifting).
+
+**Which constants are `.float`.** `ecvt.o`'s data holds `10.0` and `1.0` in
+4 bytes each but `c3 f5 28 5c 8f c2 75 7b` - 0.03 - in 8: all three are
+the constants of v7's `ecvt.c` (again from memory - not in this repo),
+whose digit loop computes `(int)((fj+.03)*10)`, and the object's 80-byte
+bss matches its `static char buf[NDIG]`, NDIG 80. So the real compiler keeps a
+constant exactly representable as a float in 4 bytes and any other in 8 -
+v7's PDP-11 `c1` has the same idea as `SFCON`, a constant whose low words
+are zero. The 8-byte form's assembler text is not in any golden, so
+`mutos_c1` refuses a constant that is not exactly a float, and also zero
+(v7 special-cases a zero `SFCON`; the MUTOS `c1` may too). The text is
+`%.17e`: 18 significant digits, exponent sign and two digits - `fltpr.o`'s
+`_pscien` writes `e`, `+` or `-` (negating), then `decpt/10` and
+`decpt%10`. For the accepted values - exactly a float, below 2**24, at most
+18 significant digits - that is the exact decimal expansion, which v7's
+`ecvt()` also produces digit by digit (below 2**24 its `fi/10` steps are
+far inside the `+.03` margin); larger values could come out with different
+digits, so they are refused too.
+
+**Where the `.data` block goes.** v7's `c1` numbers an `FCON` from its own
+label counter when it reads the tree (`c11.c`'s `getree()`: `fp->value =
+isn++` - the counter behind `L10000`) and prints it in `cexpr()` when the
+operator that uses it is matched, before any of that operator's code
+(`c10.c`: "`.data\nL%d:%o;...\n.text`"). `mutos_c1` streams, so it writes
+the block when it reads the `FCON` - the same place whenever the operator's
+other operand has no code of its own yet, which covers both goldens. A
+constant right operand of an already computed value (`(a + b) * 2.0`)
+would put the block after the left operand's code, so it is refused; so
+is anything that would need two stack entries (a computed right operand -
+including `a + i`, whose right operand is converted; libc's `...r` entry
+points suggest the real compiler computes the int first, then uses
+`fsubrs`-style reversed calls, but no golden shows it).
+
+**Everything else is refused** in one of three places. `mutos_c0`:
+`promote_char()` - the operand hook of every integer operator (shifts,
+bitwise, relational, `%`, a subscript) - refuses a floating operand, and
+`char_value_refused()` a floating value in a condition, `&&`/`||`/`!`/`?:`,
+a call argument or `switch`; floating parameters, globals, statics, arrays,
+pointers and members are refused at their declarations. `mutos_c1`:
+`pop_val_ex()` refuses the new floating value kinds (`VK_FMEM`, `VK_FCON`,
+`VK_FACC`, `VK_FDONE`) to every consumer but the floating handlers, and
+`plan_expression()` never plans an expression containing a floating value
+(its order rules are integer rules) - and refuses one with `&&`/`||`/`?:`/
+`,` in it, which only a plan can generate (`d = (i && j);` reached the
+streaming handlers' "internal: ... outside an evaluation-order plan" until
+`scan_op_args_v()` learnt the floating opcodes' shapes).
+
+**`mutos_as`.** The goldens' `.s` does not assemble: `lea ax,L10000` is an
+"unsupported instruction" (`lea` takes indirect operands only), and
+`.float` was SILENTLY SKIPPED - `handle_directive()` ignores what it does
+not know, so `L10000` named the next thing in `.data` and every later data
+address was 4 bytes short. `.float`/`.double` are now explicit errors;
+implementing them (the encoding above) and `lea` with a label is the first
+"Next up" item.
+
+**Tooling.** `dump_temp.py` decodes `FCON` (`F` field), `ITOF`, `FTOI`,
+`FTOL` and `LTOF` - `08_float`'s `.1.golden`s now decode to the end.
+`x86sim.py` runs floating code against a model of the runtime: host floats
+on a stack for `flds`...`ftol`, `.float` data and stores in the MUTOS format
+(`mbf_encode()`/`mbf_decode()` reproduce the `libc.a` bytes above), a float
+store truncated like `fstsp`, AX/BX/CX/DX poisoned after each call.
+
+**Verification.** `make test` (clean build): 62/62, 0 genuine mismatches,
+zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5. Against the previous
+build (`c2c7a68`), on all 71 golden inputs: `mutos_c0` changed the two
+`08_float` files and the wording of one diagnostic in four `11_kernel`
+files (it now lists `float`/`double`; identical temp1), `mutos_c1` the two
+`08_float` files only. `fuzz_c.py`: 42000 programs against the previous
+build byte-identical (0 WRONG, 0 BAD), 4500 through ASan/UBSan builds
+clean. `x86sim.py`: 53 of the 62 goldens run (both `08_float` ones: 7 and
+3). Eleven hand-written floating programs through the whole pipeline and
+`x86sim.py`, compared with the host C compiler: ten equal, one refused
+(an int right operand); about 60 refusal probes each stop with their
+diagnostic. ASan/UBSan over the golden inputs, programs and probes: clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -5109,6 +5322,17 @@ These apply to *every* milestone, not just the one where they were first learned
   constant-shift threshold (repeat for 1-2, `mov cx,N` / shift by `cl` from 3 up)
   was found, after `c1` had been silently wrong for counts of 3 or more since
   `04_shift`.
+- **So is `libc.a`.** Its objects are real compiler, assembler and hand-coded
+  runtime output: their symbol tables name a runtime's entry points, their
+  disassembly gives its calling convention, and their data segments hold
+  values in the target's own formats. `08_float`'s floating-point runtime
+  calls, the floating format and the "4 bytes only if exactly a float" rule
+  for constants were all read there, not guessed (see that section).
+- **"Unknown, so ignored" is only safe for a directive that emits nothing.**
+  `mutos_as` skipped `.float` silently, shifting every later data address;
+  the first program whose compiler output used it would have been wrong with
+  no diagnostic. A directive (or opcode) that reserves or writes bytes must
+  be implemented or refused, never dropped.
 - **A fix's real shape can come from the kernel corpus even without its C
   source.** The postfix-in-condition shape was recognizable in
   `kernel_nonopt/*.s` by pattern alone (`mov R,X` / `inc|dec X` / a test

@@ -133,6 +133,38 @@ a whole structure of 4 bytes is assigned like a
 .BR long ,
 one of 2 bytes like an
 .BR int .
+Floating-point code calls the software floating-point runtime in the
+real
+.IR libc.a ,
+which works on a stack of doubles and takes an operand's address in AX:
+.B "lea ax,<x>"
+followed by
+.B call flds
+or
+.B fldd
+loads a value,
+.BR fadds ,
+.BR fsubs ,
+.BR fmuls ,
+.B fdivs
+(and their double counterparts ending in
+.BR d )
+combine it with a memory operand,
+.B fstsp
+or
+.B fstdp
+store it,
+.BR itof ,
+.B ftoi
+and
+.B ftol
+convert; each floating constant becomes a
+.B .float
+in the data segment, and a file with floating code ends with
+.BR ".globl fltused" .
+Only a constant exactly representable as a
+.B float
+is supported.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

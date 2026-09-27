@@ -13,15 +13,20 @@ char array's "_text:.byte /74,..." or a string literal's "L4:.byte ...",
 its elements addressed "_text(bx)" or "#_text(bx)") - and reports the
 final state: main()'s return value (AX at main's "jmp cret") and every
 local variable's word(s), located through c1's own "| _name=-N." frame
-comments. It is a checker, not an emulator: anything outside the subset
+comments. Floating-point code runs against a model of libc.a's software
+floating-point runtime (the calls mutos_c1 emits - "flds"/"fldd",
+"fstsp"/"fstdp", "fadds"..."fdivd", "itof", "ftoi", "ftol" - on a stack
+of host floats, see FP_RUNTIME) and ".float" data, in MUTOS's own
+floating format (see mbf_encode()). It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
 message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
-.s.golden it can execute (51 of the 62 - the rest call libc or runtime
+.s.golden it can execute (53 of the 62 - the rest call libc or runtime
 helpers, or use 'long' carries, a jump table or a function's address)
-returns the value its C source computes, among them 01_expr/06_compasgn
+returns the value its C source computes, among them 08_float/01_floatbas
+(7) and 02_dblconv (3), 01_expr/06_compasgn
 (33), 04_funcs/05_staticvar (3), 07_scope/01_globstat (3) and
 03_externdef (12),
 03_ctrlflow/05_breakcont (12), 04_funcs/03_recfact (720), 05_arrptr/
@@ -61,6 +66,56 @@ BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi"}
 
 class SimError(Exception):
     """Code outside the supported subset (not a wrong-code verdict)."""
+
+
+# MUTOS 1700's floating format, as the real toolchain's own data shows it
+# (tests/mutos1700_libc: atof.o's 2**56 is the bytes 00 00 00 b9, ecvt.o's
+# 10.0 is 00 00 20 84, 1.0 is 00 00 00 81) and the runtime handles it
+# (stacks.o's flds widens a float by zero-filling the double's LOW four
+# bytes, convert.o's itof builds the exponent in the top byte): the value
+# 0.1mmm... (binary) * 2**(e - 128), the excess-128 exponent e in the
+# highest byte, the sign in the top bit of the byte below it, then the
+# mantissa bits after its leading 1 (not stored) - 23 of them in a 4-byte
+# float, 55 in an 8-byte double; e == 0 is zero. A float stored from the
+# runtime's stack keeps the double's high four bytes (stacks.o's fstsp),
+# i.e. its mantissa is truncated, not rounded.
+def mbf_encode(v, nbytes):
+    if v == 0:
+        return [0] * nbytes
+    import math
+    f, e = math.frexp(abs(v))           # abs(v) = f * 2**e, f in [0.5, 1)
+    if not 1 <= e + 128 <= 255:
+        raise SimError(f"floating value {v!r} out of range")
+    mbits = 8 * nbytes - 9              # stored mantissa bits
+    m = int(f * (1 << (mbits + 1)))     # truncated, leading 1 included
+    word = (m & ((1 << mbits) - 1)) | ((1 << mbits) if v < 0 else 0) \
+        | ((e + 128) << (mbits + 1))
+    return [(word >> (8 * i)) & 0xFF for i in range(nbytes)]
+
+
+def mbf_decode(bs):
+    nbytes = len(bs)
+    word = sum(b << (8 * i) for i, b in enumerate(bs))
+    mbits = 8 * nbytes - 9
+    e = word >> (mbits + 1)
+    if e == 0:
+        return 0.0
+    m = (word & ((1 << mbits) - 1)) | (1 << mbits)
+    v = m / float(1 << (mbits + 1)) * 2.0 ** (e - 128)
+    return -v if word & (1 << mbits) else v
+
+
+# The software floating-point runtime's entry points mutos_c1 calls: each
+# takes a memory operand's ADDRESS in AX (or an int in AX) and works on a
+# stack of doubles - here host floats (53-bit, not the runtime's 56-bit
+# mantissa: the values checked are exact either way). name -> (kind, size)
+FP_RUNTIME = {
+    "flds": ("load", 4), "fldd": ("load", 8),
+    "fstsp": ("store", 4), "fstdp": ("store", 8),
+    "fadds": ("+", 4), "faddd": ("+", 8), "fsubs": ("-", 4), "fsubd": ("-", 8),
+    "fmuls": ("*", 4), "fmuld": ("*", 8), "fdivs": ("/", 4), "fdivd": ("/", 8),
+    "itof": ("itof", 0), "ftoi": ("ftoi", 0), "ftol": ("ftol", 0),
+}
 
 
 def s16(v):
@@ -110,6 +165,7 @@ class Sim:
         self.locals = {}
         self.data = {}             # fixed-address variable -> address
         self.next_data = DATA0
+        self.fstack = []           # the floating-point runtime's stack
         for raw in text.splitlines():
             self._parse_line(raw)
 
@@ -157,6 +213,10 @@ class Sim:
         if m:                       # initialized bytes
             self._put_bytes(names, [int(v[1:], 16)
                                     for v in m.group(1).split(",")])
+            return
+        m = re.match(r"^\t\.float (\S+)$", line)
+        if m:                       # a floating constant ("L10000:\t.float ...")
+            self._put_bytes(names, mbf_encode(float(m.group(1)), 4))
             return
         if line == ".even":
             self.next_data = (self.next_data + 1) & ~1
@@ -272,6 +332,42 @@ class Sim:
                                                             dict(self.locals), dict(self.mem),
                                                             data=self.data)))
 
+    # -- the floating-point runtime ---------------------------------------
+    def _fp_call(self, name):
+        kind, size = FP_RUNTIME[name]
+        ax = self.regs["ax"]
+        mem = [self.mem.get((ax + i) & M16, 0) for i in range(size)]
+        st = self.fstack
+        if kind != "load" and kind != "itof" and not st:
+            raise SimError(f"'{name}' with an empty floating-point stack")
+        if kind == "load":
+            st.append(mbf_decode(mem))
+        elif kind == "store":
+            for i, b in enumerate(mbf_encode(st.pop(), size)):
+                self.mem[(ax + i) & M16] = b
+        elif kind == "itof":
+            st.append(float(s16(ax)))
+        elif kind in ("ftoi", "ftol"):
+            v = int(st.pop())                  # truncated toward zero
+            lim = 1 << (15 if kind == "ftoi" else 31)
+            if not -lim <= v < lim:
+                raise SimError(f"'{name}' overflow")
+        else:
+            b = mbf_decode(mem)
+            if kind == "/" and b == 0:
+                raise SimError("floating division by zero")
+            a = st.pop()
+            st.append({"+": a + b, "-": a - b, "*": a * b, "/": a / b}[kind])
+        # The runtime returns through cret: DI/SI/BP survive, AX, BX, CX
+        # and DX do not - poisoned, so code relying on them shows up.
+        for r in ("ax", "bx", "cx", "dx"):
+            self.regs[r] = 0xDEAD
+        if kind == "ftoi":
+            self.regs["ax"] = v & M16
+        elif kind == "ftol":
+            self.regs["ax"] = v & M16
+            self.regs["dx"] = (v >> 16) & M16
+
     # -- execution ------------------------------------------------------
     def run(self):
         if "_main" not in self.labels:
@@ -375,6 +471,9 @@ class Sim:
                     raise SimError("division overflow")
                 self.regs["ax"] = q & M16
                 self.regs["dx"] = (n - q * d) & M16
+            elif mnem == "call" and ops[0] in FP_RUNTIME:
+                self._fp_call(ops[0])
+                self.cmp = None
             elif mnem == "call" and ops[0] == "chkstk":
                 # The large-frame allocation helper (docs/MUTOS_C_ABI.md
                 # sect. 1.9): sp -= ax, as "sub sp,ax" would, returning

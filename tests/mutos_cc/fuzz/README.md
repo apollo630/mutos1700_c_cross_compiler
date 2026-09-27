@@ -30,9 +30,12 @@ directly, on random programs:
   r,r` - stops it with an error, never a guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
-`tests/mutos_cc` `.s.golden` it can execute (51 of the 62; the others
+`tests/mutos_cc` `.s.golden` it can execute (53 of the 62; the others
 call libc or runtime helpers, or use `long` carries, a jump table or a
 function's address) returns the value its C source computes, including
+both `08_float` files (7 and 3 - floating code runs against a model of
+`libc.a`'s software floating-point runtime, see `x86sim.py`'s
+`FP_RUNTIME`), and
 all nine struct, union, bit-field, enum and typedef programs of
 `06_struct` (`mutos_c1` has produced them byte-exact since 2026-09-27),
 the six `09_abiprobe` frames (through `chkstk` from 128 bytes up),
