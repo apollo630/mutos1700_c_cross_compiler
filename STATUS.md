@@ -20,10 +20,11 @@ item since Milestone 1, not specific to any single milestone. `make`/`make
 all` builds `mutos_ld` (compiled directly; it has no sub-Makefile of its
 own yet), and delegates to each of `mutos_as`/`mutos_cpp`/`mutos_cc`'s own
 `src/mutos_<tool>/Makefile`. `make test` runs every component's own
-golden-diff suite from one place (`mutos_as`'s `kernel_nonopt`/`kernel_opt`,
-`mutos_cpp`'s, and `mutos_cc`'s — see each milestone's section below for
-current results). Verified this session via a full `make clean && make all
-&& make test` from a clean checkout.
+golden-diff suite from one place (`mutos_as`'s `kernel_nonopt`/`kernel_opt`/
+`libc_recon` plus its `.float` check and the assembly of every real compiler
+`.s` in `tests/mutos_cc`, `mutos_cpp`'s, and `mutos_cc`'s — see each
+milestone's section below for current results). Verified this session via a
+full `make clean && make all && make test`.
 
 ---
 
@@ -77,27 +78,35 @@ new real hardware evidence (e.g. a V30-targeted golden `.o`) surfaces. Functiona
 this milestone's work is done and Milestone 3 has begun on top of it.
 
 `mutos_as` (`src/mutos_as/`: `mutos_as.h`, `lexer.c`, `parser.c`, `pass2.c`,
-`symtab.c`, `encode.c`, `objwrite.c`, `assemble.c`; secondary tools `main.c`
-(→ `parse_dump`) and `classify_test.c`) is a two-pass cross-assembler producing real
-MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30.
+`symtab.c`, `encode.c`, `objwrite.c`, `fltconst.c`, `assemble.c`; secondary tools
+`main.c` (→ `parse_dump`) and `classify_test.c`) is a two-pass cross-assembler
+producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30.
 
 ### Verified this session
 
 - **Clean rebuild** from source (`make clean && make all`), zero warnings under
   `-std=c11 -Wall -Wextra -Wpedantic`.
-- **Full regression: 67/67 golden files byte-for-byte identical**, full file compare
+- **Full regression: 68/68 golden files byte-for-byte identical**, full file compare
   (header + text + data + text-reloc + data-reloc + symtab):
-  - `tests/mutos_as/kernel_opt/`: 62/62 clean (includes `mch_insw_outsw.s`, a
-    hardware-parity test added this session for the INSW/OUTSW fix below).
+  - `tests/mutos_as/kernel_opt/`: 62/62 clean (includes `mch_insw_outsw.s`, the
+    hardware-parity test for the INSW/OUTSW fix below).
   - `tests/mutos_as/kernel_nonopt/`: 5/5 clean.
-  - 0 diff-mismatches, 0 assembler-invocation errors, both directories.
+  - `tests/mutos_as/libc_recon/`: 1/1 clean - `ldexp.s`, new this session: a
+    source reconstructed from the real `libc.a` object `ldexp.o`, which is its
+    golden (see below).
+  - 0 diff-mismatches, 0 assembler-invocation errors, all three directories.
+- **`.float` against real bytes**: `libc_recon/check_floatdat.sh` - 6/6 constants
+  byte-identical to the real `atof.o`/`ecvt.o` data (see below).
+- **Every real compiler output assembles**: `tests/mutos_as/assemble_cc_goldens.sh`
+  - 71/71 `tests/mutos_cc` `.s.golden` files (the 62-file corpus and `11_kernel`'s
+  nine), up from 69 (the two `08_float` files). There are no reference objects for
+  these; their bytes are checked only where the kernel and `libc_recon` goldens
+  cover the same constructs.
 - **AddressSanitizer + UBSan** (`-fsanitize=address,undefined`, `-O0 -g`): 0 errors
-  across the entire 67-file corpus plus a dedicated smoke test for this session's new
-  80186 instructions.
-- Two real bugs found and fixed this session (see "Recent fixes" below), both
-  confirmed via rebuild + full-corpus diff, not just inspection.
+  over 143 inputs (every file above plus hand-written `.float`/`lea` probes, their
+  error paths included), each object identical to the `-O2` build's.
 
-### Recent fixes (this session)
+### Earlier fixes (prior session records; both still covered by the regression above)
 
 1. **INSW/OUTSW mis-assembly** — `insb`/`insw`/`outsb`/`outsw` had no dispatch entry
    in `encode_instruction()` at all. An unrecognized zero-operand mnemonic fell into
@@ -125,23 +134,56 @@ MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30.
    session by regenerating the list programmatically from the source instead of by
    hand a second time.)
 
-### `.float`/`.double`: an explicit error, no longer silently skipped (verified this session)
+### `.float`, `lea <reg>,<label>`, no padding at a segment switch, byte-register `mov` (verified this session)
 
-`handle_directive()` silently ignores any directive it does not implement
-(by design, so a file outside the corpus "degrades gracefully"). For
-`.float` and `.double` that was silent mis-assembly - no bytes, so the
-label on the line named whatever followed and every later address in the
-segment was short - and `mutos_c1` now writes a `.float` for every
-floating constant (Milestone 4's `08_float`). Both are now an error
-("`.float is not yet supported at line N`"), reported in Pass 1. Nothing
-in the corpus uses either directive: `make test` still gives 67/67
-byte-exact (`kernel_opt` 62, `kernel_nonopt` 5). `lea <reg>,<label>` (the
-other shape `mutos_c1`'s floating code needs) is still refused as an
-"unsupported instruction", as before. Implementing both is Milestone 4's
-"Next up" item 1, with the `.float` encoding already confirmed by real
-data bytes (see there). The other data directives the manual lists and
-this assembler does not implement (`.int`, `.long`, `.ascii`, `.space`,
-`.blkw`, `.org`) are still silently skipped - not changed here.
+`mutos_c1`'s floating output (Milestone 4's `08_float`) now assembles, links with
+the real `crt0.o`/`libc.a`, and runs. Full derivation in `docs/DEVLOG.md`'s section
+"`mutos_as`: `.float`, `lea <reg>,<label>` - `08_float` assembles, links and runs".
+
+- **`.float`** (`fltconst.c`): one 4-byte MUTOS float per operand (`L10000:<TAB>.float
+  3.50000000000000000e+00`; the manual's `0f` prefix accepted too), converted with
+  exact integer arithmetic - no host floating point. Only a value exactly
+  representable in 24 significant bits is accepted; an inexact value and zero are
+  explicit errors (the real assembler's rounding and its zero bytes - `bc a2 31 00`
+  in `atof.o`/`ecvt.o`, the mantissa of 5\*\*17 with a zero exponent - are not
+  reproducible from the evidence). `mutos_c1` writes neither. `.double` stays an
+  explicit error.
+- **`lea <reg>,<label>`**: `8D /r`, mod=00 rm=110 + a relocated disp16 (R_DATA /
+  R_TEXT / R_BSS / R_EXT like any direct operand) - confirmed by `libc.a`'s machine
+  code (`atof.o`/`ecvt.o` `8d 06 <disp16>` R_DATA; `ldexp.o`, `modf.o`,
+  `doubles.o`, `singles.o`, `stkmath.o` with R_EXT `fac`). `lea` now also refuses a
+  byte-register destination.
+- **No padding at a `.text`/`.data` switch - a real bug, found by this work.**
+  `mutos_as` padded the segment it left to an even size at every switch; the real
+  assembler rounds each segment once, at the end. `mutos_c1` writes each floating
+  constant's `.data` / `L10000: .float ...` / `.text` block between two
+  instructions, so an odd location there put a `0x00` byte INTO the code (`add
+  [bx+si],al` at run time). `atof.o`/`ecvt.o` show the lea directly after the
+  previous instruction at odd offsets (text 71, 407; 201, 345). The earlier evidence
+  (`malloc.o`, `mch.o`) was each file's last switch, where both rules give the same
+  bytes - all 136 other `.s` inputs assemble to identical objects under the new rule.
+- **`mov` with a byte register and a memory or register operand** (`mov al,x`,
+  `mov x,al`, `mov al,bl`) got the WORD opcode (A1/A3/8B/89) unless written `movb` -
+  now byte-sized, like the reg,imm form (`mov al,*0` in `mch.s`). Found reproducing
+  `ldexp.o` (A0, A2, `8A 46 0A`); no corpus file writes one.
+- **Regression tests**: `tests/mutos_as/libc_recon/` (`ldexp.s` reproduces the real
+  `ldexp.o` byte for byte - `lea` with external and local labels at even and odd
+  offsets, the byte `mov`s; `floatdat.s` + `check_floatdat.sh` for `.float`) and
+  `tests/mutos_as/assemble_cc_goldens.sh`, all in the top-level `make test`. See
+  that directory's `README.md` for why no compiled-C `libc.a` object can be
+  reproduced whole yet: a zero constant, and no `L` labels in their symbol tables
+  (the real `as` default without `-L`, which `mutos_as` does not implement).
+- **End to end**: both `08_float` goldens, assembled and linked by `mutos_ld` with
+  the real `crt0.o` and `libc.a`, return 7 and 3 - their C sources' values - when
+  their `_main` runs under an 8086 emulator (Unicorn, a scratch harness, not part of
+  `make test`), the real runtime's `flds`/`fadds`/`fmuls`/`fstsp`/`itof`/`fdivs`/
+  `ftol`/`ftoi` reading the assembled constants. Ten more floating programs through
+  `mutos_cpp`, `mutos_c0`, `mutos_c1`, `mutos_as`, `mutos_ld` and the same harness
+  all return what the host C compiler's build returns.
+- **`fltconst.c` checked**: 59,000 randomized exact and inexact texts (random 24-bit
+  mantissas, exponents over the whole range, several spellings each) against an
+  independent exact-fraction encoder in Python and `x86sim.py`'s `mbf_encode()`: 0
+  differences; ASan/UBSan clean.
 
 ### Auxiliary deliverables (prior session records, not re-checked this session)
 - `mutos_as.1` — English troff man page.
@@ -339,10 +381,11 @@ section of the same name.
   product) or a register variable converted, `LTOF`, an unused computed
   value, and every constant that is zero, not exactly a float, 2**24 or
   more, or longer than 18 significant digits.
-- **`mutos_as`** still cannot assemble this output: `.float` was silently
-  SKIPPED (its label then named what followed) - now an explicit error,
-  as is `.double` (see Milestone 2) - and `lea ax,L10000` (a label operand)
-  is an "unsupported instruction". See "Next up".
+- **`mutos_as`** could not assemble this output when this section was
+  written (`.float` silently skipped, then an explicit error; `lea ax,L10000`
+  an "unsupported instruction"). Done in a later session: it now assembles,
+  links with the real `crt0.o`/`libc.a` and returns the C source's value
+  when run - see Milestone 2's "`.float`, `lea <reg>,<label>`, ..." section.
 - **`dump_temp.py`** decodes `FCON` (its text), `ITOF`, `FTOI`, `FTOL` and
   `LTOF`; **`x86sim.py`** runs floating code against a model of the runtime
   (host floats on a stack, `.float` data and stores in the MUTOS format).
@@ -2339,23 +2382,20 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **`mutos_as`: `.float` and `lea <reg>,<label>`**, so `mutos_c1`'s floating
-   code assembles (see `08_float` above - today `.float` is an explicit
-   error and the `lea` an unsupported instruction). The encoding of a
-   `.float` value exactly representable as a float is confirmed by real
-   data bytes (`atof.o`'s `2**56` = `00 00 00 b9`, `ecvt.o`'s `10.0` =
-   `00 00 20 84`, `1.0` = `00 00 00 81` - see `docs/DEVLOG.md`'s `08_float`
-   section); `lea` with a label is the 8086's `8D /r`, r/m 110 plus a
-   relocated address word, like `mov`'s direct form. `.double` (an 8-byte
-   value from a decimal text) would need the real `atof`'s 56-bit
-   rounding - leave it an error until a golden object needs it.
-2. **Floating shapes still refused** (see `08_float` above), each waiting
+1. **Floating shapes still refused** (see `08_float` above), each waiting
    for a golden: an int RIGHT operand of `+ - * /` (`d + i`) - libc's
    `fsubrs`/`fdivrs`/`fsubrd`/`fdivrd` ("reversed" entry points) suggest
    the real compiler computes the int first and then uses those;
    comparisons (`stkmath.o`'s `fcmp`/`ftest`); a zero or non-float
-   constant; floating parameters, globals and return types.
-3. **Globals beyond `07_scope`**, each with kernel evidence (see
+   constant; floating parameters, globals and return types. A zero or
+   non-float constant also needs `mutos_as`: a real zero constant is `bc a2
+   31 00` (`atof.o`, `ecvt.o` - the mantissa of 5\*\*17 under a zero
+   exponent, not reproducible from `libc.a`'s own `atof`), and the one real
+   8-byte constant (`ecvt.o`'s `.03`) is the correctly rounded 56-bit value;
+   `mutos_as` refuses a zero `.float` and every `.double` until the real
+   conversion is pinned down (see `docs/DEVLOG.md`'s `mutos_as` `.float`
+   section).
+2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
    _amxscd(bx),*4.` in `kernel_nonopt/amx.s`); `x = y;` between two
@@ -2363,7 +2403,7 @@ is now fully covered (62/62). In order:
    but in a function with a register variable in DI the kernel uses DX
    (`mov dx,*-6.(bp)` / `mov _cfreeli,dx`, a function with two) - which
    register with one still needs a golden.
-4. **Two shape follow-ups from the conditional-evaluation work** (both
+3. **Two shape follow-ups from the conditional-evaluation work** (both
    currently correct code, just not the real compiler's bytes; see
    `docs/DEVLOG.md`'s "Conditional evaluation" section): a call result
    tested as a condition is `cmp ax,*0` where `kernel_nonopt/sys1.s`
@@ -2371,20 +2411,20 @@ is now fully covered (62/62). In order:
    emits so far only for a postfix operand; and a postfix call argument is
    `mov di,a / push di / inc a` where the kernel pushes the memory operand
    directly (`push *-56.(bp) / inc *-56.(bp) / call _clearse`).
-5. **Struct shapes still refused** (see `src/mutos_cc/README.md`'s
+4. **Struct shapes still refused** (see `src/mutos_cc/README.md`'s
    "Structs, unions, bit-fields, enums and typedefs"): file-scope struct
    variables, functions returning a struct or a struct pointer, block
    copies, a computed value stored into a bit-field, a struct size that is
    not a power of two in a subscript - each needs evidence of the real
    compiler's shape first. Then the remaining 81..127-byte `chkstk` gap.
-6. **`tests/mutos_cc/11_kernel`** (9 real kernel driver files, currently
+5. **`tests/mutos_cc/11_kernel`** (9 real kernel driver files, currently
    0/9): grow coverage into it once the categories above are done. One
    concrete, confirmed gap to start from - a bare expression-statement
    (`i++;` on its own, `01_delay.c`) has no grammar production yet; the
    six files refusing with "external definition syntax" still need their
    specific construct isolated first. See `docs/DEVLOG.md`'s Milestone 4
    section for the full per-file breakdown.
-7. **The `mutos_cc` driver itself.**
+6. **The `mutos_cc` driver itself.**
 
 The register-occupancy guard's refusals (see the `c1_gen.c` review section
 above) mark where further spill/reordering codegen - and an SI-scratch
@@ -2580,8 +2620,7 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
-   byte-exact): `mutos_as` support for `mutos_c1`'s floating output, the
-   remaining `chkstk` gap, growing coverage
+   byte-exact): the remaining `chkstk` gap, growing coverage
    into the new `tests/mutos_cc/11_kernel` real-kernel corpus (0/9 so
    far), and the `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
@@ -2591,3 +2630,13 @@ far.
    call whose argument list spans multiple physical lines), re-check that specific
    behavior against it — see `src/mutos_cpp/README.md`'s "Known, documented
    simplifications" section for exactly which three cases these are.
+6. `mutos_as`'s `-L` deviation (see `CLAUDE.md` rule 3) has a counterpart in
+   real evidence now: none of `libc.a`'s 167 objects - 96 of them C-ABI code
+   calling `cret`, among them compiled C such as `atof.o` and `ecvt.o` - has
+   an `L`-number label in its symbol table (the real `as`'s documented
+   default), while the kernel goldens have them (`malloc.o`: 14). Whether the kernel goldens
+   were assembled with `-L` (so that implementing the documented default plus
+   `-L` would satisfy both) is not known; resolving it is what a compiled-C
+   `libc.a` object needs to become a `mutos_as` golden, and what the future
+   `mutos_cc` driver needs to decide how it invokes `mutos_as` (see
+   `tests/mutos_as/libc_recon/README.md`).

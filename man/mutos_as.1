@@ -118,8 +118,8 @@ selects the byte form; the unsuffixed mnemonic
 selects the word form, or infers byte size from an explicit
 byte-class register operand where the instruction supports that
 inference (e.g.\& plain
-.B mov al,*0
-still assembles to a byte-sized move).
+.BR "mov al,*0" ", " "mov al,_x" " or " "mov _x,al"
+still assemble to byte-sized moves).
 .SS "Addressing modes"
 .TP
 .I register
@@ -134,6 +134,11 @@ displacement expression, e.g.\&
 .I symbol
 A bare symbolic or absolute address (direct addressing), e.g.\&
 .BR _global_ .
+As the source operand of
+.B lea
+it yields that address itself, e.g.\&
+.B lea ax,L10000
+(a relocated 16-bit address field, like any direct operand).
 .TP
 .I immediate
 An immediate value or address-of expression, typically introduced by
@@ -251,14 +256,36 @@ resolved at assembly time.
 Advances the current location counter by
 .I N
 bytes, zero-filling the reserved span in the output.
+.TP
+.BI .float\  number\  "[, " number " ...]"
+Emits one 4-byte floating-point constant per comma-separated
+.IR number ,
+written as
+.BR atof (3)
+reads it (an optional sign, digits with an optional decimal point,
+an optional
+.B e
+exponent), optionally prefixed with
+.BR 0f ,
+e.g.\&
+.BR "L10000: .float 3.50000000000000000e+00" ,
+the form the compiler writes for every floating constant.
+The constant is in the MUTOS floating format: little-endian, the
+excess-128 binary exponent in the highest byte, the sign in the top
+bit of the byte below it, then the mantissa bits after its leading
+one.
+Only a value exactly representable in the format's 24 significant
+bits is accepted, and encoded exactly; a value that is not, and zero,
+are rejected with an error, since how the original assembler rounds
+such a value, and the bytes it writes for zero, are not confirmed.
+No alignment is implied and no relocation is ever needed.
 .PP
-The floating-point data directives
-.B .float
-and
+The 8-byte
 .B .double
-are not implemented yet and are rejected with an error (rather than
-skipped, which would leave the following addresses wrong); other
-directives this assembler does not implement are ignored.
+directive is not implemented yet and is rejected with an error
+(rather than skipped, which would leave the following addresses
+wrong); other directives this assembler does not implement are
+ignored.
 .SS "Branches and jumps"
 The real conditional jump mnemonics
 .RI ( "e.g." " je" ", " jne ", " jb ", " jae ", " jg ", " jle ,
@@ -301,6 +328,14 @@ The object file written is in the MUTOS a.out relocatable format
 a fixed header, the text segment, the data segment, a text
 relocation table, a data relocation table, and a symbol table, in
 that order.
+The text and data segments are each rounded up to an even size with
+one zero byte at the end of the assembly; switching between
+.B .text
+and
+.B .data
+in the middle of the source inserts nothing, so a constant's
+.BR .data " ... " .text
+block written between two instructions leaves the code contiguous.
 The symbol table is written in
 .I creation order
 \(em the order in which each distinct symbol name is first

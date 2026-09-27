@@ -95,13 +95,13 @@ OPT     := -O2 -g
 CFLAGS  := $(CSTD) $(WARN) $(OPT)
 LDFLAGS :=
 
-ASM_SRCS      := lexer.c parser.c pass2.c symtab.c encode.c objwrite.c assemble.c
+ASM_SRCS      := lexer.c parser.c pass2.c symtab.c encode.c objwrite.c fltconst.c assemble.c
 ASM_OBJS      := $(ASM_SRCS:.c=.o)
 PARSE_SRCS    := lexer.c parser.c main.c
 PARSE_OBJS    := $(PARSE_SRCS:.c=.o)
 CLASSIFY_SRCS := lexer.c parser.c pass2.c classify_test.c
 CLASSIFY_OBJS := $(CLASSIFY_SRCS:.c=.o)
-HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h mutos_aout.h
+HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h fltconst.h mutos_aout.h
 
 TARGET    := mutos_as
 PARSE     := parse_dump

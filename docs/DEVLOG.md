@@ -85,9 +85,10 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 67/67 golden object files
-byte-for-byte identical (full file: header + text + data + trel + drel + symtab), 0
-AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
+**Status:** provisionally complete for the real corpus — 68/68 golden object files
+byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
+kernel files plus `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
+real `libc.a` object), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
 Guideline 6.
@@ -214,6 +215,12 @@ and later goldens) unless marked *unconfirmed*. Standard 8086 ModRM throughout.
   register always uses `8B`/`89` + `mod00`/`rm110`/disp16. (`A1` inferred by
   symmetry, not directly observed; the other three are directly confirmed.)
 - `8E`/`8C` for segment-register MOV — a separate opcode family, not `8B`/`89`.
+- The reg↔mem and reg↔reg forms (`A0`–`A3`, `88`–`8B`) are byte-sized for `movb`
+  **or** for a byte-register operand under plain `mov` — the same two-signal rule as
+  `B0+reg`. Until 2026-09-27 only `movb` selected them, so `mov al,x` silently
+  assembled as a load of AX; the kernel corpus never writes one (`c1` writes `movb`
+  with word register names), `libc.a`'s `ldexp.o` has three (`A0`, `A2`, `8A 46 0A`
+  — see the `mutos_as` `.float` section under Milestone 4).
 
 **Group1 arithmetic (`add`/`or`/`adc`/`sbb`/`and`/`sub`/`xor`/`cmp`)**
 - `AND`/`OR`/`XOR` have **no sign-extend (`s`) bit** in their real CPU encoding
@@ -257,7 +264,10 @@ and later goldens) unless marked *unconfirmed*. Standard 8086 ModRM throughout.
   aliases despite similar spelling.
 
 **Misc confirmed opcodes**
-`LEA`=`8D /r`; `MUL`/`NEG`/`DIV`/`IMUL`/`NOT`/`IDIV` = group3 `F6`/`F7` `/4`/`/3`/`/6`/
+`LEA`=`8D /r`, with an indirect operand or — since 2026-09-27, `mutos_c1`'s
+`lea ax,L10000` — a direct one (mod=00 rm=110 + relocated disp16, confirmed by
+`libc.a`'s own machine code: `8d 06 <disp16>` + R_DATA in `atof.o`/`ecvt.o`, R_EXT
+`fac` in `ldexp.o`/`modf.o`/`doubles.o`); `MUL`/`NEG`/`DIV`/`IMUL`/`NOT`/`IDIV` = group3 `F6`/`F7` `/4`/`/3`/`/6`/
 `/5`/`/2`/`/7` (register-only, byte-ness inferred from `REG_BYTE`); `WAIT`=`9B`;
 `INW`/`OUTW`=`ED`/`EF`; `MOVSB`/`MOVSW`=`A4`/`A5`; `STOB`/`STOW`/`LODB`/`LODW`=`AA`/
 `AB`/`AC`/`AD`; `rep` and `seg <sr>` are each their own 1-byte prefix
@@ -291,8 +301,12 @@ text start (symbol `start0`=128, filled with `EB 7E` jump-over + repeated `EB FE
 traps + zero bytes); each linked object module's own code ends with a fixed 6-byte
 tail of exactly three `EB FE` trap instructions; a single stray `0x00` filler byte
 appears whenever a label needs even (`.even`) alignment but the preceding instruction
-ended at an odd offset — this rule applies symmetrically at `.text`↔`.data`
-transitions and at end-of-file.
+ended at an odd offset, and each module's text and data segments are rounded up to an
+even size at the module's **end** — not at a `.text`↔`.data` switch in the middle of
+the source (corrected 2026-09-27: `mutos_as` padded at every switch, which the corpus
+could not tell apart because its evidence was each file's last switch; `atof.o`/
+`ecvt.o` show no pad where `c1` switches to `.data` for a floating constant between
+two instructions — see the `mutos_as` `.float` section under Milestone 4).
 
 **`.bss` segment** (first seen in `v30opt.s`): `.bss` directive switches to a third
 segment (own location counter, no output byte stream — implicitly all-zero, only the
@@ -387,6 +401,16 @@ Chronological, most important first for future reference:
    actually zero-fill the reserved span in the Pass-2 output buffer, silently
    desyncing the buffer with no symbol-address symptom (the hardest class of bug to
    find this way — see Debugging methodology's LC-delta-vs-buffer-growth technique).
+8. **Padding at every segment switch** (2026-09-27) — an odd location counter at a
+   `.data`/`.text` switch got a `0x00` pad byte in the segment being left, a rule
+   generalized from `malloc.o`/`mch.o`, where the switch was the file's last and
+   end-of-file rounding gives the same bytes. `mutos_c1`'s floating constants
+   (`.data` / `L10000: .float ...` / `.text` between two instructions) made it real:
+   the pad landed inside the code. Fixed by rounding each segment once, at the end;
+   all 136 previously assembling `.s` inputs give identical objects.
+9. **Plain `mov` with a byte register and a memory/register operand got the word
+   opcode** (2026-09-27) — see Confirmed encoding facts (MOV). Found reproducing
+   `libc.a`'s `ldexp.o`.
 
 ### Opcode coverage audit
 
@@ -436,7 +460,11 @@ implemented once, found to break byte-for-byte golden parity (every real golden 
 project validates against has those labels present *unconditionally*, with no flag
 involved in how they were produced), and was then **removed entirely** per explicit
 project decision. Matching the golden files takes priority over literal
-switch-for-switch parity with the man page here.
+switch-for-switch parity with the man page here. **Counter-evidence found
+2026-09-27**: none of `libc.a`'s 167 objects has an `L`-number symbol — not even
+compiled C such as `atof.o`/`ecvt.o`, which branch to `L` labels — i.e. they show the
+documented default. The kernel goldens may simply have been assembled with `-L`;
+unresolved, see `STATUS.md`'s open items and `tests/mutos_as/libc_recon/README.md`.
 
 ### Auxiliary deliverables
 
@@ -5149,7 +5177,7 @@ streaming handlers' "internal: ... outside an evaluation-order plan" until
 not know, so `L10000` named the next thing in `.data` and every later data
 address was 4 bytes short. `.float`/`.double` are now explicit errors;
 implementing them (the encoding above) and `lea` with a label is the first
-"Next up" item.
+"Next up" item. (Done - see the next section.)
 
 **Tooling.** `dump_temp.py` decodes `FCON` (`F` field), `ITOF`, `FTOI`,
 `FTOL` and `LTOF` - `08_float`'s `.1.golden`s now decode to the end.
@@ -5170,6 +5198,138 @@ clean. `x86sim.py`: 53 of the 62 goldens run (both `08_float` ones: 7 and
 `x86sim.py`, compared with the host C compiler: ten equal, one refused
 (an int right operand); about 60 refusal probes each stop with their
 diagnostic. ASan/UBSan over the golden inputs, programs and probes: clean.
+
+### `mutos_as`: `.float`, `lea <reg>,<label>` - `08_float` assembles, links and runs (`mutos_as` extended and verified this session)
+
+The first "Next up" item after `08_float`: make `mutos_c1`'s floating output
+assemble. Both goldens now assemble, link with `mutos_ld` against the real
+`crt0.o` and `libc.a`, and - run under an 8086 emulator - return their C
+sources' values. On the way, two older `mutos_as` bugs surfaced, one of them
+fatal for exactly this code.
+
+**`lea <reg>,<label>`: the encoding is in `libc.a`'s machine code**, not just
+analogous to `mov`. Scanning every text segment in `tests/mutos1700_libc/` for
+`8D` with ModRM mod=00 rm=110 and a relocation on the disp16 finds 31: `atof.o`
+(`8d 06 00 00`, `8d 06 04 00`, ...) and `ecvt.o` with R_DATA - the compiled-C
+objects' own floating constants, `lea ax,<constant>` / `call flds` exactly as in
+the goldens - and `ldexp.o`, `modf.o`, `doubles.o`, `singles.o`, `stkmath.o`,
+`dmath.o` with R_EXT `fac` or R_DATA, at even and odd offsets (`0x8004`,
+`0x8038`: the relocation word's shift bit). So `encode_lea()` takes an
+`ADDR_DIRECT` operand through `emit_modrm_direct()` - the same mod=00 rm=110
+form and non-PC-relative relocation classification as `mov`'s direct form, no
+accumulator short form (LEA has none: `atof.o`'s `lea ax` is `8d 06`). It also
+now refuses a byte-register destination (`lea al,...`), which it used to
+encode.
+
+**`.float`: the format, and what is (not) known about the conversion.** The
+format is the `08_float` section's (and `CLAUDE.md` rule 5's):
+excess-128 exponent in the highest byte, sign in bit 7 of the byte below
+(`stkmath.o`'s `fneg` XORs bit 7 of a double's byte 6, a float's byte 2 since
+`flds` loads a float into a double's high half), 23 stored mantissa bits after
+the leading 1, exponent 0 = zero. What the real assembler does with a decimal
+text is only partly visible:
+
+- Every nonzero 4-byte constant in `libc.a` is exact (2\*\*56, 10.0, 1.0, 5.0),
+  and so is every constant `mutos_c1` writes (it refuses the rest). For those,
+  any correct conversion gives the same bytes.
+- `ecvt.o`'s one 8-byte constant, `.03` (`c3 f5 28 5c 8f c2 75 7b`), is the
+  correctly ROUNDED 56-bit value; truncation would end in `c2`. One sample.
+- **Zero is not a plain zero.** `atof.o` (data+4, +16) and `ecvt.o` (+0, +4,
+  +8, +28) hold every zero constant as `bc a2 31 00`: exponent byte 0, mantissa
+  bits `0.1011 0001 1010 0010 1011 1100` - the top of 5\*\*17 =
+  762939453125 = `0xB1A2BC2EC5` (and of 10\*\*17 = 5\*\*17 \* 2\*\*17). A text with
+  17 fraction digits and exponent 0 is `%.17e` of zero -
+  `0.00000000000000000e+00` - and v7's `atof()` algorithm scales such a text by
+  `flexp` = 5\*\*17, so the bytes look like a zero result that kept 5\*\*17's
+  mantissa. But `libc.a`'s own `atof` (`atof.o`, read in full: v7's algorithm,
+  `fl /= flexp` via `fdivd`) cannot produce them: `dmath.o`'s `ddiv` tests the
+  dividend's exponent byte and jumps to `zero:`, which clears all 8 bytes of
+  `fac`, and `ldexp()` returns a zero exponent unchanged. So the real
+  assembler converts with something else (another `atof`/`ddiv` version, its
+  own code), or zero constants never went through `.float` text. Either way the
+  bytes `.float 0.00000000000000000e+00` must produce are not known.
+- The manual (`MUTOS1700_Assembler_as.pdf` sect. 3.2) spells a float constant
+  `0f` + "characters atof accepts" and a double `0d` with a `d` exponent; the
+  real compiler writes `.float` operands bare (`3.50000000000000000e+00`).
+
+So `.float` (`fltconst.c`) accepts an optional `0f`, then atof syntax (sign,
+digits with optional `.`, optional `e`/`E` exponent; at least one digit;
+nothing after), and encodes a value **only if it is exactly representable** -
+decided exactly: the text becomes D \* 10\*\*E (D an integer held in a small
+bignum, trailing zeros folded into E); for E < 0 the value is dyadic only if
+5\*\*-E divides D; the remaining odd integer must fit 24 bits and the exponent
+the byte's 1..255. No host floating point is involved. An inexact value
+(`0.1`) and zero are explicit errors naming the reason; so, still, is every
+`.double`. Operands are re-scanned raw from the source, like `.asciz` - the
+tokenizer splits `3.5e+00` into `3.` `5` `e` `+` `00`, and punctuation tokens'
+text does not point into the source - up to `,`, newline, `;` or a `|`
+comment.
+
+**Bug 1 - padding at a segment switch put a byte into the code.** The first
+assembled `01_floatbas` disassembled with a `00` after `call fstsp`: `.data` at
+an odd text location padded the text segment, the rule `assemble.c` had carried
+since `malloc.o` ("an odd-length `.text` immediately followed by `.data`") and
+its mirror from `mch.o`. `mutos_c1` writes `.data` / `L10001: .float ...` /
+`.text` between two instructions, so the pad executed as `add [bx+si],al`. The
+real objects settle it: in `atof.o` the `lea ax,<constant>` follows the previous
+instruction directly at text 71 and 407 (both odd, both right after such a
+block), in `ecvt.o` at 201 and 345. Each segment is rounded up to even once, at
+the end of the file; `malloc.s`'s and `mch.s`'s switches were their files' last,
+where both rules produce the same bytes. The change leaves all 136 other `.s`
+inputs (67 kernel files, 69 compiler goldens) byte-identical to the previous
+build's objects.
+
+**Bug 2 - `mov` with a byte register.** A regression test for `lea` with real
+bytes: `ldexp.o` (hand-written; `lea si,*4(bp)`, `lea di,fac`, `lea si,huge`,
+`lea ax,fac`) reconstructed from its disassembly as
+`tests/mutos_as/libc_recon/ldexp.s`, the real object as its golden. The first
+attempt differed in three bytes - `A1`/`A3`/`8B` where the real object has
+`A0`/`A2`/`8A`: `encode_mov()` chose the byte opcodes of its reg↔mem and
+reg↔reg forms only for `movb`, so `mov al,fac+7` loaded AX. The reg,imm form
+already inferred byte size from a byte register (`mch.s`'s real `mov al,*0`);
+the other forms now do too. With that, `ldexp.s` reproduces `ldexp.o` byte for
+byte - header, text, data, both relocation tables, symbol table (its order is
+first mention, so the reconstruction keeps the original's: `ERANGE`, `DOFF`,
+`_ldexp`, `fac`, `ldexp3`, `ldexp2`, `_errno`, `huge`, `cret`). No kernel file
+writes a plain `mov` with a byte register and a memory operand, so no golden
+moved.
+
+**Why no compiled-C `libc.a` object is a golden yet.** `atof.o`/`ecvt.o` would
+test `.float` and `lea` together, but both hold zero constants, `ecvt.o` a
+`.double`, and none of `libc.a`'s 167 objects has an `L`-number symbol - the
+real `as`'s default without `-L` - while `mutos_as` always writes them, because
+the kernel goldens compiled from C have them (the deliberate `-L` deviation, see
+Milestone 2's CLI reference). Maybe the kernel was assembled with `-L`; unknown.
+Instead `tests/mutos_as/libc_recon/floatdat.s` holds four of those objects'
+constants as `%.17e` text, and `check_floatdat.sh` compares each assembled
+value with the real object's bytes at test time: 6/6 identical (2\*\*56, 10.0
+twice, 1.0 twice, 5.0).
+
+**End to end.** Both `08_float` goldens assembled by `mutos_as`, linked by
+`mutos_ld` with the real `crt0.o` and `libc.a` (every floating entry point and
+`fltused` resolved), and run from `_main` under the Unicorn engine's 8086 mode
+(a scratch harness: the 0407 image loaded as one 64K segment, a HLT as the
+return address, no syscalls) return **7** and **3** - `(int)(3.5 * 2.0)` and
+`(int)(7 / 2.0)` - computed by the real runtime from the assembled constants;
+with the constants edited to 2.5 and -3.0 the first returns -7. Ten more
+programs (float and double locals, `+ - * /`, int/long conversions, loops,
+float code in a called function, 2\*\*24-1) through `mutos_cpp`, `mutos_c0`,
+`mutos_c1`, `mutos_as`, `mutos_ld` and the same harness return what the host C
+compiler's build returns. Before this change the same executables would have
+run into the pad byte.
+
+**Verification.** `make test` (clean build, zero warnings): `mutos_as` 68/68
+(62 `kernel_opt`, 5 `kernel_nonopt`, 1 `libc_recon`), `check_floatdat.sh` 6/6,
+`assemble_cc_goldens.sh` 71/71 (was 69), `mutos_cpp` 5/5, `mutos_c0`/`mutos_c1`
+62/62. Against the previous assembler, every `.s` it accepted (136 of 138)
+assembles to an identical object. ASan/UBSan build of `mutos_as` over 143
+inputs (those plus hand-written `.float`/`lea` probes and their error paths): no
+reports, objects identical to the `-O2` build's. `fltconst.c` against an
+independent exact-fraction encoder (Python `fractions`) and `x86sim.py`'s
+`mbf_encode()`: about 59,000 random exact and inexact texts (random 24-bit
+mantissas over the whole exponent range, plain, scientific, `0f`-prefixed and
+trailing-zero spellings, plus inexact neighbours), 0 differences, sanitizer
+clean.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
@@ -5404,3 +5564,14 @@ These apply to *every* milestone, not just the one where they were first learned
   the CPU reference section above) happened exactly this way. `CLAUDE.md` now
   states explicitly that the protocol applies from message 1 of any session in
   this project, regardless of how the opening message is framed.
+- **Evidence from a boundary case cannot tell two rules apart.** `mutos_as` padded
+  a segment at every `.text`/`.data` switch because `malloc.o` and `mch.o` showed a
+  pad there - but both switches were their files' last, where "pad at the end of the
+  file" gives the same bytes. The wrong rule stood unnoticed until code switched to
+  `.data` between two instructions (`mutos_c1`'s floating constants) and the pad
+  landed in the code. When a rule is inferred from a sample, ask which other rule the
+  same sample also fits, and look for a sample that separates them (here `atof.o`).
+- **Run what you build, when you can.** 67/67 byte-exact goldens said nothing about
+  a pad byte in code no golden contained; linking the float goldens with the real
+  `crt0.o`/`libc.a` and executing them in an emulator is what makes "it assembles"
+  mean "it works".

@@ -1078,6 +1078,20 @@ static bool encode_mov(CodeBuf *out, const ParsedOperand *dst, const ParsedOpera
         return true;
     }
 
+    /* The register-to/from-memory and register-to-register forms below
+     * are byte-sized for 'movb' OR for a byte register written with a
+     * plain 'mov' - the same "check both signals" rule as the reg,imm
+     * form above (real mch.s: "mov al,*0" -> B0). An AL/BL/... operand
+     * with the WORD opcode would name AX/BX/..., so the previous rule
+     * (only 'movb' selected the byte opcodes) silently assembled
+     * "mov al,x" as a load of AX. The bytes are confirmed by libc.a's
+     * ldexp.o, whose AL load/stores are A0 (mov al,fac+7), A2 (mov
+     * fac+7,al) and 8A 46 0A (mov al,*10.(bp)) - reproduced by tests/
+     * mutos_as/libc_recon/ldexp.s (the lost original's spelling of
+     * them is unknown). No file in the kernel corpus writes one - c1
+     * always writes 'movb' with word register names - so no golden
+     * changes. */
+
     /* mem,reg -> 0x89/0x88 /r store form. DIRECT (bare address) with
      * the accumulator (AL/AX) instead gets the short A2/A3 forms -
      * confirmed real: opcodetest.o "movb _global_,ax" (AL) -> A2,
@@ -1086,6 +1100,8 @@ static bool encode_mov(CodeBuf *out, const ParsedOperand *dst, const ParsedOpera
     if ((dst->mode == ADDR_INDIRECT || dst->mode == ADDR_DIRECT) && src->mode == ADDR_REGISTER) {
         int rn = reg_number(&src->reg);
         if (rn < 0) return false;
+        if (src->reg_class == REG_BYTE)
+            byte_mode = true;
         if (dst->mode == ADDR_DIRECT && rn == 0) {
             codebuf_put(out, byte_mode ? 0xA2 : 0xA3);
             long addr = dst->expr ? resolve_expr(dst->expr, cur_addr, st, resolve) : 0;
@@ -1112,6 +1128,8 @@ static bool encode_mov(CodeBuf *out, const ParsedOperand *dst, const ParsedOpera
         (src->mode == ADDR_INDIRECT || src->mode == ADDR_REGISTER || src->mode == ADDR_DIRECT)) {
         int rn = reg_number(&dst->reg);
         if (rn < 0) return false;
+        if (dst->reg_class == REG_BYTE)
+            byte_mode = true;
 
         if (src->mode == ADDR_DIRECT && rn == 0) {
             codebuf_put(out, byte_mode ? 0xA0 : 0xA1);
@@ -1262,15 +1280,34 @@ static bool encode_enter(CodeBuf *out, const ParsedOperand *framesize,
     return true;
 }
 
-/* LEA reg,mem - confirmed real usage: "lea sp,#6(bp)", "lea sp,#-4(bp)". */
+/* LEA reg,mem - 8D /r, with either memory operand shape:
+ *   - INDIRECT, "(reg)"/"<disp>(reg)" - confirmed real: "lea sp,#6(bp)",
+ *     "lea sp,#-4(bp)" (kernel corpus), "lea ax,*-8.(bp)" (mutos_c1's
+ *     floating code, tests/mutos_cc/08_float);
+ *   - DIRECT, a bare label/expression, "lea ax,L10000" (08_float's .s
+ *     goldens: a floating constant's address for the runtime) - mod=00
+ *     rm=110 plus a relocated disp16, exactly mov's direct form (no
+ *     AL/AX short form exists for LEA). Confirmed real by libc.a's
+ *     machine code (tests/mutos1700_libc): atof.o/ecvt.o "8d 06
+ *     <disp16>" with an R_DATA entry (lea ax,<constant in .data>),
+ *     ldexp.o "8d 36 00 00" R_DATA at an odd offset (lea si,huge),
+ *     ldexp.o/modf.o/doubles.o/singles.o/stkmath.o "8d 3e|36|06 00 00"
+ *     with R_EXT fac. tests/mutos_as/libc_recon/ldexp.s reproduces
+ *     ldexp.o byte for byte.
+ * An IMMEDIATE operand ("lea ax,#x") has no LEA encoding and is
+ * refused. */
 static bool encode_lea(CodeBuf *out, const ParsedOperand *dst, const ParsedOperand *src,
                         long cur_addr, SymTab *st, bool resolve, RelocList *relocs)
 {
-    if (dst->mode != ADDR_REGISTER || src->mode != ADDR_INDIRECT) return false;
+    if (dst->mode != ADDR_REGISTER || dst->reg_class != REG_WORD) return false;
+    if (src->mode != ADDR_INDIRECT && src->mode != ADDR_DIRECT) return false;
     int rn = reg_number(&dst->reg);
     if (rn < 0) return false;
     codebuf_put(out, 0x8D);
-    emit_modrm_indirect(out, rn, src, cur_addr, st, resolve, relocs);
+    if (src->mode == ADDR_DIRECT)
+        emit_modrm_direct(out, rn, src, cur_addr, st, resolve, relocs);
+    else
+        emit_modrm_indirect(out, rn, src, cur_addr, st, resolve, relocs);
     return true;
 }
 
