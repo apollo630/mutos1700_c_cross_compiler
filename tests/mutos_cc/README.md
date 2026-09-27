@@ -101,6 +101,51 @@ fuzzing tools for `mutos_c0`/`mutos_c1` (`make fuzz` from the repo root -
 see `fuzz/README.md`). It contains no `.c` files, so nothing that walks
 this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 
+## `11_kernel` — real MUTOS kernel driver golden corpus
+
+`11_kernel/` is a second, separate golden corpus alongside the 62-file
+table above, not one more entry in it. Where `00_smoke` through
+`10_integ` are small, single-construct probes written for this corpus,
+`11_kernel` holds nine **real, unmodified MUTOS 1700 kernel driver
+source files**, ordered easy to hard: `01_delay.c`, `02_prim.c`,
+`03_mem.c`, `04_pipe.c`, `05_nami.c`, `06_fio.c`, `07_v24.c`, `08_tty.c`
+and `09_amx.c` (the AMX serial-board driver, the largest at ~40 KB) -
+plus the local header tree they `#include` (`a.out.h`, `acct.h`,
+`amx.h`, `asp.h`, `buf.h`, `chars.h`, `conf.h`, `dir.h`, `file.h`,
+`filsys.h`, `inode.h`, `intr.h`, `mount.h`, `msdos.h`, `param.h`,
+`proc.h`, `reg.h`, `systm.h`, `tty.h`, `user.h`, `var.h`) copied in
+directly rather than via a separate `h/` subdirectory, and its own
+`Makefile.mutos`. This plays the same role here that `tests/mutos_cpp/c/`
+already plays for `mutos_cpp` (see the main `CLAUDE.md`): a golden
+corpus made of real kernel source instead of constructed test cases,
+exercising whatever the kernel actually uses rather than only what this
+corpus's constructed cases were written to probe.
+
+Full real-hardware-verified goldens (`*.s.golden`, `*.i.golden`,
+`*.1.golden`/`*.2.golden` plus base64 companions) are already present in
+this checkout - the golden-capture pipeline (same one described under
+"Workflow" below) has already been run on real MUTOS 1700 hardware for
+all nine files, and `run_goldens.sh`'s per-category wildcard loop already
+discovers them with no script change needed.
+
+**Verifying `mutos_c0`/`mutos_c1` against them is separate, not-yet-started
+work**, tracked apart from the 62-file corpus's own N/62 pass fraction used
+throughout this project's docs: as of this writing `mutos_c0` refuses all
+nine at the front-end stage, each with a diagnosed error, never a silent
+wrong compile. One gap is a genuinely new, confirmed find: a bare
+expression-statement (e.g. `i++;` used as a whole statement - `01_delay.c`)
+has no production in `mutos_c0`'s current grammar at all, since every
+`++`/`--` use in the 62-file corpus is inside an assignment's right-hand
+side. Two more hit gaps already documented in `src/mutos_cc/README.md`'s
+"Current scope" (an untyped `register c;` local in `05_nami.c`; a
+file-scope struct/`unsigned` variable in `06_fio.c`). The remaining six
+(`02_prim.c`, `03_mem.c`, `04_pipe.c`, `07_v24.c`, `08_tty.c`, `09_amx.c`)
+refuse with the generic "external definition syntax" diagnostic; which
+specific file-scope construct each hits has not been isolated yet. See
+`docs/DEVLOG.md`'s Milestone 4 section for the full per-file breakdown and
+`src/mutos_cc/README.md`'s "Next steps" for where this sits in the
+project's roadmap.
+
 ### `09_abiprobe` — resolving a documented open question
 
 `docs/DEVLOG.md`'s Milestone 4 section had an explicit **open item**: the
@@ -129,7 +174,9 @@ make all intermediates
 #    header for what that means in practice) — one category at a time:
 cd 00_smoke && make -f Makefile.mutos && cd ..
 cd 01_expr  && make -f Makefile.mutos && cd ..
-# ...and so on for each of the 11 category directories.
+# ...and so on for each of the 11 category directories, plus 11_kernel
+# (see above), which has its own Makefile.mutos too - already run for
+# this checkout's present goldens.
 
 # C) no make at all -- a plain shell script, run it DIRECTLY, never
 #    with "make -f" (it is not a makefile and make cannot parse it):

@@ -4895,6 +4895,69 @@ already ran all nine `06_struct` goldens.
   hand-written programs and 6000 fuzzed programs (a quarter `--scope`):
   clean.
 
+### Test corpus: `tests/mutos_cc/11_kernel` added — real kernel driver golden
+corpus, initial `mutos_c0`/`mutos_c1` coverage assessed (2026-09-27)
+
+Nine real, unmodified MUTOS 1700 kernel driver source files were added to
+`tests/mutos_cc/` as `11_kernel/` (commit `dd5dd73`): `01_delay.c`,
+`02_prim.c`, `03_mem.c`, `04_pipe.c`, `05_nami.c`, `06_fio.c`, `07_v24.c`,
+`08_tty.c` and `09_amx.c` (the AMX serial-board driver, the largest at
+~40 KB), plus the local `h/`-tree headers they `#include` and their own
+`Makefile.mutos`. This plays the same role for `mutos_cc`/`mutos_c0`/
+`mutos_c1` that `tests/mutos_cpp/c/` already plays for `mutos_cpp`: a
+second golden corpus made of real kernel source instead of constructed
+test cases. Full real-hardware-verified goldens (`.s`/`.i`/`.1`/`.2` plus
+base64 companions) arrived already captured — the golden-capture pipeline
+had already been run on real MUTOS 1700 hardware for all nine files before
+the directory was added here.
+
+**Coverage assessment (this session, `tests/mutos_cc/run_goldens.sh`
+against the `06_struct`-era build, commit `dd5dd73`).** `mutos_cpp`
+matches all nine `.i.golden`s byte-for-byte (0 mismatches) - `mutos_c0`
+refuses all nine, each with a diagnosed error, never silent wrong output,
+so the construct-coverage corpus's 60/62 pass fraction is unaffected;
+`11_kernel` is tracked separately from it, not folded into that count.
+The nine break down as:
+
+- **One genuinely new gap, confirmed with a minimal reproduction**:
+  `01_delay.c`'s `while(i < 192) i++;` - a bare expression-statement
+  (here a lone postfix `++`) used as a whole statement, not as part of an
+  assignment's right-hand side. `src/mutos_cc/README.md`'s "Current scope"
+  grammar has no `expr-stmt` production at all - `stmt := assign-stmt |
+  star-assign-stmt | call-stmt | return-stmt` - because every `++`/`--`
+  use in the existing corpus (`01_expr/05_incdec.c`) is inside a `j =
+  i++;`-shaped assignment. `mutos_c0` diagnoses it correctly (`error:
+  expected '=' or a compound-assignment operator, found token`) rather
+  than misparsing it.
+- **Two hits on already-documented gaps**, real-kernel confirmation of
+  limits already named in `src/mutos_cc/README.md`: `05_nami.c`'s
+  `uchar()` declares `register c;` - a storage-class specifier with no
+  type keyword (K&R implicit `int`), which the parser correctly refuses
+  ("only 'int'/'char'/'long', struct, union, enum and typedef'd local
+  declarations are supported so far"), cascading into a further
+  `'c' undeclared` on the following statements; `06_fio.c` hits the
+  already-documented file-scope struct/union-or-`unsigned` variable
+  refusal (see `src/mutos_cc/README.md`'s "Current scope" and
+  `STATUS.md`'s "Next up" item 4).
+- **Six not yet root-caused**: `02_prim.c`, `03_mem.c`, `04_pipe.c`,
+  `07_v24.c`, `08_tty.c` and `09_amx.c` all refuse with the generic
+  "external definition syntax (expected a function name...)" diagnostic -
+  something at file scope beyond a plain function definition, prototype,
+  or plain variable, per `c0_parser.c`'s `extdef` handling. Real driver
+  code plausibly hits this via initialized arrays of structs,
+  function-pointer tables, or similar file-scope initializer shapes not
+  yet in the grammar, but which specific construct in each file triggers
+  it has not been isolated - that is deliberately left as real,
+  dependency-ordered future work (see `STATUS.md`'s "Next up" and
+  `src/mutos_cc/README.md`'s "Next steps"), not guessed at here.
+
+**Verification.** `make check-docs`: clean. `make test` (clean build,
+unchanged by this addition): 60/62 byte-exact, 0 genuine mismatches,
+`mutos_as` 67/67, `mutos_cpp` 5/5 - `run_goldens.sh`'s wildcard-per-category
+loop already discovers `11_kernel/*.c` without any script change; its nine
+files land entirely in the "grammar/opcode not yet supported" bucket, not
+in the genuine-mismatch buckets that would fail the run.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a

@@ -1370,7 +1370,21 @@ di,*2.(si)`).
    corpus: `08_float` (floating point - `FCON`, `ITOF`, the FP runtime).
    The 81..127-byte `chkstk` gap stays "not yet supported" until a golden
    lands in it.
-6. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
+6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
+   files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
+   already present, currently 0/9 through `mutos_c0`): a second, separate
+   golden corpus alongside the 62-file table above, added once the items
+   above are done. One gap is already confirmed with a minimal
+   reproduction - a bare expression-statement (e.g. `i++;` used as a
+   whole statement, `01_delay.c`) has no production in the "Current
+   scope" grammar's `stmt` rule above, since every `++`/`--` use in the
+   62-file corpus is inside an assignment's right-hand side; two more
+   files hit already-documented gaps above (an untyped `register c;`
+   local, a file-scope struct/`unsigned` variable); the other six refuse
+   with the generic "external definition syntax" diagnostic, not yet
+   isolated to a specific construct. See `docs/DEVLOG.md`'s Milestone 4
+   section for the full per-file breakdown.
+7. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
    `tests/mutos_cc/run_goldens.sh`). The `-P`/`-S` interaction
