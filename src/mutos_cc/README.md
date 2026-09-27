@@ -1191,9 +1191,11 @@ statics, arrays, pointers and struct members, a `char` mixed with a
 floating value; in `mutos_c1` a computed right operand (hence `a + i`,
 the int on the right), a constant right operand of a computed value, a
 converted constant, an int in AX or a register variable converted, `LTOF`
-and an unused computed value. `mutos_as` cannot assemble the output yet
-(`.float` and `lea <reg>,<label>` - see `STATUS.md`). Full derivation in
-`docs/DEVLOG.md`'s `08_float` section.
+and an unused computed value. `mutos_as` assembles the output (`.float`,
+`lea <reg>,<label>`), and linked with the real `crt0.o`/`libc.a` both
+goldens return their C sources' values under an 8086 emulator - see
+`STATUS.md`'s Milestone 2 section. Full derivation in `docs/DEVLOG.md`'s
+`08_float` section and the `mutos_as` section after it.
 
 ## `SETSTK` / local-frame handling
 
@@ -1417,13 +1419,14 @@ di,*2.(si)`).
    shapes are done** (a char with one int operand, char call arguments
    and conditions, a store into a file-scope array element - see "More
    `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
-   "Floating point" under "Current scope") - all 62 of 62. Left: `mutos_as`
-   support for the floating output (`.float`, `lea <reg>,<label>` - see
-   `STATUS.md`'s "Next up"), the floating shapes still refused (an int
-   right operand - libc's `fsubrs`/`fdivrs`... "reversed" entry points
-   suggest how the real compiler does it - comparisons, a zero or
-   non-float constant, floating parameters, globals and returns), each
-   waiting for a golden. The 81..127-byte `chkstk` gap stays "not yet
+   "Floating point" under "Current scope") - all 62 of 62; `mutos_as`
+   assembles the floating output too. Left: the floating shapes still
+   refused (an int right operand - libc's `fsubrs`/`fdivrs`... "reversed"
+   entry points suggest how the real compiler does it - comparisons, a
+   zero or non-float constant, floating parameters, globals and returns),
+   each waiting for a golden; a zero or non-float constant also needs
+   `mutos_as`, which refuses a zero `.float` and every `.double` (see
+   `STATUS.md`'s "Next up"). The 81..127-byte `chkstk` gap stays "not yet
    supported" until a golden lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens

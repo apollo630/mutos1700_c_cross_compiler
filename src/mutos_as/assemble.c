@@ -33,6 +33,7 @@
 #include "encode.h"
 #include "symtab.h"
 #include "objwrite.h"
+#include "fltconst.h"
 
 typedef enum { SEG_TEXT, SEG_DATA, SEG_BSS } Segment;
 
@@ -177,18 +178,18 @@ static void handle_directive(AsmState *as, const Statement *s)
         (d->len == 5 && strncmp(d->text, ".byte", 5) == 0))
         return;
 
-    /* .float/.double - initialized floating-point data
-     * (MUTOS1700_Assembler_as.pdf sect. 7.2.1) - are not implemented.
-     * Unlike the directives ignored below, skipping one is never
-     * harmless: its label would name whatever follows, and every later
-     * address in the segment would be short by the value's size. Since
-     * mutos_c1 writes a ".float" for every floating constant (tests/
-     * mutos_cc/08_float - "L10000:<TAB>.float 3.50000000000000000e+00"),
-     * this is an explicit error until it is implemented (see STATUS.md's
+    /* .double - 8-byte initialized floating-point data
+     * (MUTOS1700_Assembler_as.pdf sect. 7.2.1) - is not implemented.
+     * (.float is, in run_pass(), which has the output buffers.) Unlike
+     * the directives ignored below, skipping it is never harmless: its
+     * label would name whatever follows, and every later address in
+     * the segment would be short by 8 - so it is an explicit error
+     * until the real assembler's conversion of a value that needs more
+     * than a float's 24 bits is pinned down (one real 8-byte constant
+     * is known, ecvt.o's .03, correctly rounded - see STATUS.md's
      * Milestone 2 section). A Pass 1 error stops before Pass 2, so this
      * is reported once. */
-    if ((d->len == 6 && strncmp(d->text, ".float", 6) == 0) ||
-        (d->len == 7 && strncmp(d->text, ".double", 7) == 0)) {
+    if (d->len == 7 && strncmp(d->text, ".double", 7) == 0) {
         fprintf(stderr, "error: %.*s is not yet supported at line %d\n",
                 (int)d->len, d->text, s->line);
         as->errors++;
@@ -298,32 +299,28 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                 break;
 
             case STMT_DIRECTIVE: {
-                /* The a.out header comment (mutos_ld.c / ld.c) is
-                 * explicit: "text size ... in bytes but even". Real
-                 * malloc.o confirms this with an actual trailing 0x00
-                 * pad byte where an odd-length .text is immediately
-                 * followed by ".data" - pad here, in BOTH passes (Pass
-                 * 1 to get the size right, Pass 2 to actually emit the
-                 * byte), before the segment switch itself. */
+                /* NO padding at a segment switch. The a.out header
+                 * comment (mutos_ld.c / ld.c) says "text size ... in
+                 * bytes but even", but that is the SEGMENT's size: the
+                 * real assembler rounds each segment up at the end of
+                 * the file (see after the statement loop), not at every
+                 * ".data"/".text". Confirmed real by libc.a: mutos_c1
+                 * writes a floating constant's ".data" / "L10000:
+                 * .float ..." / ".text" block in the middle of a
+                 * function, right before the "lea ax,L10000" that uses
+                 * it (tests/mutos_cc/08_float's .s goldens), and in
+                 * atof.o/ecvt.o - compiled C with such constants - the
+                 * lea follows the previous instruction directly even
+                 * where that ends at an odd offset (atof.o text 71 and
+                 * 407, ecvt.o 201 and 345). Padding there put a 0x00
+                 * byte INTO the code, which the CPU would execute. The
+                 * earlier evidence for padding at a switch (malloc.o's
+                 * odd .text before ".data", mch.o's odd .data before
+                 * ".text") is the last switch in each file, where the
+                 * end-of-file rounding produces the same bytes: none of
+                 * the 136 .s files mutos_as assembled before (the 67
+                 * kernel goldens among them) gives a different object. */
                 const Token *d = &s.mnemonic_or_name;
-                if (d->len == 5 && strncmp(d->text, ".data", 5) == 0 &&
-                    as->seg == SEG_TEXT && (as->text_loc & 1)) {
-                    if (pass2 && text_out) codebuf_put(text_out, 0x00);
-                    as->text_loc++;
-                }
-                /* Symmetric case: switching FROM .data back TO .text
-                 * with an odd data_loc - confirmed real via mch.s:
-                 * "_szicode: . - _icode" (a STMT_DATA_VALUE word,
-                 * ending the .data content at an odd offset, 581)
-                 * followed by ".globl _icodech" / ".text" - the real
-                 * mch.o's data segment is 582 bytes (even), one 0x00
-                 * pad byte past _szicode's word. */
-                if (d->len == 5 && strncmp(d->text, ".text", 5) == 0 &&
-                    as->seg == SEG_DATA && (as->data_loc & 1)) {
-                    if (pass2 && data_out) codebuf_put(data_out, 0x00);
-                    as->data_loc++;
-                }
-
                 /* .word <expr>[,<expr>...] / .byte <expr>[,<expr>...] -
                  * emit raw data into whichever segment is current. */
                 if (d->len == 5 && (strncmp(d->text, ".word", 5) == 0 ||
@@ -445,6 +442,64 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                             codebuf_put(target, 0x00); /* NUL terminator */
                         }
                         *lc += (long)slen + 1;
+                    }
+                    break;
+                }
+
+                /* .float <number>[,<number>...] - one 4-byte MUTOS
+                 * floating constant per operand, in the current segment
+                 * (MUTOS1700_Assembler_as.pdf sect. 7.2.1). mutos_c1
+                 * writes one for every floating constant, e.g.
+                 * "L10000:<TAB>.float 3.50000000000000000e+00" (tests/
+                 * mutos_cc/08_float's .s goldens - real compiler output).
+                 * The format and the exactness rule are fltconst.h's.
+                 *
+                 * Like .asciz, the operand text is re-scanned RAW from
+                 * the source buffer, since the tokenizer has no notion
+                 * of a floating number ("3.5e+00" arrives as "3." "5"
+                 * "e" "+" "00", and a punctuation token's text does not
+                 * point into the source). An operand runs to the next
+                 * ',', or to the end of the statement - newline, ';' or
+                 * a '|' comment. No alignment and no relocation: the
+                 * bytes are absolute data (libc.a's atof.o/ecvt.o hold
+                 * their constants back to back, 4 bytes each). Errors
+                 * are reported in Pass 1 only (a Pass 1 error stops
+                 * before Pass 2). */
+                if (d->len == 6 && strncmp(d->text, ".float", 6) == 0) {
+                    CodeBuf *target = pass2 ? seg_target(as, text_out, data_out) : NULL;
+                    const char *p = d->text + d->len;
+                    for (;;) {
+                        while (*p == ' ' || *p == '\t')
+                            p++;
+                        const char *start = p;
+                        while (*p && *p != ',' && *p != '\n' && *p != ';' && *p != '|')
+                            p++;
+                        const char *end = p;
+                        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
+                            end--;
+                        unsigned char bytes[4];
+                        if (end == start) {
+                            if (!pass2) {
+                                fprintf(stderr, "error: missing .float operand at line %d\n", s.line);
+                                as->errors++;
+                            }
+                        } else {
+                            FltStatus fs = flt_encode(start, (size_t)(end - start), bytes);
+                            if (fs != FLT_OK) {
+                                if (!pass2) {
+                                    fprintf(stderr, "error: bad .float operand '%.*s' at line %d: %s\n",
+                                            (int)(end - start), start, s.line, flt_status_text(fs));
+                                    as->errors++;
+                                }
+                            } else if (pass2 && target) {
+                                for (int k = 0; k < 4; k++)
+                                    codebuf_put(target, bytes[k]);
+                            }
+                        }
+                        *lc += 4;
+                        if (*p != ',')
+                            break;
+                        p++;
                     }
                     break;
                 }
@@ -588,17 +643,19 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
     }
 
     /* End-of-file padding: the a.out header comment ("text size ... in
-     * bytes but even") applies not just at an explicit ".data"
-     * transition (handled above) but also at the very end of the
-     * source if the file never has a trailing .data section at all -
-     * confirmed real: mch.s ends "... ret\n.end strt" with no closing
-     * .data, and the real mch.o's text segment still ends with a
-     * single trailing 0x00 pad byte to reach an even total length. */
-    if (as->seg == SEG_TEXT && (as->text_loc & 1)) {
+     * bytes but even") - each segment is rounded up to an even size
+     * here, once, whichever segment is current at the end (there is no
+     * padding at a segment switch - see the STMT_DIRECTIVE case above).
+     * Confirmed real: mch.s ends "... ret\n.end strt" in .text, and the
+     * real mch.o's text segment ends with a single trailing 0x00 pad
+     * byte; its data segment (odd after "_szicode: . - _icode", the
+     * last thing in .data) ends with one too; malloc.s ends in an empty
+     * ".data" after an odd .text, and malloc.o's text is padded. */
+    if (as->text_loc & 1) {
         if (pass2 && text_out) codebuf_put(text_out, 0x00);
         as->text_loc++;
     }
-    if (as->seg == SEG_DATA && (as->data_loc & 1)) {
+    if (as->data_loc & 1) {
         if (pass2 && data_out) codebuf_put(data_out, 0x00);
         as->data_loc++;
     }

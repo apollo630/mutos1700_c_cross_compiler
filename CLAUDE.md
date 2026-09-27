@@ -55,6 +55,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all object files and `libc.a.base64.txt`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`.
+* `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
+  sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
+  byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
+  `libc.a` constants. `tests/mutos_as/assemble_cc_goldens.sh` checks that every real
+  compiler `.s` in `/tests/mutos_cc/` assembles. See that directory's `README.md`.
 * `/tests/mutos_as/v30_speculative/`: Speculative 80186/V30 opcode test cases (PUSHA/POPA,
   PUSH imm, INSB/OUTSB, ENTER/LEAVE, BOUND, IMUL-immediate, shift/rotate-with-immediate-
   count) covering every opcode `STATUS.md` lists as "implemented, no real corpus sample".
@@ -208,7 +213,10 @@ You act as an expert systems programmer, compiler architect, and operating syste
      byte-for-byte golden parity. Matching the golden files takes priority over literal
      switch-for-switch parity with `as.1` here; `-o`/`-W` and everything else are
      unaffected. Do not "fix" this without re-breaking golden parity — see
-     `src/mutos_as/assemble.c`'s `-L` comment and `STATUS.md`.
+     `src/mutos_as/assemble.c`'s `-L` comment and `STATUS.md`. Counter-evidence
+     since 2026-09-27: none of `libc.a`'s 167 objects (compiled C included) has an
+     `L`-number symbol — the documented default — so the kernel goldens may have been
+     assembled with `-L`; open, see `STATUS.md`'s open items.
    * **Known, deliberate exception**: `mutos_cpp` never emits `# N "file"` line-marker
      output, regardless of `-P`. Every real MUTOS 1700 golden reference this tool is
      validated against was itself generated with `cc`'s `-P` flag (which `cc` also
@@ -519,7 +527,10 @@ scope and intent, not a snapshot of what's done.
   `call flds`, `fadds`, `fstsp`, `itof`, `ftoi`, `ftol`, ...), each
   constant a `.float` in `.data`, `.globl fltused` at the end; the
   floating format itself read off real `libc.a` data bytes (see
-  `STATUS.md`/`docs/DEVLOG.md`).**
+  `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
+  (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
+  `libc.a` it runs: both goldens return their C sources' values under an
+  8086 emulator.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -540,8 +551,8 @@ scope and intent, not a snapshot of what's done.
 * **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
   category by category — see
   `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: `mutos_as` support for `mutos_c1`'s floating
-  output (`.float` and `lea <reg>,<label>` - see `STATUS.md`), the
+  dependency-ordered list: the floating shapes still refused (zero and
+  non-float constants also need `mutos_as` - see `STATUS.md`), the
   remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
   goldens narrowed the threshold to `(80,128]`), then growing coverage
   into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
