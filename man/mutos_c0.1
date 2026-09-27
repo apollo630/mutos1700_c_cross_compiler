@@ -126,25 +126,52 @@ converts its value to the target's type \(en except that a
 variable, element or dereference compared with a constant from 0 to
 127 is not widened: the constant is typed
 .B char
-instead.
+instead; where the real compiler converts nothing (a condition, a call
+argument, an operand of
+.BR && ,
+.B ||
+or
+.BR ! )
+a
+.B char
+variable, element or dereference is passed on unconverted;
+.IP \(bu 2
+structures and unions (laid out as the real compiler does: members on a
+word boundary except
+.BR char ,
+.B int
+and
+.B unsigned
+bit-fields packed into words, union members at offset 0), members
+reached with
+.B .
+and
+.B \->
+(written as the real front end retypes them), arrays of structures,
+nested structures, assignment of a whole structure of 2 or 4 bytes,
+enumerations (their constants plain
+.B int
+constants),
+.B typedef
+names, and pointer casts of a call such as
+.BR "(struct node *) malloc(n)" .
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
 constant folding. Not yet supported, among others: file-scope
-pointers, other arrays and other initializers,
+pointers, other arrays and other initializers, file-scope structures,
 .B static
-functions, structures, unions, enumerations,
-.BR typedef ,
-floating point, arrays of three or more dimensions, pointer
-subtraction, an ordered comparison of pointers, and a
+functions, a function returning a structure or a pointer to one, a
+structure passed by value,
+.B unsigned
+variables, floating point, arrays of three or more dimensions, pointer
+subtraction, an ordered comparison of pointers, division, a right shift
+or an ordered comparison of an
+.B unsigned
+value, and a
 .B char
-value used as a condition, a call argument or an operand of
-.BR && ,
-.BR || ,
-.BR ! ,
-.B ~
-or
-.BR ?: .
+value that is not a variable, element or dereference (a cast's, an
+assignment's) used as a condition or a call argument.
 .PP
 Anything outside the supported scope is rejected with a clear
 diagnostic and a non-zero exit status, never silently miscompiled.

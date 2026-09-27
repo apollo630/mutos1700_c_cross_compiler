@@ -105,6 +105,34 @@ values. A constant shift count of 1 or
 2 is a repeated single-bit shift, a larger one is loaded into CX and
 shifted by CL. A call's arguments are evaluated from the last to the
 first, each pushed as soon as it is computed, as the real compiler does.
+A
+.B char
+with one
+.B int
+operand is computed in AX (masked with a small constant, in DX), a
+.B char
+argument pushed from AX after
+.BR cbw .
+Registers are handed out in order: an address or a pointer goes into
+DI, or into SI while DI still holds a value, a subscript index into DI,
+SI or DX. A structure member is addressed with its offset as a
+displacement
+.RB ( "*2.(si)" );
+a store through a pointer plus a non-zero offset computes its right-hand
+side first, and a sum of several terms adds a plain variable after the
+computed terms, both as the real compiler does. A bit-field is read with
+.BR mov ,
+.B sar
+and
+.B and
+and assigned a constant with
+.B and
+(its complemented mask, in hexadecimal unless the value is 0) and
+.BR or ;
+a whole structure of 4 bytes is assigned like a
+.BR long ,
+one of 2 bytes like an
+.BR int .
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

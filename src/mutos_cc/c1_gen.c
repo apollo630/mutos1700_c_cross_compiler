@@ -149,7 +149,12 @@ static int ty_is_word(int t) { return t == TY_INT || t == TY_UNSIGN || ty_is_ptr
 typedef enum { VK_IMM, VK_MEM, VK_MEM_DIRECT, VK_REG, VK_IND, VK_IND_PENDING, VK_COND, VK_LONG, VK_LCON,
                VK_FUNC, VK_ARGLIST, VK_MEM_CVT, VK_STATIC, VK_FUNCADDR,
                VK_STATICADDR, VK_REGOFF, VK_SCALED, VK_ROWADDR,
-               VK_STACKED, VK_CHARX, VK_IDXOFF, VK_SYMIDX } ValKind;
+               VK_STACKED, VK_CHARX, VK_IDXOFF, VK_SYMIDX, VK_FIELD } ValKind;
+/* VK_FIELD - a bit-field as an assignment TARGET: the word holding it
+ * (`cl` - VK_MEM, VK_STATIC or VK_IND) and the field's position in it
+ * (Val's `bitoffs`/`flen`), produced by OP_FSEL only when an OP_ASSIGN
+ * takes it as its left operand; that ASSIGN is its only consumer
+ * (gen_field_store()), pop_val() refuses it anywhere else. */
 /* VK_SYMIDX - "the file-scope char array `sym`, indexed by the plain
  * int variable `cl` (VK_MEM or VK_STATIC)", NOT computed yet: OP_PLUS's
  * result for "text[i]" (NAME(SC_EXTERN, TY_CHAR, "_text") AMPER(9)
@@ -393,6 +398,8 @@ typedef struct {
     const char *reg;
     const char *sym;  /* see Val's own field of the same name */
     int     postfix;  /* see Val's own field of the same name */
+    int     flagsv;   /* see Val's own field of the same name */
+    long    flags_at; /* see Val's own field of the same name */
 } SimpleVal;
 
 /* Forward-declared (as just a pointer target) so Val below can hold
@@ -475,6 +482,20 @@ typedef struct {
     int       charcon;   /* VK_IMM only: a CON typed TY_CHAR - the
      * right operand of a char compared with a small constant (see
      * cond_is_byte); OP_CON checks that it is consumed exactly there. */
+    int       flagsv;    /* VK_REG only: the value was just computed by an
+     * AND in its own register (see gen_charx_binop() and OP_AND), which
+     * left ZF/SF set from it; `flags_at` is GenState.ninsn right after
+     * that AND. A truth test of it that follows with no instruction in
+     * between branches on those flags directly, with no "cmp reg,*0" -
+     * the real compiler's "movb dx,#_amxscd(bx)" / "and dx,*12." / "beq"
+     * and "call _inb" / "add sp,*2." / "and ax,*9." / "bne" (tests/
+     * mutos_as/kernel_nonopt/amx.s, lp_AC.s); see gen_cond_branch(). */
+    long      flags_at;
+    int       structv;   /* VK_MEM only: a whole struct in memory (a NAME of
+     * type TY_STRUCT) - consumed only by OP_AMPER ("&p") and a struct
+     * OP_ASSIGN (see OP_STRASG); pop_val() refuses it elsewhere. */
+    int       bitoffs, flen; /* VK_FIELD only: the field's lowest bit and
+     * its width - OP_FSEL's two arguments */
 } Val;
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
@@ -554,8 +575,16 @@ typedef enum {
     SEG_DISCARD, /* end of a comma operator's left operand: c = the region */
     SEG_PUSHARG, /* a call argument just computed goes onto the machine
                   * stack; slot[a] counts the words pushed so far */
-    SEG_CALL     /* the call, its arguments pushed: slot[a] words, b = the
+    SEG_CALL,    /* the call, its arguments pushed: slot[a] words, b = the
                   * CALL's own type */
+    SEG_RHSREG,  /* an assignment's right-hand side, computed ahead of its
+                  * target, into a register - see plan_rhsreg() */
+    SEG_SWAP2,   /* exchange the top two values (no spill involved) */
+    SEG_LOADIND, /* a dereference on top loaded into its own register */
+    SEG_DEFPUSH, /* the pointer variable on top pushed onto the machine
+                  * stack - see is_deferred_ptr() */
+    SEG_DEFPOP   /* ... and popped into BX, below the value on top: the
+                  * operand it points to becomes "(bx)" */
 } SegKind;
 typedef struct {
     SegKind kind;
@@ -675,6 +704,10 @@ typedef struct {
                                  * the "Evaluation order" section */
     struct NameNode *names;    /* file-scope symbol names referenced so
                                  * far - see intern_name() */
+    long ninsn;                /* instructions written so far (put_insn_ex())
+                                 * - tells whether the flags an AND set are
+                                 * still those of its result (Val's
+                                 * `flagsv`) */
 } GenState;
 
 _Noreturn static void gen_fatal(const char *fmt, ...)
@@ -740,7 +773,7 @@ static void fatal_clobbered(void)
 
 /* What a consumer is prepared to receive beyond an ordinary value - see
  * Val's `bytev` field and VK_CHARX. */
-enum { POP_BYTE = 1, POP_CHARX = 2 };
+enum { POP_BYTE = 1, POP_CHARX = 2, POP_STRUCT = 4 };
 
 /* Refuses a 'char' operand a consumer has not been written for (see
  * POP_BYTE/POP_CHARX): generating code from it with a word
@@ -752,6 +785,10 @@ static void refuse_char_operand(const Val *v, int allow)
                   "through the char-to-int conversion, opcode 109, that "
                   "mutos_c0 inserts for an int operand) is not yet "
                   "supported - see src/mutos_cc/README.md");
+    if (v->structv && !(allow & POP_STRUCT))
+        gen_fatal("a whole struct used by this operator is not yet supported "
+                  "(only its address, or a struct assignment) - see "
+                  "src/mutos_cc/README.md");
     if (v->kind == VK_CHARX && !(allow & POP_CHARX))
         gen_fatal("a 'char' element or variable used as an operand of this "
                   "operator is not yet supported (no golden reference "
@@ -803,6 +840,9 @@ static Val pop_val_ex(GenState *g, int allow)
     if (v.kind == VK_SYMIDX)
         gen_fatal("internal: an unloaded file-scope array element address "
                   "reached a consumer other than OP_STAR");
+    if (v.kind == VK_FIELD)
+        gen_fatal("internal: a bit-field assignment target reached a "
+                  "consumer other than OP_ASSIGN");
     return v;
 }
 
@@ -889,6 +929,8 @@ static SimpleVal simple_of(Val v)
     s.reg = v.reg;
     s.sym = v.sym;
     s.postfix = v.postfix;
+    s.flagsv = v.flagsv;
+    s.flags_at = v.flags_at;
     return s;
 }
 
@@ -903,6 +945,8 @@ static Val val_from_simple(SimpleVal s)
     v.reg = s.reg;
     v.sym = s.sym;
     v.postfix = s.postfix;
+    v.flagsv = s.flagsv;
+    v.flags_at = s.flags_at;
     return v;
 }
 
@@ -1013,6 +1057,7 @@ static void render_operand(char *buf, size_t n, Val v)
     case VK_CHARX: snprintf(buf, n, "<unloaded-char>"); break;
     case VK_IDXOFF: snprintf(buf, n, "<uncomputed-index>"); break;
     case VK_SYMIDX: snprintf(buf, n, "<unloaded-array-element-address>"); break;
+    case VK_FIELD: snprintf(buf, n, "<unstored-bit-field>"); break;
     }
 }
 
@@ -1270,6 +1315,7 @@ static unsigned val_regs(const Val *v)
     case VK_CHARX:   return simple_regs(v->cl); /* "(bx)" etc. */
     case VK_IDXOFF:  return simple_regs(v->cl);
     case VK_SYMIDX:  return simple_regs(v->cl);
+    case VK_FIELD:   return simple_regs(v->cl);
     case VK_ROWADDR: return reg_bit(v->reg) | simple_regs(v->cl);
     default:      return 0;
     }
@@ -1379,6 +1425,7 @@ static void require_free(Val pending, unsigned regs, const char *ctx)
 static void put_insn_ex(GenState *g, const Insn *in, int regvar_store)
 {
     note_writes(g, insn_writes(in), regvar_store);
+    g->ninsn++;
     switch (in->nops) {
     case 0:  fprintf(g->out, "%s\n", in->mnem); break;
     case 1:  fprintf(g->out, "%s\t%s\n", in->mnem, in->a.s); break;
@@ -1890,6 +1937,17 @@ static Val as_cond(Val v)
     Val c = {0};
     c.kind = VK_COND;
     c.true_op = OP_NEQUAL;
+    /* A char in memory tested for truth ("if (c)", "while (*p)", an
+     * operand of "&&"/"||"/"!"): mutos_c0 writes it unconverted, as v7's
+     * build() converts no condition and no operand of those operators,
+     * and v7/cc/table.s's cctab tests the byte itself ("%a,z": tstb A1;
+     * "%n*,z": F* / tstb #1(R)) - the byte compare with 0 a char compared
+     * with '\0' already gets (emit_byte_cmp_and_branch()): "cmpb *1.(si),
+     * *0" / "cmpb (di),*0" in tests/mutos_as/kernel_nonopt/amx.s. */
+    if (v.bytev) {
+        c.cond_is_byte = 1;
+        v.bytev = 0;
+    }
     c.cl = simple_of(v);
     c.cr = simple_of(val_imm(0));
     return c;
@@ -1945,14 +2003,60 @@ static void load_into_cx(GenState *g, Val v)
  * left element's value in DI, the right one's address in SI). A
  * 'register' local's own NAME does not count - it is the assignment
  * target a statement computes into (see note_writes()). */
+static int reg_busy(const GenState *g, unsigned bit);
+
 static int di_busy(const GenState *g)
 {
     if (g->valsp >= 1 && g->valstack[g->valsp - 1].kind == VK_MEM_DIRECT)
         return 1;
+    return reg_busy(g, RB_DI);
+}
+
+/* Whether a pending value on the value stack lives in (or behind) the
+ * register(s) `bits` - a 'register' local's own NAME excepted, as in
+ * di_busy(). */
+static int reg_busy(const GenState *g, unsigned bits)
+{
     for (int i = 0; i < g->valsp; i++)
-        if (!g->valstack[i].regvar && (val_regs(&g->valstack[i]) & RB_DI))
+        if (!g->valstack[i].regvar && (val_regs(&g->valstack[i]) & bits))
             return 1;
     return 0;
+}
+
+/* The register an address or a pointer is computed into: DI, the
+ * working register, or SI while a pending value holds DI - the real
+ * compiler's next free register, as its code templates allocate them
+ * (R, then R+1): 06_struct/03_starray.s.golden's "pts[i].y = i * 2;"
+ * ("lea si,*-16.(bp)" with i * 2 in DI), 02_stptr.s.golden's "mov si,
+ * *4.(bp)" / "mov *2.(si),di", 05_nestst.s.golden's "mov si,*4.(bp)" /
+ * "sub di,*2.(si)" and 10_integ/02_bubsort.s.golden's "a[j] > a[j + 1]"
+ * (the second element's address in SI). Both taken is refused: the
+ * next register, DX, cannot address memory, and no golden shows what
+ * the real compiler does then. */
+static const char *pick_addr_reg(const GenState *g)
+{
+    if (!reg_busy(g, RB_DI))
+        return "di";
+    if (!reg_busy(g, RB_SI))
+        return "si";
+    gen_fatal("an address needed while both DI and SI hold pending values "
+              "is not yet supported (no golden reference confirms the "
+              "spill a real compiler would emit) - see docs/DEVLOG.md");
+}
+
+/* A base register - one the 8086 can address memory through. */
+static int is_base_reg(const char *reg)
+{
+    return strcmp(reg, "di") == 0 || strcmp(reg, "si") == 0 ||
+           strcmp(reg, "bx") == 0;
+}
+
+/* load_into_di()/load_into_si() for any register. */
+static void load_into(GenState *g, const char *reg, Val v)
+{
+    if (v.kind == VK_REG && strcmp(v.reg, reg) == 0)
+        return;
+    ins2(g, v.kind == VK_MEM_DIRECT ? "lea" : "mov", o_reg(reg), o_val(v));
 }
 
 /* Loads a VK_CHARX (a char in memory, read as an int - see its ValKind
@@ -2001,6 +2105,81 @@ static int exact_log2(long v)
         n++;
     }
     return v == 1 ? n : -1;
+}
+
+/* Bit-fields (06_struct/07_bitfield). mutos_c0 writes a field as the
+ * STAR of the word holding it, typed unsigned, then FSEL(TY_UNSIGN,
+ * bitoffs, flen) - v7/cc/c01.c's build() of a field member. */
+
+/* A bit-field's value: v7/cc/c12.c's unoptim() turns FSEL into "(word
+ * >> bitoffs) & ((1 << flen) - 1)" - the word loaded into the working
+ * register (DI, or SI while DI holds a pending value - the next free
+ * register), shifted by emit_const_shift()'s rule and masked in
+ * decimal: 07_bitfield.s.golden's "f.ready + f.mode + f.count" -> "mov
+ * di,*-6.(bp)" / "and di,*1." (no shift at bit 0), "mov si,*-6.(bp)" /
+ * "sar si,*1" / "sar si,*1" / "and si,*3.", "mov si,*-6.(bp)" / "mov
+ * cx,*4." / "sar si,cl" / "and si,*15.". SAR drags the sign bit in, but
+ * the mask removes every bit above the field. The AND leaves the flags
+ * set from the value, as OP_AND's own result does (see Val's
+ * `flagsv`). */
+static Val gen_field_load(GenState *g, Val word, int bitoffs, int flen)
+{
+    const char *reg = pick_addr_reg(g);
+    ins2(g, "mov", o_reg(reg), o_val(word));
+    if (bitoffs > 0)
+        emit_const_shift(g, "sar", reg, bitoffs);
+    ins2(g, "and", o_reg(reg), o_imm((1L << flen) - 1));
+    Val v = val_reg(reg);
+    v.flagsv = 1;
+    v.flags_at = g->ninsn;
+    return v;
+}
+
+/* A constant assigned to a bit-field, v7/cc/c12.c's lvfield() / FSELA
+ * rules: 0 clears the field ("&= ~mask", the mask complemented, in
+ * decimal - 07_bitfield.s.golden's "f.error = 0;" -> "and *-6.(bp),
+ * *-3."); a value equal to the field's mask sets it ("|= value" -
+ * "f.ready = 1;" -> "or *-6.(bp),*1.", a 1-bit field at bit 0; v7
+ * compares the UNSHIFTED value with the shifted mask, so for a field
+ * above bit 0 this rule never applies to a value that fits); any other
+ * value clears the field, with the complemented mask in HEX - the FSELA
+ * code template's own rendering, "/" and lower-case digits with the
+ * operand's size marker - and ORs the shifted value in, in decimal:
+ * "f.mode = 2;" -> "and *-6.(bp),<*>/fff3" / "or *-6.(bp),*8.", "f.count
+ * = 9;" -> "and *-6.(bp),#/ff0f" / "or *-6.(bp),#144." (<*> is the
+ * one-character '*' marker, which cannot stand before a '/' inside this
+ * comment). A computed
+ * right-hand side (the FSELA template's shift-and-mask of a register)
+ * has no golden, and a constant that does not fit the field would be
+ * truncated by v7's template in a way no golden shows - both refused. */
+static void gen_field_store(GenState *g, Val field, Val rhs)
+{
+    if (rhs.kind != VK_IMM)
+        gen_fatal("assigning a computed value to a bit-field is not yet "
+                  "supported (only a constant) - see src/mutos_cc/README.md");
+    long fmask = (1L << field.flen) - 1;
+    long mask = (fmask << field.bitoffs) & 0xFFFFL;
+    long notmask = ~mask & 0xFFFFL;
+    long snotmask = notmask >= 0x8000L ? notmask - 0x10000L : notmask;
+    Val word = val_from_simple(field.cl);
+    long v = rhs.imm;
+    if (v == 0) {
+        ins2(g, "and", o_val(word), o_imm(snotmask));
+        return;
+    }
+    if (v < 0 || v > fmask)
+        gen_fatal("assigning a constant outside a bit-field's range (%ld "
+                  "to a %d-bit field) is not yet supported - see "
+                  "src/mutos_cc/README.md", v, field.flen);
+    if (v == mask) {
+        ins2(g, "or", o_val(word), o_imm(v));
+        return;
+    }
+    ins2(g, "and", o_val(word), o_fmt("%c/%lx", disp_marker(snotmask), notmask));
+    /* The shifted value is a 16-bit int constant, printed signed like
+     * every decimal immediate (a field reaching bit 15). */
+    long ov = (v << field.bitoffs) & 0xFFFFL;
+    ins2(g, "or", o_val(word), o_imm(ov >= 0x8000L ? ov - 0x10000L : ov));
 }
 
 /* The column step of a complete 2-D subscript "m[i][j]": `row` is the
@@ -2199,6 +2378,22 @@ static void gen_cond_branch(GenState *g, Val v, int lbl, int cond_sense, int bas
     }
     int branch_op = cond_sense ? c.true_op : cond_invert(c.true_op);
     flush_deferred_from(g, base);
+    /* A value an AND has just computed in its register, tested against
+     * 0 (for truth, or "== 0"/"!= 0"): the AND's own flags are the
+     * test - v7/cc/table.s's cctab compiles an AND as a bit test, the
+     * PDP-11's "bit", which MUTOS renders as the AND itself followed by
+     * the branch: "movb dx,#_amxscd(bx)" / "and dx,*12." / "beq L144"
+     * (tests/mutos_as/kernel_nonopt/amx.s, a char element masked with
+     * 014) and "call _inb" / "add sp,*2." / "and ax,*9." / "bne L110"
+     * (lp_AC.s, a call's result). Only while nothing has been emitted
+     * since the AND (a postfix fixup flushed just above, for one, would
+     * have changed the flags) - otherwise the ordinary compare below. */
+    if (c.cl.kind == VK_REG && c.cl.flagsv && c.cl.flags_at == g->ninsn &&
+        c.cr.kind == VK_IMM && c.cr.imm == 0 &&
+        (branch_op == OP_EQUAL || branch_op == OP_NEQUAL)) {
+        ins1(g, cond_true_mnem(branch_op), o_lab(lbl));
+        return;
+    }
     if (c.cl.kind == VK_REG && c.cl.postfix &&
         c.cr.kind == VK_IMM && c.cr.imm == 0) {
         ins2(g, "or", o_reg(c.cl.reg), o_reg(c.cl.reg));
@@ -2349,6 +2544,28 @@ static Val gen_long_binop_call(GenState *g, Val l, Val r, const char *helper)
  * (plan_call()), which pushes each argument as soon as it is computed. */
 static int push_call_arg(GenState *g, Val v)
 {
+    if (v.bytev || v.kind == VK_CHARX) {
+        /* A char argument: widened into AX and pushed from there - the
+         * real non-optimized compiler's "movb ax,*-8.(bp)" / "cbw" / "push
+         * ax" (a char local), "movb ax,(bx)" / "cbw" / "push ax" (through
+         * a pointer), "movb ax,4.+_amxtout(bx)" / "cbw" / "push ax" (an
+         * element of a file-scope array, its symbol with no marker) and
+         * "movb ax,(di)" / "cbw" / "push ax" (tests/mutos_as/kernel_nonopt/
+         * lp_AC.s, amx.s). mutos_c0 writes a char argument unconverted,
+         * as v7's build() converts nothing under a COMMA or a CALL (a
+         * "no-conversion operator"); an ITOC(TY_INT) one would be the same
+         * load. */
+        if (v.kind != VK_CHARX) {
+            Val c = {0};
+            c.kind = VK_CHARX;
+            v.bytev = 0;
+            c.cl = simple_of(v);
+            v = c;
+        }
+        (void)load_charx(g, v);
+        ins1(g, "push", o_reg("ax"));
+        return 1;
+    }
     /* A comparison used as an argument ("f(a < b)") is a 0/1 value in
      * DI first - it used to reach the push below unmaterialized and be
      * rendered as placeholder text. */
@@ -2501,7 +2718,9 @@ static Val gen_call(GenState *g, Val callee, Val args, int is_long_ret)
          * NAME/CON/AMPER left them, plus at most a computed last
          * argument.) */
         unsigned w = 0;
-        if (items[i].kind == VK_LCON)
+        if (items[i].bytev || items[i].kind == VK_CHARX)
+            w = RB_AX;                           /* movb ax / cbw / push ax */
+        else if (items[i].kind == VK_LCON)
             w = (items[i].offset == (items[i].imm < 0 ? -1 : 0))
                 ? (RB_AX | RB_DX) : RB_DI;
         else if (items[i].kind == VK_IMM || items[i].kind == VK_MEM_DIRECT ||
@@ -2641,6 +2860,139 @@ static const AluOp *aluop(int op)
 }
 
 /* -------------------------------------------------------------- */
+/* A 'char' with one int operand.
+ *
+ * mutos_c0 widens a char operand of an int operator with ITOC(TY_INT)
+ * (-> VK_CHARX); the one way the real compiler turns a char into an int
+ * is "movb ax,<char>" / "cbw" (load_charx()) - CBW works on AL/AX only -
+ * and the operator then works on AX in place, the working register v7's
+ * code tables compute into being wherever the left operand already is:
+ *
+ *   "movb ax,*23.(bx)" / "cbw" / "and ax,*-2." / "or ax,*16." / "pop bx"
+ *       / "movb *23.(bx),ax"           (3x - a char member masked, stored)
+ *   "movb ax,*52.(di)" / "cbw" / "mov ax,ax" / "mov cx,*20." / "imul cx"
+ *                                       (5x - a char times 20)
+ *
+ * (tests/mutos_as/kernel_nonopt/amx.s, the real non-optimized compiler's
+ * output; the "mov ax,ax" is OP_TIMES's own "mov ax,<left>", as in
+ * 04_funcs/03_recfact.s.golden). A '-' of a constant is v7/cc/c12.c
+ * optim()'s "x - c" -> "x + -c" (its MINUS case), so "c - '0'" is "add
+ * ax,*-48." - tests/mutos_as/kernel_opt/genio.s ("movb ax,*-10.(bp)" /
+ * "cbw" / "add ax,*-48."), and a char compound subtraction "addb
+ * *-8.(bp),*-32." in kernel_nonopt/lp_AC.s; "+ 1"/"- 1" are "inc"/"dec"
+ * as for DI (07_ternary's "inc di", 03_recfact's "dec di"), and the
+ * shifts are kernel_opt's "cbw" / "sal ax,*1" and "sal ax,cl".
+ *
+ * One exception: a char AND a constant 0..127 is loaded without the
+ * CBW, into DX, the byte working register - the mask clears the high
+ * byte a "movb" leaves undefined: "mov dx,*-10.(bp)" / "mov bx,dx" /
+ * "movb dx,(bx)" / "and dx,*127." / "pop bx" / "movb 4.+_amxtout(bx),dx"
+ * and "movb dx,#_amxscd(bx)" / "and dx,*12." / "beq L144" (amx.s; the
+ * element's symbol takes v7's "#1" marker - o_load()). A mask with
+ * bit 7 set, 0200..0377, would work the same way but has no example,
+ * so it takes the CBW path.
+ *
+ * Only an int LEAF as the other operand - a constant, a variable in
+ * memory, a 'register' local - so no code of its own lies between the
+ * char's load and the operator (where the real compiler would evaluate
+ * a computed operand relative to the char is not shown anywhere). For a
+ * commutative operator the char goes left, as v7's acommute() sorts it
+ * (a char leaf's degree(), 1, above an int leaf's 0); "x - c" and a
+ * char shift count have no example and are refused. */
+
+/* An int leaf - see above. */
+static int is_int_leaf(const Val *v)
+{
+    switch (v->kind) {
+    case VK_IMM:     return !v->charcon;
+    case VK_MEM:
+    case VK_MEM_CVT:
+    case VK_STATIC:  return !v->bytev;
+    case VK_REG:     return v->regvar;
+    default:         return 0;
+    }
+}
+
+/* Puts the one VK_CHARX operand of a commutative or char-left operator
+ * on the left and checks the other one - see above. */
+static void charx_left(int op, Val *l, Val *r)
+{
+    int commute = (op == OP_PLUS || op == OP_AND || op == OP_OR ||
+                   op == OP_EXOR || op == OP_TIMES);
+    if (l->kind == VK_CHARX && r->kind == VK_CHARX)
+        gen_fatal("%s of two 'char' operands is not yet supported "
+                  "(confirmed so far: the sum of two chars) - see "
+                  "src/mutos_cc/README.md", aluop(op)->name);
+    if (r->kind == VK_CHARX) {
+        if (!commute)
+            gen_fatal("%s with a 'char' right operand is not yet supported "
+                      "- see src/mutos_cc/README.md", aluop(op)->name);
+        Val t = *l;
+        *l = *r;
+        *r = t;
+    }
+    if (!is_int_leaf(r))
+        gen_fatal("%s of a 'char' and a computed int value is not yet "
+                  "supported (only a constant, a variable or a 'register' "
+                  "local as the int operand) - see src/mutos_cc/README.md",
+                  aluop(op)->name);
+}
+
+/* PLUS, MINUS, AND, OR, EXOR, LSHIFT or RSHIFT of a VK_CHARX (left, after
+ * charx_left()) and an int leaf - see above. Returns the result, in AX
+ * (DX for the byte mask). */
+static Val gen_charx_binop(GenState *g, int op, Val l, Val r)
+{
+    if (op == OP_AND && r.kind == VK_IMM && r.imm >= 0 && r.imm <= 127) {
+        ins2(g, "movb", o_reg("dx"), o_load(val_from_simple(l.cl)));
+        ins2(g, "and", o_reg("dx"), o_imm(r.imm));
+        Val d = val_reg("dx");
+        d.flagsv = 1;
+        d.flags_at = g->ninsn;
+        return d;
+    }
+    (void)load_charx(g, l);
+    Val ax = val_reg("ax");
+    switch (op) {
+    case OP_PLUS:
+    case OP_MINUS:
+        if (r.kind == VK_IMM) {
+            long k = (op == OP_MINUS) ? -r.imm : r.imm;   /* v7's x - c */
+            if (k == 1)
+                ins1(g, "inc", o_reg("ax"));
+            else if (k == -1)
+                ins1(g, "dec", o_reg("ax"));
+            else if (k != 0)                              /* v7 drops + 0 */
+                ins2(g, "add", o_reg("ax"), o_imm(k));
+        } else {
+            ins2(g, aluop(op)->mnem, o_reg("ax"), o_val(r));
+        }
+        break;
+    case OP_AND:
+    case OP_OR:
+    case OP_EXOR:
+        ins2(g, aluop(op)->mnem, o_reg("ax"), o_val(r));
+        if (op == OP_AND) {
+            ax.flagsv = 1;
+            ax.flags_at = g->ninsn;
+        }
+        break;
+    case OP_LSHIFT:
+    case OP_RSHIFT:
+        if (r.kind == VK_IMM) {
+            emit_const_shift(g, aluop(op)->mnem, "ax", r.imm);
+        } else {
+            load_into_cx(g, r);
+            ins2(g, aluop(op)->mnem, o_reg("ax"), o_reg("cl"));
+        }
+        break;
+    default:
+        gen_fatal("internal: gen_charx_binop() for opcode %d", op);
+    }
+    return ax;
+}
+
+/* -------------------------------------------------------------- */
 /* Consumer lookahead.
  *
  * mutos_c1 generates code opcode by opcode as it reads temp1, without
@@ -2679,14 +3031,20 @@ typedef struct {
  * classifies it by how many expression values it pops/pushes. Only the
  * opcodes that can appear inside an expression tree are known; any
  * other yields AR_UNKNOWN (and its arguments are NOT consumed - the
- * caller stops there). */
-static Arity scan_op_args(FILE *t1, int op, int *type)
+ * caller stops there). A CON's value or a NAME's storage class comes
+ * back through *aux (0 for anything else), for the evaluation-order
+ * decisions that look at a subtree's shape (is_disp_store(),
+ * is_deferred_ptr(), enode_degree()); scan_op_args() is the same without
+ * it. */
+static Arity scan_op_args_v(FILE *t1, int op, int *type, long *aux)
 {
     *type = 0;
+    *aux = 0;
     switch (op) {
     case OP_NAME: {
         int hclass = c1_read_num(t1, "temp1");
         *type = c1_read_num(t1, "temp1");
+        *aux = hclass;
         if (hclass == SC_EXTERN)
             free(c1_read_sym(t1, "temp1"));
         else
@@ -2695,7 +3053,7 @@ static Arity scan_op_args(FILE *t1, int op, int *type)
     }
     case OP_CON:
         *type = c1_read_num(t1, "temp1");
-        (void)c1_read_num(t1, "temp1");
+        *aux = c1_read_num(t1, "temp1");
         return AR_LEAF;
     case OP_LCON:
         *type = c1_read_num(t1, "temp1");
@@ -2722,6 +3080,15 @@ static Arity scan_op_args(FILE *t1, int op, int *type)
     case OP_INCBEF: case OP_DECBEF: case OP_INCAFT: case OP_DECAFT:
         *type = c1_read_num(t1, "temp1");
         return AR_BINARY;
+    case OP_STRASG:                   /* after a struct ASSIGN */
+        *type = c1_read_num(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        return AR_UNARY;
+    case OP_FSEL:                     /* a bit-field of the STAR below */
+        *type = c1_read_num(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        return AR_UNARY;
     case OP_EXPR:
         (void)c1_read_num(t1, "temp1");
         return AR_STMT;
@@ -2733,6 +3100,12 @@ static Arity scan_op_args(FILE *t1, int op, int *type)
     default:
         return AR_UNKNOWN;
     }
+}
+
+static Arity scan_op_args(FILE *t1, int op, int *type)
+{
+    long aux;
+    return scan_op_args_v(t1, op, type, &aux);
 }
 
 /* See this section's header. Call right after the value in question
@@ -2773,6 +3146,46 @@ static Consumer scan_consumer(FILE *t1)
     if (fseek(t1, savepos, SEEK_SET) != 0)
         gen_fatal("internal: temp1 is not seekable (fseek failed)");
     return c;
+}
+
+/* Whether a dereference consumed by `c` is loaded into its register
+ * right away, before its sibling's code: it is the LEFT operand of a
+ * comparison or of an int '+'/'-' whose right operand has code of its
+ * own - v7's template computes the left operand into its register
+ * first ("F"), the right one into the next ("S1"). 10_integ/02_bubsort.
+ * s.golden's "a[j] > a[j + 1]" -> ... "add di,*4.(bp)" / "mov di,(di)"
+ * / "mov si,*-8.(bp)" / ... / "cmp di,*2.(si)", and 06_struct/
+ * 05_nestst.s.golden's "rp->botright.y - rp->topleft.y" -> "mov di,
+ * *4.(bp)" / "mov di,*6.(di)" / "mov si,*4.(bp)" / "sub di,*2.(si)".
+ * (With a lone variable or constant on the right, the load - if any -
+ * happens in the operator's own handler, the same bytes.) */
+static int load_now(const Consumer *c)
+{
+    if (!c->as_left || c->nops <= 1)
+        return 0;
+    if (find_relop(c->op))
+        return 1;
+    return (c->op == OP_PLUS || c->op == OP_MINUS) &&
+           (c->type == TY_INT || c->type == TY_UNSIGN);
+}
+
+/* Whether the next two opcodes add a constant to the pointer value
+ * just produced - "CON, PLUS(pointer)", a struct member's offset. */
+static int next_is_con_plus(FILE *t1)
+{
+    long pos = ftell(t1);
+    if (pos < 0)
+        gen_fatal("internal: temp1 is not seekable (ftell failed)");
+    int yes = 0;
+    if (c1_read_op(t1, "temp1") == OP_CON) {
+        (void)c1_read_num(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        if (c1_read_op(t1, "temp1") == OP_PLUS)
+            yes = ty_is_ptr(c1_read_num(t1, "temp1"));
+    }
+    if (fseek(t1, pos, SEEK_SET) != 0)
+        gen_fatal("internal: temp1 is not seekable (fseek failed)");
+    return yes;
 }
 
 /* -------------------------------------------------------------- */
@@ -2837,18 +3250,36 @@ static Consumer scan_consumer(FILE *t1)
  * right-hand-side-first store are the same mechanism with other
  * decisions (see docs/DEVLOG.md); neither is taken here. */
 
+/* How a node's operands are ordered, when not in temp1's own postfix
+ * order - see eval_order(). */
+typedef enum {
+    ORD_POSTFIX = 0, /* as written: left operand, right operand, node */
+    ORD_SPILL,       /* right operand first, spilled onto the machine
+                      * stack - the "%n,n" template (order_right_first()) */
+    ORD_DISPSTORE,   /* an ASSIGN through "pointer + constant": the right-
+                      * hand side first - see is_disp_store() */
+    ORD_DEFPTR,      /* a MINUS whose right operand is "*p": p pushed first
+                      * - see is_deferred_ptr() */
+    ORD_ACOMMUTE     /* the top of a chain of int '+' whose terms v7's
+                      * acommute() reorders - see acommute_order() */
+} EvalOrder;
+
 /* One node of a pre-scanned expression. */
 typedef struct {
     int  op, type;
+    long aux;         /* a CON's value, a NAME's storage class */
     long off;         /* its own opcode tag */
     long start;       /* the first opcode of its subtree */
     long end;         /* just past its own arguments */
     int  kid[2];      /* operand node indices, -1 for none; kid[0] is
                        * the left (or only) operand */
-    int  right_first; /* evaluate kid[1] before kid[0] */
-    int  planned;     /* this node or a descendant is right_first or a
-                       * conditional-evaluation node (is_control()) - its
-                       * subtree cannot simply be streamed */
+    int  parent;      /* the node this one is an operand of, -1 for the
+                       * root */
+    EvalOrder order;  /* see EvalOrder */
+    int  planned;     /* this node or a descendant has a non-postfix
+                       * order or is a conditional-evaluation node
+                       * (is_control()) - its subtree cannot simply be
+                       * streamed */
 } ENode;
 
 typedef struct {
@@ -2893,6 +3324,7 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
     for (;;) {
         long off = ftell(t1);
         int type = 0, lbl = 0, cond = 0;
+        long aux = 0;
         int op = c1_read_op(t1, "temp1");
         Arity ar;
         if (op == OP_CBRANCH) {
@@ -2901,7 +3333,7 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
             (void)c1_read_num(t1, "temp1");      /* source line */
             ar = AR_STMT;
         } else {
-            ar = scan_op_args(t1, op, &type);
+            ar = scan_op_args_v(t1, op, &type, &aux);
         }
         if (ar == AR_UNKNOWN)
             break;
@@ -2916,7 +3348,8 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
             }
             break;
         }
-        ENode nd = { op, type, off, off, ftell(t1), { -1, -1 }, 0, 0 };
+        ENode nd = { op, type, aux, off, off, ftell(t1), { -1, -1 }, -1,
+                     ORD_POSTFIX, 0 };
         int need = (ar == AR_BINARY) ? 2 : (ar == AR_UNARY) ? 1 : 0;
         if (depth < need)
             break;
@@ -2936,7 +3369,10 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
                 gen_fatal("out of memory");
             stk = s;
         }
-        stk[depth++] = etree_add(t, nd);
+        int idx = etree_add(t, nd);
+        for (int k = 0; k < need; k++)
+            t->v[nd.kid[k]].parent = idx;
+        stk[depth++] = idx;
     }
     free(stk);
     if (fseek(t1, savepos, SEEK_SET) != 0)
@@ -2999,6 +3435,305 @@ static int order_right_first(const ETree *t, int i)
     const ENode *n = &t->v[i];
     return n->op == OP_TIMES && n->type == TY_INT &&
            is_2d_elem_read(t, n->kid[0]) && is_2d_elem_read(t, n->kid[1]);
+}
+
+/* Follows pointer-valued node `i` through "+ constant" steps and "&*"
+ * pairs - a struct member's address, "&(*(p + 4)) + 2" for "p->a.b" -
+ * down to the node that computes the base pointer, which it returns;
+ * the constants' sum goes to *off. v7/cc/c12.c's optim() does the same
+ * folding (the AMPER/STAR cancel, acommute()'s constant merging and
+ * "+0" toss) before any code is chosen, so the real compiler's code
+ * templates only ever see "base + total offset". */
+static int ptr_fold(const ETree *t, int i, long *off)
+{
+    *off = 0;
+    for (;;) {
+        const ENode *n = &t->v[i];
+        if (n->op == OP_PLUS && ty_is_ptr(n->type) &&
+            t->v[n->kid[1]].op == OP_CON) {
+            *off += t->v[n->kid[1]].aux;
+            i = n->kid[0];
+        } else if (n->op == OP_AMPER && t->v[n->kid[0]].op == OP_STAR) {
+            i = t->v[n->kid[0]].kid[0];
+        } else {
+            return i;
+        }
+    }
+}
+
+/* Node `i` is a NAME of a pointer variable in memory (a local, a
+ * parameter, a local static or a file-scope variable - not a
+ * 'register' local, which v7 addresses like an index register). */
+static int is_ptr_var(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    return n->op == OP_NAME && ty_is_ptr(n->type) &&
+           (n->aux == SC_AUTO || n->aux == SC_STATIC || n->aux == SC_EXTERN);
+}
+
+/* A store through "pointer + non-zero constant" - a struct member
+ * other than the first, reached through a pointer or an array element
+ * ("p->next = head;", "pts[i].y = i * 2;") - with a right-hand side
+ * that is not a lone constant: the real compiler computes the right-
+ * hand side FIRST, into DI, then the pointer into the next free
+ * register, and stores through the displacement - 10_integ/03_linklist.
+ * s.golden's "cur->next = head;" -> "mov di,*-6.(bp)" / "mov si,
+ * *-8.(bp)" / "mov *2.(si),di", 06_struct/02_stptr.s.golden's "pp->y =
+ * pp->y + dy;" -> "mov di,*4.(bp)" / "mov di,*2.(di)" / "add di,*8.
+ * (bp)" / "mov si,*4.(bp)" / "mov *2.(si),di", and 03_starray.s.
+ * golden's "pts[i].y = i * 2;" -> "mov di,*-18.(bp)" / "sal di,*1" /
+ * "lea si,*-16.(bp)" / "mov dx,*-18.(bp)" / "sal dx,*1" / "sal dx,*1"
+ * / "add si,dx" / "mov *2.(si),di". With the member at offset 0 the
+ * same goldens push the target's address first instead ("cur->val =
+ * i;" -> "push *-8.(bp)" ... "pop bx" / "mov (bx),di" - OP_STAR's
+ * VK_IND_PENDING): on the PDP-11 that "*p" is itself an addressable
+ * operand ("@-8(r5)"), "*(p + 2)" is not. A constant right-hand side
+ * ("p->y = 5;") and a link-time-constant address ("p->s = &glob;") keep
+ * the target-first order (the constant is stored straight through the
+ * loaded pointer); a target whose base is a named object ("s.y = x",
+ * no code at all) is left alone - both orders emit the same bytes. */
+static int is_disp_store(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (n->op != OP_ASSIGN || !ty_is_word(n->type))
+        return 0;
+    const ENode *lhs = &t->v[n->kid[0]];
+    if (lhs->op != OP_STAR || !ty_is_word(lhs->type))
+        return 0;
+    long off;
+    int base = ptr_fold(t, lhs->kid[0], &off);
+    if (off == 0 || t->v[base].op == OP_AMPER)
+        return 0;
+    const ENode *rhs = &t->v[n->kid[1]];
+    if (rhs->op == OP_CON)
+        return 0;
+    if (rhs->op == OP_AMPER && t->v[rhs->kid[0]].op == OP_NAME &&
+        t->v[rhs->kid[0]].aux != SC_AUTO)
+        return 0;
+    return 1;
+}
+
+/* An int "x - *p" whose left operand has code of its own and whose
+ * right one reads through a pointer VARIABLE with no offset (the first
+ * member of "p->..."): the pointer is pushed before the left operand is
+ * computed and popped into BX for the subtraction - 06_struct/05_nestst.
+ * s.golden's "rp->botright.x - rp->topleft.x" -> "push *4.(bp)" / "mov
+ * di,*4.(bp)" / "mov di,*4.(di)" / "pop bx" / "sub di,(bx)". It is the
+ * store's VK_IND_PENDING shape (see is_disp_store()) for an operand:
+ * "*p" is an addressable PDP-11 operand ("@4(r5)"), which the x86 code
+ * reaches through BX. With a non-zero offset ("rp->botright.y -
+ * rp->topleft.y") the same golden computes left to right, "mov si,
+ * *4.(bp)" / "sub di,*2.(si)". A leaf left operand ("x - *p") and '+'
+ * have no golden. */
+static int is_deferred_ptr(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (n->op != OP_MINUS || n->type != TY_INT)
+        return 0;
+    const ENode *l = &t->v[n->kid[0]];
+    const ENode *r = &t->v[n->kid[1]];
+    if (l->kid[0] < 0 || r->op != OP_STAR || r->type != TY_INT)
+        return 0;
+    if (l->op == OP_AMPER && t->v[l->kid[0]].op == OP_NAME)
+        return 0;
+    long off;
+    int base = ptr_fold(t, r->kid[0], &off);
+    return off == 0 && is_ptr_var(t, base);
+}
+
+/* v7/cc/c11.c's degree() of node `i`, as the MUTOS compiler's operand
+ * ordering shows it: a constant -3, a named object's address -2, a
+ * leaf 0 (a char one 1), and anything computed at least 1, one more
+ * than two equal-degree operands (a Sethi-Ullman number). The "+0" of a
+ * first struct member and an "&*" pair are folded away first, as
+ * optim() does. Only the RELATIVE order matters - it decides where
+ * acommute_order() puts a term. (v7's PDP-11 optim() keeps an int
+ * expression's degree at 0 however deep it is; the MUTOS compiler
+ * evidently does not - 06_struct/03_starray.s.golden adds "sum" after
+ * both computed terms of "sum + pts[i].x + pts[i].y".) */
+static int enode_degree(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    switch (n->op) {
+    case OP_CON:
+        return -3;
+    case OP_NAME:
+        return n->type == TY_CHAR ? 1 : 0;
+    case OP_AMPER:
+        if (t->v[n->kid[0]].op == OP_STAR)
+            return enode_degree(t, t->v[n->kid[0]].kid[0]);
+        if (t->v[n->kid[0]].op == OP_NAME)
+            return -2;
+        break;
+    case OP_PLUS:
+        if (t->v[n->kid[1]].op == OP_CON && t->v[n->kid[1]].aux == 0)
+            return enode_degree(t, n->kid[0]);
+        break;
+    default:
+        break;
+    }
+    if (n->kid[0] < 0)
+        return 0;
+    if (n->kid[1] < 0) {
+        int d = enode_degree(t, n->kid[0]);
+        return d > 1 ? d : 1;
+    }
+    int d1 = enode_degree(t, n->kid[0]);
+    int d2 = enode_degree(t, n->kid[1]);
+    if (d1 < 1)
+        d1 = 1;
+    if (d2 < 0)
+        d2 = 0;
+    return d1 == d2 ? d1 + 1 : (d1 > d2 ? d1 : d2);
+}
+
+/* Node `i`'s subtree has no side effect and no conditional evaluation,
+ * so its code may move relative to its siblings'. */
+static int is_pure(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    switch (n->op) {
+    case OP_NAME: case OP_CON:
+        return 1;
+    case OP_AMPER: case OP_STAR: case OP_ITOC: case OP_COMPL: case OP_NEG:
+    case OP_FSEL:
+        return is_pure(t, n->kid[0]);
+    case OP_PLUS: case OP_MINUS: case OP_TIMES: case OP_ITOP: case OP_AND:
+    case OP_OR: case OP_EXOR: case OP_LSHIFT: case OP_RSHIFT:
+        return is_pure(t, n->kid[0]) && is_pure(t, n->kid[1]);
+    default:
+        return 0;
+    }
+}
+
+/* Node `i` is a '+' of type `type` - a link of the chain of '+'
+ * acommute_order() reorders. */
+static int is_chain_plus(const ETree *t, int i, int type)
+{
+    return t->v[i].op == OP_PLUS && t->v[i].type == type;
+}
+
+#define ACOMMUTE_MAX 16
+
+/* The terms of the '+' chain whose top is node `top`, in source order,
+ * into terms[] (at most ACOMMUTE_MAX - returns -1 beyond that), and the
+ * chain's own '+' nodes, innermost first, into pluses[]. */
+static int chain_terms(const ETree *t, int top, int *terms, int *pluses,
+                       int *nplus)
+{
+    int type = t->v[top].type;
+    int n = 0;
+    *nplus = 0;
+    /* The chain is left-leaning as written ("a + b + c" is ((a + b) +
+     * c)), but a parenthesized right operand ("a + (b + c)") joins it
+     * too, as insert() walks both operands. An explicit stack keeps
+     * source order. */
+    int stack[2 * ACOMMUTE_MAX], sp = 0;
+    stack[sp++] = top;
+    while (sp > 0) {
+        int i = stack[--sp];
+        if (is_chain_plus(t, i, type)) {
+            if (sp + 2 > 2 * ACOMMUTE_MAX)
+                return -1;
+            stack[sp++] = t->v[i].kid[1];
+            stack[sp++] = t->v[i].kid[0];
+            continue;
+        }
+        if (n == ACOMMUTE_MAX)
+            return -1;
+        terms[n++] = i;
+    }
+    /* The chain's '+' nodes in postfix order (node indices are postfix
+     * order): those whose chain of '+' parents reaches `top`. */
+    for (int i = 0; i <= top; i++) {
+        if (!is_chain_plus(t, i, type))
+            continue;
+        int j = i;
+        while (j != top && t->v[j].parent >= 0 &&
+               is_chain_plus(t, t->v[j].parent, type))
+            j = t->v[j].parent;
+        if (j == top)
+            pluses[(*nplus)++] = i;
+    }
+    return n;
+}
+
+/* v7/cc/c12.c's acommute() for an int '+' chain: insert() collects the
+ * terms, placing each before the first one of strictly lower degree and
+ * carrying the displaced one on the same way (so equal-degree terms can
+ * change places), and the chain is rebuilt left-deep in that order -
+ * the highest-degree term computed first, a plain variable added last:
+ * 06_struct/03_starray.s.golden's "sum + pts[i].x + pts[i].y" -> "lea
+ * di,<pts>" ... "mov di,(di)" / "lea si,<pts>" ... "add di,*2.(si)" /
+ * "add di,*-20.(bp)". Applied only where it changes what is emitted: at
+ * least three terms, two of them with code, none a constant (v7 would
+ * fold those - a shape of its own) and none with a side effect (whose
+ * order C leaves open, but mutos_c1 keeps as written). Returns the
+ * number of terms and their new order in order[], or 0 when the chain
+ * streams as written. */
+static int acommute_order(const ETree *t, int top, int *order)
+{
+    int terms[ACOMMUTE_MAX], pluses[ACOMMUTE_MAX], nplus;
+    int n = chain_terms(t, top, terms, pluses, &nplus);
+    if (n < 3)
+        return 0;
+    int ncode = 0, nscaled = 0;
+    for (int k = 0; k < n; k++) {
+        const ENode *e = &t->v[terms[k]];
+        if (e->op == OP_CON || !is_pure(t, terms[k]))
+            return 0;
+        if (e->kid[0] >= 0 &&
+            !(e->op == OP_AMPER && t->v[e->kid[0]].op == OP_NAME))
+            ncode++;
+        if ((e->op == OP_TIMES || e->op == OP_LSHIFT) &&
+            t->v[e->kid[1]].op == OP_CON)
+            nscaled++;
+    }
+    /* Two constant multiples are distrib()'s to factor ("i*4 + j*2" ->
+     * "(i*2 + j)*2") - a shape of its own, not this one. */
+    if (ncode < 2 || nscaled > 1)
+        return 0;
+    int list[ACOMMUTE_MAX], nl = 0;
+    for (int k = 0; k < n; k++) {
+        int cur = terms[k];
+        int d = enode_degree(t, cur);
+        for (int j = 0; j < nl; j++) {
+            int dj = enode_degree(t, list[j]);
+            if (dj < d) {
+                int tmp = list[j];
+                list[j] = cur;
+                cur = tmp;
+                d = dj;
+            }
+        }
+        list[nl++] = cur;
+    }
+    int same = 1;
+    for (int k = 0; k < n; k++) {
+        order[k] = list[k];
+        if (list[k] != terms[k])
+            same = 0;
+    }
+    return same ? 0 : n;
+}
+
+/* The evaluation order of node `i` - see EvalOrder. */
+static EvalOrder eval_order(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (order_right_first(t, i))
+        return ORD_SPILL;
+    if (is_disp_store(t, i))
+        return ORD_DISPSTORE;
+    if (is_deferred_ptr(t, i))
+        return ORD_DEFPTR;
+    if (n->op == OP_PLUS && (n->type == TY_INT || n->type == TY_UNSIGN) &&
+        !(n->parent >= 0 && is_chain_plus(t, n->parent, n->type))) {
+        int order[ACOMMUTE_MAX];
+        if (acommute_order(t, i, order) > 0)
+            return ORD_ACOMMUTE;
+    }
+    return ORD_POSTFIX;
 }
 
 static void plan_add(Plan *p, Seg s)
@@ -3273,7 +4008,56 @@ static void plan_value(Plan *p, const ETree *t, int i)
         plan_value(p, t, n->kid[1]);
         return;
     }
-    if (n->right_first) {
+    if (n->order == ORD_ACOMMUTE) {
+        /* The chain rebuilt left-deep in acommute_order()'s order; each
+         * '+' step replays one of the chain's own PLUS opcodes (all the
+         * same opcode and type) - the outermost one last, so the step
+         * whose handler looks past the chain sees what really follows. */
+        int order[ACOMMUTE_MAX], terms[ACOMMUTE_MAX], pluses[ACOMMUTE_MAX];
+        int nplus;
+        int nt = acommute_order(t, i, order);
+        (void)chain_terms(t, i, terms, pluses, &nplus);
+        if (nt < 2 || nplus != nt - 1)
+            gen_fatal("internal: an acommute() chain changed between "
+                      "planning steps");
+        plan_value(p, t, order[0]);
+        for (int k = 1; k < nt; k++) {
+            /* A dereference about to be added to something with code
+             * of its own is loaded first - its register is needed
+             * (v7's template computes the left operand into its
+             * register before the right one: "mov di,(di)" ahead of
+             * "lea si,<pts>" in 03_starray.s.golden). */
+            if (t->v[order[k]].kid[0] >= 0)
+                plan_op(p, SEG_LOADIND, 0, 0, 0);
+            plan_value(p, t, order[k]);
+            const ENode *pl = &t->v[pluses[k - 1]];
+            plan_range(p, pl->off, pl->end);
+        }
+        return;
+    }
+    if (n->order == ORD_DISPSTORE) {
+        plan_value(p, t, n->kid[1]);
+        plan_op(p, SEG_RHSREG, 0, 0, 0);
+        plan_value(p, t, n->kid[0]);
+        plan_op(p, SEG_SWAP2, 0, 0, 0);
+        plan_range(p, n->off, n->end);
+        return;
+    }
+    if (n->order == ORD_DEFPTR) {
+        /* The pointer NAME's own range pushes its value; SEG_DEFPUSH
+         * puts it on the machine stack. The rest of the right operand
+         * (its "+0"s and "&*" pairs, and the STAR) is never streamed:
+         * SEG_DEFPOP stands for all of it. */
+        long off;
+        int base = ptr_fold(t, t->v[n->kid[1]].kid[0], &off);
+        plan_range(p, t->v[base].start, t->v[base].end);
+        plan_op(p, SEG_DEFPUSH, 0, 0, 0);
+        plan_value(p, t, n->kid[0]);
+        plan_op(p, SEG_DEFPOP, 0, 0, 0);
+        plan_range(p, n->off, n->end);
+        return;
+    }
+    if (n->order == ORD_SPILL) {
         plan_value(p, t, n->kid[1]);
         plan_op(p, SEG_SPILL, 0, 0, 0);
         plan_value(p, t, n->kid[0]);
@@ -3312,8 +4096,8 @@ static int plan_expression(GenState *g, FILE *t1)
      * forward pass sees a node's children fully marked. */
     for (int i = 0; root >= 0 && i < t.n; i++) {
         ENode *n = &t.v[i];
-        n->right_first = order_right_first(&t, i);
-        n->planned = n->right_first || is_control(n->op) ||
+        n->order = eval_order(&t, i);
+        n->planned = n->order != ORD_POSTFIX || is_control(n->op) ||
                      call_needs_plan(&t, i);
         for (int k = 0; k < 2; k++)
             if (n->kid[k] >= 0 && t.v[n->kid[k]].planned)
@@ -3375,6 +4159,103 @@ static void plan_swap(GenState *g)
     g->valstack[g->valsp - 2] = tmp;
 }
 
+/* SEG_SWAP2: an assignment target generated after its right-hand side
+ * (is_disp_store()) goes back below it, where OP_ASSIGN pops it. */
+static void plan_swap2(GenState *g)
+{
+    if (g->valsp < 2)
+        gen_fatal("expression stack underflow - malformed temp1 stream");
+    Val tmp = g->valstack[g->valsp - 1];
+    g->valstack[g->valsp - 1] = g->valstack[g->valsp - 2];
+    g->valstack[g->valsp - 2] = tmp;
+}
+
+/* SEG_RHSREG: the right-hand side of a store through "pointer +
+ * constant", computed first (is_disp_store()), is put into a register
+ * before the target's own code runs - the "S" of v7's template, which
+ * computes into R: a dereference in place ("mov di,*2.(di)"), a char
+ * through AX (load_charx()), anything in memory or any address into DI
+ * (10_integ/03_linklist.s.golden's "mov di,*-6.(bp)" for "cur->next =
+ * head;"), a value already in a register left there. */
+static void plan_rhsreg(GenState *g)
+{
+    Val v = materialize(g, pop_val_ex(g, POP_CHARX));
+    switch (v.kind) {
+    case VK_CHARX:
+        v = load_charx(g, v);
+        break;
+    case VK_IND:
+        ins2(g, "mov", o_reg(v.reg), o_val(v));
+        v = val_reg(v.reg);
+        break;
+    case VK_REG:
+        break;
+    case VK_MEM: case VK_STATIC: case VK_MEM_CVT: case VK_MEM_DIRECT:
+    case VK_IMM:
+        load_into_di(g, v);
+        v = val_reg("di");
+        break;
+    default:
+        gen_fatal("storing this kind of value through a pointer plus a "
+                  "constant offset is not yet supported - see "
+                  "src/mutos_cc/README.md");
+    }
+    push_val(g, v);
+}
+
+/* SEG_LOADIND: see plan_value()'s ORD_ACOMMUTE case. */
+static void plan_loadind(GenState *g)
+{
+    if (g->valsp < 1)
+        gen_fatal("expression stack underflow - malformed temp1 stream");
+    Val *top = &g->valstack[g->valsp - 1];
+    if (top->kind != VK_IND || top->bytev || top->sym)
+        return;
+    if (top->clobbered)
+        fatal_clobbered();
+    Val v = *top;
+    g->valsp--;
+    ins2(g, "mov", o_reg(v.reg), o_val(v));
+    push_val(g, val_reg(v.reg));
+}
+
+/* SEG_DEFPUSH: the pointer variable just streamed (is_deferred_ptr())
+ * goes onto the machine stack - "push *4.(bp)". */
+static void plan_defpush(GenState *g)
+{
+    Val p = pop_val(g);
+    if (p.kind != VK_MEM && p.kind != VK_STATIC)
+        gen_fatal("internal: a deferred pointer operand is not a variable "
+                  "in memory");
+    ins1(g, "push", o_val(p));
+    Val s = {0};
+    s.kind = VK_STACKED;
+    push_val(g, s);
+}
+
+/* SEG_DEFPOP: the left operand is complete; the pushed pointer comes
+ * back into BX and the right operand becomes "(bx)" - "pop bx" / "sub
+ * di,(bx)". A left operand that is still a dereference ("(di)") is
+ * loaded into its register first: the 8086 SUB takes one memory
+ * operand, and "(bx)" is it. */
+static void plan_defpop(GenState *g)
+{
+    if (g->valsp < 2 || g->valstack[g->valsp - 2].kind != VK_STACKED)
+        gen_fatal("internal: a deferred pointer operand is missing from "
+                  "below the value stack's top");
+    Val l = pop_val_ex(g, POP_CHARX);
+    g->valsp--;                          /* the VK_STACKED marker */
+    l = materialize(g, l);
+    if (l.kind == VK_IND && !l.bytev) {
+        ins2(g, "mov", o_reg(l.reg), o_val(l));
+        l = val_reg(l.reg);
+    }
+    require_free(l, RB_BX, "a subtraction through a pointer");
+    ins1(g, "pop", o_reg("bx"));
+    push_val(g, l);
+    push_val(g, val_ind("bx"));
+}
+
 /* The conditional-evaluation steps (and SEG_GOTO) - see SegKind and
  * the "Conditional evaluation" section. */
 static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
@@ -3396,7 +4277,8 @@ static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
         return;
     case SEG_BRANCH: {
         const int *rec = &p->slot[s->c];
-        gen_cond_branch(g, pop_val(g), p->slot[s->a], s->b, rec[0]);
+        /* A char condition is tested as a byte - see as_cond(). */
+        gen_cond_branch(g, pop_val_ex(g, POP_BYTE), p->slot[s->a], s->b, rec[0]);
         region_close(g, rec);
         return;
     }
@@ -3421,7 +4303,9 @@ static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
         region_close(g, &p->slot[s->c]);
         return;
     case SEG_PUSHARG:
-        p->slot[s->a] += push_call_arg(g, pop_val(g));
+        /* A char argument is widened as it is pushed - see
+         * push_call_arg(). */
+        p->slot[s->a] += push_call_arg(g, pop_val_ex(g, POP_BYTE | POP_CHARX));
         return;
     case SEG_CALL: {
         /* OP_CALL's own handler, for a call whose arguments a plan
@@ -3462,6 +4346,19 @@ static void plan_step(GenState *g, FILE *t1)
         }
         if (s->kind == SEG_SWAP) {
             plan_swap(g);
+            p->cur++;
+            continue;
+        }
+        if (s->kind == SEG_SWAP2 || s->kind == SEG_RHSREG ||
+            s->kind == SEG_LOADIND || s->kind == SEG_DEFPUSH ||
+            s->kind == SEG_DEFPOP) {
+            switch (s->kind) {
+            case SEG_SWAP2:   plan_swap2(g);   break;
+            case SEG_RHSREG:  plan_rhsreg(g);  break;
+            case SEG_LOADIND: plan_loadind(g); break;
+            case SEG_DEFPUSH: plan_defpush(g); break;
+            default:          plan_defpop(g);  break;
+            }
             p->cur++;
             continue;
         }
@@ -3891,12 +4788,17 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * pointer type. What a consumer may then DO with it
              * (dereference, subscript, ...) is checked by that
              * consumer. */
-            if (!ty_is_word(type) && type != TY_CHAR && type != TY_LONG)
+            if (!ty_is_word(type) && type != TY_CHAR && type != TY_LONG &&
+                type != TY_STRUCT)
                 gen_fatal("NAME of type %d not yet supported (only "
-                          "int/char/long/pointer locals are covered so "
-                          "far)", type);
+                          "int/char/long/pointer/struct locals are covered "
+                          "so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             Val mv = val_mem(offset);
+            /* A whole struct (06_struct: "&p", "p2 = p1") - see Val's
+             * `structv`. A member reference never reaches here as a
+             * struct: mutos_c0 retypes its NAME to the member's type. */
+            mv.structv = (type == TY_STRUCT);
             /* A char array's NAME carries the element type too, but is
              * always consumed by the AMPER that decays it, which
              * accepts a byte operand. */
@@ -4038,6 +4940,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_imm((long)(int8_t)(uint8_t)(v.imm & 0xFF)));
                 break;
             }
+            if (v.kind == VK_REG && !v.regvar &&
+                (strcmp(v.reg, "ax") == 0 || strcmp(v.reg, "dx") == 0)) {
+                /* Already in a register with a byte half: stored from
+                 * there - "and ax,*-2." / "or ax,*16." / "pop bx" / "movb
+                 * *23.(bx),ax" and "and dx,*127." / "pop bx" / "movb
+                 * 4.+_amxtout(bx),dx" (tests/mutos_as/kernel_nonopt/
+                 * amx.s). DI and SI have no byte half, so a value there
+                 * still goes through DX below. */
+                v.flagsv = 0;
+                push_val(&g, v);
+                break;
+            }
             ins2(&g, "mov", o_reg("dx"), o_val(v));
             push_val(&g, val_reg("dx"));
             break;
@@ -4150,6 +5064,37 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "(other than a char array subscripted by a "
                               "variable) is not yet supported - see "
                               "src/mutos_cc/README.md");
+                if ((l.kind == VK_REGOFF && r.kind == VK_IMM) ||
+                    (r.kind == VK_REGOFF && l.kind == VK_IMM)) {
+                    /* A member of a member through a pointer, "rp->
+                     * botright.x": the outer member's address "&*(rp + 4)"
+                     * is still "rp + 4" pending (OP_STAR's "&*" cancel),
+                     * and the inner member's offset joins it - one
+                     * displacement, as v7's acommute() merges the two
+                     * constants (and tosses a "+0"): 06_struct/05_nestst.
+                     * s.golden's "mov di,*4.(bp)" / "mov di,*4.(di)" for
+                     * "rp->botright.x", "*6.(di)" for ".y". Dereferenced
+                     * next it stays pending; any other consumer gets the
+                     * address computed, "add R,*N." last (as for "&a[j +
+                     * 1]" above). */
+                    Val ro = (l.kind == VK_REGOFF) ? l : r;
+                    ro.imm += (l.kind == VK_REGOFF) ? r.imm : l.imm;
+                    long pos = ftell(temp1);
+                    int next = c1_read_op(temp1, "temp1");
+                    fseek(temp1, pos, SEEK_SET);
+                    if (next == OP_STAR) {
+                        push_val(&g, ro);
+                        break;
+                    }
+                    Val base = val_from_simple(ro.cl);
+                    const char *reg = (base.kind == VK_REG) ? base.reg
+                                                            : pick_addr_reg(&g);
+                    load_into(&g, reg, base);
+                    if (ro.imm != 0)
+                        ins2(&g, "add", o_reg(reg), o_imm(ro.imm));
+                    push_val(&g, val_reg(reg));
+                    break;
+                }
                 if (l.kind == VK_REGOFF || r.kind == VK_REGOFF) {
                     /* A scaled "var + N" index (OP_ITOP's VK_REGOFF, the
                      * variable already scaled in a register, N * size
@@ -4175,7 +5120,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     long pos = ftell(temp1);
                     int next = c1_read_op(temp1, "temp1");
                     fseek(temp1, pos, SEEK_SET);
-                    if (next == OP_STAR) {
+                    /* A member of the element ("p[i + 1].y") adds its
+                     * offset to the pending one first - see the REGOFF +
+                     * constant fold below. */
+                    if (next == OP_STAR || next_is_con_plus(temp1)) {
                         push_val(&g, ro);
                         break;
                     }
@@ -4361,7 +5309,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_long());
                 break;
             }
-            if (type != TY_INT)
+            /* An unsigned sum or difference (a bit-field's value - 06_struct/
+             * 07_bitfield.1.golden's "f.ready + f.mode + f.count", PLUS
+             * type 7) is the same 16-bit instruction as an int one. */
+            if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
             Val l, r;
@@ -4379,13 +5330,15 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * golden's "buf[0] + buf[N - 1]" and 06_struct/06_union.
                  * s.golden's "n.b[0] + n.b[1]" -> "movb ax,<a>" / "cbw"
                  * / "mov di,ax" / "movb ax,<b>" / "cbw" / "add di,ax".
-                 * With ONE char operand the real compiler very probably
-                 * computes in AX instead (the kernel_nonopt corpus has
-                 * "movb ax,*23.(bx)" / "cbw" / "and ax,*-2." for a char
-                 * masked by a constant), and MINUS's operand order is
-                 * unconfirmed - both refused until a golden shows them. */
-                if (op != OP_PLUS || l.kind != VK_CHARX || r.kind != VK_CHARX)
-                    gen_fatal("%s with a 'char' operand is not yet supported "
+                 * With ONE char operand the computation is in AX - see
+                 * gen_charx_binop(); MINUS of two chars has no example. */
+                if (l.kind != VK_CHARX || r.kind != VK_CHARX) {
+                    charx_left(op, &l, &r);
+                    push_val(&g, gen_charx_binop(&g, op, l, r));
+                    break;
+                }
+                if (op != OP_PLUS)
+                    gen_fatal("%s of two 'char' operands is not yet supported "
                               "(confirmed so far: the sum of two chars) - "
                               "see src/mutos_cc/README.md", aluop(op)->name);
                 require_free(r, RB_AX | RB_DI, "PLUS");
@@ -4438,6 +5391,21 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * matter and no golden confirms the shape. */
                 Val ind = (r.kind == VK_IND) ? r : l;
                 Val other = (r.kind == VK_IND) ? l : r;
+                if (other.kind == VK_REG && !other.regvar && !ind.bytev &&
+                    (strcmp(other.reg, "di") == 0 || strcmp(other.reg, "si") == 0) &&
+                    strcmp(other.reg, ind.reg) != 0) {
+                    /* The other operand is already a value in a register
+                     * of its own (a left operand loaded first - see
+                     * load_now(), SEG_LOADIND): the dereference is added
+                     * to it straight from memory - 06_struct/03_starray.
+                     * s.golden's "sum + pts[i].x + pts[i].y" -> "mov di,
+                     * (di)" / "lea si,*-16.(bp)" / ... / "add di,*2.(si)"
+                     * (as "cmp di,*2.(si)" in 02_bubsort, "sub di,*2.
+                     * (si)" in 05_nestst). */
+                    ins2(&g, "add", o_reg(other.reg), o_val(ind));
+                    push_val(&g, val_reg(other.reg));
+                    break;
+                }
                 require_free(other, reg_bit(ind.reg), "PLUS");
                 ins2(&g, "mov", o_reg(ind.reg), o_val(ind));
                 if (other.kind == VK_IMM && other.imm == 1)
@@ -4489,7 +5457,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * to the ordinary path below unchanged - load_into_di()
                  * is a no-op for an operand already sitting in DI, so
                  * no separate case is needed for that shape. */
-                ins2(&g, "mov", o_reg("si"), o_val(l));
+                load_into_si(&g, l);   /* nothing to do if it is there */
                 ins2(&g, aluop(op)->mnem, o_reg("si"), o_reg("di"));
                 push_val(&g, val_reg("si"));
                 break;
@@ -4519,12 +5487,48 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_OR:
         case OP_EXOR: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
+            /* Unsigned (mutos_c0 types the operator so when an operand is
+             * a bit-field) is the same instruction. */
+            if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
             Val l, r;
-            pop_operands(&g, &l, &r);
+            pop_operands_ex(&g, &l, &r, POP_CHARX);
+            if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
+                /* A char with an int operand - see gen_charx_binop(). */
+                charx_left(op, &l, &r);
+                push_val(&g, gen_charx_binop(&g, op, l, r));
+                break;
+            }
             constant_to_right(&l, &r);
+            if (r.kind == VK_REG && !r.regvar &&
+                (strcmp(r.reg, "ax") == 0 || strcmp(r.reg, "dx") == 0) &&
+                is_int_leaf(&l)) {
+                Val t = l;               /* acommute(): the computed */
+                l = r;                   /* value goes left          */
+                r = t;
+            }
+            if (l.kind == VK_REG && !l.regvar &&
+                (strcmp(l.reg, "ax") == 0 || strcmp(l.reg, "dx") == 0) &&
+                is_int_leaf(&r)) {
+                /* The left operand is already a value in AX or DX (a
+                 * call's result, a quotient or remainder, a char just
+                 * widened or masked): the operator works on it there, as
+                 * v7's templates compute into the register the left
+                 * operand is in - "and ax,*-2." / "or ax,*16." after a
+                 * char's "cbw" (tests/mutos_as/kernel_nonopt/amx.s, 3x) and
+                 * "call _inb" / "add sp,*2." / "and ax,*9." (lp_AC.s),
+                 * never moved to DI first. An AND's flags then serve a
+                 * truth test directly (see Val's `flagsv`). */
+                ins2(&g, aluop(op)->mnem, o_reg(l.reg), o_val(r));
+                Val res = val_reg(l.reg);
+                if (op == OP_AND) {
+                    res.flagsv = 1;
+                    res.flags_at = g.ninsn;
+                }
+                push_val(&g, res);
+                break;
+            }
             if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
                 require_free(r, RB_DI, aluop(op)->name);
             load_into_di(&g, l);
@@ -4536,11 +5540,20 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_LSHIFT:
         case OP_RSHIFT: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT)
+            /* An unsigned left shift is the int one; an unsigned right
+             * shift would need SHR, not this handler's SAR (mutos_c0
+             * refuses it too). */
+            if (type != TY_INT && !(type == TY_UNSIGN && op == OP_LSHIFT))
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
             Val l, r;
-            pop_operands(&g, &l, &r);
+            pop_operands_ex(&g, &l, &r, POP_CHARX);
+            if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
+                /* A char shifted by an int - see gen_charx_binop(). */
+                charx_left(op, &l, &r);
+                push_val(&g, gen_charx_binop(&g, op, l, r));
+                break;
+            }
             if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
                 require_free(r, RB_DI, aluop(op)->name);
             load_into_di(&g, l);
@@ -4613,8 +5626,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* The address of a char is an ordinary word - taking it
              * reads no byte (a char array's or string literal's NAME is
              * typed with its char element - see OP_NAME). */
-            Val v = pop_val_ex(&g, POP_BYTE);
+            Val v = pop_val_ex(&g, POP_BYTE | POP_STRUCT);
             v.bytev = 0;
+            v.structv = 0;     /* "&p" of a struct: an ordinary address */
             if (v.kind == VK_STATIC) {
                 /* The address of a static object - a string literal's
                  * (c0's putstr() NAME(SC_STATIC, TY_CHAR, <label>) +
@@ -4673,8 +5687,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_mem_direct(v.offset));
                 break;
             }
-            ins2(&g, "lea", o_reg("di"), o_val(v));
-            push_val(&g, val_reg("di"));
+            /* Into SI while DI holds a pending value - 06_struct/
+             * 03_starray.s.golden's "pts[i].y = i * 2;" -> "mov di,
+             * *-18.(bp)" / "sal di,*1" / "lea si,*-16.(bp)" (the right-
+             * hand side first - see is_disp_store()). */
+            const char *areg = pick_addr_reg(&g);
+            ins2(&g, "lea", o_reg(areg), o_val(v));
+            push_val(&g, val_reg(areg));
             break;
         }
 
@@ -4723,7 +5742,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 if (sz != 1 && sz != 2 && sz != 4)
                     gen_fatal("ITOP scaling by a non-power-of-two size "
                               "(%ld) is not yet supported", sz);
+                /* A base register either way: the displacement is added
+                 * through it ("*2.(si)"). */
                 const char *reg = di_busy(&g) ? "si" : "di";
+                if (strcmp(reg, "si") == 0 && reg_busy(&g, RB_SI))
+                    gen_fatal("a subscript of the form \"i + N\" while both DI "
+                              "and SI hold pending values is not yet "
+                              "supported - see src/mutos_cc/README.md");
                 ins2(&g, "mov", o_reg(reg), o_val(val_from_simple(amt.cl)));
                 for (long k = sz; k > 1; k /= 2)
                     ins2(&g, "sal", o_reg(reg), o_shift1());
@@ -4771,8 +5796,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "src/mutos_cc/README.md");
                 if (row_step && !(below && below->kind == VK_REG &&
                                   strcmp(below->reg, "di") == 0))
-                    gen_fatal("internal: 2-D subscript row step without "
-                              "its base address in di");
+                    gen_fatal("a 2-D array subscript while DI holds another "
+                              "pending value is not yet supported - see "
+                              "src/mutos_cc/README.md");
                 Val sc = {0};
                 sc.kind = VK_SCALED;
                 sc.cl = simple_of(amt);
@@ -4814,12 +5840,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, amt);
                 break;
             }
-            int use_si = di_busy(&g);
-            const char *reg = use_si ? "si" : "di";
-            if (use_si)
-                load_into_si(&g, amt);
-            else
-                load_into_di(&g, amt);
+            /* DI, or SI while DI is busy, or - both taken, e.g. by a
+             * right-hand side computed first and the array base "lea"'d
+             * after it - DX: the index is only ever added to the base
+             * register, never addressed through, so DX (the next
+             * register) serves: 06_struct/03_starray.s.golden's "pts[i].
+             * y = i * 2;" -> "lea si,*-16.(bp)" / "mov dx,*-18.(bp)" /
+             * "sal dx,*1" / "sal dx,*1" / "add si,dx" / "mov *2.(si),di",
+             * and "sum + pts[i].x + pts[i].y" alike. */
+            const char *reg = "di";
+            if (di_busy(&g)) {
+                reg = "si";
+                if (reg_busy(&g, RB_SI)) {
+                    if (reg_busy(&g, RB_DX))
+                        gen_fatal("a subscript while DI, SI and DX all hold "
+                                  "pending values is not yet supported - "
+                                  "see src/mutos_cc/README.md");
+                    reg = "dx";
+                }
+            }
+            load_into(&g, reg, amt);
             long sz = size.imm;
             if (sz != 1 && sz != 2 && sz != 4)
                 gen_fatal("ITOP scaling by a non-power-of-two size "
@@ -4858,25 +5898,45 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                         gen_fatal("expression stack underflow - "
                                   "malformed temp1 stream");
                     Val *top = &g.valstack[g.valsp - 1];
+                    /* A struct member's type is its own, mutos_c0 retyping
+                     * the member access's STAR/AMPER spine to it (v7's
+                     * setype()) - int, unsigned (a bit-field's word) or
+                     * any pointer, one word each, like an int. */
                     int is_char = (type == TY_CHAR && atype == TY_PTR_CHAR);
-                    int is_int = (type == TY_INT && atype == TY_PTR_INT);
-                    if (!is_char && !is_int)
+                    int is_int = (ty_is_word(type) && ty_is_ptr(atype) &&
+                                  ty_decref(atype) == type);
+                    /* A struct member that is itself a struct, its address
+                     * taken ("&r.b", "&rp->b"): the member's address, as
+                     * for any other member. */
+                    int is_struct = (type == TY_STRUCT && ty_is_ptr(atype) &&
+                                     ty_decref(atype) == TY_STRUCT);
+                    if (!is_char && !is_int && !is_struct)
                         gen_fatal("'&*' with types %d/%d is not yet "
                                   "supported", type, atype);
                     if (top->kind == VK_REGOFF) {
                         /* "&a[j + 1]" (a pointer variable, see OP_PLUS):
                          * the pending constant is added now - 10_integ/
                          * 02_bubsort.s.golden's "add di,*4.(bp)" / "add
-                         * di,*2." / "push di". A constant index on a
-                         * pointer VARIABLE ("&p[2]", nothing in a
-                         * register yet) has no golden. */
-                        if (top->cl.kind != VK_REG)
-                            gen_fatal("'&p[N]' with a constant index on a "
-                                      "pointer variable is not yet "
-                                      "supported - see src/mutos_cc/README.md");
+                         * di,*2." / "push di". A pointer VARIABLE plus a
+                         * constant ("&p->b", nothing in a register yet)
+                         * stays pending when another constant follows -
+                         * a member of that member, "p->b.c", whose two
+                         * offsets become one displacement (see OP_PLUS);
+                         * otherwise the pointer is loaded and the offset
+                         * added - "&p[2]" the same as "&a[j + 1]". An
+                         * element's address with its register already
+                         * computed ("p[i + 1].y") keeps the pending offset
+                         * the same way. */
+                        if (next_is_con_plus(temp1))
+                            break;
                         Val ro = pop_any(&g);
-                        ins2(&g, "add", o_reg(ro.cl.reg), o_imm(ro.imm));
-                        push_val(&g, val_reg(ro.cl.reg));
+                        Val base = val_from_simple(ro.cl);
+                        const char *reg = (base.kind == VK_REG)
+                                          ? base.reg : pick_addr_reg(&g);
+                        load_into(&g, reg, base);
+                        if (ro.imm != 0)
+                            ins2(&g, "add", o_reg(reg), o_imm(ro.imm));
+                        push_val(&g, val_reg(reg));
                         break;
                     }
                     if (top->kind == VK_REG) {
@@ -4890,8 +5950,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                          * see below.) */
                         break;
                     }
-                    if (is_char && top->kind == VK_MEM_DIRECT)
-                        break;   /* "&buf[3]": the address, lea'd later */
+                    if ((is_char || is_struct) && top->kind == VK_MEM_DIRECT)
+                        break;   /* "&buf[3]", "&r.b": the address, lea'd later */
                     if (is_int && top->kind == VK_MEM_DIRECT) {
                         top->rowbase = 1;
                         break;
@@ -5018,10 +6078,32 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     break;
                 }
                 if (ptr.kind == VK_SYMIDX) {
+                    if (is_target) {
+                        /* An element of a file-scope char array as the
+                         * target of an assignment: the INDEX is pushed
+                         * (not an address - the symbol is the store's
+                         * displacement), the right-hand side computed,
+                         * and the index popped into BX for the store:
+                         * "amxscd[unit] = scd;" -> "push *-34.(bp)" /
+                         * "mov dx,*-30.(bp)" / "pop bx" / "movb
+                         * _amxscd(bx),dx" (tests/mutos_as/kernel_nonopt/
+                         * amx.s - the int right-hand side through DX, its
+                         * ITOC(TY_CHAR)). A constant right-hand side has
+                         * no example (as for a char pointer below). */
+                        if (!cons.saw_runtime)
+                            gen_fatal("storing a constant into an element of "
+                                      "a file-scope array is not yet "
+                                      "supported - see src/mutos_cc/README.md");
+                        ins1(&g, "push", o_val(val_from_simple(ptr.cl)));
+                        Val pend = val_ind_pending();
+                        pend.sym = ptr.sym;
+                        push_val(&g, pend);
+                        break;
+                    }
                     if (cons.op == OP_ASSIGN && cons.as_left)
                         gen_fatal("storing into an element of a file-scope "
-                                  "array is not yet supported - see "
-                                  "src/mutos_cc/README.md");
+                                  "array inside a larger expression is not "
+                                  "yet supported - see src/mutos_cc/README.md");
                     Val idx = val_from_simple(ptr.cl);
                     ins2(&g, "mov", o_reg("dx"), o_val(idx));
                     ins2(&g, "mov", o_reg("bx"), o_reg("dx"));
@@ -5079,22 +6161,39 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * ("cur->next = head;" -> "mov di,head" / "mov si,cur"
                  * / "mov *2.(si),di"), so that is refused. */
                 if (is_target && !trivial_rhs) {
+                    /* A non-zero offset takes is_disp_store()'s right-
+                     * hand-side-first plan, which leaves the right-hand
+                     * side on the value stack (so is_target is not set);
+                     * reaching here with one means that plan was not
+                     * made (the expression's shape is outside it). */
                     if (type != TY_INT || ptr.imm != 0)
                         gen_fatal("storing a computed value through a pointer "
                                   "plus a non-zero constant offset is not "
-                                  "yet supported - see src/mutos_cc/README.md");
+                                  "yet supported in this expression shape - "
+                                  "see src/mutos_cc/README.md");
                     Val base = val_from_simple(ptr.cl);
                     ins1(&g, "push", o_val(base));
                     push_val(&g, val_ind_pending());
                     break;
                 }
+                /* The pointer into DI, or SI while DI holds a pending
+                 * value (see pick_addr_reg()); one already in a base
+                 * register is used where it is. */
                 Val base = val_from_simple(ptr.cl);
-                const char *reg = "di";
-                if (base.kind == VK_REG)
+                const char *reg;
+                if (base.kind == VK_REG && is_base_reg(base.reg)) {
                     reg = base.reg;
-                else
-                    load_into_di(&g, base);
-                push_val(&g, val_ind_disp(reg, ptr.imm));
+                } else {
+                    reg = pick_addr_reg(&g);
+                    load_into(&g, reg, base);
+                }
+                Val ind = val_ind_disp(reg, ptr.imm);
+                if (load_now(&cons)) {
+                    ins2(&g, "mov", o_reg(reg), o_val(ind));
+                    push_val(&g, val_reg(reg));
+                    break;
+                }
+                push_val(&g, ind);
                 break;
             }
             if (ptr.kind == VK_SCALED || ptr.kind == VK_ROWADDR)
@@ -5163,24 +6262,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, val_ind_pending());
                 break;
             }
-            load_into_di(&g, ptr);
-            if (cons.as_left && find_relop(cons.op) && cons.nops > 1) {
-                /* The left operand of a comparison whose right operand
-                 * has code of its own: the value is loaded now, before
-                 * that code runs - v7's template computes the left
-                 * operand into its register first - and the right
-                 * operand's address then goes through SI (see OP_ITOP):
-                 * 10_integ/02_bubsort.s.golden's "a[j] > a[j + 1]" ->
-                 * ... "add di,*4.(bp)" / "mov di,(di)" / "mov si,
-                 * *-8.(bp)" / ... / "cmp di,*2.(si)". (With a lone
-                 * variable or constant on the right, the load - if any -
-                 * happens at the compare, emit_cmp_and_branch(), the
-                 * same bytes.) */
-                ins2(&g, "mov", o_reg("di"), o_val(val_ind("di")));
-                push_val(&g, val_reg("di"));
+            /* The pointer into DI - or, while DI holds a pending value,
+             * SI (pick_addr_reg()); an address already in a base
+             * register (a subscript's sum) is dereferenced where it is. */
+            const char *preg;
+            if (ptr.kind == VK_REG && is_base_reg(ptr.reg) && !ptr.regvar) {
+                preg = ptr.reg;
+            } else {
+                preg = pick_addr_reg(&g);
+                load_into(&g, preg, ptr);
+            }
+            if (load_now(&cons)) {
+                ins2(&g, "mov", o_reg(preg), o_val(val_ind(preg)));
+                push_val(&g, val_reg(preg));
                 break;
             }
-            push_val(&g, val_ind("di"));
+            push_val(&g, val_ind(preg));
             break;
         }
 
@@ -5242,9 +6339,35 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, c);
                 break;
             }
-            pop_operands(&g, &l, &r);
+            pop_operands_ex(&g, &l, &r, POP_CHARX);
             int relop = op;
-            if (is_const_val(&l) && !is_const_val(&r)) {
+            if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
+                /* A char compared with an int that is not a char-typed
+                 * constant (a variable, a register local, a constant
+                 * outside 0..127 - mutos_c0 widened the char): the char
+                 * goes left - v7's optim() exchanges a relational's
+                 * operands when degree(left) < degree(right), and a char
+                 * leaf's degree (1) is above an int leaf's (0) or a
+                 * constant's (-3) - is widened into AX, and AX is
+                 * compared with the other operand: tests/mutos_as/
+                 * kernel_opt/ifss.s's "movb ax,*22.(di)" / "cbw" / "cmp
+                 * ax,*-6.(bp)" / "jne", cons_NOBIOS.s's "movb ax,
+                 * _kennung(bx)" / "cbw" / "cmp ax,*-8.(bp)", and 22 "cbw"
+                 * / "cmp ax,di" there. Two chars have no example. */
+                if (l.kind == VK_CHARX && r.kind == VK_CHARX)
+                    gen_fatal("comparing two 'char' values is not yet "
+                              "supported - see src/mutos_cc/README.md");
+                if (r.kind == VK_CHARX) {
+                    Val t = l;
+                    l = r;
+                    r = t;
+                    relop = find_relop(op)->mirror;
+                }
+                if (!is_int_leaf(&r))
+                    gen_fatal("comparing a 'char' with a computed int value is "
+                              "not yet supported - see src/mutos_cc/README.md");
+                l = load_charx(&g, l);
+            } else if (is_const_val(&l) && !is_const_val(&r)) {
                 /* v7's optim(): exchanged, relation mirrored - see
                  * constant_to_right(). */
                 Val t = l;
@@ -5320,7 +6443,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                                                  * rendered into the
                                                  * .s output, same as
                                                  * OP_EXPR's. */
-            gen_cond_branch(&g, pop_val(&g), lbl, cond_sense, g.defer_floor);
+            /* A char condition is tested as a byte - see as_cond(). */
+            gen_cond_branch(&g, pop_val_ex(&g, POP_BYTE), lbl, cond_sense,
+                            g.defer_floor);
             break;
         }
 
@@ -5347,7 +6472,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * following ASSIGN materializes the result as a single
              * "cmp *-10.(bp),*0 / beq ..." (EQUAL, i.e. NEQUAL
              * inverted) sequence, never a separate negation step. */
-            Val v = pop_val(&g);
+            /* "!c" on a char: tested as a byte - see as_cond(). */
+            Val v = pop_val_ex(&g, POP_BYTE);
             Val c = as_cond(v);
             Val neg = {0};
             neg.kind = VK_COND;
@@ -5379,8 +6505,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             int type = c1_read_num(temp1, "temp1");
             if (type != TY_INT)
                 gen_fatal("COMMA of type %d not yet supported", type);
-            Val rhs = pop_val(&g);
-            Val lhs = pop_val(&g);
+            /* A char argument stays a byte operand in the list until
+             * push_call_arg() widens it. */
+            Val rhs = pop_val_ex(&g, POP_BYTE | POP_CHARX);
+            Val lhs = pop_val_ex(&g, POP_BYTE | POP_CHARX);
             Val out_v = {0};
             out_v.kind = VK_ARGLIST;
             if (lhs.kind == VK_ARGLIST) {
@@ -5427,7 +6555,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("a call returning type %d is not yet supported "
                           "(only a function returning an int, a long or a "
                           "pointer is covered so far)", type);
-            Val args = pop_val(&g);
+            /* A lone char argument is widened as it is pushed - see
+             * push_call_arg(). */
+            Val args = pop_val_ex(&g, POP_BYTE | POP_CHARX);
             Val callee = pop_val(&g);
             push_val(&g, gen_call(&g, callee, args, type == TY_LONG));
             break;
@@ -5442,7 +6572,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, gen_long_binop_call(&g, l, r, "lmul"));
                 break;
             }
-            if (type != TY_INT)
+            /* The low word of a product is the same signed or unsigned. */
+            if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("TIMES of type %d not yet supported", type);
             if (g.valsp >= 1 && g.valstack[g.valsp - 1].kind == VK_STACKED) {
                 /* The right operand was evaluated first and spilled (see
@@ -5471,8 +6602,29 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             Val l, r;
-            pop_operands(&g, &l, &r);
+            pop_operands_ex(&g, &l, &r, POP_CHARX);
             constant_to_right(&l, &r);
+            if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
+                /* A char times an int: the char widened into AX, then the
+                 * ordinary shape below with AX as the "mov ax,<left>"
+                 * side - "movb ax,*52.(di)" / "cbw" / "mov ax,ax" / "mov
+                 * cx,*20." / "imul cx" (tests/mutos_as/kernel_nonopt/
+                 * amx.s, 5x). See gen_charx_binop(). The constant checks
+                 * below would refuse a power of two only after the load,
+                 * so they are made first. */
+                charx_left(op, &l, &r);
+                if (r.kind == VK_IMM && exact_log2(r.imm) >= 1) {
+                    /* v7's pow2(): a shift - see below. */
+                    push_val(&g, gen_charx_binop(&g, OP_LSHIFT, l,
+                                                 val_imm(exact_log2(r.imm))));
+                    break;
+                }
+                if (r.kind == VK_IMM && r.imm <= 1)
+                    gen_fatal("multiplying by the constant %ld is not yet "
+                              "supported - no golden reference confirms the "
+                              "shape a real compiler would emit", r.imm);
+                l = load_charx(&g, l);
+            }
             /* Which operand becomes the "mov ax,<X>" side and which
              * becomes the IMUL operand: ordinarily the LEFT operand
              * goes into AX and the RIGHT is IMUL'd (every previously-
@@ -5498,6 +6650,19 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 ax_side = r;
                 imul_side = l;
             }
+            if (imul_side.kind == VK_IMM && exact_log2(imul_side.imm) >= 1) {
+                /* A power-of-two multiplier is a left shift - v7/cc/c10.c's
+                 * pow2() turns TIMES by 2^k into LSHIFT by k before any code
+                 * is chosen - and so gets the shift's own code: 06_struct/
+                 * 03_starray.s.golden's "i * 2" -> "mov di,*-18.(bp)" / "sal
+                 * di,*1" (see OP_LSHIFT/emit_const_shift()). */
+                if (!(ax_side.kind == VK_REG && strcmp(ax_side.reg, "di") == 0))
+                    require_free(imul_side, RB_DI, "TIMES");
+                load_into_di(&g, ax_side);
+                emit_const_shift(&g, "sal", "di", exact_log2(imul_side.imm));
+                push_val(&g, val_reg("di"));
+                break;
+            }
             if (imul_side.kind == VK_IMM) {
                 /* A constant multiplier: 8086 IMUL has no immediate
                  * form, so the constant is loaded into CX first and
@@ -5510,12 +6675,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * no golden confirms for OP_TIMES itself (06_compasgn's
                  * "a *= 2" -> "sal" is the compound-assignment
                  * analogue only). */
-                if (imul_side.imm == 0 || exact_log2(imul_side.imm) >= 0)
-                    gen_fatal("multiplying by the constant %ld (zero or a "
-                              "power of two) is not yet supported - no "
-                              "golden reference confirms the strength-"
-                              "reduced shape a real compiler would emit",
-                              imul_side.imm);
+                if (imul_side.imm == 0 || imul_side.imm == 1)
+                    gen_fatal("multiplying by the constant %ld is not yet "
+                              "supported - no golden reference confirms the "
+                              "shape a real compiler would emit (v7 folds or "
+                              "drops it)", imul_side.imm);
                 if (ax_side.kind == VK_IMM)
                     gen_fatal("multiplying two constants at run time is "
                               "not expected (mutos_c0 folds them)");
@@ -5737,6 +6901,65 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
 
         case OP_ASSIGN: {
             int type = c1_read_num(temp1, "temp1");
+            if (g.valsp >= 2 && g.valstack[g.valsp - 2].kind == VK_FIELD) {
+                /* "f.mode = 2;" - see OP_FSEL and gen_field_store(). The
+                 * assigned constant is the expression's value. */
+                Val rhs = pop_val(&g);
+                Val field = pop_any(&g);
+                gen_field_store(&g, field, rhs);
+                push_val(&g, rhs);
+                break;
+            }
+            if (type == TY_STRUCT) {
+                /* A whole-struct assignment, "p2 = p1;": ASSIGN(4), then
+                 * STRASG(4, size) (see OP_STRASG). v7/cc/c10.c's strasg()
+                 * retypes a struct of at most 4 bytes as a long (2 bytes:
+                 * an int) and assigns that - here the long ASSIGN's own
+                 * shape, the source loaded low word into SI, high word
+                 * into DI, and stored low then high: 06_struct/
+                 * 04_stassign.s.golden's "mov si,*-6.(bp)" / "mov di,
+                 * *-8.(bp)" / "mov *-10.(bp),si" / "mov *-12.(bp),di". A
+                 * larger struct (a block copy) and any operand but two
+                 * struct variables have no golden. */
+                long pos = ftell(temp1);
+                int next = c1_read_op(temp1, "temp1");
+                int size = -1;
+                if (next == OP_STRASG) {
+                    (void)c1_read_num(temp1, "temp1");
+                    size = c1_read_num(temp1, "temp1");
+                }
+                if (fseek(temp1, pos, SEEK_SET) != 0)
+                    gen_fatal("internal: temp1 is not seekable (fseek failed)");
+                Val rhs = pop_val_ex(&g, POP_STRUCT);
+                Val lhs = pop_val_ex(&g, POP_STRUCT);
+                if (!rhs.structv || !lhs.structv || rhs.kind != VK_MEM ||
+                    lhs.kind != VK_MEM)
+                    gen_fatal("a struct assignment other than between two "
+                              "struct variables is not yet supported - see "
+                              "src/mutos_cc/README.md");
+                if (size == 4) {
+                    ins2(&g, "mov", o_reg("si"), o_mem(rhs.offset + MCC_SZINT));
+                    ins2(&g, "mov", o_reg("di"), o_mem(rhs.offset));
+                    ins2(&g, "mov", o_mem(lhs.offset + MCC_SZINT), o_reg("si"));
+                    ins2(&g, "mov", o_mem(lhs.offset), o_reg("di"));
+                    push_val(&g, val_long());
+                } else if (size == 2) {
+                    /* v7: "setype(tree, INT)" - an int "x = y;" (see the
+                     * memory-to-memory case below). */
+                    if (g.reserved & RB_DI)
+                        gen_fatal("a struct assignment in a function with a "
+                                  "register variable in DI is not yet "
+                                  "supported");
+                    ins2(&g, "mov", o_reg("di"), o_mem(rhs.offset));
+                    ins2(&g, "mov", o_mem(lhs.offset), o_reg("di"));
+                    push_val(&g, val_reg("di"));
+                } else {
+                    gen_fatal("assigning a struct of %d bytes is not yet "
+                              "supported (only 2 or 4 bytes) - see "
+                              "src/mutos_cc/README.md", size);
+                }
+                break;
+            }
             if (type == TY_LONG) {
                 /* Confirmed against 08_castsize.s.golden's "l =
                  * 70000;" and "l = (long) c;" - both store LOW
@@ -5852,7 +7075,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * "mov\t(bx),di". */
                 require_free(rhs, RB_BX, "ASSIGN");
                 ins1(&g, "pop", o_reg("bx"));
+                /* A file-scope array's element keeps its symbol as the
+                 * displacement - "movb _amxscd(bx),dx" (see OP_STAR). */
+                const char *esym = lhs.sym;
                 lhs = val_ind("bx");
+                lhs.sym = esym;
             }
             if (lhs.kind != VK_MEM && lhs.kind != VK_MEM_DIRECT &&
                 lhs.kind != VK_IND && lhs.kind != VK_STATIC &&
@@ -5884,17 +7111,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 rhs = val_reg("di");
             } else if (rhs.kind == VK_MEM ||
                        (rhs.kind == VK_STATIC && lhs.kind != VK_REG)) {
-                /* A static or file-scope right-hand side is the same
-                 * memory operand to MOV: "x = y;" with either one would
-                 * be "mov _x,_y" - which, for two local statics
-                 * ("mov L4,L5"), this used to emit silently (mutos_as
-                 * rejects it). Into a 'register' local it is a plain
-                 * "mov di,_y". */
-                gen_fatal("direct memory-to-memory assignment (\"x = y;\") "
-                          "is not yet supported - 8086 MOV cannot take two "
-                          "memory operands, and no golden reference "
-                          "confirms which intermediate register a real "
-                          "compiler would route this through");
+                /* "x = y;" between two memory operands - 8086 MOV takes
+                 * one: the value goes through DI, the working register, as
+                 * v7's "S / mov R,A1" template computes the right-hand side
+                 * into it - 10_integ/03_linklist.s.golden's "head = cur;"
+                 * and "cur = head;": "mov di,*-8.(bp)" / "mov *-6.(bp),di".
+                 * A static or file-scope operand is the same memory operand
+                 * to MOV (before this, two local statics were written as the
+                 * impossible "mov L4,L5"). With a 'register' local in DI the
+                 * real compiler uses another register - DX in tests/
+                 * mutos_as/kernel_nonopt/amx.s, whose function has two -
+                 * which no golden settles for one: refused. Into a
+                 * 'register' local it is a plain "mov di,_y" (below). */
+                if (g.reserved & RB_DI)
+                    gen_fatal("a memory-to-memory assignment (\"x = y;\") in a "
+                              "function with a register variable in DI is not "
+                              "yet supported - no golden confirms the register "
+                              "a real compiler routes it through there");
+                require_free(lhs, RB_DI, "ASSIGN");
+                load_into_di(&g, rhs);
+                rhs = val_reg("di");
             }
             if (lhs.kind == VK_REG && rhs.kind == VK_REG &&
                 strcmp(lhs.reg, rhs.reg) == 0) {
@@ -5950,6 +7186,55 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
         }
 
+        case OP_STRASG:
+            /* The struct assignment's size, already read by OP_ASSIGN (see
+             * there) - "BNN", STRASG, STRUCT, size - its value passed on
+             * for OP_EXPR to discard. */
+            (void)c1_read_num(temp1, "temp1");
+            (void)c1_read_num(temp1, "temp1");
+            break;
+
+        case OP_FSEL: {
+            /* A bit-field of the word the STAR below it reads - "BNNN":
+             * FSEL, TY_UNSIGN, bitoffs, flen (v7/cc/c04.c writes the
+             * field's width and offset the same way). As the target of an
+             * assignment it becomes a VK_FIELD (gen_field_store()), any
+             * other use reads its value (gen_field_load()). */
+            int type = c1_read_num(temp1, "temp1");
+            int bitoffs = c1_read_num(temp1, "temp1");
+            int flen = c1_read_num(temp1, "temp1");
+            if (type != TY_UNSIGN)
+                gen_fatal("FSEL of type %d not yet supported", type);
+            if (flen < 1 || flen > 15 || bitoffs < 0 || bitoffs + flen > 16)
+                gen_fatal("a bit-field of %d bits at bit %d is not yet "
+                          "supported - see src/mutos_cc/README.md",
+                          flen, bitoffs);
+            Consumer cons = scan_consumer(temp1);
+            Val word = pop_val(&g);
+            if (word.kind != VK_MEM && word.kind != VK_STATIC &&
+                word.kind != VK_IND)
+                gen_fatal("internal: a bit-field's word is not a memory "
+                          "operand");
+            if (cons.as_left && cons.op == OP_ASSIGN) {
+                Val f = {0};
+                f.kind = VK_FIELD;
+                f.cl = simple_of(word);
+                f.bitoffs = bitoffs;
+                f.flen = flen;
+                push_val(&g, f);
+                break;
+            }
+            if (cons.as_left &&
+                ((cons.op >= OP_ASPLUS && cons.op <= OP_ASXOR) ||
+                 cons.op == OP_INCBEF || cons.op == OP_DECBEF ||
+                 cons.op == OP_INCAFT || cons.op == OP_DECAFT))
+                gen_fatal("changing a bit-field other than by a plain "
+                          "assignment is not yet supported - see "
+                          "src/mutos_cc/README.md");
+            push_val(&g, gen_field_load(&g, word, bitoffs, flen));
+            break;
+        }
+
         case OP_RFORCE: {
             int type = c1_read_num(temp1, "temp1");
             if (type == TY_LONG) {
@@ -5975,7 +7260,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 put_seq(&g, SEQ_DISI_TO_AXDX);
                 break;
             }
-            if (type != TY_INT)
+            /* RFORCE carries the type of the value converted to the
+             * function's (v7/cc/c04.c's doret()): unsigned for a bit-field
+             * returned from an int function - 06_struct/07_bitfield.1.
+             * golden's RFORCE(7) - the same word in AX. */
+            if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("RFORCE to type %d not yet supported (only "
                           "int/long-returning functions are covered so "
                           "far)", type);

@@ -24,22 +24,25 @@ directly, on random programs:
   `#_text(bx)`). It reports `main()`'s return value and every local's
   final value (found through `c1`'s own `| _name=-N.` frame comments).
   Anything outside its subset - a libc or indirect call, a branch on
-  flags not set by a `cmp`, a `cmpb`, an `or r,r` or an `orb r,r` - stops
-  it with an error, never a guess.
+  flags not set by a `cmp`, a `cmpb`, an `and`/`or`/`xor` (flags from the
+  result, as `cmp <result>,0` - `or r,r` is `mutos_c1`'s truth test of a
+  register, `and dx,*12.` / `beq` an AND tested directly) or an `orb
+  r,r` - stops it with an error, never a guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
 `tests/mutos_cc` `.s.golden` it can execute (51 of the 62; the others
 call libc or runtime helpers, or use `long` carries, a jump table or a
 function's address) returns the value its C source computes, including
-struct, union and bit-field programs `mutos_c1` cannot produce yet, the
-six `09_abiprobe` frames (through `chkstk` from 128 bytes up),
+all nine struct, union, bit-field, enum and typedef programs of
+`06_struct` (`mutos_c1` has produced them byte-exact since 2026-09-27),
+the six `09_abiprobe` frames (through `chkstk` from 128 bytes up),
 `10_integ/02_bubsort` (91) and `01_wordcount` (55 - byte compares and an
 initialized char array), and `04_funcs/05_staticvar` and all three
 `07_scope` files (globals, a file-scope `static`, a shadowing block).
-`fuzz_c.py` itself generates neither chars, calls nor globals;
-hand-written programs of that kind can be run through the same pipeline
-and `x86sim.py` (see `docs/DEVLOG.md`'s `char`, `07_scope` and
-`01_wordcount` sections).
+`fuzz_c.py` itself generates neither chars, calls, structs nor globals
+(`--scope` adds file-scope ints); hand-written programs of that kind can
+be run through the same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s
+`char`, `07_scope`, `01_wordcount` and `06_struct` sections).
 
 Nothing here is part of the corpus: the scripts write only to a
 temporary directory, and `run_goldens.sh`, `gen_mutos.sh` and the
