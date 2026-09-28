@@ -57,6 +57,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — meant to assemble every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it. **Concluded 2026-09-28, without needing a full comparison run**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated — there is nothing to diff. See `STATUS.md`'s open item 6 for the finding and the new source-level angle it points to instead.
 * `/tests/mutos_as/float_coverage/`: real-hardware goldens (generated on real MUTOS 1700 hardware 2026-09-28) for two former `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both implemented from these goldens the same day (see `src/mutos_as/fltconst.h`) — plus two regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. All four are byte-identical and part of `make test`. See that directory's own `README.md` and `STATUS.md`'s open item 7.
+* `/tests/mutos_as/float_open/`: a new hand-written probe (`fltopen.s`), **not yet run on
+  real hardware**, for the four floating-point spellings `float_coverage/` above left
+  open: a short zero `.float 0.0`, a negated confirmed-spelling zero, a zero `.double`,
+  and an inexact `.float 0.1`. `mutos_as` refuses all four by design (see the file's own
+  header), so this directory is deliberately **not** wired into `make test` — see its
+  `README.md` for how to run it on real hardware and what each answer would change in
+  `src/mutos_as/fltconst.c`.
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
