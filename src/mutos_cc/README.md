@@ -1424,10 +1424,14 @@ di,*2.(si)`).
    refused (an int right operand - libc's `fsubrs`/`fdivrs`... "reversed"
    entry points suggest how the real compiler does it - comparisons, a
    zero or non-float constant, floating parameters, globals and returns),
-   each waiting for a golden; a zero or non-float constant also needs
-   `mutos_as`, which refuses a zero `.float` and every `.double` (see
-   `STATUS.md`'s "Next up"). The 81..127-byte `chkstk` gap stays "not yet
-   supported" until a golden lands in it.
+   each waiting for a golden. On the assembler side a zero or non-float
+   constant is no longer blocked outright: `mutos_as` now assembles a zero
+   `.float` in the `%.17e` spelling and any exactly representable
+   `.double` (real-hardware goldens in `tests/mutos_as/float_coverage/`),
+   but an inexact `.double` such as `ecvt.o`'s `.03` stays refused, and
+   the real compiler's text for either kind of constant is in no golden
+   (see `STATUS.md`'s "Next up"). The 81..127-byte `chkstk` gap stays "not
+   yet supported" until a golden lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
    already present, currently 0/9 through `mutos_c0`): a second, separate

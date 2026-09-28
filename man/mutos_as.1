@@ -1,7 +1,7 @@
 .\" mutos_as.1 - manual page for the MUTOS 1700 cross-assembler
 .\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
 .\" View with: man ./mutos_as.1   or   groff -man -Tascii mutos_as.1 | less
-.TH MUTOS_AS 1 "August 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.TH MUTOS_AS 1 "September 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
 .SH NAME
 mutos_as \- MUTOS 1700 cross-assembler for the 8086/80186
 .SH SYNOPSIS
@@ -275,17 +275,46 @@ excess-128 binary exponent in the highest byte, the sign in the top
 bit of the byte below it, then the mantissa bits after its leading
 one.
 Only a value exactly representable in the format's 24 significant
-bits is accepted, and encoded exactly; a value that is not, and zero,
-are rejected with an error, since how the original assembler rounds
-such a value, and the bytes it writes for zero, are not confirmed.
+bits is accepted, and encoded exactly; a value that is not is
+rejected with an error, since how the original assembler rounds such
+a value is not confirmed.
 No alignment is implied and no relocation is ever needed.
-.PP
-The 8-byte
+.IP
+Zero is not stored as zero bytes: the original assembler writes
+.B bc a2 31 00
+(exponent byte 0 with a leftover mantissa).
+Those bytes are confirmed only for the spelling the compiler writes,
+.BR 0.00000000000000000e+00 ,
+so exactly that shape (no minus sign, 17 digits after the point,
+exponent 0) is accepted; any other spelling of zero is rejected with
+an error.
+.TP
+.BI .double\  number\  "[, " number " ...]"
+Like
+.BR .float ,
+but emits one 8-byte constant per
+.IR number :
+the same format with 56 significant bits (55 stored after the
+leading one), e.g.\&
+.B .double 1.00000000023283064365386962890625
+gives
+.BR "00 00 80 00 00 00 00 81" .
+The number is written as for
+.B .float
+without a prefix, or with the manual's
+.B 0d
+prefix, after which the exponent is marked with
+.B d
+instead of
+.BR e ,
+e.g.\&
+.BR "0d1.5d3" .
+Only exactly representable values are accepted, and every zero is
+rejected: no bytes of the original assembler for a zero
 .B .double
-directive is not implemented yet and is rejected with an error
-(rather than skipped, which would leave the following addresses
-wrong); other directives this assembler does not implement are
-ignored.
+are confirmed.
+.PP
+Other directives this assembler does not implement are ignored.
 .SS "Branches and jumps"
 The real conditional jump mnemonics
 .RI ( "e.g." " je" ", " jne ", " jb ", " jae ", " jg ", " jle ,

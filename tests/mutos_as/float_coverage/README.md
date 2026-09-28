@@ -5,12 +5,15 @@ real object, unlike `../libc_recon/`) targeting the specific floating-point
 gaps this project's own docs already flag as open, rather than general
 "more float coverage":
 
-| File | Tests | Expected on real `as` | Expected on current `mutos_as` |
+| File | Tests | Real `as` (2026-09-28) | Current `mutos_as` |
 |---|---|---|---|
-| `fltaddr.s` | `lea <reg>,<label>` + `call` addressing a real `.float` constant, in one whole object | succeeds | succeeds (regression golden) |
-| `fltmulti.s` | two `.float` constants, `.text`/`.data` switch + `EVEN`-padding interaction, chained runtime calls | succeeds | succeeds (regression golden) |
-| `fltzero.s` | `.float 0.0` | succeeds | **refused** (`FLT_ZERO`) |
-| `fltdbl.s` | `.double` (8-byte), a value needing >24 mantissa bits | succeeds | **refused** (`.double` not implemented) |
+| `fltaddr.s` | `lea <reg>,<label>` + `call` addressing a real `.float` constant, in one whole object | succeeds | byte-identical (regression golden) |
+| `fltmulti.s` | two `.float` constants, `.text`/`.data` switch + `EVEN`-padding interaction, chained runtime calls | succeeds | byte-identical (regression golden) |
+| `fltzero.s` | `.float 0.00000000000000000e+00` | succeeds | byte-identical (was refused, `FLT_ZERO`, until 2026-09-28) |
+| `fltdbl.s` | `.double` (8-byte), a value needing >24 mantissa bits | succeeds | byte-identical (was refused, `.double` not implemented, until 2026-09-28) |
+
+All four run in the top-level `make test` (`../run_goldens.sh` in this
+directory).
 
 ## Why these four, specifically
 
@@ -26,17 +29,17 @@ only accepts a value that's exactly representable in 24 mantissa bits —
 `2.5`, `3.140625`, `2.71875` are all exact terminating binary fractions,
 picked for that reason, not because they're numerically interesting).
 
-`fltzero.s` and `fltdbl.s` are different in kind: they are **probes for
-open questions**, not regression goldens. `mutos_as` currently refuses
-both outright —
+`fltzero.s` and `fltdbl.s` are different in kind: they were written as
+**probes for open questions**, not regression goldens. When they were
+written, `mutos_as` refused both outright —
 
-- a zero `.float`, because `fltconst.h` says plainly: *"a zero's real
+- a zero `.float`, because `fltconst.h` said plainly: *"a zero's real
   bytes are not a plain zero"* — known only from the two real compiled-C
   objects that happen to hold one (`atof.o`/`ecvt.o`, both `bc a2 31 00`),
   whose real assembler-input spelling is unknown (see
   `../libc_recon/README.md`'s "Why only these"), so `mutos_as` refuses to
   guess.
-- `.double` at all — `src/mutos_as/assemble.c` errors out before even
+- `.double` at all — `src/mutos_as/assemble.c` errored out before even
   parsing the operand, because the one known real 8-byte constant
   (`ecvt.o`'s `.03`) can't by itself pin down how a value needing more
   than a float's 24 bits is converted.
@@ -68,9 +71,8 @@ successfully on real MUTOS 1700 hardware and were pushed
 (`fltaddr.o.golden`, `fltmulti.o.golden`, `fltzero.o.golden`,
 `fltdbl.o.golden` plus their `*.o.golden_base64.txt` companions). Both
 open questions this directory exists for are now resolved — see
-"Results" below. `../run_goldens.sh` has not yet been run against these
-goldens (a still-pending verification step, not a blocker to reading the
-findings below directly from the pushed bytes).
+"Results" below — and `mutos_as` reproduces all four objects byte for
+byte (see "Implemented" at the end).
 
 ## Results (2026-09-28)
 
@@ -95,9 +97,28 @@ findings below directly from the pushed bytes).
   example to implement `.double` support from in
   `src/mutos_as/fltconst.c`/`assemble.c`.
 
-Implementing both in `src/mutos_as/fltconst.c`/`assemble.c` from these
-two goldens is now unblocked — see `CLAUDE.md`'s "Next up" and
-`STATUS.md`'s open item 7. Once done, update `CLAUDE.md`/`STATUS.md` per
-the usual sync rule (Workflow Guideline 6), including removing the
-"is not yet supported" wording once it no longer applies, and re-run
-`../run_goldens.sh` from this directory to confirm all four land clean.
+## Implemented (2026-09-28)
+
+`src/mutos_as/fltconst.c`/`assemble.c` now encode both, from these two
+goldens; `../run_goldens.sh` here: 4/4 byte-identical, part of the
+top-level `make test`. What is accepted, and why no more:
+
+- **Zero `.float`**: `bc a2 31 00`, but only for the spelling
+  `fltzero.s` uses — the `%.17e` text the real compiler writes (no minus
+  sign, exactly 17 digits after the `.`, exponent 0). The mantissa bits
+  are those of 5\*\*17, which looks like v7 `atof()` scaling the text's 17
+  fraction digits by `flexp` = 5\*\*17; under that reading `.float 0.0`
+  (scaled by 5) would come out differently, so every other zero
+  spelling stays an explicit error. `../libc_recon/check_floatdat.sh` now
+  also compares this zero with all six zero constants compiled into
+  `atof.o`/`ecvt.o`: identical.
+- **`.double`**: 8 bytes, 56 significant bits, exactly representable
+  values only (as for `.float`: the real assembler's rounding of an
+  inexact value is still unconfirmed — `ecvt.o`'s `0.03` is one rounded
+  sample with a lost source spelling). Bare numbers as in `fltdbl.s`, or
+  the manual's `0d` prefix with a `d`/`D` exponent. A zero `.double` is
+  refused: no real zero `.double` bytes exist anywhere (`libc.a` has
+  none).
+
+Full derivation and verification in `docs/DEVLOG.md` ("`mutos_as`: zero
+`.float` and `.double` implemented").
