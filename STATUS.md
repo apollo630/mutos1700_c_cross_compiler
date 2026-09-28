@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-27.
+Last updated: 2026-09-28.
 
 ---
 
@@ -38,8 +38,9 @@ full archive (`.a` / `-l`) support.
 
 ### Verified this session
 - `mutos_ld.c` compiles cleanly (`cc -std=c11 -Wall -Wextra -O2`), zero warnings.
-- The reference archive `tests/mutos1700_libc/libc.a` is present and intact (72,178
-  bytes, matches the previously recorded size).
+- The reference archive is present and intact as `tests/mutos1700_libc/libc.a.base64.txt`
+  (base64-encoded; decodes to 72,178 bytes, matching the previously recorded size — the
+  raw `libc.a` binary itself was replaced by this base64 text file on 2026-09-27).
 
 ### NOT verified this session
 - **The golden reference binaries this milestone's "byte-for-byte identical" claim
@@ -2253,7 +2254,7 @@ Build: `cd src/mutos_cc && make`; clean build, zero warnings under `-Wall
 
 Before writing any `mutos_c1` code generation logic, the real MUTOS 1700 function
 calling convention and C runtime startup/cleanup behavior were reverse-engineered
-byte-for-byte from real hardware-linked objects: `tests/mutos1700_crt0/crt0.o` and
+byte-for-byte from real hardware-linked objects: `tests/mutos1700_crt0/crt0.o.base64.txt` and
 ~15 selected files from `tests/mutos1700_libc/`'s 167 real linked objects (the
 load-bearing evidence), plus `tests/mutos_as/kernel_opt/mch.s`'s hand-written source
 as supplementary/corroborating evidence — **not**, as an earlier version of this

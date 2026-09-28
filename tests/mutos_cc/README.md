@@ -241,7 +241,7 @@ does internally (see the Makefile comment for why that distinction
 matters for getting byte-identical `temp1`/`temp2`). `temp1`/`temp2` are
 raw binary tagged byte streams (`v7/cc/c04.c`'s `outcode()`), not text, so
 `make goldens` gives them the same binary+base64 treatment already used
-elsewhere in this project for `tests/mutos1700_libc/*.o` and `libc.a`:
+elsewhere in this project for `tests/mutos_as/kernel_opt/`'s `*.o.golden`/`*.o.golden_base64.txt` pairs:
 `<name>.1.golden`/`<name>.2.golden` (raw bytes) plus
 `<name>.1.golden.base64.txt`/`<name>.2.golden.base64.txt` (base64 text, so
 the content stays inspectable without a binary-capable viewer).
