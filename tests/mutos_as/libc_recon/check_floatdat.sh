@@ -9,6 +9,11 @@
 # (tests/mutos1700_libc/atof.o and ecvt.o) - read from those objects at
 # test time, not copied into this directory. See README.md.
 #
+# Since 2026-09-27 the real objects under tests/mutos1700_libc/ are stored
+# base64-encoded as "<name>.o.base64.txt" (the raw ".o" binaries were
+# deleted - see CLAUDE.md's ".o"-ambiguity caution); each referenced object
+# is base64-decoded into a scratch file before its data segment is read.
+#
 # Usage (from this directory):
 #   ./check_floatdat.sh                              # "mutos_as" from $PATH
 #   MUTOS_AS=../../../src/mutos_as/mutos_as ./check_floatdat.sh
@@ -28,7 +33,8 @@ fi
 
 obj="$(mktemp)"
 log="$(mktemp)"
-trap 'rm -f "$obj" "$log"' EXIT
+decode_dir="$(mktemp -d)"
+trap 'rm -f "$obj" "$log"; rm -rf "$decode_dir"' EXIT
 
 if ! "$MUTOS_AS" -o "$obj" "$HERE/floatdat.s" >"$log" 2>&1; then
     echo "error: mutos_as failed on floatdat.s:" >&2
@@ -45,12 +51,25 @@ data_bytes() {
     od -An -tx1 -j $((16 + lo + 256 * hi + $2)) -N4 "$1" | tr -s ' \n' ' ' | sed 's/^ //; s/ $//'
 }
 
+# decoded_path NAME: base64-decodes "$LIBC/NAME.base64.txt" into
+# "$decode_dir/NAME" (once per NAME) and prints that scratch path.
+decoded_path() {
+    local name="$1" out="$decode_dir/$1"
+    if [ ! -e "$out" ]; then
+        if ! base64 -d "$LIBC/$name.base64.txt" >"$out" 2>/dev/null; then
+            echo "error: failed to base64-decode '$LIBC/$name.base64.txt'" >&2
+            exit 1
+        fi
+    fi
+    printf '%s' "$out"
+}
+
 fail=0
 n=0
 # floatdat.s offset | real object | its data offset | value
 while read -r ours real roff what; do
     n=$((n + 1))
-    want="$(data_bytes "$LIBC/$real" "$roff")"
+    want="$(data_bytes "$(decoded_path "$real")" "$roff")"
     got="$(data_bytes "$obj" "$ours")"
     if [ "$got" = "$want" ]; then
         printf '  ok    %-6s %s  = %s data+%d\n' "$what" "$got" "$real" "$roff"

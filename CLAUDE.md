@@ -53,8 +53,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all `*.o.base64.txt` object files and `libc.a.base64.txt`.
-* `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`.
-* `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`.
+* `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets) for the real-hardware `-L` experiment described below.
+* `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
+* `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — assembles every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it, since none of `libc.a`'s 167 objects have `L`-number labels while every kernel golden does. Infrastructure only as of 2026-09-28, **not yet run on real MUTOS 1700 hardware** — see `STATUS.md`'s open item 6.
+* `/tests/mutos_as/float_coverage/`: real-hardware test cases for two open `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both currently refused by `mutos_as` itself (see `src/mutos_as/fltconst.h`/`assemble.c`) — plus two already-`mutos_as`-clean regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. Infrastructure only as of 2026-09-28, **not yet run on real MUTOS 1700 hardware** — see that directory's own `README.md` and `STATUS.md`'s open item 7.
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
