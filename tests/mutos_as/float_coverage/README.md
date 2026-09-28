@@ -63,24 +63,41 @@ corpus in this project (see `tests/mutos_cc/README.md`):
    the same naming `../kernel_opt/`, `../kernel_nonopt/` and
    `../libc_recon/` already use (`../mk_goldenbase64.sh`).
 
-**Neither `Makefile.mutos` nor this `Makefile` has produced real
-goldens yet** — both are infrastructure only, added this session without
-access to real MUTOS 1700 hardware. Treat every claim above about what
-"is expected to succeed" as a documented prediction from reading
-`fltconst.h`/`assemble.c`, not a verified fact, until a real run confirms
-it — the whole point of running `fltzero.s`/`fltdbl.s` for real is that
-their outcome isn't actually known yet.
+**Real goldens exist as of 2026-09-28** — all four sources assembled
+successfully on real MUTOS 1700 hardware and were pushed
+(`fltaddr.o.golden`, `fltmulti.o.golden`, `fltzero.o.golden`,
+`fltdbl.o.golden` plus their `*.o.golden_base64.txt` companions). Both
+open questions this directory exists for are now resolved — see
+"Results" below. `../run_goldens.sh` has not yet been run against these
+goldens (a still-pending verification step, not a blocker to reading the
+findings below directly from the pushed bytes).
 
-## After the real goldens exist
+## Results (2026-09-28)
 
-Run `../run_goldens.sh` from this directory exactly as in `kernel_opt/`/
-`kernel_nonopt/`: `fltaddr.s`/`fltmulti.s` should land in its category 1
-(clean); `fltzero.s`/`fltdbl.s` are expected to land in its category 3
-(assembler error) until `fltconst.c`/`assemble.c` are updated from the
-new goldens' real bytes — that is expected, not a regression, exactly
-like `../libc_recon/`'s two currently-irreproducible compiled-C objects.
-Once `fltzero.o.golden`/`fltdbl.o.golden` exist, use their real data
-bytes to implement zero-`.float` and `.double` encoding in
-`src/mutos_as/fltconst.c`/`assemble.c`, then update `CLAUDE.md`/
-`STATUS.md` per the usual sync rule (Workflow Guideline 6) — including
-removing the "is not yet supported" wording once it no longer applies.
+- **`fltaddr.o.golden` / `fltmulti.o.golden` — byte-identical to current
+  `mutos_as`'s own output for the same sources.** This is a clean
+  regression confirmation, not just "assembles without error": the
+  `lea <reg>,<label>` + `.float` combination this pair was written to
+  test matches exactly.
+- **`fltzero.o.golden`'s data segment is `bc a2 31 00`** — **exactly**
+  the bytes `atof.o`/`ecvt.o` were already known to hold for their zero
+  constants (see "Why these four, specifically" above), now confirmed
+  from a known, hand-written `.float 0.0` source rather than an
+  unreproducible compiled-C object. `mutos_as`'s `FLT_ZERO` refusal in
+  `src/mutos_as/fltconst.c` can be replaced with this confirmed encoding.
+- **`fltdbl.o.golden`'s data segment is `00 00 80 00 00 00 00 81`** —
+  this matches the documented double format exactly at the bit position
+  predicted for this source's chosen value (`1 + 2**-32`): exponent byte
+  `0x81` (excess-128 → `2**1`, correct for a value just above 1.0), sign
+  bit 0, and a single mantissa bit set 32 bits in. This confirms
+  `.double` follows the same `0.1mmm * 2**(e-128)` scheme as `.float`,
+  just with 55 mantissa bits instead of 23, and gives a real worked
+  example to implement `.double` support from in
+  `src/mutos_as/fltconst.c`/`assemble.c`.
+
+Implementing both in `src/mutos_as/fltconst.c`/`assemble.c` from these
+two goldens is now unblocked — see `CLAUDE.md`'s "Next up" and
+`STATUS.md`'s open item 7. Once done, update `CLAUDE.md`/`STATUS.md` per
+the usual sync rule (Workflow Guideline 6), including removing the
+"is not yet supported" wording once it no longer applies, and re-run
+`../run_goldens.sh` from this directory to confirm all four land clean.

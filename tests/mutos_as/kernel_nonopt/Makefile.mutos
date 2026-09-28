@@ -14,8 +14,14 @@
 #   make -f Makefile.mutos L
 #   make -f Makefile.mutos clean
 #
-# NOT yet run on real MUTOS 1700 hardware -- unverified, same caveat as
-# ../kernel_opt/Makefile.mutos.
+# CONCLUDED 2026-09-28, without a run in this directory being needed: the
+# "-L" question this file was written to help answer was already settled
+# by the FIRST "-L" invocation tried anywhere in this experiment (see
+# ../kernel_opt/Makefile.mutos and ../README.md's "Result") -- the real
+# "as" prints "Unknown option L ignored" and does not implement "-L" at
+# all, so "L:" and "noL:" are necessarily byte-identical here too and
+# there is nothing this directory's own run would add. Left unrun and
+# unmodified as working infrastructure, same as ../kernel_opt's.
 #
 # No filename here is anywhere near the real DIRSIZ=14 limit (longest
 # stem is "lp_AC" at 5 characters, so "lp_AC.oL" is 8), so there is no

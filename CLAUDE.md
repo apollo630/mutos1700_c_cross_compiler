@@ -53,10 +53,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all `*.o.base64.txt` object files and `libc.a.base64.txt`.
-* `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets) for the real-hardware `-L` experiment described below.
+* `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
-* `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — assembles every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it, since none of `libc.a`'s 167 objects have `L`-number labels while every kernel golden does. Infrastructure only as of 2026-09-28, **not yet run on real MUTOS 1700 hardware** — see `STATUS.md`'s open item 6.
-* `/tests/mutos_as/float_coverage/`: real-hardware test cases for two open `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both currently refused by `mutos_as` itself (see `src/mutos_as/fltconst.h`/`assemble.c`) — plus two already-`mutos_as`-clean regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. Infrastructure only as of 2026-09-28, **not yet run on real MUTOS 1700 hardware** — see that directory's own `README.md` and `STATUS.md`'s open item 7.
+* `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — meant to assemble every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it. **Concluded 2026-09-28, without needing a full comparison run**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated — there is nothing to diff. See `STATUS.md`'s open item 6 for the finding and the new source-level angle it points to instead.
+* `/tests/mutos_as/float_coverage/`: real-hardware test cases for two open `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both currently refused by `mutos_as` itself (see `src/mutos_as/fltconst.h`/`assemble.c`) — plus two already-`mutos_as`-clean regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. **Goldens generated and pushed from real MUTOS 1700 hardware 2026-09-28** — both gaps are now resolved with real ground truth (`run_goldens.sh` has not yet been run against them). See that directory's own `README.md` and `STATUS.md`'s open item 7.
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
@@ -216,10 +216,19 @@ You act as an expert systems programmer, compiler architect, and operating syste
      byte-for-byte golden parity. Matching the golden files takes priority over literal
      switch-for-switch parity with `as.1` here; `-o`/`-W` and everything else are
      unaffected. Do not "fix" this without re-breaking golden parity — see
-     `src/mutos_as/assemble.c`'s `-L` comment and `STATUS.md`. Counter-evidence
-     since 2026-09-27: none of `libc.a`'s 167 objects (compiled C included) has an
-     `L`-number symbol — the documented default — so the kernel goldens may have been
-     assembled with `-L`; open, see `STATUS.md`'s open items.
+     `src/mutos_as/assemble.c`'s `-L` comment and `STATUS.md`.
+     **Real-hardware finding (2026-09-28), settles one part of the open question**:
+     the real MUTOS 1700 `as` binary does not implement `-L` at all —
+     `as -L -o v30ide.oL v30ide.s` prints `Unknown option L ignored` and proceeds —
+     despite `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1 documenting it (a
+     manual/binary mismatch this project cannot resolve). This rules out "the
+     kernel build invoked `as -L`" as the explanation for why none of `libc.a`'s
+     167 objects (compiled C included) has an `L`-number symbol while every kernel
+     golden does — the flag is a no-op on this hardware either way, so no
+     per-invocation switch can produce that difference. The underlying
+     kernel-vs-libc discrepancy is still open; see `STATUS.md`'s open item 6 for
+     the new source-level angle (whether `L`-labels come from the compiler's C
+     sources, not the assembler's symbol-table policy).
    * **Known, deliberate exception**: `mutos_cpp` never emits `# N "file"` line-marker
      output, regardless of `-P`. Every real MUTOS 1700 golden reference this tool is
      validated against was itself generated with `cc`'s `-P` flag (which `cc` also
@@ -551,18 +560,42 @@ scope and intent, not a snapshot of what's done.
   condition (all three fixed 2026-09-24; `&&`/`||`/`?:`/`,` are now
   generated through `mutos_c1`'s evaluation-order plan, in v7's
   `cexpr()`/`cbranch()` order - see `STATUS.md`).
-* **Next up**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-  category by category — see
-  `src/mutos_cc/README.md`'s "Next steps" for the concrete
-  dependency-ordered list: the floating shapes still refused (zero and
-  non-float constants also need `mutos_as` - see `STATUS.md`), the
-  remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
-  goldens narrowed the threshold to `(80,128]`), then growing coverage
-  into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
-  0/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
-  Milestone 4 section for the initial assessment), then the `mutos_cc`
-  driver itself; the shapes still refused (see `src/mutos_cc/README.md`'s
-  "Current scope") each wait for evidence of the real compiler's output.
+* **Next up**:
+  * **`mutos_as`: implement zero-`.float` and `.double` encoding.** Both were
+    blocking gaps in `mutos_as` (see `src/mutos_as/fltconst.h`/`assemble.c`'s
+    refusals) and both are now unblocked by real-hardware ground truth from
+    `tests/mutos_as/float_coverage/` (2026-09-28): a zero `.float` encodes as
+    `bc a2 31 00` (matching the previously-ambiguous `atof.o`/`ecvt.o` bytes
+    exactly, now from a known, hand-written source instead of lost compiled-C
+    input), and `.double` follows the same `0.1mmm * 2**(e-128)` scheme as
+    `.float` with 55 mantissa bits (confirmed against a worked example,
+    `fltdbl.o.golden`). See `STATUS.md`'s open item 7 for the full derivation.
+    Once implemented, `atof.o`/`ecvt.o` become reconstructable `libc_recon/`
+    goldens too (see that directory's README "Why only these" — the zero
+    constant was the other blocker there, alongside the `L`-label question
+    below).
+  * **The `libc.a`-vs-kernel `L`-label discrepancy is still open, but the
+    flag-level explanation is now ruled out.** Real hardware confirmed
+    2026-09-28 that `as -L` is not implemented at all (`Unknown option L
+    ignored`) — see this file's "Known, deliberate exception" above and
+    `STATUS.md`'s open item 6. The next angle is source-level, not
+    flag-level: whether `L`-labels are emitted by the *compiler* only under
+    certain conditions, so kernel `.s` sources contain them in the text while
+    `libc.a`'s lost sources never did — not a symbol-table policy the
+    assembler applies per invocation. `mutos_as`'s own always-emit-`L`-labels
+    behavior remains the pragmatic choice for golden parity either way.
+  * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
+    category by category — see
+    `src/mutos_cc/README.md`'s "Next steps" for the concrete
+    dependency-ordered list: the floating shapes still refused (zero and
+    non-float constants also need `mutos_as`, now unblocked — see above), the
+    remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
+    goldens narrowed the threshold to `(80,128]`), then growing coverage
+    into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
+    0/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
+    Milestone 4 section for the initial assessment), then the `mutos_cc`
+    driver itself; the shapes still refused (see `src/mutos_cc/README.md`'s
+    "Current scope") each wait for evidence of the real compiler's output.
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

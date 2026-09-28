@@ -53,6 +53,18 @@
 # chain of small sub-targets (see docs/DEVLOG.md's finding #2/#3 for
 # that exact pattern).
 #
+# CONCLUDED 2026-09-28 without ever running "noL"/"L" here: the "-L"
+# question this file exists to help answer was already settled by the
+# first "-L" invocation tried on real hardware, "as -L -o v30ide.oL
+# v30ide.s" -> "Unknown option L ignored" -- the real "as" does not
+# implement "-L" at all (see ../README.md's "Result" and STATUS.md's
+# open item 6). Since the flag is silently ignored rather than merely
+# defaulted, "noL" and "L" are necessarily byte-identical for every
+# file here, so running either adds nothing. Left unrun and unmodified
+# as working infrastructure -- its own reliability at 61 files (the
+# question this comment block above was written to flag) remains
+# genuinely untested, but is now moot for the "-L" question itself.
+#
 # EXCEPTION -- mch_insw_outsw.s is deliberately left OUT of both lists
 # below: its stem is already 14 characters, so even its plain ".s"
 # name (16 characters) already exceeds the real MUTOS 1700 DIRSIZ=14
