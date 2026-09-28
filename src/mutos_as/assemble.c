@@ -726,7 +726,17 @@ int main(int argc, char **argv)
      * unconditionally, with no flag needed, so this project always
      * includes them - matching the golden files is what actually
      * matters here, not literal switch-for-switch parity with as.1.
-     * "-o"/"-W" and everything else from as.1 are unaffected. */
+     * "-o"/"-W" and everything else from as.1 are unaffected.
+     *
+     * Real-hardware finding (2026-09-28): the real MUTOS 1700 "as"
+     * binary does not implement "-L" either - "as -L -o v30ide.oL
+     * v30ide.s" prints "Unknown option L ignored" and proceeds,
+     * despite as.1 documenting the switch. So this was never a choice
+     * between two working behaviors; matching the goldens' always-on
+     * labels is simply the only implementable option here. See
+     * CLAUDE.md's "Known, deliberate exception" and STATUS.md's open
+     * item 6 for what this does (and does not) settle about the
+     * separate libc.a-vs-kernel L-label discrepancy. */
     bool verbose = false;
     bool opt_W = false;
     const char *opt_o = NULL;

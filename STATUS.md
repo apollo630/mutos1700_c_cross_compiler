@@ -2631,33 +2631,59 @@ far.
    call whose argument list spans multiple physical lines), re-check that specific
    behavior against it — see `src/mutos_cpp/README.md`'s "Known, documented
    simplifications" section for exactly which three cases these are.
-6. `mutos_as`'s `-L` deviation (see `CLAUDE.md` rule 3) has a counterpart in
-   real evidence now: none of `libc.a`'s 167 objects - 96 of them C-ABI code
-   calling `cret`, among them compiled C such as `atof.o` and `ecvt.o` - has
-   an `L`-number label in its symbol table (the real `as`'s documented
-   default), while the kernel goldens have them (`malloc.o`: 14). Whether the kernel goldens
-   were assembled with `-L` (so that implementing the documented default plus
-   `-L` would satisfy both) is not known; resolving it is what a compiled-C
-   `libc.a` object needs to become a `mutos_as` golden, and what the future
-   `mutos_cc` driver needs to decide how it invokes `mutos_as` (see
-   `tests/mutos_as/libc_recon/README.md`). Infrastructure to actually settle
-   this with real hardware evidence was added 2026-09-28:
-   `tests/mutos_as/kernel_opt/Makefile.mutos` and
-   `tests/mutos_as/kernel_nonopt/Makefile.mutos` each assemble every real
-   kernel `*.s` with the real `as`, both with and without `-L`, for
-   diffing against the already-committed goldens (see
-   `tests/mutos_as/README.md`) — **not yet run on real MUTOS 1700
-   hardware, so this item is still open**; only the tooling to close it
-   exists now.
+6. `mutos_as`'s `-L` deviation (see `CLAUDE.md` rule 3): **the "-L was used
+   for the kernel build" hypothesis is now RULED OUT by real hardware**
+   (2026-09-28). `tests/mutos_as/kernel_opt/Makefile.mutos`/
+   `kernel_nonopt/Makefile.mutos` were written to assemble every real kernel
+   `*.s` with the real `as`, both with and without `-L`, but the first
+   attempt already settled the flag question without needing a full
+   diff: `as -L -o v30ide.oL v30ide.s` printed `Unknown option L ignored`
+   and proceeded — **the real MUTOS 1700 `as` binary does not implement
+   `-L` at all**, despite `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1
+   documenting it (a manual/binary mismatch, not a MUTOS 1700
+   toolchain-version question this project can resolve). Since the flag
+   is silently ignored, "-L" and no-"-L" invocations are necessarily
+   byte-identical on this hardware, so no `.oL` goldens were generated —
+   there would be nothing to compare. This still leaves the original
+   discrepancy genuinely open (none of `libc.a`'s 167 objects — compiled
+   C such as `atof.o`/`ecvt.o` included — has an `L`-number label, while
+   every kernel golden does, e.g. `malloc.o`: 14) but rules out a
+   per-invocation flag as the cause: real `as` has exactly one behavior
+   here, unconditionally. The next angle to try is source-level, not
+   flag-level — whether `L`-labels are emitted by the *compiler* only
+   under certain conditions (so kernel `.s` sources contain them in the
+   text and libc.a's lost sources never did), not by the assembler's
+   symbol-table policy; `mutos_as`'s own always-emit-`L`-labels behavior
+   remains the pragmatic choice for golden parity either way (see
+   `CLAUDE.md` rule 3 and `tests/mutos_as/README.md`).
 7. Two floating-point gaps this document and `fltconst.h`/`assemble.c`
-   already flag as open - a zero `.float` constant's real bytes ("not a
-   plain zero", known only from the ambiguous compiled-C `atof.o`/`ecvt.o`
-   evidence) and `.double` (8-byte) encoding for values needing more than
-   a float's 24 mantissa bits (only one real example known, `ecvt.o`'s
-   `.03`) - have real-hardware-assembled test infrastructure as of
-   2026-09-28: `tests/mutos_as/float_coverage/` (`fltzero.s`, `fltdbl.s`,
-   plus two already-mutos_as-clean regression cases, `fltaddr.s`/
-   `fltmulti.s`, closing a related "lea+.float in one whole object" gap
-   `libc_recon/`'s `floatdat.s`/`ldexp.s` don't cover). **Not yet run on
-   real MUTOS 1700 hardware** — see that directory's `README.md` for the
-   full methodology and current unverified status.
+   already flagged as open - a zero `.float` constant's real bytes ("not a
+   plain zero", previously known only from the ambiguous compiled-C
+   `atof.o`/`ecvt.o` evidence) and `.double` (8-byte) encoding for values
+   needing more than a float's 24 mantissa bits (previously only one real
+   example known, `ecvt.o`'s `.03`) - **are now resolved with real
+   hardware evidence (2026-09-28)**: `tests/mutos_as/float_coverage/`'s
+   four sources were all successfully assembled by the real `as` and
+   pushed as goldens (`fltaddr.o.golden`, `fltmulti.o.golden`,
+   `fltzero.o.golden`, `fltdbl.o.golden`). Confirmed this session by
+   decoding the pushed goldens directly:
+   - `fltaddr.o.golden`/`fltmulti.o.golden` are **byte-identical** to
+     current `mutos_as`'s own output for the same sources — a clean
+     regression confirmation, not just "assembles without error".
+   - `fltzero.o.golden`'s data segment is `bc a2 31 00` — **exactly**
+     `atof.o`/`ecvt.o`'s previously-ambiguous zero bytes, now confirmed
+     from a known, hand-written `.float 0.0` source rather than an
+     unreproducible compiled-C object. `fltconst.c`'s `FLT_ZERO` refusal
+     can be replaced with this confirmed encoding.
+   - `fltdbl.o.golden`'s data segment (`00 00 80 00 00 00 00 81`) matches
+     the documented double format exactly at the predicted bit: exponent
+     byte `0x81` (excess-128 → 2^1, correct for a value just above 1.0),
+     sign bit 0, and a single mantissa bit set 32 bits in — precisely
+     where `1 + 2**-32` (this source's chosen value) should land. This
+     confirms the double format is the same `0.1mmm * 2**(e-128)` scheme
+     as `.float`, just with 55 mantissa bits, and gives a real worked
+     example to implement `.double` support from.
+   Implementing both in `src/mutos_as/fltconst.c`/`assemble.c` from these
+   two goldens is now unblocked - see `CLAUDE.md`'s "Next up" and
+   `tests/mutos_as/float_coverage/README.md`'s "Results" section.
+   `run_goldens.sh` has not been run against these goldens yet.

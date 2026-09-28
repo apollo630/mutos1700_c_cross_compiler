@@ -5331,6 +5331,71 @@ mantissas over the whole exponent range, plain, scientific, `0f`-prefixed and
 trailing-zero spellings, plus inexact neighbours), 0 differences, sanitizer
 clean.
 
+### Real-hardware confirmation: `-L` is a manual/binary mismatch, and the two open `.float`/`.double` gaps are closed (2026-09-28)
+
+Two open items from the previous section — the "-L" question left open in
+"Why no compiled-C `libc.a` object is a golden yet", and the zero-`.float`/
+`.double` gaps described under "`.float`: the format, and what is (not)
+known about the conversion" — both got real-hardware evidence this
+session, from two small test directories built for exactly this purpose
+(`tests/mutos_as/README.md` and `tests/mutos_as/float_coverage/README.md`).
+
+**`-L` is not implemented by the real `as` at all.** The plan was to
+assemble every real kernel `.s` both with and without `-L` and diff each
+result against the already-committed `.o.golden` files, to settle whether
+the kernel build's goldens (all carrying `L`-number labels) came from an
+`as -L` invocation that the lost `libc.a` build never used (none of its
+167 objects has an `L`-number label — the documented default). That
+comparison never had to run: the very first `-L` invocation tried,
+`as -L -o v30ide.oL v30ide.s`, printed `Unknown option L ignored` and
+assembled anyway. `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1 documents
+`-L` as a real switch; the binary on this hardware simply does not have
+it. Since the flag is silently ignored rather than merely defaulted to
+off, an `as`/`as -L` pair is necessarily byte-identical for any input on
+this hardware — there is nothing left to diff, so no `.oL` goldens were
+generated. This rules out "the kernel build used `-L`" as an explanation
+for the `L`-label discrepancy (the flag has exactly one behavior,
+unconditionally), but does not resolve the discrepancy itself: the
+kernel-vs-libc difference is still open, and the next angle is
+source-level — whether the *compiler* emits `L`-labels only under
+conditions the lost `libc.a` C sources never met, not a policy the
+assembler applies per invocation. `mutos_as`'s own always-emit-`L`-labels
+behavior (the "Known, deliberate exception" in `CLAUDE.md`) is unaffected
+either way, since it was already chosen for golden parity rather than for
+matching any hypothesized real invocation.
+
+**Zero `.float` and `.double` now have real, known-source ground truth.**
+`tests/mutos_as/float_coverage/`'s four hand-written sources all assembled
+successfully on real MUTOS 1700 hardware. Two are plain regression
+confirmations — `fltaddr.o.golden`/`fltmulti.o.golden` (`lea <reg>,<label>`
++ `.float` in one whole object) are byte-identical to current `mutos_as`'s
+own output. The other two close gaps the previous section left open:
+
+- `fltzero.o.golden` (source: `.float 0.00000000000000000e+00`) has data
+  segment `bc a2 31 00` — the exact bytes `atof.o`/`ecvt.o` were already
+  known to hold for a zero constant, now confirmed from a known,
+  hand-written source rather than lost compiled-C input whose conversion
+  path could only be guessed at. Where the constant's bytes come from is
+  still not derivable from first principles (the previous section's
+  `ddiv`-clears-`fac` puzzle stands unexplained), but what they *are* is
+  no longer in doubt, which is what `mutos_as`'s `FLT_ZERO` refusal was
+  waiting on.
+- `fltdbl.o.golden` (source: `.double 1.00000000023283064365386962890625`,
+  i.e. `1 + 2**-32`, chosen to need more than a float's 24 mantissa bits)
+  has data segment `00 00 80 00 00 00 00 81`: exponent byte `0x81`
+  (excess-128 → `2**1`, correct for a value just above 1.0), sign bit 0,
+  and a single mantissa bit set exactly 32 bits in — precisely where
+  `2**-32` should land under the same `0.1mmm * 2**(e-128)` scheme
+  `.float` already uses, just with 55 stored mantissa bits instead of 23.
+  This is the first real evidence pinning down `.double`'s bit layout
+  beyond `ecvt.o`'s single already-known `.03` sample.
+
+Both gaps are implementation work now, not open questions — see
+`CLAUDE.md`'s "Next up" and `STATUS.md`'s open item 7. `tests/mutos_as/
+float_coverage/README.md`'s own "Results" section has the full byte
+breakdown; `../run_goldens.sh` has not yet been run against these four
+goldens.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
