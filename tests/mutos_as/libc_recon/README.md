@@ -18,7 +18,7 @@ so a reconstruction must mention its symbols in the original's order.
 
 | File | Real object | What it covers |
 |---|---|---|
-| `ldexp.s` | `tests/mutos1700_libc/ldexp.o` (hand-written assembler) | `lea <reg>,<label>` — an external label at even and odd offsets (`lea di,fac`, `lea ax,fac`: `R_EXT`) and a local data label at an odd offset (`lea si,huge`: `R_DATA`); `mov` with a byte register and a memory operand (`mov al,fac+7` → `A0`, `mov fac+7,al` → `A2`, `mov al,*10.(bp)` → `8A`) |
+| `ldexp.s` | `tests/mutos1700_libc/ldexp.o.base64.txt` (hand-written assembler) | `lea <reg>,<label>` — an external label at even and odd offsets (`lea di,fac`, `lea ax,fac`: `R_EXT`) and a local data label at an odd offset (`lea si,huge`: `R_DATA`); `mov` with a byte register and a memory operand (`mov al,fac+7` → `A0`, `mov fac+7,al` → `A2`, `mov al,*10.(bp)` → `8A`) |
 | `floatdat.s` | `atof.o`, `ecvt.o` (data bytes only) | `.float`: four constants the real toolchain wrote into those objects' data segments, spelled `%.17e` as `mutos_c1` (and the real compiler) writes them |
 
 `ldexp.s` runs through `../run_goldens.sh` like the kernel directories. `floatdat.s`

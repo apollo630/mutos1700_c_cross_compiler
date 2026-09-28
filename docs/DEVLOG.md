@@ -578,7 +578,7 @@ into it, matching this file's usual role).
 
 ### Method
 
-Real hardware-linked evidence, primarily two sources: `tests/mutos1700_crt0/crt0.o`
+Real hardware-linked evidence, primarily two sources: `tests/mutos1700_crt0/crt0.o.base64.txt`
 (the real startup object) and ~15 hand-picked files out of `tests/mutos1700_libc/`'s
 167 real linked objects (chosen to cover: a trivial 1-arg function, 2-arg functions,
 `long`-returning/`long`-parameter functions, the compiler's own long-arithmetic
@@ -5471,9 +5471,13 @@ These apply to *every* milestone, not just the one where they were first learned
   rebuild-and-diff-against-goldens-first rule (`CLAUDE.md` Workflow Guideline 6)
   exists specifically because of this.
 - **`.o` is ambiguous in this repo** — golden reference object files
-  (`tests/mutos1700_libc/*.o`, `tests/mutos_as/*/*.o.golden`) look like build
-  artifacts but are precious, irreplaceable hardware-linked data. A blanket
-  `find . -name "*.o" -delete` from the repo root will destroy them; scope any
+  (`tests/mutos_as/*/*.o.golden`) look like build artifacts but are precious,
+  irreplaceable hardware-linked data; a blanket `find . -name "*.o" -delete`
+  from the repo root will destroy them. `tests/mutos1700_libc/*.o.base64.txt`
+  and `tests/mutos1700_crt0/crt0.o.base64.txt` are the same kind of precious
+  hardware-linked data, now stored as base64 text (the raw `.o`/`.a` binaries
+  were deleted 2026-09-27) specifically so a `.o`-glob sweep can't catch them
+  by accident — don't regenerate or re-encode them either. Scope any
   build-artifact cleanup to the specific `src/mutos_<tool>/` directory being built.
 - **Real compiler output already in the repo is evidence too.** The
   `tests/mutos_as/kernel_nonopt/*.s` files are genuine non-optimized MUTOS `c1`

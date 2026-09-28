@@ -52,7 +52,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
-* `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all object files and `libc.a.base64.txt`.
+* `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all `*.o.base64.txt` object files and `libc.a.base64.txt`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`.
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
@@ -95,7 +95,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     the real MUTOS 1700 `make(1)` cannot run it (no `%.o: %.c`, no
     `$(wildcard)`/`$(dir)`/`$(notdir)`, no `:=` — confirmed against its
     own manpage). `goldens` (base64-encoding the binary `.1`/`.2` files,
-    matching the `tests/mutos1700_libc/*.o` convention) is meant to run
+    matching `tests/mutos_as/kernel_opt/`'s `*.o.golden`/`*.o.golden_base64.txt`
+    convention) is meant to run
     on the modern host regardless of how the `.s`/`.i`/`.1`/`.2` files
     upstream of it were produced.
   * `<category>/Makefile.mutos` (one per category directory, e.g.
@@ -292,7 +293,7 @@ You act as an expert systems programmer, compiler architect, and operating syste
 ### 📋 Workflow Guidelines
 1. **Context Alignment**: Before modifying code in `/src/mutos_<tool>/`, always check the corresponding test suite in `/tests/mutos_<tool>/` to understand the expected behavior and existing edge cases.
 2. **Golden Master Integrity**: Do not alter files in `/tests/.../kernel_opt/` or `kernel_nonopt/` unless explicitly instructed. These serve as our regression baseline.
-   * **Caution — `.o` is ambiguous in this repo**: `tests/mutos1700_libc/*.o`, `tests/mutos1700_crt0/*.o`, and every `*.o.golden` under `tests/mutos_as/` are precious real hardware-linked **reference data**, not regenerable build byproducts, even though they share the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy them. Always scope any such cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
+   * **Caution — `.o` is ambiguous in this repo**: every `*.o.golden` under `tests/mutos_as/` is precious real hardware-linked **reference data**, not a regenerable build byproduct, even though it shares the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy those. `tests/mutos1700_libc/*.o.base64.txt`, `tests/mutos1700_libc/libc.a.base64.txt`, and `tests/mutos1700_crt0/crt0.o.base64.txt` are the same kind of precious real hardware-linked reference data — stored as base64 *text* (the raw `.o`/`.a` binaries were deleted 2026-09-27) specifically so a `.o`-glob cleanup can't catch them by accident, but they must never be regenerated, re-encoded, or otherwise altered either. Always scope any build-artifact cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
      Extend the same care to `tests/mutos_as/v30_speculative/`'s `*.o.crosschecked` files
      (if/when present) — do not delete them in a cleanup sweep either, but also never
      treat them as equivalent to a real `*.o.golden`: they are cross-checked against

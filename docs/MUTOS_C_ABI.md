@@ -15,8 +15,9 @@ C-compiler folklore — every rule has a cited example.
 
 ## Evidence sources
 
-- `tests/mutos1700_crt0/crt0.o` — the real linked C runtime startup object.
-- `tests/mutos1700_libc/*.o` (167 files) — the real linked library, containing both
+- `tests/mutos1700_crt0/crt0.o.base64.txt` (base64-encoded; decode before disassembling)
+  — the real linked C runtime startup object.
+- `tests/mutos1700_libc/*.o.base64.txt` (167 files, likewise base64-encoded) — the real linked library, containing both
   **compiler-generated** functions (the vast majority — anything with a leading `_`
   and a `push bp / mov bp,sp / push di / push si` opening) and a smaller set of
   **hand-written assembly** leaf/syscall stubs (see "What is *not* part of this
