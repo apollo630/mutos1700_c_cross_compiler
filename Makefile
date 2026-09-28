@@ -68,9 +68,14 @@ clean:
 # in the current directory), so it is run once per golden subdirectory.
 # libc_recon/ adds check_floatdat.sh (".float" bytes against real
 # libc.a constants), float_coverage/ holds real-hardware objects from
-# hand-written .float/.double sources (a zero .float and a .double among
-# them), and assemble_cc_goldens.sh checks that every real compiler
-# output in tests/mutos_cc assembles (no reference objects).
+# hand-written .float/.double sources (zeros, a .double, an inexact
+# .float among them), and assemble_cc_goldens.sh checks that every real
+# compiler output in tests/mutos_cc assembles (no reference objects).
+# float_coverage/fltmodel.py (Python 3, standard library only) re-derives
+# the .float/.double conversion model's unknowns from those goldens and
+# checks src/mutos_as/fltconst.c against its own, independent model.
+# tests/mutos_as/float_open/ is deliberately NOT run here: it holds
+# probes mutos_as still refuses (see its README.md).
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -81,6 +86,9 @@ test: all
 	@cd tests/mutos_as/libc_recon && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ./check_floatdat.sh
 	@echo "== mutos_as goldens (float_coverage - .float/.double) =="
 	@cd tests/mutos_as/float_coverage && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
+	@echo "== mutos_as .float/.double conversion model (float_coverage/fltmodel.py) =="
+	@python3 tests/mutos_as/float_coverage/fltmodel.py survivors
+	@python3 tests/mutos_as/float_coverage/fltmodel.py check $(CURDIR)/src/mutos_as/fltconst_test
 	@echo "== mutos_as on the real compiler's .s (tests/mutos_cc goldens) =="
 	@MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as tests/mutos_as/assemble_cc_goldens.sh
 	@echo "== mutos_cpp goldens =="

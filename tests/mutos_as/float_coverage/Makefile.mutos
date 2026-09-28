@@ -1,4 +1,4 @@
-# Makefile.mutos -- float_coverage (this directory's 4 files only).
+# Makefile.mutos -- float_coverage (this directory's 5 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory ON THE REAL MUTOS 1700 hardware / emulator:
@@ -6,19 +6,19 @@
 #   make -f Makefile.mutos
 #   make -f Makefile.mutos clean
 #
-# Assembles each hand-written *.s source with the REAL "as" to gather
-# real-hardware ground truth for two currently-open mutos_as gaps
-# alongside two already-working regression cases - see README.md for
-# what each of the four actually tests and why:
+# Assembles each hand-written *.s source with the REAL "as" - the
+# real-hardware ground truth for mutos_as's .float/.double encoding (see
+# README.md for what each file tests and why). All five goldens exist
+# (2026-09-28) and mutos_as reproduces every one of them:
 #
-#   fltaddr.o, fltmulti.o -- expected to assemble cleanly on BOTH the
-#     real "as" and the current mutos_as (regression goldens).
-#   fltzero.o, fltdbl.o -- expected to assemble cleanly on the real
-#     "as" here, but mutos_as currently REFUSES both (a known,
-#     documented gap, not a bug) - capturing their real bytes is the
-#     entire point of this pair.
+#   fltaddr.o, fltmulti.o -- lea <reg>,<label> + .float in whole objects.
+#   fltzero.o, fltdbl.o -- a zero .float and a .double; mutos_as refused
+#     both until their goldens showed the real bytes.
+#   fltopen.o -- a short zero, a negative zero, a zero .double and an
+#     inexact .float (written in ../float_open/, moved here once
+#     mutos_as reproduced it).
 #
-# One small makefile (4 files) needs no per-category split the way
+# One small makefile (5 files) needs no per-category split the way
 # tests/mutos_cc's 62-file corpus did - see that directory's own
 # Makefile.mutos header for the "Make: out of memory" history this
 # avoids simply by staying this small.
@@ -27,13 +27,12 @@
 # tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't
 # carry across separate recipe lines.
 #
-# NOT yet run on real MUTOS 1700 hardware - unverified, like every
-# Makefile.mutos this session added (see also ../kernel_opt/
-# Makefile.mutos, ../kernel_nonopt/Makefile.mutos).
+# Run on real MUTOS 1700 hardware 2026-09-28 (the fltopen rule in
+# ../float_open/Makefile.mutos, where fltopen.s was assembled).
 
 AS = as
 
-all: fltaddr.o fltmulti.o fltzero.o fltdbl.o
+all: fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o
 
 fltaddr.o: fltaddr.s
 	$(AS) -o fltaddr.o fltaddr.s
@@ -47,5 +46,8 @@ fltzero.o: fltzero.s
 fltdbl.o: fltdbl.s
 	$(AS) -o fltdbl.o fltdbl.s
 
+fltopen.o: fltopen.s
+	$(AS) -o fltopen.o fltopen.s
+
 clean:
-	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o
+	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o

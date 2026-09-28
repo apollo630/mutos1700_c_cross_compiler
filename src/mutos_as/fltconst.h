@@ -2,24 +2,22 @@
  * fltconst.h - decimal text -> MUTOS 1700 floating constant: 4 bytes
  * (the ".float" directive) or 8 bytes (".double").
  *
- * MUTOS 1700's floating format, as the real toolchain's own data bytes
- * show it (tests/mutos1700_libc: atof.o's 2**56 is 00 00 00 b9, ecvt.o's
- * 10.0 is 00 00 20 84, 1.0 is 00 00 00 81, atof.o's 5.0 is 00 00 20 83)
- * and as its software floating-point runtime handles it (stkmath.o's
- * fneg flips bit 7 of a double's byte 6, which is a float's byte 2 -
- * stacks.o's flds loads a float into a double's high four bytes): the
- * value is 0.1mmm...(binary) * 2**(e - 128), stored
+ * FORMAT. MUTOS 1700's floating format, as the real toolchain's own data
+ * bytes show it (tests/mutos1700_libc: atof.o's 2**56 is 00 00 00 b9,
+ * ecvt.o's 10.0 is 00 00 20 84, 1.0 is 00 00 00 81, atof.o's 5.0 is
+ * 00 00 20 83) and as its software floating-point runtime handles it
+ * (stkmath.o's fneg flips bit 7 of a double's byte 6, which is a float's
+ * byte 2 - stacks.o's flds loads a float into a double's high four
+ * bytes): the value is 0.1mmm...(binary) * 2**(e - 128), stored
  * little-endian as a whole - the excess-128 exponent e in the HIGHEST
  * byte, the sign in the top bit of the byte below it, then the mantissa
  * bits after the leading 1, which is not stored: 23 of them in a float,
  * 55 in a double (24 and 56 significant bits). e == 0 is zero. NOT
- * PDP-11 word order (see CLAUDE.md rule 5). The double layout is
- * confirmed by real assembler output from a known source:
- * tests/mutos_as/float_coverage/fltdbl.o.golden, ".double
- * 1.00000000023283064365386962890625" (1 + 2**-32, 33 significant bits)
- * -> 00 00 80 00 00 00 00 81.
+ * PDP-11 word order (see CLAUDE.md rule 5). Double layout confirmed by
+ * tests/mutos_as/float_coverage/fltdbl.o.golden (1 + 2**-32 ->
+ * 00 00 80 00 00 00 00 81).
  *
- * Accepted text (MUTOS1700_Assembler_as.pdf sect. 3.2: a float constant
+ * ACCEPTED TEXT (MUTOS1700_Assembler_as.pdf sect. 3.2: a float constant
  * is "0f" followed by "Zeichen ..., die atof als Floating-Point-Zahl
  * akzeptiert"; a double constant starts with "0d" instead and marks its
  * exponent with d or D):
@@ -31,31 +29,57 @@
  *
  * The bare form is what the real compiler writes (tests/mutos_cc/
  * 08_float's .s goldens: ".float 3.50000000000000000e+00") and what the
- * real assembler accepts for .double (fltdbl.s above); the prefixed
- * forms are the manual's constant spellings. Nothing may follow the
- * number.
+ * real assembler accepts for .double; the prefixed forms are the
+ * manual's constant spellings. Nothing may follow the number.
  *
- * Only a value EXACTLY representable in the format is accepted: it is
- * encoded exactly, which is the only case real bytes confirm (every
- * nonzero 4-byte constant in libc.a is exact, and so is fltdbl.s's
- * double - see docs/DEVLOG.md's 08_float section). Whether the real
- * assembler rounds or truncates an inexact value is not known (ecvt.o's
- * one 8-byte constant, 0.03, is correctly rounded - a single sample, and
- * its assembler-input spelling is lost), so an inexact value is refused
- * rather than guessed. The check is exact: the decimal text is converted
- * with integer arithmetic, never through a host float.
+ * CONVERSION MODEL. The real assembler converts with v7 libc atof()'s
+ * algorithm on the 56-bit double, and a .float is the HIGH FOUR BYTES of
+ * that double - truncated, not rounded. Every confirmed constant fits
+ * this, most tellingly the four in float_coverage/fltopen.o.golden,
+ * two of which (Z1, Z3) were predicted byte for byte before the real
+ * assembler ran:
  *
- * Zero is not a plain zero. The real assembler writes a zero .float as
- * bc a2 31 00 - exponent byte 0, the mantissa bits of 5**17 - confirmed
- * from a known source (float_coverage/fltzero.o.golden, ".float
- * 0.00000000000000000e+00", the "%.17e" text the real compiler writes)
- * and matching every zero constant compiled into atof.o/ecvt.o. The
- * mantissa looks like a leftover of scaling the text's 17 fraction
- * digits by 5**17 (v7 atof()'s flexp), so another spelling of zero -
- * "0.0" would be scaled by 5 - may well have other bytes. So a zero is
- * accepted only in the confirmed shape: .float, no minus sign, exactly
- * 17 digits after the '.', exponent 0 (FLT_ZERO otherwise). No zero
- * .double has real bytes anywhere, so every zero .double is refused.
+ *   - digits: fl = 10*fl + digit while fl < 2**56 (atof's "big" -
+ *     also a constant in libc's own atof.o), a fraction digit lowering
+ *     the decimal exponent; after that an integer digit raises the
+ *     exponent and a fraction digit is dropped;
+ *   - flexp = 5**k, k = |decimal exponent|, by repeated squaring;
+ *   - fl /= flexp (negative exponent) or fl *= flexp; ldexp(fl, exponent);
+ *     negated for a leading '-';
+ *   - .float 0.10000000000000000e+00 -> cc cc 4c 7d (fltopen IN): the
+ *     high half of the double for 0.1 - correct rounding would give cd;
+ *   - a zero dividend gives the DIVISOR's mantissa with exponent byte 0:
+ *     ".float 0.0" -> 00 00 20 00 (5**1, fltopen Z1),
+ *     ".float 0.00000000000000000e+00" -> bc a2 31 00 (5**17, fltzero -
+ *     and every zero compiled into atof.o/ecvt.o),
+ *     ".double 0.00000000000000000e+00" -> 00 00 c5 2e bc a2 31 00
+ *     (fltopen Z3; its high half is fltzero's bytes), and the sign is
+ *     applied afterwards: "-0.00000000000000000e+00" -> bc a2 b1 00
+ *     (fltopen Z2).
+ *
+ * How each double operation (dmul, dadd, ddiv) rounds is not known,
+ * except that ddiv does not truncate (fltdbl.o.golden needs its one
+ * inexact quotient rounded up; truncation gives one unit less). So
+ * flt_encode() runs the model under every remaining combination - dmul
+ * and dadd each truncating, to nearest (ties even or away) or away from
+ * zero, ddiv any of those but truncating - and accepts a constant only
+ * if all of them give the same bytes. That covers every exactly
+ * representable value whose conversion needs no rounding (all constants
+ * seen in real objects), and inexact values too where the unknown
+ * rounding cannot reach the stored bytes (a .float's hidden low 32 bits
+ * absorb it, e.g. 0.1). It refuses (FLT_ROUNDING) a value whose bytes
+ * the unknown rounding decides - including some EXACT floats written in
+ * the compiler's 18-digit "%.17e" form, e.g. 2.93572534179687500e+03,
+ * whose 18th digit makes 10*fl inexact: under a truncating dmul the
+ * real assembler would store one unit less in the last place.
+ *
+ * A zero is accepted only where it is observed: a negative decimal
+ * exponent of at most 24 (more fraction digits than exponent), so that
+ * 5**k is exact; any sign, either directive. Other zeros ("0", "0e5"
+ * - atof's multiplication path - or more than 24) are refused
+ * (FLT_ZERO). Values outside the format's exponent range at any step of
+ * the conversion are refused too (FLT_RANGE): the real arithmetic's
+ * overflow and underflow behaviour is unknown.
  */
 
 #ifndef MUTOS_AS_FLTCONST_H
@@ -63,18 +87,18 @@
 
 #include <stddef.h>
 
-/* Which directive's format: its size, its precision, its prefix. */
+/* Which directive's format: its size and its prefix. */
 typedef enum {
-    FP_FLOAT = 0,   /* .float:  4 bytes, 24 significant bits, 0f prefix */
-    FP_DOUBLE       /* .double: 8 bytes, 56 significant bits, 0d prefix */
+    FP_FLOAT = 0,   /* .float:  4 bytes, the double's high half, 0f prefix */
+    FP_DOUBLE       /* .double: 8 bytes, 0d prefix */
 } FpKind;
 
 typedef enum {
     FLT_OK = 0,
     FLT_SYNTAX,     /* not a number in the accepted syntax */
-    FLT_ZERO,       /* a zero whose real bytes are not confirmed (see above) */
-    FLT_INEXACT,    /* not exactly representable in the format's significant bits */
-    FLT_RANGE       /* exponent outside the format, or text too long */
+    FLT_ZERO,       /* a zero whose real bytes are not known (see above) */
+    FLT_ROUNDING,   /* the bytes depend on the real arithmetic's unknown rounding */
+    FLT_RANGE       /* exponent outside the format at some step, or text too long */
 } FltStatus;
 
 /* Size in bytes of one constant of this kind: 4 or 8. */

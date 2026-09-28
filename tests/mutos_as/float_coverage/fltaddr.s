@@ -8,9 +8,9 @@
 | (docs/DEVLOG.md's 08_float section / src/mutos_cc/README.md: "an
 | operand's address in AX (`lea ax,<x>` / `call flds` ... loads)").
 |
-| HALF = 2.5 = 1.01b * 2**1: exact in a float's 24-bit mantissa (see
-| src/mutos_as/fltconst.h - only an exactly representable value is
-| accepted), so this assembles cleanly with the CURRENT mutos_as - this
+| HALF = 2.5 = 1.01b * 2**1: exact in a float's 24-bit mantissa (when
+| this was written, src/mutos_as/fltconst.h accepted only an exactly
+| representable value), so this assembles cleanly with mutos_as - this
 | is a regression golden, not an open-question probe (see fltzero.s /
 | fltdbl.s in this directory for those).
 

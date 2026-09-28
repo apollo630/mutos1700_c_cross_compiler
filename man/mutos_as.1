@@ -274,31 +274,64 @@ The constant is in the MUTOS floating format: little-endian, the
 excess-128 binary exponent in the highest byte, the sign in the top
 bit of the byte below it, then the mantissa bits after its leading
 one.
-Only a value exactly representable in the format's 24 significant
-bits is accepted, and encoded exactly; a value that is not is
-rejected with an error, since how the original assembler rounds such
-a value is not confirmed.
 No alignment is implied and no relocation is ever needed.
 .IP
-Zero is not stored as zero bytes: the original assembler writes
+The bytes are those the original assembler writes, which are not
+always the correctly rounded value: it converts with the Version 7
+.BR atof (3)
+algorithm on the 56-bit double (at most about 17 digits are used;
+the digits are scaled by a power of 5 and then by a power of 2), and a
+.B .float
+is the high half of that double, truncated.
+So
+.B .float 0.1
+gives
+.BR "cc cc 4c 7d" ,
+not the correctly rounded
+.BR "cd cc 4c 7d" .
+How the original's double arithmetic rounds each step is not fully
+known; a constant is accepted only when every rounding still possible
+gives the same bytes, and is otherwise rejected with an error saying
+so.
+This rejects some exact values too, among them some the compiler
+writes in its 18-digit form, e.g.\&
+.BR 2.93572534179687500e+03 ,
+where the original may store one unit less in the last place.
+.IP
+Zero is not stored as zero bytes: the original writes exponent byte 0
+with the mantissa of 5 to the power of the number of fraction digits
+less the exponent, e.g.\&
 .B bc a2 31 00
-(exponent byte 0 with a leftover mantissa).
-Those bytes are confirmed only for the spelling the compiler writes,
-.BR 0.00000000000000000e+00 ,
-so exactly that shape (no minus sign, 17 digits after the point,
-exponent 0) is accepted; any other spelling of zero is rejected with
-an error.
+for the compiler's
+.B 0.00000000000000000e+00
+and
+.B 00 00 20 00
+for
+.BR 0.0 ,
+with the sign bit set for a negative zero.
+A zero is accepted when that power is 1 to 24; any other zero (such as
+.B 0
+or
+.BR 0e5 )
+is rejected with an error, since its bytes are not known.
+Values whose conversion leaves the format's exponent range at any
+step (the value itself, or the power of 5 for a large decimal
+exponent) are rejected as out of range.
 .TP
 .BI .double\  number\  "[, " number " ...]"
 Like
 .BR .float ,
 but emits one 8-byte constant per
 .IR number :
-the same format with 56 significant bits (55 stored after the
-leading one), e.g.\&
+the whole double, 56 significant bits (55 stored after the leading
+one), e.g.\&
 .B .double 1.00000000023283064365386962890625
 gives
-.BR "00 00 80 00 00 00 00 81" .
+.B 00 00 80 00 00 00 00 81
+and
+.B .double 0.1
+gives
+.BR "cd cc cc cc cc cc 4c 7d" .
 The number is written as for
 .B .float
 without a prefix, or with the manual's
@@ -309,10 +342,10 @@ instead of
 .BR e ,
 e.g.\&
 .BR "0d1.5d3" .
-Only exactly representable values are accepted, and every zero is
-rejected: no bytes of the original assembler for a zero
-.B .double
-are confirmed.
+Acceptance, zeros and range follow the same rules as for
+.BR .float ;
+since all eight bytes are stored, more values depend on the unknown
+rounding and are rejected.
 .PP
 Other directives this assembler does not implement are ignored.
 .SS "Branches and jumps"

@@ -1,4 +1,4 @@
-# Makefile.mutos -- float_open (this directory's one file).
+# Makefile.mutos -- float_open (this directory's current probe only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory ON THE REAL MUTOS 1700 hardware / emulator:
@@ -6,28 +6,25 @@
 #   make -f Makefile.mutos
 #   make -f Makefile.mutos clean
 #
-# Assembles fltopen.s with the REAL "as" to gather real-hardware ground
-# truth for the four still-open floating-point spellings listed in
-# fltopen.s's own header and README.md - the ones STATUS.md's open item
-# 7 lists as remaining after ../float_coverage/'s zero-".float" and
-# ".double" implementation (2026-09-28). fltopen.o is expected to
-# assemble cleanly here (see README.md); the CURRENT mutos_as refuses
-# all four constants in it by design, so this file is NOT part of the
-# top-level "make test" - see this directory's README.md.
+# Assembles fltmode.s with the REAL "as": the third round of
+# floating-point probes, to pin down how the real assembler's double
+# arithmetic rounds (see README.md). fltmode.o is expected to assemble
+# cleanly here; the CURRENT mutos_as refuses eight of its ten constants
+# by design, so this directory is NOT part of the top-level "make test".
+# (The previous probe here, fltopen.s, was run on real hardware
+# 2026-09-28 with the same rule shape and has moved to
+# ../float_coverage/.)
 #
 # One recipe, one shell line, per make(1)'s own note (see
 # tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't carry
 # across separate recipe lines.
-#
-# NOT yet run on real MUTOS 1700 hardware - unverified, like
-# ../float_coverage/Makefile.mutos was before its own goldens landed.
 
 AS = as
 
-all: fltopen.o
+all: fltmode.o
 
-fltopen.o: fltopen.s
-	$(AS) -o fltopen.o fltopen.s
+fltmode.o: fltmode.s
+	$(AS) -o fltmode.o fltmode.s
 
 clean:
-	rm -f fltopen.o
+	rm -f fltmode.o
