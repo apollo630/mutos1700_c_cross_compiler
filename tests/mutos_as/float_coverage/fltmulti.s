@@ -12,8 +12,8 @@
 |   PI = 3.140625 = 11.001001b (9/64 = 0.140625, exact)
 |   EE = 2.71875   = 10.10111b (23/32 = 0.71875, exact)
 | (Deliberately not real pi/e - those are irrational, not exactly
-| representable, and fltconst.h refuses anything inexact rather than
-| round or truncate it.)
+| representable, and when this was written fltconst.h refused anything
+| inexact rather than round or truncate it.)
 
 .text
 .globl	_fltmulti_probe

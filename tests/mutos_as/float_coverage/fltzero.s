@@ -11,8 +11,9 @@
 | RESOLVED 2026-09-28: the real "as" wrote bc a2 31 00 (fltzero.o.golden),
 | and fltconst.c now encodes exactly this spelling of zero that way -
 | mutos_as reproduces the golden byte for byte. Other spellings of zero
-| ("0.0", a minus sign, ...) stay refused: their real bytes may differ
-| (see src/mutos_as/fltconst.h and README.md's "Implemented").
+| were refused until fltopen.o.golden showed their bytes too ("0.0" ->
+| 00 00 20 00, a minus sign sets the sign bit - see fltopen.s and
+| src/mutos_as/fltconst.h).
 
 .text
 .globl	_fltzero_probe

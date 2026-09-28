@@ -1,61 +1,71 @@
-# `tests/mutos_as/float_open/` — the floating-point spellings still open after 2026-09-28
+# `tests/mutos_as/float_open/` — floating-point probes `mutos_as` still refuses
 
-One hand-written, **new** assembler source — `fltopen.s` — probing the
-four specific spellings `STATUS.md`'s open item 7 still lists as
-unresolved once `../float_coverage/` closed the zero-`.float` and
-`.double` gaps (2026-09-28, see `src/mutos_as/fltconst.h` and
-`CLAUDE.md`'s "Next up"). Like `../float_coverage/fltzero.s`/`fltdbl.s`
-were before that session, this is a **probe for open questions, not a
-regression golden**: it exists to gather real-hardware bytes for cases
-the current `mutos_as` refuses on principle rather than guesses at.
+This directory holds hand-written probes for the real MUTOS 1700 `as`
+whose constants the current `mutos_as` refuses on principle. Every
+constant in them is plain `atof` syntax, so the real `as` assembles
+them. Because `mutos_as` does not, `../run_goldens.sh` would put them in
+category 3 ("errors calling mutos_as") permanently, so this directory
+is deliberately **not** part of the top-level `make test`. Once
+`mutos_as` reproduces a probe's golden, the probe and its golden move to
+`../float_coverage/` and become regression goldens. That is what
+happened to this directory's first probe, `fltopen.s`, on 2026-09-28:
+see `../float_coverage/README.md`.
 
-## The four cases
+## Current probe: `fltmode.s` (not yet run on real hardware)
 
-| Label | Text | What it probes |
-|---|---|---|
-| `Z1` | `.float 0.0` | Is the short zero spelling's real encoding the same as the confirmed `%.17e` one (`bc a2 31 00`), or different? The confirmed bytes look like a leftover of scaling 17 fraction digits by `5**17` (v7 `atof()`'s `flexp`) — a text with a different fraction-digit count may convert to something else entirely. |
-| `Z2` | `.float -0.00000000000000000e+00` | The one confirmed zero spelling, negated. Does the sign bit (byte 2's top bit) get set on an otherwise-zero exponent byte, or is zero special-cased to ignore the sign? |
-| `Z3` | `.double 0.00000000000000000e+00` | Zero in the 8-byte format. No real `.double` zero exists anywhere in `tests/mutos1700_libc`'s objects to compare against — `.double` itself was only confirmed for exactly representable non-zero values (`fltdbl.o.golden`, `1 + 2**-32`). |
-| `IN` | `.float 0.10000000000000000e+00` | 0.1 is not exactly representable in a float's 24-bit mantissa (a repeating binary fraction). Does the real assembler round it, truncate it, or refuse it? `ecvt.o`'s one known inexact `.double` sample (`.03`) is correctly *rounded*, but its assembler-input spelling is lost, so it doesn't answer this for `.float`. |
+`mutos_as` re-enacts the real assembler's conversion: v7 `atof()` on
+the 56-bit double, with `.float` stored as the double's high half (see
+`src/mutos_as/fltconst.h`). The one unknown left is how the real double
+arithmetic rounds. That covers `dmul` (M), `dadd` (A) and `ddiv` (D),
+each of which may truncate, round to nearest (ties to even or away) or
+round away from zero. Of those 64 combinations, 48 still reproduce every
+golden in `../float_coverage/`; only a truncating `ddiv` is ruled out
+(`fltdbl.o.golden`). `mutos_as` refuses any constant whose bytes the 48
+disagree on. `fltmode.s` is built to pin the rounding down, and to test
+the model where it has not been tested yet:
 
-All four are plain decimal texts in the syntax
-`MUTOS1700_Assembler_as.pdf` sect. 3.2 documents ("Zeichen ..., die
-`atof` als Floating-Point-Zahl akzeptiert") — nothing in the manual
-restricts that to exactly representable values, so **the real `as` is
-expected to accept all four without error**. This probe is about what
-*bytes* it writes, not about whether it errors.
+| Label | Data offset | Text | Purpose |
+|---|---|---|---|
+| `M1` | `data+0` | `.double 1.47397409833160963e-08` | rounding modes |
+| `M2` | `data+8` | `.double 2.97967517326469533e-09` | rounding modes |
+| `M3` | `data+16` | `.double 1.45615926012396812e-02` | rounding modes |
+| `M4` | `data+24` | `.double 1007211910940938336` | rounding modes (and `atof`'s digit dropping beyond 2\*\*56) |
+| `CF` | `data+32` | `.float 2.93572534179687500e+03` | an exact float the compiler can write, refused now |
+| `D1` | `data+36` | `.double 0.10000000000000000e+00` | accepted now on the model's prediction alone |
+| `NZ` | `data+44` | `.double -0.00000000000000000e+00` | accepted now on the model's prediction alone |
+| `Z0` | `data+52` | `.float 0.00000000000000000e+17` | a zero on `atof`'s multiplication path (exponent 0) |
+| `Z4` | `data+56` | `.float 0.0e+05` | a zero on the multiplication path (`fl *= 5**4`) |
+| `Z25` | `data+60` | `.double 0.0000000000000000000000000` | a zero with 25 fraction digits: `5**25` is rounded |
 
-The **current `mutos_as` refuses all four**, each with its own
-diagnosis (verified against the source in this directory):
+`M1`…`M4` were chosen by searching about 7,500 compiler-style texts for
+the ones that split the 48 combinations best. Together they separate
+them into 32 classes; the only thing they leave open is `ddiv`'s tie
+rule, and a division by `5**k` never ties.
 
-```
-error: bad .float operand '0.0' at line 63: this zero is not supported
-  (the real assembler's bytes are confirmed only for
-  0.00000000000000000e+00: 17 fraction digits, exponent 0, no minus sign)
-error: bad .float operand '-0.00000000000000000e+00' at line 64: this
-  zero is not supported (...)
-error: bad .double operand '0.00000000000000000e+00' at line 65: zero
-  is not supported in .double (the real assembler's bytes for it are
-  unconfirmed)
-error: bad .float operand '0.10000000000000000e+00' at line 66: not
-  exactly representable as a float (the real assembler's rounding is
-  unconfirmed)
-```
+### Predicted bytes
 
-That is by design (see `fltopen.s`'s own header and
-`src/mutos_as/fltconst.h`'s comment), not a bug to work around —
-**this directory does not wire into the top-level `make test`**, unlike
-`../float_coverage/`: since `mutos_as` refuses every constant in
-`fltopen.s`, `../run_goldens.sh` would always put it in category 3
-("errors calling mutos_as") with no golden to diff against, which would
-make `make test` fail permanently until the real answers land. Run it
-manually instead (see below).
+Each row below is a possible outcome under the 48 combinations. If the
+real bytes match none of a constant's rows, the conversion model
+itself is wrong, which is also a finding.
 
-Each constant is loaded the way `mutos_c1` actually emits a floating
-operand (`lea <reg>,<label>` / `call flds`|`fldd` —
-`docs/DEVLOG.md`'s `08_float` section), so `fltopen.s` is a normal
-whole-object source, not a data-only file like
-`../libc_recon/floatdat.s`.
+- `M1`: `00 00 00 00 11 3a 7d 66` (D away) · `ff ff ff ff 10 3a 7d 66`
+  (D nearest) · `fe ff ff ff 10 3a 7d 66` (M not trunc, A trunc, D away)
+  · `fd ff ff ff 10 3a 7d 66` (M not trunc, A trunc, D nearest) ·
+  `02 00 00 00 11 3a 7d 66` (M trunc, A not trunc, D away) ·
+  `01 00 00 00 11 3a 7d 66` (M trunc, A not trunc, D nearest)
+- `M2`: `02 00 00 00 00 c3 4c 64` · `01 00 00 00 00 c3 4c 64` ·
+  `00 00 00 00 00 c3 4c 64` · `ff ff ff ff ff c2 4c 64`
+- `M3`: `02 00 00 00 bf 93 6e 7a` · `00 00 00 00 bf 93 6e 7a` ·
+  `fe ff ff ff be 93 6e 7a`
+- `M4`: `07 d5 52 58 5e a5 5f bc` · `05 d5 52 58 5e a5 5f bc` ·
+  `06 d5 52 58 5e a5 5f bc`
+- `CF`: `9b 7b 37 8c` (the exact value) or `9a 7b 37 8c` (one unit
+  less: `dmul` truncates and `ddiv` rounds to nearest)
+- `D1`: `cd cc cc cc cc cc 4c 7d` (the only prediction)
+- `NZ`: `00 00 c5 2e bc a2 b1 00` (the only prediction)
+- `Z0`, `Z4`, `Z25`: no prediction. The model covers a zero only on
+  `atof`'s division path with an exact `5**k`. For `Z25` a guess would
+  be the rounded `5**25`'s mantissa with exponent byte 0.
 
 ## Running this
 
@@ -63,63 +73,34 @@ Same two-machine shape as `../float_coverage/`:
 
 1. `make -f Makefile.mutos` — **on real MUTOS 1700 hardware / an
    accurate emulator**, from inside this directory. Produces
-   `fltopen.o`. Expected to succeed (see above); if the real `as`
-   refuses any operand instead, that is itself the finding — note
-   which one and its exact error text.
+   `fltmode.o`. If the real `as` refuses an operand instead, note which
+   one and its exact error text; that is the finding.
 2. `make goldens` — **on the modern (Linux) side**, after copying
-   `fltopen.o` back into this directory. Produces `fltopen.o.golden`
-   (a verbatim copy) and `fltopen.o.golden_base64.txt` (base64 text),
-   the same naming `../kernel_opt/`, `../kernel_nonopt/`,
-   `../libc_recon/` and `../float_coverage/` already use
-   (`../mk_goldenbase64.sh`).
+   `fltmode.o` back here. Produces its golden and base64 companion
+   (`<name>.o.golden`, `<name>.o.golden_base64.txt` - `../mk_goldenbase64.sh`'s
+   naming).
 
 ## Reading the result
 
-`fltopen.o`'s `.data` segment holds the four constants back to back,
-in declaration order, with no padding between them (no relocation, no
-alignment — same as every other `.float`/`.double` constant this
-project has seen):
+From `../float_coverage/`:
 
-| Bytes | Offset | Constant |
-|---|---|---|
-| 4 | `data+0` | `Z1` (`.float 0.0`) |
-| 4 | `data+4` | `Z2` (`.float -0.00000000000000000e+00`) |
-| 8 | `data+8` | `Z3` (`.double 0.00000000000000000e+00`) |
-| 4 | `data+16` | `IN` (`.float 0.10000000000000000e+00`) |
+```
+python3 fltmodel.py survivors . ../float_open
+```
 
-(`data` itself starts right after the `a.out` header's 16 bytes plus
-`a_text` bytes — `../libc_recon/check_floatdat.sh`'s `data_bytes()`
-shows the exact offset arithmetic, including reading `a_text`
-byte-by-byte so host endianness doesn't matter.)
+This reads every constant of `fltmode.s` out of its golden
+alongside the existing goldens and prints the rounding-mode
+combinations that fit all of them. It lists `Z0`/`Z4`/`Z25` as "NOT
+MODELLED" together with their real bytes, and reports "MODEL
+CONTRADICTED" if a modelled constant fits no combination at all. It
+exits 1 in any case until `fltconst.c` catches up. Then:
 
-## Once the golden exists
-
-Each of the four answers feeds back into
-`src/mutos_as/fltconst.c`/`.h` independently — they don't have to all
-resolve at once:
-
-- If `Z1`'s bytes equal `Z2`'s with bit 7 of byte 2 clear regardless of
-  the source's minus sign, or if `Z1` differs from the confirmed
-  `bc a2 31 00`, that tells `flt_encode()`'s zero branch exactly which
-  spellings besides the current one to accept, and what bytes to write
-  for them (`FORMATS[].zero_confirmed` in `fltconst.c` and the
-  `ZERO_FRAC_DIGITS`-gated check would need to grow into a small table
-  of confirmed spelling→bytes pairs, or a real conversion rule, once
-  more than one shape is known).
-- `Z3`'s bytes pin down whether `.double`'s zero follows the same
-  leftover-mantissa pattern as `.float`'s (scaled by `5**17` again, or
-  by a different power for the extra 32 mantissa bits) or is a clean
-  8-byte zero — either answer lets `FORMATS[FP_DOUBLE].zero_confirmed`
-  flip to `true` with its own confirmed bytes.
-- `IN`'s bytes settle whether `FLT_INEXACT` should become "round to
-  nearest" (most likely, matching `ecvt.o`'s `.03`) or something else;
-  implementing that touches the bit-length check in `flt_encode()`
-  (`if (bits > fmt->sig_bits) return FLT_INEXACT;`), which would need
-  to round the mantissa to `sig_bits` instead of refusing once rounding
-  is confirmed on more than the one existing `ecvt.o` sample.
-
-Update `CLAUDE.md`'s "Next up" and `STATUS.md`'s open item 7 in the
-same change per Workflow Guideline 6, and add `../run_goldens.sh`
-support once `mutos_as` actually accepts `fltopen.s` (at which point
-this directory's `Makefile`/reasoning above should fold back into
-`../float_coverage/` and this README should say so).
+- narrow `fltconst.c`'s `MODES_MUL_ADD`/`MODES_DIV` and `fltmodel.py`'s
+  `EXPECTED` to the surviving set. With M and A each down to one mode,
+  every constant the model covers becomes determined: `CF` and every
+  other refused `%.17e` float included;
+- extend the zero rule in both from `Z0`/`Z4`/`Z25`'s bytes;
+- move `fltmode.s` and its golden to `../float_coverage/` (add it to
+  that directory's `Makefile`/`Makefile.mutos`), and update
+  `STATUS.md`'s open item 7, `CLAUDE.md`'s "Next up" and
+  `docs/DEVLOG.md` in the same change (Workflow Guideline 6).

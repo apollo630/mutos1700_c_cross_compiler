@@ -165,6 +165,12 @@ in the data segment, and a file with floating code ends with
 Only a constant exactly representable as a
 .B float
 is supported.
+.BR mutos_as (1)
+refuses some of those in the 18-digit form written here (about one in
+twenty), where the original assembler's conversion may store one unit
+less in the last place; see its
+.B .float
+entry.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

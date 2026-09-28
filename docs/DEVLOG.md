@@ -85,11 +85,11 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 72/72 golden object files
+**Status:** provisionally complete for the real corpus — 73/73 golden object files
 byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
 kernel files, `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
-real `libc.a` object, and the four `tests/mutos_as/float_coverage/` objects, a zero
-`.float` and a `.double` among them), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
+real `libc.a` object, and the five `tests/mutos_as/float_coverage/` objects - zeros,
+a `.double` and an inexact `.float` among them), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
 Guideline 6.
@@ -5478,6 +5478,127 @@ constants (`1 + 2**-32`, `1 + 12345 * 2**-50`, `-1 - 7 * 2**-52`, `3 + 0x5a5a *
 Unicorn's 8086 mode (scratch harness, not part of `make test`), return 1,
 12345, -7, 23130 (`0x5a5a`) and 1499 - so the low mantissa bytes land where
 the real runtime reads them.
+
+(Its two restrictions - one zero spelling, exact values only - were superseded
+the same day by the next section.)
+
+### `mutos_as`: the real conversion, re-enacted (2026-09-28)
+
+**The probe.** `tests/mutos_as/float_open/fltopen.s` asked the real `as` for
+the four spellings the previous section left refused; `fltopen.o.golden`
+(real hardware) answered, data segment in declaration order:
+
+| Text | Real bytes |
+|---|---|
+| `.float 0.0` | `00 00 20 00` |
+| `.float -0.00000000000000000e+00` | `bc a2 b1 00` |
+| `.double 0.00000000000000000e+00` | `00 00 c5 2e bc a2 31 00` |
+| `.float 0.10000000000000000e+00` | `cc cc 4c 7d` |
+
+The first and third are exactly the bytes the previous section predicted
+from v7 `atof()` - "`.float 0.0` (`flexp` = 5) would plausibly come out
+`00 00 20 00`", and for a zero `.double` "`00 00 c5 2e bc a2 31 00`?" -
+before the real assembler ran: a zero dividend keeps the divisor
+`flexp` = 5\*\*k's mantissa (k = 1 and 17 here) with exponent byte 0, and the
+zero `.double`'s high half is `fltzero.o`'s `bc a2 31 00`. The second is that
+zero with the sign bit set: `fl = -fl` after the division. The fourth is
+0.1 **truncated** to 24 bits (`0xcccccc`; correct rounding gives `0xcccccd`):
+a `.float` is the high four bytes of the double conversion, like `stacks.o`'s
+`fstsp`, which also truncates.
+
+**What truncation implies for exact values.** The previous encoder wrote the
+exact value of any exactly representable decimal text. That is right only if
+the real double conversion is exact too, or errs upward: an error of one
+56-bit ulp downward, truncated, costs a whole float ulp. v7 `atof()` has
+rounding steps an exact value can pass through: `fl = 10*fl + digit` once `fl`
+nears 2\*\*56 (the 18th digit of a `%.17e` text often makes `10*fl` inexact),
+`flexp` for k > 24 (5\*\*25 has 59 bits), and the final `fl /= flexp` or
+`fl *= flexp`. Digits beyond `fl >= 2**56` are dropped entirely.
+`2.93572534179687500e+03` - an exact float, as `mutos_c1` would write it -
+comes out `9b 7b 37 8c` (exact) if `dmul` rounds `10*fl` up or to nearest,
+but `9a 7b 37 8c` if it truncates.
+
+**The implementation.** `fltconst.c` now re-enacts `atof()` step by step on a
+56-bit mantissa (`uint64_t` plus a portable 64x64->128 multiply and a
+restoring division - still no host floating point): the `fl < 2**56`
+accumulation with v7's exponent bookkeeping, `flexp` by v7's repeated
+squaring (including where it squares), the division or multiplication,
+`ldexp`, negation, the zero rule, and a range check after every step (the
+real arithmetic's overflow behaviour is unknown, so any step outside the
+format's exponent range is `FLT_RANGE` - e.g. `1.00000000000000000e-38`, whose
+`flexp` = 5\*\*55 overflows although the value fits). Each double operation's
+rounding is a parameter - truncate, nearest-even, nearest-away, away from
+zero - for `dmul` (which `10*fl` and the squaring also use), `dadd` and
+`ddiv`. `fltdbl.o.golden` rules out a truncating `ddiv`: under `atof()` its
+33-digit text keeps 18 digits and its one division lands 0.13 ulp below the
+real result, so the division rounded up. No other golden constrains
+anything, which leaves 48 of 64 combinations. `flt_encode()` runs all 48 and
+accepts a constant only if they agree on the stored bytes; otherwise
+`FLT_ROUNDING` (replacing `FLT_INEXACT`). Zeros are accepted where they are
+observed: `atof()`'s division path (negative decimal exponent) with k <= 24,
+so 5\*\*k is exact - either sign, either directive. A zero on the
+multiplication path (`0`, `0e5`) or with k > 24 stays `FLT_ZERO`.
+
+Consequences, measured with the model over compiler-style texts:
+- newly accepted: inexact values whose stored bytes no remaining rounding
+  reaches - `.float 0.1`, `.double 0.1` (`cd cc cc cc cc cc 4c 7d`: every
+  non-truncating `ddiv` rounds its 0.8-ulp remainder up), and
+  `.double 3.00000000000000000e-02`/`.03`, which gives `ecvt.o`'s real
+  `c3 f5 28 5c 8f c2 75 7b` - a further, independent fit of the model
+  (the source spelling of `ecvt.o`'s constant is unknown, but both plausible
+  ones give these bytes);
+- newly refused: about 6% of the exact `%.17e` floats `mutos_c1` can write
+  (636 of 10,184 in a random sample of exact floats below 2\*\*24 with at most
+  18 significant digits), and many long exact expansions. These were a latent
+  mismatch: the previous encoder's exact bytes were a guess for them. No `.s`
+  in the repository uses one - every one of the 153 inputs below that
+  assembled before assembles to the same object.
+
+**The independent model.** `tests/mutos_as/float_coverage/fltmodel.py` is the
+same conversion written separately in Python (arbitrary-precision integers).
+`survivors` reads every `<name>.s` in `float_coverage/` with a golden, takes
+each `.float`/`.double` constant's real bytes from the golden's data segment
+(9 constants in 5 goldens), and reports the combinations that reproduce all
+of them - failing if that set is not the one `fltconst.c` hard-codes, if a
+golden contradicts the model outright, or if a golden holds a constant the
+model does not cover. `check` compares `fltconst.c`, via the new test driver
+`src/mutos_as/fltconst_test`, with the model on 49 edge cases and 2,000 seeded
+random texts. Both run in `make test`; a doctored golden (0.1 as the correctly
+rounded `cd`) makes `survivors` fail with "MODEL CONTRADICTED".
+
+**The next probe.** `tests/mutos_as/float_open/fltmode.s` (not yet run on real
+hardware): four `.double` constants in the compiler's form, chosen from about
+7,500 candidates by greedy refinement to split the 48 combinations into 32
+classes - all that is left is `ddiv`'s tie rule, and a division by 5\*\*k
+never ties - plus the refused `2.93572534179687500e+03` itself, `.double 0.1`
+and a negative zero `.double` (accepted now on the model's prediction alone),
+and three zeros outside the zero rule (decimal exponent 0 and +4 - `atof()`'s
+multiplication path - and 25 fraction digits, where 5\*\*25 is rounded). Its
+`README.md` lists every predicted outcome; a simulated golden built from one
+assumed combination decodes back to exactly that combination with
+`fltmodel.py survivors . ../float_open`.
+
+**Verification.** Clean `make clean && make all && make test`: zero warnings,
+`mutos_as` 73/73 (62 `kernel_opt`, 5 `kernel_nonopt`, 1 `libc_recon`, 5
+`float_coverage`), `check_floatdat.sh` 13/13 (`ecvt.o`'s `.03` added, all 8
+bytes), `fltmodel.py survivors` ok, `fltmodel.py check` 0 differences in
+2,049 texts, `assemble_cc_goldens.sh` 71/71, `mutos_cpp` 5/5,
+`mutos_c0`/`mutos_c1` 62/62. `fltconst_test` against the Python model on
+170,778 texts (the previous section's 136,818 random ones plus 33,960
+targeted: `%.17e` of exact floats and doubles, integers around 2\*\*56...2\*\*66,
+decimal exponents to -60, zeros with 0 to 29 fraction digits and exponents
+-30...+7, prefixed spellings) - 0 differences, and the same under ASan/UBSan.
+Against the previous commit's assembler, over 153 `.s` inputs (the 73 golden
+sources, `floatdat.s`, the seven `v30_speculative` sources, `fltmode.s` and
+the 71 compiler goldens): the 150 it assembled give identical objects;
+`fltopen.s` and the extended `floatdat.s`, which it refused, now assemble
+(to their golden and real bytes); `fltmode.s` is refused by both, by design.
+The ASan/UBSan build over the same 153: no reports, output identical to the
+`-O2` build's. The five end-to-end `.double` programs from the
+previous section: the three with short or exact-conversion texts still
+assemble and still return 1, 12345 and 1499 through the real runtime; the
+two with 53- and 54-digit texts are now refused (`atof()` keeps 17 digits,
+and the rounding decides the last bit).
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

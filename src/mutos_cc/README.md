@@ -1425,12 +1425,16 @@ di,*2.(si)`).
    entry points suggest how the real compiler does it - comparisons, a
    zero or non-float constant, floating parameters, globals and returns),
    each waiting for a golden. On the assembler side a zero or non-float
-   constant is no longer blocked outright: `mutos_as` now assembles a zero
-   `.float` in the `%.17e` spelling and any exactly representable
-   `.double` (real-hardware goldens in `tests/mutos_as/float_coverage/`),
-   but an inexact `.double` such as `ecvt.o`'s `.03` stays refused, and
-   the real compiler's text for either kind of constant is in no golden
-   (see `STATUS.md`'s "Next up"). The 81..127-byte `chkstk` gap stays "not
+   constant is no longer blocked outright: `mutos_as` re-enacts the real
+   assembler's conversion (real-hardware goldens in
+   `tests/mutos_as/float_coverage/`) - the `%.17e` zero and `ecvt.o`'s
+   `.03` come out as the real bytes - but the real compiler's text for
+   either kind of constant is in no golden. Note that `mutos_as` now
+   refuses about 6% of the exact `%.17e` floats `mutos_c1` already writes
+   (e.g. `2.93572534179687500e+03`): the real assembler may store them one
+   unit low, depending on rounding that `tests/mutos_as/float_open/fltmode.s`
+   is to settle (see `STATUS.md`'s "Next up"). `mutos_c1` itself still
+   writes them; the refusal comes from `mutos_as`, with the reason. The 81..127-byte `chkstk` gap stays "not
    yet supported" until a golden lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens

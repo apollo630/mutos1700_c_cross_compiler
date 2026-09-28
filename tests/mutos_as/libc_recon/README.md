@@ -19,11 +19,11 @@ so a reconstruction must mention its symbols in the original's order.
 | File | Real object | What it covers |
 |---|---|---|
 | `ldexp.s` | `tests/mutos1700_libc/ldexp.o.base64.txt` (hand-written assembler) | `lea <reg>,<label>` — an external label at even and odd offsets (`lea di,fac`, `lea ax,fac`: `R_EXT`) and a local data label at an odd offset (`lea si,huge`: `R_DATA`); `mov` with a byte register and a memory operand (`mov al,fac+7` → `A0`, `mov fac+7,al` → `A2`, `mov al,*10.(bp)` → `8A`) |
-| `floatdat.s` | `atof.o`, `ecvt.o` (data bytes only) | `.float`: five constants the real toolchain wrote into those objects' data segments (zero among them - compared with all six of its occurrences), spelled `%.17e` as `mutos_c1` (and the real compiler) writes them |
+| `floatdat.s` | `atof.o`, `ecvt.o` (data bytes only) | `.float`/`.double`: six constants the real toolchain wrote into those objects' data segments — zero among them (compared with all six of its occurrences) and `ecvt.o`'s inexact 8-byte `0.03` — spelled `%.17e` as `mutos_c1` (and the real compiler) writes them |
 
 `ldexp.s` runs through `../run_goldens.sh` like the kernel directories. `floatdat.s`
 is not a whole object — no real object is made of `.float` constants alone — so
-`check_floatdat.sh` compares each assembled value's 4 bytes with the bytes at the
+`check_floatdat.sh` compares each assembled value's 4 or 8 bytes with the bytes at the
 named data offset of the real `atof.o`/`ecvt.o`, read from `tests/mutos1700_libc/`
 at test time (`run_goldens.sh` lists it as "no golden"). Both run from the
 top-level `make test`.
@@ -32,10 +32,10 @@ top-level `make test`.
 
 The obvious candidates for `.float` — the compiled-C objects `atof.o` and `ecvt.o`,
 which hold their constants in `.data` and address them with `lea ax,<label>` —
-cannot be reconstructed whole yet: `atof.o` because of the second point below
-alone, `ecvt.o` because of both.
+cannot be reconstructed whole yet — since 2026-09-28 only because of the
+second point below.
 
-- **Floating constants: the zero is solved, `ecvt.o`'s `.03` is not.** Both hold `0.0` as `bc a2 31 00`:
+- **Floating constants: solved.** Both hold `0.0` as `bc a2 31 00`:
   exponent byte 0 (zero), but the mantissa bits of 5\*\*17 (= 10\*\*17 /
   2\*\*17). That points at a conversion of a text with 17 fraction digits
   (`%.17e` of zero) that scales by 5\*\*17 and leaves 5\*\*17's mantissa in a
@@ -44,13 +44,15 @@ alone, `ecvt.o` because of both.
   dividend), so the real assembler's conversion is not this `atof`. Real
   hardware settled the bytes on 2026-09-28: `.float 0.00000000000000000e+00`
   assembles to exactly `bc a2 31 00` (`../float_coverage/fltzero.o.golden`),
-  and `mutos_as` now writes the same for exactly that spelling (other
-  spellings of zero stay refused - see `src/mutos_as/fltconst.h`);
+  and `mutos_as` writes the same (with `../float_coverage/fltopen.o.golden`,
+  also other zero spellings - see `src/mutos_as/fltconst.h`);
   `floatdat.s` compares it with all six zero constants in `atof.o`/`ecvt.o`.
-  `ecvt.o` also holds an 8-byte constant, `.03`: `.double` is implemented now
-  (`../float_coverage/fltdbl.o.golden`), but only for exactly representable
-  values, and 0.03 is not — the real assembler's rounding stays unconfirmed
-  (this one rounded sample aside), so `ecvt.o` still cannot be reproduced.
+  `ecvt.o` also holds an 8-byte constant, `.03`, which is not exact. Since
+  `mutos_as` re-enacts the real conversion (v7 `atof()` on the 56-bit double,
+  see `src/mutos_as/fltconst.h`, from `../float_coverage/fltopen.o.golden`),
+  `.double 3.00000000000000000e-02` — and `.03` — give exactly `ecvt.o`'s
+  `c3 f5 28 5c 8f c2 75 7b` under every rounding still possible;
+  `floatdat.s` checks all 8 bytes.
 - **No `L` labels.** Their symbol tables contain no compiler-generated `L`
   labels (nor does any other of `libc.a`'s 167 objects) — the real `as`'s
   documented default without `-L`
@@ -61,7 +63,7 @@ alone, `ecvt.o` because of both.
   (`Unknown option L ignored`, 2026-09-28 - see `STATUS.md`'s open item 6), so
   why the kernel goldens have `L` labels and `libc.a` has none is still open.
   A compiled-C `libc.a` object can only be reproduced once that difference is
-  resolved - for `atof.o` it is now the only blocker.
+  resolved - for both `atof.o` and `ecvt.o` it is now the only blocker.
 
 `ldexp.o` has neither problem: it is hand-written (no `L` labels) and its one
 floating constant, `huge`, is emitted as `.word`s here — its original spelling

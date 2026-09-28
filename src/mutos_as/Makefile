@@ -46,6 +46,9 @@
 #                    with the real assembler above).
 #   classify_test  - Step 2 debug tool: dumps operand-classification
 #                    results (addressing modes, expressions).
+#   fltconst_test  - reads "f <text>"/"d <text>" lines and prints what
+#                    .float/.double would store for each (fltconst.c),
+#                    for tests/mutos_as/float_coverage/fltmodel.py.
 
 # Instruction coverage was additionally cross-checked against the
 # COMPLETE Assembler_as.pdf Anlage A instruction table (all 5 pages,
@@ -101,11 +104,14 @@ PARSE_SRCS    := lexer.c parser.c main.c
 PARSE_OBJS    := $(PARSE_SRCS:.c=.o)
 CLASSIFY_SRCS := lexer.c parser.c pass2.c classify_test.c
 CLASSIFY_OBJS := $(CLASSIFY_SRCS:.c=.o)
+FLTTEST_SRCS  := fltconst.c fltconst_test.c
+FLTTEST_OBJS  := $(FLTTEST_SRCS:.c=.o)
 HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h fltconst.h mutos_aout.h
 
 TARGET    := mutos_as
 PARSE     := parse_dump
 CLASSIFY  := classify_test
+FLTTEST   := fltconst_test
 
 # Real c1-generated .s corpus used to validate the assembler end-to-end
 # (not shipped in this archive - drop your own .s files here, or the
@@ -114,7 +120,7 @@ TEST_SRCS := malloc.s mch.s sys1nonopt.s sys1opt.s v30opt.s tty.s
 
 .PHONY: all clean test test1 test2 distclean
 
-all: $(TARGET) $(PARSE) $(CLASSIFY)
+all: $(TARGET) $(PARSE) $(CLASSIFY) $(FLTTEST)
 
 $(TARGET): $(ASM_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(ASM_OBJS)
@@ -124,6 +130,9 @@ $(PARSE): $(PARSE_OBJS)
 
 $(CLASSIFY): $(CLASSIFY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(CLASSIFY_OBJS)
+
+$(FLTTEST): $(FLTTEST_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(FLTTEST_OBJS)
 
 %.o: %.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -162,7 +171,7 @@ test2: $(CLASSIFY)
 	./$(CLASSIFY) $$files
 
 clean:
-	rm -f $(ASM_OBJS) $(PARSE_OBJS) $(CLASSIFY_OBJS)
+	rm -f $(ASM_OBJS) $(PARSE_OBJS) $(CLASSIFY_OBJS) $(FLTTEST_OBJS)
 
 distclean: clean
-	rm -f $(TARGET) $(PARSE) $(CLASSIFY)
+	rm -f $(TARGET) $(PARSE) $(CLASSIFY) $(FLTTEST)
