@@ -1,0 +1,39 @@
+# Makefile.mutos -- kernel_nonopt (this directory's 5 files only).
+#
+# Same purpose and methodology as ../kernel_opt/Makefile.mutos -- see
+# that file's header for the full rationale (STATUS.md's open item 6,
+# the "-L" question) and README.md for how to use the results. This
+# directory is tiny (5 files), so none of that file's size-related
+# caution applies here, but the same two-suffix-rule shape is used for
+# consistency between the two.
+#
+# Run from INSIDE this directory, ON THE REAL MUTOS 1700 hardware /
+# emulator:
+#
+#   make -f Makefile.mutos noL
+#   make -f Makefile.mutos L
+#   make -f Makefile.mutos clean
+#
+# NOT yet run on real MUTOS 1700 hardware -- unverified, same caveat as
+# ../kernel_opt/Makefile.mutos.
+#
+# No filename here is anywhere near the real DIRSIZ=14 limit (longest
+# stem is "lp_AC" at 5 characters, so "lp_AC.oL" is 8), so there is no
+# exception list to maintain, unlike kernel_opt's mch_insw_outsw.s.
+
+AS = as
+
+.SUFFIXES: .s .o .oL
+
+.s.o:
+	$(AS) -o $*.o $*.s
+
+.s.oL:
+	$(AS) -L -o $*.oL $*.s
+
+noL: amx.o bus.o intr.o lp_AC.o sys1.o
+
+L: amx.oL bus.oL intr.oL lp_AC.oL sys1.oL
+
+clean:
+	rm -f *.o *.oL

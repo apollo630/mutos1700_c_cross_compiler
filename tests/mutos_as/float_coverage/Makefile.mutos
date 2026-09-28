@@ -1,0 +1,51 @@
+# Makefile.mutos -- float_coverage (this directory's 4 files only).
+#
+# Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
+# directory ON THE REAL MUTOS 1700 hardware / emulator:
+#
+#   make -f Makefile.mutos
+#   make -f Makefile.mutos clean
+#
+# Assembles each hand-written *.s source with the REAL "as" to gather
+# real-hardware ground truth for two currently-open mutos_as gaps
+# alongside two already-working regression cases - see README.md for
+# what each of the four actually tests and why:
+#
+#   fltaddr.o, fltmulti.o -- expected to assemble cleanly on BOTH the
+#     real "as" and the current mutos_as (regression goldens).
+#   fltzero.o, fltdbl.o -- expected to assemble cleanly on the real
+#     "as" here, but mutos_as currently REFUSES both (a known,
+#     documented gap, not a bug) - capturing their real bytes is the
+#     entire point of this pair.
+#
+# One small makefile (4 files) needs no per-category split the way
+# tests/mutos_cc's 62-file corpus did - see that directory's own
+# Makefile.mutos header for the "Make: out of memory" history this
+# avoids simply by staying this small.
+#
+# Every recipe is one shell line, per make(1)'s own note (see
+# tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't
+# carry across separate recipe lines.
+#
+# NOT yet run on real MUTOS 1700 hardware - unverified, like every
+# Makefile.mutos this session added (see also ../kernel_opt/
+# Makefile.mutos, ../kernel_nonopt/Makefile.mutos).
+
+AS = as
+
+all: fltaddr.o fltmulti.o fltzero.o fltdbl.o
+
+fltaddr.o: fltaddr.s
+	$(AS) -o fltaddr.o fltaddr.s
+
+fltmulti.o: fltmulti.s
+	$(AS) -o fltmulti.o fltmulti.s
+
+fltzero.o: fltzero.s
+	$(AS) -o fltzero.o fltzero.s
+
+fltdbl.o: fltdbl.s
+	$(AS) -o fltdbl.o fltdbl.s
+
+clean:
+	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o

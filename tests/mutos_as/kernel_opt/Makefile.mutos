@@ -1,0 +1,103 @@
+# Makefile.mutos -- kernel_opt: assembles every real kernel *.s here with
+# the REAL "as", twice, to gather real-hardware ground truth for
+# STATUS.md's open item 6 (the "-L" question):
+#
+#   noL   ->  "<name>.o"   assembled WITHOUT "-L" (as.1's documented
+#             default, which excludes compiler-internal "L"-prefixed
+#             labels from the symbol table).
+#   L     ->  "<name>.oL"  assembled WITH "-L" explicitly (labels
+#             included).
+#
+# Every already-committed "<name>.o.golden" in this directory carries
+# L-number labels, which the documented default should exclude -- see
+# CLAUDE.md's "Known, deliberate exception" for mutos_as's own "-L".
+# Whether the original kernel build actually invoked "as -L" is not
+# known. After copying "noL"'s and "L"'s outputs back to the modern
+# host (see ../mk_goldenbase64.sh / the sibling Linux Makefile), diff
+# each fresh "<name>.o"/"<name>.oL" against the existing
+# "<name>.o.golden": whichever variant matches settles the question for
+# every file at once (see STATUS.md's open item 6 and
+# tests/mutos_as/libc_recon/README.md, which is blocked on this same
+# answer for compiled-C libc.a objects).
+#
+# Run from INSIDE this directory, ON THE REAL MUTOS 1700 hardware /
+# emulator:
+#
+#   make -f Makefile.mutos noL
+#   make -f Makefile.mutos L
+#   make -f Makefile.mutos clean
+#
+# (Deliberately no "all" combining both in one invocation -- matches
+# this project's established "tackle one variant/category at a time"
+# practice, see tests/mutos_cc/README.md.)
+#
+# Uses a genuine V7/MUTOS make(1) two-suffix rule per variant
+# (".s.o:" / ".s.oL:", both confirmed supported -- see
+# tests/mutos_cc/Makefile.mutos's own header) instead of one explicit
+# target per file. This keeps the file's total size tiny regardless of
+# how many "*.s" files exist: only two recipe blocks are ever
+# registered, so this sidesteps the "Make: out of memory" failure
+# tests/mutos_cc's original all-62-files-explicit Makefile.mutos hit on
+# real hardware (see docs/DEVLOG.md's Milestone 4 host-tooling
+# findings) -- that failure came from ~124 explicit per-file recipe
+# blocks exhausting a fixed-size internal table, not from a long
+# dependency list by itself. "noL:"/"L:" below are plain (recipe-less)
+# grouping targets, so they only ever add one long prerequisite line
+# each, not new rules.
+#
+# NOT yet run on real MUTOS 1700 hardware -- this file's own
+# reliability (in particular, whether the suffix-rule approach really
+# does avoid the internal-table limit above at 61 files) is therefore
+# UNVERIFIED. If it still hits a real-hardware resource limit, fall
+# back to tests/mutos_cc's proven workaround: split "noL"/"L" into a
+# chain of small sub-targets (see docs/DEVLOG.md's finding #2/#3 for
+# that exact pattern).
+#
+# EXCEPTION -- mch_insw_outsw.s is deliberately left OUT of both lists
+# below: its stem is already 14 characters, so even its plain ".s"
+# name (16 characters) already exceeds the real MUTOS 1700 DIRSIZ=14
+# filename limit (see CLAUDE.md's "Identifier length limits") -- a
+# pre-existing fact about this file, not introduced by this Makefile.
+# Assemble it by hand under a short on-device alias and rename the
+# *.o/*.oL result back to "mch_insw_outsw.o"/"mch_insw_outsw.oL" only
+# after copying it back to the modern host (where the 14-character
+# limit no longer applies) -- see README.md's "mch_insw_outsw.s" section
+# for the exact commands. Do not "mv" it back to the long name while
+# still on MUTOS 1700 -- that would silently truncate or fail under
+# DIRSIZ.
+#
+# Every recipe is one shell line, per make(1)'s own note (see
+# tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't
+# carry across separate recipe lines.
+
+AS = as
+
+.SUFFIXES: .s .o .oL
+
+.s.o:
+	$(AS) -o $*.o $*.s
+
+.s.oL:
+	$(AS) -L -o $*.oL $*.s
+
+noL: acct.o alloc.o amx.o bio.o bus.o c.o c5170.o camx.o casp.o \
+	ccons.o clocal.o clock.o clp.o cons_NOBIOS.o cram.o debug.o \
+	delay.o dlock.o dosent.o dsort.o fio.o gcpc.o genio.o ifsp.o \
+	ifss.o iget.o intr.o k5170.o kdebug.o load86.o lp_AC.o \
+	machdep.o main.o malloc.o mch.o mem.o msdos.o nami.o \
+	physio.o pipe.o prf.o prim.o ramfl.o rdwri.o sbreak.o sig.o \
+	slp.o subr.o symtab.o sys.o sys1.o sys2.o sys3.o sys4.o \
+	sysent.o sysx.o text.o trap.o tty.o v24.o v30ide.o
+
+L: acct.oL alloc.oL amx.oL bio.oL bus.oL c.oL c5170.oL camx.oL \
+	casp.oL ccons.oL clocal.oL clock.oL clp.oL cons_NOBIOS.oL \
+	cram.oL debug.oL delay.oL dlock.oL dosent.oL dsort.oL fio.oL \
+	gcpc.oL genio.oL ifsp.oL ifss.oL iget.oL intr.oL k5170.oL \
+	kdebug.oL load86.oL lp_AC.oL machdep.oL main.oL malloc.oL \
+	mch.oL mem.oL msdos.oL nami.oL physio.oL pipe.oL prf.oL \
+	prim.oL ramfl.oL rdwri.oL sbreak.oL sig.oL slp.oL subr.oL \
+	symtab.oL sys.oL sys1.oL sys2.oL sys3.oL sys4.oL sysent.oL \
+	sysx.oL text.oL trap.oL tty.oL v24.oL v30ide.oL
+
+clean:
+	rm -f *.o *.oL

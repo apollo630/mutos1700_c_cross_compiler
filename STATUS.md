@@ -2640,4 +2640,24 @@ far.
    `-L` would satisfy both) is not known; resolving it is what a compiled-C
    `libc.a` object needs to become a `mutos_as` golden, and what the future
    `mutos_cc` driver needs to decide how it invokes `mutos_as` (see
-   `tests/mutos_as/libc_recon/README.md`).
+   `tests/mutos_as/libc_recon/README.md`). Infrastructure to actually settle
+   this with real hardware evidence was added 2026-09-28:
+   `tests/mutos_as/kernel_opt/Makefile.mutos` and
+   `tests/mutos_as/kernel_nonopt/Makefile.mutos` each assemble every real
+   kernel `*.s` with the real `as`, both with and without `-L`, for
+   diffing against the already-committed goldens (see
+   `tests/mutos_as/README.md`) — **not yet run on real MUTOS 1700
+   hardware, so this item is still open**; only the tooling to close it
+   exists now.
+7. Two floating-point gaps this document and `fltconst.h`/`assemble.c`
+   already flag as open - a zero `.float` constant's real bytes ("not a
+   plain zero", known only from the ambiguous compiled-C `atof.o`/`ecvt.o`
+   evidence) and `.double` (8-byte) encoding for values needing more than
+   a float's 24 mantissa bits (only one real example known, `ecvt.o`'s
+   `.03`) - have real-hardware-assembled test infrastructure as of
+   2026-09-28: `tests/mutos_as/float_coverage/` (`fltzero.s`, `fltdbl.s`,
+   plus two already-mutos_as-clean regression cases, `fltaddr.s`/
+   `fltmulti.s`, closing a related "lea+.float in one whole object" gap
+   `libc_recon/`'s `floatdat.s`/`ldexp.s` don't cover). **Not yet run on
+   real MUTOS 1700 hardware** — see that directory's `README.md` for the
+   full methodology and current unverified status.
