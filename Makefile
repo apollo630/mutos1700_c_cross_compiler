@@ -67,8 +67,10 @@ clean:
 # mutos_as's run_goldens.sh is per-directory (it assembles every *.s
 # in the current directory), so it is run once per golden subdirectory.
 # libc_recon/ adds check_floatdat.sh (".float" bytes against real
-# libc.a constants), and assemble_cc_goldens.sh checks that every real
-# compiler output in tests/mutos_cc assembles (no reference objects).
+# libc.a constants), float_coverage/ holds real-hardware objects from
+# hand-written .float/.double sources (a zero .float and a .double among
+# them), and assemble_cc_goldens.sh checks that every real compiler
+# output in tests/mutos_cc assembles (no reference objects).
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -77,6 +79,8 @@ test: all
 	@echo "== mutos_as goldens (libc_recon - real libc.a objects) =="
 	@cd tests/mutos_as/libc_recon && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
 	@cd tests/mutos_as/libc_recon && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ./check_floatdat.sh
+	@echo "== mutos_as goldens (float_coverage - .float/.double) =="
+	@cd tests/mutos_as/float_coverage && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
 	@echo "== mutos_as on the real compiler's .s (tests/mutos_cc goldens) =="
 	@MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as tests/mutos_as/assemble_cc_goldens.sh
 	@echo "== mutos_cpp goldens =="

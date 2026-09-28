@@ -85,10 +85,11 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 68/68 golden object files
+**Status:** provisionally complete for the real corpus — 72/72 golden object files
 byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
-kernel files plus `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
-real `libc.a` object), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
+kernel files, `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
+real `libc.a` object, and the four `tests/mutos_as/float_coverage/` objects, a zero
+`.float` and a `.double` among them), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
 Guideline 6.
@@ -5393,8 +5394,90 @@ own output. The other two close gaps the previous section left open:
 Both gaps are implementation work now, not open questions — see
 `CLAUDE.md`'s "Next up" and `STATUS.md`'s open item 7. `tests/mutos_as/
 float_coverage/README.md`'s own "Results" section has the full byte
-breakdown; `../run_goldens.sh` has not yet been run against these four
-goldens.
+breakdown. (Implemented the same day - next section.)
+
+### `mutos_as`: zero `.float` and `.double` implemented (2026-09-28)
+
+From the two goldens above. `fltconst.c` has one encoder for both formats now,
+`flt_encode(kind, ...)` with `kind` `FP_FLOAT` or `FP_DOUBLE`, driven by a small format table (size,
+significant bits, prefix, limits); `assemble.c` handles `.double` in the same
+`run_pass()` branch as `.float` (raw operand re-scan, no alignment, no
+relocation, the location counter advanced by the full size even for a refused
+operand) instead of refusing it in `handle_directive()`.
+
+**`.double`.** 8 bytes: the float layout with 56 significant bits - the byte-7
+excess-128 exponent, the sign in bit 7 of byte 6, 55 mantissa bits below it.
+`fltdbl.o.golden` pins it (`1 + 2**-32` → `00 00 80 00 00 00 00 81`: the one
+mantissa bit 32 places after the leading 1 is bit 23 of the value, byte 2's
+`0x80`). As for `.float`, only exactly representable values are accepted and
+encoded exactly - the golden's value is exact, and the one inexact 8-byte
+sample (`ecvt.o`'s `.03`, correctly rounded) has a lost source spelling and
+cannot show how the real conversion rounds in general (v7's `atof()` scheme -
+up to 17 digits accumulated in a double, `flexp` built by repeated squaring,
+one `fdivd`/`fmuld` - is not obviously correctly rounded, and `libc.a`'s own
+`atof` is not what the assembler uses, see the zero puzzle above). The
+bounds grow with the precision: an exact double has at most 183 binary
+fraction digits (2\*\*-127 times a 56-bit mantissa) and at most 145
+significant decimal digits, so `.double` accepts up to 160 significant digits
+and decimal exponents down to -190; `.float` keeps its 120 and -160 so every
+`.float` text gets the same answer as before. Syntax: the bare form `fltdbl.s`
+uses (with atof's `e`/`E` exponent), or the manual's constant spelling (sect.
+3.2): `0d`/`0D` prefix, then a `d`/`D` exponent - neither prefixed form (`0f`
+nor `0d`) is confirmed by real bytes. A zero `.double` is refused: `libc.a`
+holds no 8-byte zero anywhere (all six zero constants in its data segments
+are 4-byte `bc a2 31 00`), and under the 5\*\*17-leftover reading below its
+low bytes would carry more of 5\*\*17 (`00 00 c5 2e bc a2 31 00`?) - a guess.
+
+**Zero `.float`: only the confirmed spelling.** `bc a2 31 00` is confirmed
+for `.float 0.00000000000000000e+00` - the `%.17e` text `mutos_c1` (and the
+real compiler) writes - and matches all six zero constants in `atof.o`/
+`ecvt.o`. It is NOT confirmed for zero in general: the mantissa is 5\*\*17's,
+which fits a v7-`atof()`-style conversion that scales the digits by `flexp` =
+5\*\*(fraction digits) and keeps the divisor's mantissa in a zero result, so
+`.float 0.0` (`flexp` = 5) would plausibly come out `00 00 20 00`, and a
+minus sign might set bit 7 of byte 2. So a zero is accepted only in the
+confirmed shape - `.float`, no `-`, exactly 17 digits after the `.`,
+exponent 0 (any count of integer zeros, a `+`, `e-00` or no exponent at all,
+and the `0f` prefix are the same text to such a conversion) - and every other
+zero is refused with a diagnostic naming the accepted spelling. A real-hardware
+`.float 0.0`/`-0.00000000000000000e+00` probe would settle whether this can be
+widened.
+
+**Tests.** `tests/mutos_as/float_coverage/` joins the top-level `make test`
+(`run_goldens.sh`: 4/4 byte-identical - `fltzero.s` and `fltdbl.s` were
+refused before). `libc_recon/floatdat.s` gains the zero, and
+`check_floatdat.sh` compares it with all six of its occurrences in `atof.o`/
+`ecvt.o`: 12/12 (was 6/6). The float_coverage directory's four raw real-hardware
+`.o` files are tracked alongside their `.o.golden` copies (byte-identical);
+`run_goldens.sh` writes its own `<name>.o` over them, with identical bytes
+while `mutos_as` matches.
+
+**Verification.** Clean `make clean && make all && make test`: zero warnings,
+`mutos_as` 72/72 (62 `kernel_opt`, 5 `kernel_nonopt`, 1 `libc_recon`, 4
+`float_coverage`), `check_floatdat.sh` 12/12, `assemble_cc_goldens.sh` 71/71,
+`mutos_cpp` 5/5, `mutos_c0`/`mutos_c1` 62/62. Against the previous assembler,
+over 151 `.s` inputs (the 72 golden sources, `floatdat.s`, the seven
+`v30_speculative` sources and the 71 compiler `.s` goldens), the 148 it
+accepted assemble to identical objects; the three it refused (`fltzero.s`,
+`fltdbl.s`, the new `floatdat.s`) are the only differences. `fltconst.c` against an independent exact-fraction encoder
+(Python `fractions`, the MBF layout computed separately): 136,818 random texts
+over both formats (random mantissas up to 2 bits past each format's precision,
+exponents over the whole range, positional, scientific, `%.17e`, prefixed and
+trailing-zero spellings, inexact neighbours, both formats for each value, zero
+spellings and syntax errors) - 0 differences; the 69,296 `.float` texts among
+them give the old encoder's answer everywhere except the seven accepted zero
+spellings. ASan/UBSan (`-O0 -g`, LeakSanitizer off - on a Pass 1 error the
+assembler exits without freeing its buffers, as before this change): the
+encoder driver over all 136,818 texts and `mutos_as` over the 151 inputs plus
+`.double`/zero probes (success and every error path) - no reports, objects
+identical to the `-O2` build's. **End to end**: five programs with `.double`
+constants (`1 + 2**-32`, `1 + 12345 * 2**-50`, `-1 - 7 * 2**-52`, `3 + 0x5a5a *
+2**-54`, and the manual spelling `0d1.5d3`/`0D1.0D0`), each `fldd` / `fsubd` /
+`fmuld` / `ftoi` through the real runtime, assembled by `mutos_as`, linked by
+`mutos_ld` with the real `crt0.o` and `libc.a` and run from `_main` under
+Unicorn's 8086 mode (scratch harness, not part of `make test`), return 1,
+12345, -7, 23130 (`0x5a5a`) and 1499 - so the low mantissa bytes land where
+the real runtime reads them.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

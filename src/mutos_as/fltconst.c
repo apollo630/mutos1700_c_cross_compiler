@@ -1,7 +1,8 @@
 /*
- * fltconst.c - decimal text -> MUTOS 1700 4-byte floating constant.
- * See fltconst.h for the format, the accepted syntax and why only
- * exactly representable values are accepted.
+ * fltconst.c - decimal text -> MUTOS 1700 floating constant, 4 bytes
+ * (.float) or 8 bytes (.double). See fltconst.h for the format, the
+ * accepted syntax, why only exactly representable values are accepted
+ * and which zero is.
  *
  * Method: the text is read as D * 10**E (D an integer of the significant
  * digits, trailing zeros moved into E). D is held as a small bignum;
@@ -9,8 +10,8 @@
  * for E < 0 it is (D / 5**-E) * 2**E - dyadic, and so possibly
  * representable, only if 5**-E divides D exactly. The remaining integer
  * N (made odd by moving its factors of 2 into the binary exponent) must
- * then fit the float's 24 significant bits. No host floating point is
- * involved anywhere, so the result is exact on any host.
+ * then fit the format's significant bits (24 or 56). No host floating
+ * point is involved anywhere, so the result is exact on any host.
  */
 
 #include <stdbool.h>
@@ -19,17 +20,15 @@
 
 #include "fltconst.h"
 
-/* Longest significant-digit string accepted. Any exactly representable
- * float needs fewer: its exact decimal expansion is at most about 113
- * significant digits (2**-151 * (2**24 - 1) is the worst case). */
-#define MAX_SIG_DIGITS 120
+/* Longest significant-digit string accepted, for either format (the
+ * digit buffer's size); each format has its own, lower or equal, limit
+ * in FpFormat below. */
+#define MAX_SIG_DIGITS 160
 
-/* Decimal-exponent bounds (after trailing zeros are folded in) outside
- * which no float can be exact: a float is below 2**127 < 10**39, and an
- * exact one has at most 151 binary fraction digits, so at most 151
- * decimal ones. */
+/* Decimal-exponent upper bound (after trailing zeros are folded in)
+ * above which no constant can be exact: both formats are below
+ * 2**127 < 10**39. The lower bound depends on the format (FpFormat). */
 #define MAX_DEC_EXP  40
-#define MIN_DEC_EXP  (-160)
 
 /* Guards the exponent/fraction-digit counters against overflow on
  * absurd input; anything this long is out of range anyway. */
@@ -37,8 +36,8 @@
 
 /* ------------------------------------------------------------------ */
 /* A minimal unsigned bignum: 32-bit limbs, least significant first.   */
-/* 32 limbs (1024 bits) exceed the largest intermediate value: 120     */
-/* digits (399 bits) times 10**40 (133 bits).                          */
+/* 32 limbs (1024 bits) exceed the largest intermediate value: 160     */
+/* digits (532 bits) times 10**40 (133 bits).                          */
 /* ------------------------------------------------------------------ */
 
 #define BIG_LIMBS 32
@@ -133,20 +132,73 @@ static int big_bitlen(const Big *b)
 }
 
 /* ------------------------------------------------------------------ */
+/* The two formats.                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int  nbytes;          /* size of one constant: 4 or 8 */
+    int  sig_bits;        /* significant bits, the unstored leading 1 included */
+    char prefix;          /* the manual's constant prefix after '0', lower case */
+    char prefix_exp;      /* exponent letter after that prefix, lower case */
+    int  max_sig_digits;  /* longer digit strings cannot be exact */
+    long min_dec_exp;     /* lower decimal-exponent bound for an exact value */
+    bool zero_confirmed;  /* a zero has confirmed real bytes (FLOAT_ZERO) */
+} FpFormat;
+
+/* An exact float has at most 151 binary fraction digits (2**-127 times a
+ * 24-bit mantissa), so at most 151 decimal ones, and at most about 113
+ * significant digits (2**-151 * (2**24 - 1) is the worst case). An exact
+ * double has at most 183 binary fraction digits (2**-127 times a 56-bit
+ * mantissa) and at most 145 significant digits (2**-183 * (2**56 - 1)).
+ * The float values are the ones this file had before .double existed,
+ * kept so every .float text gets the same answer as before. */
+static const FpFormat FORMATS[2] = {
+    /* FP_FLOAT  */ { 4, 24, 'f', 'e', 120, -160L, true  },
+    /* FP_DOUBLE */ { 8, 56, 'd', 'd', 160, -190L, false },
+};
+
+/* The real assembler's bytes for a zero .float - see fltconst.h:
+ * float_coverage/fltzero.o.golden (".float 0.00000000000000000e+00"),
+ * and every zero constant in libc.a's atof.o (data+4, +16) and ecvt.o
+ * (+0, +4, +8, +28). Exponent byte 0; the rest is the top of 5**17 =
+ * 0xB1A2BC2EC5 without its leading 1. */
+static const unsigned char FLOAT_ZERO[4] = { 0xbc, 0xa2, 0x31, 0x00 };
+
+/* The one zero spelling those bytes are confirmed for: "%.17e" of zero,
+ * i.e. 17 digits after the '.' and a zero exponent. */
+#define ZERO_FRAC_DIGITS 17
+
+/* ------------------------------------------------------------------ */
 
 static bool is_digit(char c)
 {
     return c >= '0' && c <= '9';
 }
 
-FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
+/* ASCII letter to lower case; anything else unchanged. */
+static char to_lower(char c)
 {
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+size_t flt_size(FpKind kind)
+{
+    return (size_t)FORMATS[kind == FP_DOUBLE].nbytes;
+}
+
+FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
+{
+    const FpFormat *fmt = &FORMATS[kind == FP_DOUBLE];
     size_t i = 0;
     bool neg = false;
+    char exp_letter = 'e';   /* atof's exponent letter: the bare form's */
 
-    /* Optional "0f"/"0F" float-constant prefix (the manual's spelling). */
-    if (len >= 2 && s[0] == '0' && (s[1] == 'f' || s[1] == 'F'))
+    /* Optional "0f"/"0F" (.float) or "0d"/"0D" (.double) constant prefix
+     * - the manual's spelling; after "0d" the exponent letter is d/D. */
+    if (len >= 2 && s[0] == '0' && to_lower(s[1]) == fmt->prefix) {
         i = 2;
+        exp_letter = fmt->prefix_exp;
+    }
     if (i < len && (s[i] == '+' || s[i] == '-')) {
         neg = (s[i] == '-');
         i++;
@@ -188,7 +240,7 @@ FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
             }
             continue;
         }
-        if (nd + pending + 1 > MAX_SIG_DIGITS)
+        if (nd + pending + 1 > fmt->max_sig_digits)
             return FLT_RANGE;
         while (pending > 0) {
             digits[nd++] = 0;
@@ -201,7 +253,7 @@ FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
 
     /* Optional exponent. */
     long exp10 = 0;
-    if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+    if (i < len && to_lower(s[i]) == exp_letter) {
         bool eneg = false;
         i++;
         if (i < len && (s[i] == '+' || s[i] == '-')) {
@@ -220,12 +272,18 @@ FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
     if (i != len)
         return FLT_SYNTAX;
 
-    if (nd == 0)
+    /* Zero: only the confirmed .float spelling (see fltconst.h). */
+    if (nd == 0) {
+        if (fmt->zero_confirmed && !neg && frac == ZERO_FRAC_DIGITS && exp10 == 0) {
+            memcpy(out, FLOAT_ZERO, sizeof FLOAT_ZERO);
+            return FLT_OK;
+        }
         return FLT_ZERO;
+    }
 
     /* value = D * 10**E */
     long e = exp10 - frac + pending;
-    if (e > MAX_DEC_EXP || e < MIN_DEC_EXP)
+    if (e > MAX_DEC_EXP || e < fmt->min_dec_exp)
         return FLT_RANGE;
 
     Big n;
@@ -251,7 +309,7 @@ FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
     b2 += tz;
 
     int bits = big_bitlen(&n);
-    if (bits > 24)
+    if (bits > fmt->sig_bits)
         return FLT_INEXACT;
 
     /* value = 0.1mmm...(binary) * 2**x, the mantissa N/2**bits. */
@@ -259,22 +317,35 @@ FltStatus flt_encode(const char *s, size_t len, unsigned char out[4])
     if (x + 128 < 1 || x + 128 > 255)
         return FLT_RANGE;
 
-    uint32_t f = n.w[0] << (24 - bits);   /* 24 bits, top bit set */
-    out[0] = (unsigned char)(f & 0xFF);
-    out[1] = (unsigned char)((f >> 8) & 0xFF);
-    out[2] = (unsigned char)(((f >> 16) & 0x7F) | (neg ? 0x80 : 0));
-    out[3] = (unsigned char)(x + 128);
+    /* The mantissa left-aligned in sig_bits (at most 56) bits, its top
+     * bit - the leading 1 - set; N has at most two limbs here. */
+    uint64_t m = (uint64_t)n.w[0] | ((n.n > 1 ? (uint64_t)n.w[1] : 0) << 32);
+    m <<= fmt->sig_bits - bits;
+
+    /* Low bytes of the mantissa, lowest first; in the byte below the
+     * exponent, the leading 1's place holds the sign instead. */
+    int top = fmt->nbytes - 2;
+    for (int k = 0; k <= top; k++)
+        out[k] = (unsigned char)((m >> (8 * k)) & 0xFF);
+    out[top] = (unsigned char)((out[top] & 0x7F) | (neg ? 0x80 : 0));
+    out[top + 1] = (unsigned char)(x + 128);
     return FLT_OK;
 }
 
-const char *flt_status_text(FltStatus st)
+const char *flt_status_text(FltStatus st, FpKind kind)
 {
+    bool dbl = (kind == FP_DOUBLE);
     switch (st) {
         case FLT_OK:      return "ok";
         case FLT_SYNTAX:  return "not a floating-point number";
-        case FLT_ZERO:    return "zero is not supported (the real assembler's bytes for it are unconfirmed)";
-        case FLT_INEXACT: return "not exactly representable as a float (the real assembler's rounding is unconfirmed)";
-        case FLT_RANGE:   return "out of range for a float";
+        case FLT_ZERO:
+            return dbl ? "zero is not supported in .double (the real assembler's bytes for it are unconfirmed)"
+                       : "this zero is not supported (the real assembler's bytes are confirmed only for "
+                         "0.00000000000000000e+00: 17 fraction digits, exponent 0, no minus sign)";
+        case FLT_INEXACT:
+            return dbl ? "not exactly representable as a double (the real assembler's rounding is unconfirmed)"
+                       : "not exactly representable as a float (the real assembler's rounding is unconfirmed)";
+        case FLT_RANGE:   return dbl ? "out of range for a double" : "out of range for a float";
     }
     return "invalid";
 }

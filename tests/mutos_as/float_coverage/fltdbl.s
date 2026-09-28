@@ -1,7 +1,7 @@
-| fltdbl.s - OPEN-QUESTION PROBE, not a regression golden (see
-| README.md). ".double" (8-byte floating data, MUTOS1700_Assembler_as.pdf
-| sect. 7.2.1) is not implemented at all in mutos_as - src/mutos_as/
-| assemble.c refuses it outright, before even trying to parse the
+| fltdbl.s - written as an OPEN-QUESTION PROBE (see README.md), now a
+| regression golden. ".double" (8-byte floating data, MUTOS1700_Assembler_as.pdf
+| sect. 7.2.1) was not implemented at all in mutos_as - src/mutos_as/
+| assemble.c refused it outright, before even trying to parse the
 | operand: "an explicit error until the real assembler's conversion of a
 | value that needs more than a float's 24 bits is pinned down (one real
 | 8-byte constant is known, ecvt.o's .03, correctly rounded)". This is a
@@ -17,10 +17,11 @@
 | float's 24, the whole reason ".double" needs its own encoding path
 | rather than reusing flt_encode()'s).
 |
-| mutos_as is expected to refuse this file (run_goldens.sh's category
-| 3) until ".double" is implemented FROM this golden's real bytes once
-| captured. That mismatch against the real "as" (which is expected to
-| accept it - see README.md) is the entire point.
+| RESOLVED 2026-09-28: the real "as" wrote 00 00 80 00 00 00 00 81
+| (fltdbl.o.golden) - the float format with 56 significant bits - and
+| mutos_as now implements ".double" from it and reproduces the golden
+| byte for byte (see src/mutos_as/fltconst.h and README.md's
+| "Implemented").
 
 .text
 .globl	_fltdbl_probe

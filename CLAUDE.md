@@ -56,7 +56,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — meant to assemble every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it. **Concluded 2026-09-28, without needing a full comparison run**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated — there is nothing to diff. See `STATUS.md`'s open item 6 for the finding and the new source-level angle it points to instead.
-* `/tests/mutos_as/float_coverage/`: real-hardware test cases for two open `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both currently refused by `mutos_as` itself (see `src/mutos_as/fltconst.h`/`assemble.c`) — plus two already-`mutos_as`-clean regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. **Goldens generated and pushed from real MUTOS 1700 hardware 2026-09-28** — both gaps are now resolved with real ground truth (`run_goldens.sh` has not yet been run against them). See that directory's own `README.md` and `STATUS.md`'s open item 7.
+* `/tests/mutos_as/float_coverage/`: real-hardware goldens (generated on real MUTOS 1700 hardware 2026-09-28) for two former `mutos_as` floating-point gaps — a zero `.float` constant and `.double` (8-byte) encoding, both implemented from these goldens the same day (see `src/mutos_as/fltconst.h`) — plus two regression cases combining `lea`+`.float` in one whole object, a gap `libc_recon/`'s existing float tests don't close. All four are byte-identical and part of `make test`. See that directory's own `README.md` and `STATUS.md`'s open item 7.
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
@@ -561,19 +561,17 @@ scope and intent, not a snapshot of what's done.
   generated through `mutos_c1`'s evaluation-order plan, in v7's
   `cexpr()`/`cbranch()` order - see `STATUS.md`).
 * **Next up**:
-  * **`mutos_as`: implement zero-`.float` and `.double` encoding.** Both were
-    blocking gaps in `mutos_as` (see `src/mutos_as/fltconst.h`/`assemble.c`'s
-    refusals) and both are now unblocked by real-hardware ground truth from
-    `tests/mutos_as/float_coverage/` (2026-09-28): a zero `.float` encodes as
-    `bc a2 31 00` (matching the previously-ambiguous `atof.o`/`ecvt.o` bytes
-    exactly, now from a known, hand-written source instead of lost compiled-C
-    input), and `.double` follows the same `0.1mmm * 2**(e-128)` scheme as
-    `.float` with 55 mantissa bits (confirmed against a worked example,
-    `fltdbl.o.golden`). See `STATUS.md`'s open item 7 for the full derivation.
-    Once implemented, `atof.o`/`ecvt.o` become reconstructable `libc_recon/`
-    goldens too (see that directory's README "Why only these" — the zero
-    constant was the other blocker there, alongside the `L`-label question
-    below).
+  * **`mutos_as`: zero `.float` and `.double` — done (2026-09-28).** Implemented
+    from `tests/mutos_as/float_coverage/`'s real-hardware goldens: a zero
+    `.float` spelled `0.00000000000000000e+00` (the `%.17e` text the compiler
+    writes) encodes as `bc a2 31 00` — `fltzero.o.golden`, identical to every
+    zero in `atof.o`/`ecvt.o` — and `.double` is the `.float` format with 56
+    significant bits (`fltdbl.o.golden`). Other zero spellings, a zero
+    `.double` and inexact values of either size stay explicit errors: their
+    real bytes are unconfirmed (see `STATUS.md`'s open item 7). With the zero
+    settled, `atof.o` is blocked only by the `L`-label question below;
+    `ecvt.o` also by its inexact 8-byte `.03` (see `libc_recon/README.md`'s
+    "Why only these").
   * **The `libc.a`-vs-kernel `L`-label discrepancy is still open, but the
     flag-level explanation is now ruled out.** Real hardware confirmed
     2026-09-28 that `as -L` is not implemented at all (`Unknown option L
@@ -587,8 +585,9 @@ scope and intent, not a snapshot of what's done.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
-    dependency-ordered list: the floating shapes still refused (zero and
-    non-float constants also need `mutos_as`, now unblocked — see above), the
+    dependency-ordered list: the floating shapes still refused (for zero and
+    non-float constants `mutos_as` is now ready as far as real bytes go — see
+    above), the
     remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
     goldens narrowed the threshold to `(80,128]`), then growing coverage
     into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently

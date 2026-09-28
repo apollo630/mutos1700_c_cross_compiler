@@ -3,7 +3,7 @@
 # check_floatdat.sh - checks mutos_as's ".float" encoding against the
 # floating constants the REAL MUTOS 1700 toolchain wrote into libc.a.
 #
-# Assembles floatdat.s (four constants, "%.17e" as mutos_c1 writes them)
+# Assembles floatdat.s (five constants, "%.17e" as mutos_c1 writes them)
 # and compares each value's 4 bytes in the resulting data segment with
 # the bytes of the same constant in a real libc.a object's data segment
 # (tests/mutos1700_libc/atof.o and ecvt.o) - read from those objects at
@@ -84,6 +84,12 @@ done <<'EOF'
 8 atof.o 20 1.0
 8 ecvt.o 32 1.0
 12 atof.o 24 5.0
+16 atof.o 4 0.0
+16 atof.o 16 0.0
+16 ecvt.o 0 0.0
+16 ecvt.o 4 0.0
+16 ecvt.o 8 0.0
+16 ecvt.o 28 0.0
 EOF
 
 echo "floatdat.s: $((n - fail))/$n real libc.a constants byte-identical"

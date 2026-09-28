@@ -178,23 +178,8 @@ static void handle_directive(AsmState *as, const Statement *s)
         (d->len == 5 && strncmp(d->text, ".byte", 5) == 0))
         return;
 
-    /* .double - 8-byte initialized floating-point data
-     * (MUTOS1700_Assembler_as.pdf sect. 7.2.1) - is not implemented.
-     * (.float is, in run_pass(), which has the output buffers.) Unlike
-     * the directives ignored below, skipping it is never harmless: its
-     * label would name whatever follows, and every later address in
-     * the segment would be short by 8 - so it is an explicit error
-     * until the real assembler's conversion of a value that needs more
-     * than a float's 24 bits is pinned down (one real 8-byte constant
-     * is known, ecvt.o's .03, correctly rounded - see STATUS.md's
-     * Milestone 2 section). A Pass 1 error stops before Pass 2, so this
-     * is reported once. */
-    if (d->len == 7 && strncmp(d->text, ".double", 7) == 0) {
-        fprintf(stderr, "error: %.*s is not yet supported at line %d\n",
-                (int)d->len, d->text, s->line);
-        as->errors++;
-        return;
-    }
+    /* .float/.double are handled by the caller (run_pass), which has
+     * the output buffers - see its STMT_DIRECTIVE case. */
 
     /* .asciz / .end etc.: not needed by the current corpus subset this
      * driver targets - silently ignored so it degrades gracefully
@@ -447,12 +432,16 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                 }
 
                 /* .float <number>[,<number>...] - one 4-byte MUTOS
-                 * floating constant per operand, in the current segment
+                 * floating constant per operand; .double the same with
+                 * 8-byte constants - in the current segment
                  * (MUTOS1700_Assembler_as.pdf sect. 7.2.1). mutos_c1
-                 * writes one for every floating constant, e.g.
+                 * writes a .float for every floating constant, e.g.
                  * "L10000:<TAB>.float 3.50000000000000000e+00" (tests/
-                 * mutos_cc/08_float's .s goldens - real compiler output).
-                 * The format and the exactness rule are fltconst.h's.
+                 * mutos_cc/08_float's .s goldens - real compiler output);
+                 * the real assembler's .double is confirmed by tests/
+                 * mutos_as/float_coverage/fltdbl.o.golden. The formats,
+                 * the exactness rule and the one accepted zero are
+                 * fltconst.h's.
                  *
                  * Like .asciz, the operand text is re-scanned RAW from
                  * the source buffer, since the tokenizer has no notion
@@ -462,10 +451,17 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                  * ',', or to the end of the statement - newline, ';' or
                  * a '|' comment. No alignment and no relocation: the
                  * bytes are absolute data (libc.a's atof.o/ecvt.o hold
-                 * their constants back to back, 4 bytes each). Errors
-                 * are reported in Pass 1 only (a Pass 1 error stops
-                 * before Pass 2). */
-                if (d->len == 6 && strncmp(d->text, ".float", 6) == 0) {
+                 * their constants back to back, 4 bytes each, ecvt.o's
+                 * 8-byte 0.03 among them at offset 20, not 8-aligned).
+                 * A refused operand still advances the location counter
+                 * by its full size, so later addresses stay right while
+                 * Pass 1 collects errors. Errors are reported in Pass 1
+                 * only (a Pass 1 error stops before Pass 2). */
+                bool is_float = (d->len == 6 && strncmp(d->text, ".float", 6) == 0);
+                bool is_double = (d->len == 7 && strncmp(d->text, ".double", 7) == 0);
+                if (is_float || is_double) {
+                    FpKind kind = is_double ? FP_DOUBLE : FP_FLOAT;
+                    size_t size = flt_size(kind);
                     CodeBuf *target = pass2 ? seg_target(as, text_out, data_out) : NULL;
                     const char *p = d->text + d->len;
                     for (;;) {
@@ -477,26 +473,28 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                         const char *end = p;
                         while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
                             end--;
-                        unsigned char bytes[4];
+                        unsigned char bytes[8];
                         if (end == start) {
                             if (!pass2) {
-                                fprintf(stderr, "error: missing .float operand at line %d\n", s.line);
+                                fprintf(stderr, "error: missing %.*s operand at line %d\n",
+                                        (int)d->len, d->text, s.line);
                                 as->errors++;
                             }
                         } else {
-                            FltStatus fs = flt_encode(start, (size_t)(end - start), bytes);
+                            FltStatus fs = flt_encode(kind, start, (size_t)(end - start), bytes);
                             if (fs != FLT_OK) {
                                 if (!pass2) {
-                                    fprintf(stderr, "error: bad .float operand '%.*s' at line %d: %s\n",
-                                            (int)(end - start), start, s.line, flt_status_text(fs));
+                                    fprintf(stderr, "error: bad %.*s operand '%.*s' at line %d: %s\n",
+                                            (int)d->len, d->text, (int)(end - start), start, s.line,
+                                            flt_status_text(fs, kind));
                                     as->errors++;
                                 }
                             } else if (pass2 && target) {
-                                for (int k = 0; k < 4; k++)
+                                for (size_t k = 0; k < size; k++)
                                     codebuf_put(target, bytes[k]);
                             }
                         }
-                        *lc += 4;
+                        *lc += (long)size;
                         if (*p != ',')
                             break;
                         p++;
