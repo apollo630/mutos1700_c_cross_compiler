@@ -2709,4 +2709,11 @@ far.
    rounds an inexact value (`ecvt.o`'s `.03` is one correctly rounded
    8-byte sample) - refused for both directives; this is what still keeps
    `ecvt.o` from being a `libc_recon/` golden, besides the `L` labels (open
-   item 6).
+   item 6). **The probe for (a) and (b) now exists**:
+   `tests/mutos_as/float_open/fltopen.s`, one whole-object source
+   exercising all four still-open spellings in one file - not yet run on
+   real hardware. See that directory's own `README.md` for exactly what
+   each answer would change in `src/mutos_as/fltconst.c`/`.h`. It is
+   deliberately not part of `make test` (the current `mutos_as` refuses
+   every constant in it by design, which would make the top-level test
+   fail permanently until real answers land).
