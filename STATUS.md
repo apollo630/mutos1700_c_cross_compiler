@@ -2743,8 +2743,8 @@ is now fully covered (62/62). In order:
    taken from `libc.a`'s optimized code byte for byte - label numbers,
    `.data` placement, the return sequence's position, `|RTYP 3` - and move
    into `08_float` as `03`..`06`; its five open-question files show the
-   shapes still refused: a zero compared as the right operand and truth
-   tests (`ftest`?), `d + i` and other computed right operands (where do
+   shapes still refused: a zero compared as the right operand (`ftest`?),
+   `d + i` and other computed right operands (where do
    `libc.a`'s "reversed" `fsubrs`/`fdivrd`... come in?), `+=`/`-=`, the
    text of a constant that is not exactly a float, the label order of a
    written constant after a converted one, floating globals, statics,

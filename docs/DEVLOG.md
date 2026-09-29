@@ -6219,6 +6219,26 @@ implemented (to confirm it byte for byte, including what `libc.a`'s
 optimized code cannot show - label numbers, `.data` placement, where the
 return sequence goes) and five that exercise the refused shapes above.
 
+**First real-hardware result (the same day).** `cc -S p1_compare.c` stopped
+with `p1_compare.c:37: Illegal type of operand` - `if (!e)`, `e` a double -
+and nothing else in the file: the real front end rejects `!` on a floating
+operand, although v7's `build()` accepts one (`!un` has no `LWORD` in v7's
+`opdope[]`; `c01.c`'s EXCLA case just types the node INT). So the MUTOS `c0`
+differs from v7 here, and `mutos_c0`'s refusal of `!e` is right - only its
+wording ("not yet supported") understates it. The line was removed from
+`p1_compare.c`. The second run got past `c0` and failed in `c1`: `37:
+Floating point stack underflow` - the line of `while (a)`, `a` a float -
+then `38: floating point stack underflow` (lower case: another message
+site) for `a = 0;`, and from there one message per stack pop of every
+floating statement to the end of the function (two per comparison, four
+for the `&&`), so the real `c1` keeps a compile-time model of the runtime
+stack's depth, and after the first underflow it stays below zero. Nothing
+earlier in the file failed, `if (d)` on line 35 (its CBRANCH carries line
+36 - `if` reads one token past its `)`, `while` does not) included, but
+whether `if (d)` already left that model one entry short cannot be told.
+Both truth tests were removed from `p1_compare.c`; a floating value tested
+for truth stays refused, now with a real reason.
+
 **Tooling.** `dump_temp.py` decodes `NEG` (`mutos_c0` writes it now).
 `x86sim.py` runs the new calls - `fsts`/`fstd`, `fadd`...`fdiv`, `fneg`,
 `fcmp` with `sahf` (only directly after it), `fac` - and no longer divides
