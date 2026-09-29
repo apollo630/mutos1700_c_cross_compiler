@@ -60,9 +60,12 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos_as/float_open/`: hand-written probes for the real `as` whose constants
   `mutos_as` still refuses — deliberately **not** in `make test`; a probe moves to
   `float_coverage/` once `mutos_as` reproduces its golden (`fltopen.s` did,
-  2026-09-28, `fltmode.s` and `fltmul.s` 2026-09-29). **No current probe**; its
-  `README.md` lists what `mutos_as` still refuses and how to add and read a probe
-  (`fltmodel.py survivors`).
+  2026-09-28, `fltmode.s` and `fltmul.s` 2026-09-29). Current probes: `fltovf.s`
+  and `fltsig.s`, **not yet run on real hardware**, which show what the real `as`
+  does when a conversion leaves the format's exponent range - a wrapped exponent
+  byte from `ldexp` (predicted) and an overflow inside `atof` (`SIGFPE` in `libc.a`'s
+  runtime; the real `as` may die). Its `README.md` has the predicted bytes and how
+  to run and read them (`fltmodel.py survivors`).
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
@@ -573,9 +576,10 @@ scope and intent, not a snapshot of what's done.
     word), so every constant the model covers is determined, and
     `mutos_as` accepts every `%.17e` constant `mutos_c1` writes from
     `e-37` up. Left: a step outside the format's range (5\*\*55 for text
-    from `e-38` down) stays refused - a real-hardware probe of the
-    overflow would settle it if the compiler's smallest floats matter
-    (see `tests/mutos_as/float_open/README.md`). All of `atof.o`'s and
+    from `e-38` down) stays refused - **run
+    `tests/mutos_as/float_open/fltovf.s` and `fltsig.s` on real hardware**
+    to see what the real `as` does there (see that directory's
+    `README.md`). All of `atof.o`'s and
     `ecvt.o`'s floating constants are reproduced, `ecvt.o`'s inexact
     `.03` included, so only the `L`-label question below keeps them from
     being `libc_recon/` goldens.
