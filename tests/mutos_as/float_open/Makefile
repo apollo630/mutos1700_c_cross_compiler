@@ -1,8 +1,8 @@
 # Makefile for tests/mutos_as/float_open/'s real-hardware floating
-# point probes. There is NO CURRENT PROBE: the last one, fltmul.s, was
-# run on real hardware 2026-09-29 and has moved to ../float_coverage/
-# with its golden, like fltopen.s and fltmode.s before it. A new probe
-# goes into SRCS below (and into Makefile.mutos) - see README.md.
+# point probes. Current probes: fltovf.s and fltsig.s (overflow - see
+# README.md; fltsig.s may make the real "as" die, which is its finding).
+# Earlier probes (fltopen.s, fltmode.s, fltmul.s) have moved to
+# ../float_coverage/ with their goldens.
 #
 # THIS FILE REQUIRES GNU MAKE - same reasoning as
 # ../float_coverage/Makefile (the real MUTOS 1700 make(1) has no
@@ -34,17 +34,18 @@
 # ../float_coverage/Makefile's own "goldens" target: it only packages
 # whatever "<name>.o" already exists on disk and must never try to
 # (re)create it - that needs the real MUTOS 1700 toolchain, not this
-# host's tools.
+# host's tools. An empty "<name>.o" (what an "as" that died may leave
+# behind) is skipped, not packaged.
 
-SRCS :=
+SRCS := fltovf.s fltsig.s
 OBJS := $(SRCS:.s=.o)
 
 goldens:
 	@for f in $(OBJS); do \
-		if [ -f "$$f" ]; then \
+		if [ -s "$$f" ]; then \
 			cp -v "$$f" "$$f.golden"; \
 			base64 "$$f" > "$$f.golden_base64.txt"; \
-		else echo "skipping $$f (not found -- generate it on real MUTOS 1700 hardware first, see Makefile.mutos)"; fi; \
+		else echo "skipping $$f (missing or empty -- generate it on real MUTOS 1700 hardware first, see Makefile.mutos)"; fi; \
 	done
 
 clean:

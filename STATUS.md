@@ -392,8 +392,8 @@ exponent 0, and `libcatof.py`".
   output and the runtime's `dmul`/`ddiv`/`dadd` against `fltmodel.py`; it
   checks the linked image's code where it patches or relies on it. A build
   with the exact product instead of `libc.a`'s fails its `check`.
-- **Tests**: `float_coverage/fltmul.s` in `make test` (7/7 there);
-  `float_open/` has no current probe.
+- **Tests**: `float_coverage/fltmul.s` in `make test` (7/7 there). Next
+  probes: `float_open/fltovf.s` and `fltsig.s` (see open item 7).
 
 ### Auxiliary deliverables (prior session records, not re-checked this session)
 - `mutos_as.1` — English troff man page (its `.float`/`.double` entries updated
@@ -2882,8 +2882,13 @@ far.
    assembler does when a step overflows (5\*\*k for k >= 55, e.g. `.float
    1.00000000000000000e-38` - refused now; `libc.a`'s runtime raises
    `SIGFPE`), and LOGHUGE after a dropped digit (refused; the value is below
-   the format's range anyway). A probe for the first would go into
-   `tests/mutos_as/float_open/` (see its `README.md`). With `atof.o`'s and
+   the format's range anyway). `tests/mutos_as/float_open/fltovf.s` and
+   `fltsig.s` (not yet run on real hardware) probe the first: `fltovf.s`
+   values whose last step, `ldexp`, leaves the range - `libc.a`'s `ldexp`
+   wraps the exponent byte, and `libcatof.py` gives the bytes that predicts -
+   and `fltsig.s` the overflow inside the squaring for 5\*\*k, which in
+   `libc.a`'s runtime raises `SIGFPE` (the real `as` may die; that is then
+   the finding). See that directory's `README.md`. With `atof.o`'s and
    `ecvt.o`'s floating constants all reproduced (`floatdat.s`, `ecvt.o`'s
    `.03` included), only the `L` labels (open item 6) keep them from being
    `libc_recon/` goldens.

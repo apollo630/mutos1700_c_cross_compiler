@@ -5883,6 +5883,54 @@ plus a probe of every new acceptance and refusal path: no reports,
 objects and diagnostics identical to the `-O2` build's; `fltconst_test`
 under both sanitizers over 75,092 texts: output identical.
 
+### The overflow probes: `float_open/fltovf.s` and `fltsig.s` (2026-09-29, not yet run on real hardware)
+
+What `mutos_as` still refuses is a conversion that leaves the format's
+exponent range at some step (`FLT_RANGE`). Reading `libc.a`'s runtime,
+and running it under `libcatof.py` with a hook on `__ovfl`/`__div0`,
+shows two different mechanisms:
+
+- **The last step, `ldexp`, wraps.** `ldexp.o` (reconstructed in
+  `libc_recon/ldexp.s`) does `mov al,fac+7` / `sub ah,ah` / `add ax,bx` /
+  `jo ldexp2` / `mov fac+7,al`: a 16-bit sum of the exponent byte and the
+  exponent, checked only for signed 16-bit overflow, stored as its low
+  byte. An exponent byte past 255 or below 1 therefore wraps, silently:
+  `2.00000000000000000e+38` (the product before `ldexp` has exponent byte
+  235, plus 21) becomes exponent byte 0, `1.0e+39` 2, `1.0e+50` 39;
+  `2.5e-39` 0, `1.0e-39` 255, `5.0e-40` 254 - each with the value's
+  mantissa. `ldexp2` (`huge`, `errno` = `ERANGE`) is reachable only for a
+  16-bit overflow, i.e. an exponent far beyond anything `flexp` survives.
+  Inside `atof` nothing else can leave the range for these texts: the
+  digit loop stays below 2\*\*60, and a quotient `fl / flexp` with k <= 54
+  has an exponent between about -125 and +60.
+- **An overflow inside `atof` raises `SIGFPE`.** `flexp` = 5\*\*k overflows
+  from k = 55 on (`flexp *= exp5` for k = 55..63, the squaring
+  `exp5 *= exp5` itself from k = 64). In `dmul` the exponent sum
+  overflows (`jo ovchk`); `ovchk` sends a wrapped-positive sum (an
+  underflow) straight to `zero` - silently - and anything else through
+  `call __ovfl` first. `__ovfl` (`fperr.o`) sets `errno` = `ERANGE` and
+  calls `kill(getpid(), 8)`. The hooked emulation reaches `__ovfl` for
+  `1.00000000000000000e-38` (5\*\*23 × 5\*\*32), `2.93873587705571877e-39`
+  (5\*\*24 × 5\*\*32) and `1.0e+65` (5\*\*32 × 5\*\*32), and for none of the
+  `ldexp` cases above. If the process survives the signal, `dmul` still
+  ends in `zero`, and the division by that "zero" `flexp` reaches `__div0`
+  - `SIGFPE` again.
+
+So the probe is two files: `fltovf.s` holds the `ldexp` cases (two in-range
+controls at the edges, `E1` 2\*\*127 in the compiler's form and `E2`
+`3.0e-39`, which `mutos_as` already writes, then four above and three
+below the range) and is expected to assemble, with the wrapped bytes
+`libcatof.py` gives as its prediction - if the real `as` uses `libc.a`'s
+`ldexp`. `fltsig.s` holds the three `__ovfl` cases, the compiler-relevant
+`1.00000000000000000e-38` first; if the real `as` does not catch
+`SIGFPE`, it dies there and writes no object, and the message is the
+finding. Kept in one file, that death would have taken `fltovf.s`'s data
+with it. `Makefile.mutos` assembles `fltovf.s` first; the modern
+`Makefile`'s `goldens` now skips an empty object. A simulated golden built
+from `libcatof.py`'s predictions decodes with `fltmodel.py survivors` as
+expected: the controls check against the model, the seven others are
+listed as "NOT MODELLED" with their bytes.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
