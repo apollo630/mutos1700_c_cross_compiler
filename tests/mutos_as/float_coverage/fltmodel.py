@@ -12,15 +12,28 @@ atof()'s algorithm on the 56-bit MUTOS double -
   * flexp = 5**k (k = |decimal exponent|) by v7's repeated squaring;
   * fl /= flexp (ddiv) for a negative exponent, else fl *= flexp;
     ldexp(fl, exponent); negated for a leading '-';
-  * a zero dividend gives the divisor's mantissa, exponent byte 0 (only
-    modelled for 1 <= k <= 24, where 5**k is exact);
+  * nd - k < -39 (LOGHUGE) makes atof() give up: a nonzero value there
+    is out of range, a zero's bytes are unknown;
+  * a zero: the real arithmetic clears only the exponent byte of its
+    accumulator, which still holds the previous result - flexp for
+    k >= 1, so flexp's mantissa with exponent byte 0 on either path;
+    for k = 0 whatever the digit loop left there, observed only for an
+    unsigned .float with 18 digits (ff ff ff 00);
   * a .float stores the double's high four bytes.
 
 Each of dmul (M), dadd (A) and ddiv (D) rounds to 56 significant bits
-with an unknown mode: trunc, ne (nearest, ties even), na (nearest, ties
-away) or away (away from zero on any remainder). The combinations that
-reproduce every known-source real constant "survive"; a constant is
-determined only if all survivors give the same stored bytes.
+with a mode from: trunc, ne (nearest, ties even), na (nearest, ties
+away) or away (away from zero on any remainder). dmul has one more
+candidate, libc: the product libc.a's own dmath.o forms - its pmuld
+takes the partial product a0*b2 from b1's word, so the product is
+a*b + (a0*b1 - a0*b2) * 2**32 (a = the operand fmuld addresses, b = the
+one on the floating-point stack; words of 16 bits from the bottom) -
+rounded to nearest, ties even. The combinations that reproduce every
+known-source real constant "survive"; a constant is determined only if
+all survivors give the same stored bytes. Since fltmode.o.golden: A = ne,
+D = ne or na (never different in atof(), whose one division cannot tie),
+M = ne or libc (different only for products no real constant has needed
+so far).
 
 Usage:
   fltmodel.py survivors [DIR ...]
@@ -29,7 +42,7 @@ Usage:
       .float/.double constant's real bytes from the golden's data
       segment, and prints the rounding-mode combinations consistent with
       all of them. Exit 1 if they differ from EXPECTED below - the set
-      fltconst.c's MODES_MUL_ADD/MODES_DIV encode - if the model
+      fltconst.c's MODES_MUL/MODES_ADD/MODES_DIV encode - if the model
       contradicts a golden outright, or if a golden holds a constant the
       model does not cover (a zero outside its known shape). Also the
       way to read a new probe's golden: "survivors . ../float_open".
@@ -49,11 +62,16 @@ import sys
 from fractions import Fraction
 
 MODES = ('trunc', 'ne', 'na', 'away')
+M_MODES = MODES + ('libc',)     # dmul only: libc.a dmath.o's product
 SIG = 56
 BIG = 1 << 56
 
-# Must match fltconst.c's MODES_MUL_ADD (M and A) and MODES_DIV (D).
-EXPECTED = set(itertools.product(MODES, MODES, ('ne', 'na', 'away')))
+# Must match fltconst.c's MODES_MUL (M), MODES_ADD (A) and MODES_DIV (D).
+EXPECTED = set(itertools.product(('ne', 'libc'), ('ne',), ('ne', 'na')))
+
+# The one zero with decimal exponent 0 seen (fltmode.o.golden, Z0).
+ZERO_K0_DIGITS = 18
+ZERO_K0_FLOAT = bytes.fromhex('ffffff00')
 
 
 class Range(Exception):
@@ -70,7 +88,7 @@ def rnd(n, sticky, e, mode):
     keep, tail, half = n >> s, n & ((1 << s) - 1), 1 << (s - 1)
     if mode == 'trunc':
         up = False
-    elif mode == 'ne':
+    elif mode in ('ne', 'libc'):
         up = tail > half or (tail == half and (sticky or keep & 1))
     elif mode == 'na':
         up = tail >= half
@@ -91,7 +109,13 @@ def chk(v):
 
 
 def mul(a, b, mode):
-    return chk(rnd(a[0] * b[0], False, a[1] + b[1], mode))
+    """a * b; a is the operand fmuld addresses (dmul's [si]), b the one
+    on the floating-point stack ([di]) - atof()'s order."""
+    p = a[0] * b[0]
+    if mode == 'libc':
+        a0, b1, b2 = a[0] & 0xffff, (b[0] >> 16) & 0xffff, (b[0] >> 32) & 0xffff
+        p += (a0 * b1 - a0 * b2) << 32
+    return chk(rnd(p, False, a[1] + b[1], mode))
 
 
 def div(a, b, mode):
@@ -143,13 +167,8 @@ def convert(kind, text, M, A, D):
             nd += 1
         exp10 += eexp
         k = abs(exp10)
-        if fl is None:
-            if exp10 < 0 and 1 <= k <= 24:
-                b = image(neg, rnd(5 ** k, False, 0, 'trunc')[0], 0)
-                return b[4:] if kind == 'f' else b
-            return 'ZERO'
         if exp10 < 0 and nd - k < -39:
-            return 'RANGE'
+            return 'ZERO' if fl is None else 'RANGE'
         flexp, exp5, kk = rnd(1, False, 0, 'trunc'), rnd(5, False, 0, 'trunc'), k
         while True:
             if kk & 1:
@@ -158,6 +177,13 @@ def convert(kind, text, M, A, D):
             if kk == 0:
                 break
             exp5 = mul(exp5, exp5, M)
+        if fl is None:
+            if k == 0:
+                if kind == 'f' and not neg and nd == ZERO_K0_DIGITS:
+                    return ZERO_K0_FLOAT
+                return 'ZERO'
+            b = image(neg, flexp[0], 0)
+            return b[4:] if kind == 'f' else b
         fl = div(fl, flexp, D) if exp10 < 0 else mul(fl, flexp, M)
         m, e = chk((fl[0], fl[1] + exp10))
     except Range:
@@ -233,7 +259,7 @@ def confirmed(dirs):
 
 def cmd_survivors(dirs):
     consts = confirmed(dirs)
-    allc = list(itertools.product(MODES, MODES, MODES))
+    allc = list(itertools.product(M_MODES, MODES, MODES))
     modelled, unmodelled = [], []
     for k, t, b, where in consts:
         outs = {convert(k, t, *c) for c in allc}
@@ -251,10 +277,10 @@ def cmd_survivors(dirs):
         print('  NOT MODELLED: .%s %s is %s in %s - extend fltconst.c and this model from it'
               % ('float' if k == 'f' else 'double', t, b.hex(' '), where))
         rc = 1
-    print('%d of 64 rounding-mode combinations (M = dmul, A = dadd, D = ddiv) reproduce all modelled ones'
-          % len(surv))
+    print('%d of %d rounding-mode combinations (M = dmul, A = dadd, D = ddiv) reproduce all modelled ones'
+          % (len(surv), len(allc)))
     for axis, name in ((0, 'M'), (1, 'A'), (2, 'D')):
-        print('  %s: %s' % (name, ' '.join(m for m in MODES if any(c[axis] == m for c in surv))))
+        print('  %s: %s' % (name, ' '.join(m for m in M_MODES if any(c[axis] == m for c in surv))))
     if len(surv) <= 8:
         for c in surv:
             print('    M=%s A=%s D=%s' % c)
@@ -262,13 +288,13 @@ def cmd_survivors(dirs):
         print('FAIL: no combination fits - the conversion model itself is wrong')
         return 1
     if set(surv) != EXPECTED:
-        print('FAIL: this differs from the set fltconst.c uses (MODES_MUL_ADD/MODES_DIV) and '
+        print('FAIL: this differs from the set fltconst.c uses (MODES_MUL/MODES_ADD/MODES_DIV) and '
               'fltmodel.py\'s EXPECTED - update both, then re-run "check"')
         return 1
     if rc:
         print('FAIL: constants above are outside the model')
         return 1
-    print('ok: matches fltconst.c\'s MODES_MUL_ADD/MODES_DIV')
+    print('ok: matches fltconst.c\'s MODES_MUL/MODES_ADD/MODES_DIV')
     return 0
 
 
@@ -287,6 +313,13 @@ EDGES = [
     'f 1.00000000000000000e-38', 'f 1e-38', 'f 3.4e38', 'f 1.7e38', 'f 1e-50', 'd 1e-50',
     'f -1.5e3', 'd 0D1.5D+3', 'd 0d1.5e3', 'f 0d1', 'f 1e', 'f e5', 'f 1.5.2', 'f -', 'f .',
     'd 144115188075855871', 'd 72057594037927935',
+    'f 0.00000000000000000e+17', 'f 000000000000000000', 'f 00000000000000000.0e1',
+    'f +0.00000000000000000e+17', 'f -0.00000000000000000e+17', 'd 0.00000000000000000e+17',
+    'f 0.0000000000000000e+16', 'f 0.000000000000000000e+18', 'd 0.0e+05', 'f -0e1', 'd 0e54',
+    'd 0e55', 'd 0.0000000000000000000000000', 'f -0.0000000000000000000000000000000000000000',
+    'd 0e-40', 'f 0e-38', 'f 0.0e-39', 'd 1e-39', 'd 1e-40', 'f 1.00000000000000000e-38',
+    'f 1.26765060022822940e+30', 'd 1.23456789012345678e+25', 'd 0.00000000000000000000e-34',
+    'd 0.00000000000000000000e-29', 'f 1.00000000000000000e+21',
 ]
 
 

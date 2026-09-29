@@ -68,8 +68,8 @@ clean:
 # in the current directory), so it is run once per golden subdirectory.
 # libc_recon/ adds check_floatdat.sh (".float" bytes against real
 # libc.a constants), float_coverage/ holds real-hardware objects from
-# hand-written .float/.double sources (zeros, a .double, an inexact
-# .float among them), and assemble_cc_goldens.sh checks that every real
+# hand-written .float/.double sources (zeros, doubles, inexact values
+# and the rounding probe fltmode.s among them), and assemble_cc_goldens.sh checks that every real
 # compiler output in tests/mutos_cc assembles (no reference objects).
 # float_coverage/fltmodel.py (Python 3, standard library only) re-derives
 # the .float/.double conversion model's unknowns from those goldens and

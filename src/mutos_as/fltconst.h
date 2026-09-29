@@ -35,9 +35,10 @@
  * CONVERSION MODEL. The real assembler converts with v7 libc atof()'s
  * algorithm on the 56-bit double, and a .float is the HIGH FOUR BYTES of
  * that double - truncated, not rounded. Every confirmed constant fits
- * this, most tellingly the four in float_coverage/fltopen.o.golden,
- * two of which (Z1, Z3) were predicted byte for byte before the real
- * assembler ran:
+ * this (19 in tests/mutos_as/float_coverage/'s goldens), and libc.a's
+ * own atof.o - v7's algorithm, compiled - run on libc.a's own
+ * floating-point runtime under an 8086 emulator gives the real bytes of
+ * every nonzero one of them; only zeros come out differently (below):
  *
  *   - digits: fl = 10*fl + digit while fl < 2**56 (atof's "big" -
  *     also a constant in libc's own atof.o), a fraction digit lowering
@@ -46,40 +47,53 @@
  *   - flexp = 5**k, k = |decimal exponent|, by repeated squaring;
  *   - fl /= flexp (negative exponent) or fl *= flexp; ldexp(fl, exponent);
  *     negated for a leading '-';
+ *   - with nd digits, nd - k < -39 (LOGHUGE) makes atof() give up;
  *   - .float 0.10000000000000000e+00 -> cc cc 4c 7d (fltopen IN): the
- *     high half of the double for 0.1 - correct rounding would give cd;
- *   - a zero dividend gives the DIVISOR's mantissa with exponent byte 0:
+ *     high half of the double for 0.1 - correct rounding would give cd.
+ *
+ * ROUNDING (fltmode.o.golden). Addition and division round to nearest,
+ * ties to even - exactly what libc.a's dmath.o implements (a guard byte
+ * with sticky bits); the division's tie rule never matters, since
+ * atof()'s one division cannot tie. The multiplication rounds to
+ * nearest, ties to even as well, but of which product is open:
+ * libc.a's dmath.o forms a*b plus (a0*b1 - a0*b2) * 2**32 (a0..b2 the
+ * mantissas' 16-bit words - one partial product loads the wrong word),
+ * and no real constant has yet needed a product where that differs from
+ * the exact one. It can in atof()'s fl * flexp for k >= 4 (a positive
+ * decimal exponent, counting digits dropped past 2**56: "%.17e" text
+ * from e+20 up) and inside flexp for k = 50..54 (from e-33 down).
+ * flt_encode() runs the conversion under every combination still
+ * possible and accepts a constant only if all give the same bytes;
+ * otherwise FLT_ROUNDING. E.g. .float
+ * 1.26765060022822940e+30 (2**100) is 00 00 00 e5 with the exact
+ * product and ff ff 7f e4 with libc.a's.
+ *
+ * ZERO. The real arithmetic, given a zero operand, does not clear its
+ * accumulator fac as libc.a's does: it zeroes only fac's exponent byte
+ * and leaves the rest as the previous operation left it - libc.a's
+ * runtime changed in just that way reproduces all seven real zeros with
+ * k >= 1. For k >= 1 the previous operation built flexp, so the result
+ * is flexp's mantissa with exponent byte 0 on either path (ldexp()
+ * leaves an exponent byte of 0 alone), the sign applied afterwards:
+ *
  *     ".float 0.0" -> 00 00 20 00 (5**1, fltopen Z1),
  *     ".float 0.00000000000000000e+00" -> bc a2 31 00 (5**17, fltzero -
  *     and every zero compiled into atof.o/ecvt.o),
  *     ".double 0.00000000000000000e+00" -> 00 00 c5 2e bc a2 31 00
- *     (fltopen Z3; its high half is fltzero's bytes), and the sign is
- *     applied afterwards: "-0.00000000000000000e+00" -> bc a2 b1 00
- *     (fltopen Z2).
+ *     (fltopen Z3), "-0.00000000000000000e+00" -> bc a2 b1 00 (fltopen
+ *     Z2), ".float 0.0e+05" -> 00 40 1c 00 (5**4 on the multiplication
+ *     path, fltmode Z4), ".double 0.0000000000000000000000000" ->
+ *     85 14 40 61 51 59 04 00 (the rounded 5**25, fltmode Z25).
  *
- * How each double operation (dmul, dadd, ddiv) rounds is not known,
- * except that ddiv does not truncate (fltdbl.o.golden needs its one
- * inexact quotient rounded up; truncation gives one unit less). So
- * flt_encode() runs the model under every remaining combination - dmul
- * and dadd each truncating, to nearest (ties even or away) or away from
- * zero, ddiv any of those but truncating - and accepts a constant only
- * if all of them give the same bytes. That covers every exactly
- * representable value whose conversion needs no rounding (all constants
- * seen in real objects), and inexact values too where the unknown
- * rounding cannot reach the stored bytes (a .float's hidden low 32 bits
- * absorb it, e.g. 0.1). It refuses (FLT_ROUNDING) a value whose bytes
- * the unknown rounding decides - including some EXACT floats written in
- * the compiler's 18-digit "%.17e" form, e.g. 2.93572534179687500e+03,
- * whose 18th digit makes 10*fl inexact: under a truncating dmul the
- * real assembler would store one unit less in the last place.
- *
- * A zero is accepted only where it is observed: a negative decimal
- * exponent of at most 24 (more fraction digits than exponent), so that
- * 5**k is exact; any sign, either directive. Other zeros ("0", "0e5"
- * - atof's multiplication path - or more than 24) are refused
- * (FLT_ZERO). Values outside the format's exponent range at any step of
- * the conversion are refused too (FLT_RANGE): the real arithmetic's
- * overflow and underflow behaviour is unknown.
+ * For k = 0 nothing builds flexp, and fac holds what the digit loop
+ * left there: ".float 0.00000000000000000e+17" -> ff ff ff 00 (fltmode
+ * Z0), which libc.a's runtime does not reproduce. So a zero with k = 0
+ * is accepted only in that shape - a .float, 18 digits, no minus sign -
+ * and the LOGHUGE path is refused; every other zero is accepted, both
+ * directives and signs (FLT_ZERO otherwise). Values outside the format's
+ * exponent range at any step of the conversion are refused too
+ * (FLT_RANGE): the real arithmetic's overflow and underflow behaviour is
+ * unknown.
  */
 
 #ifndef MUTOS_AS_FLTCONST_H
@@ -97,7 +111,7 @@ typedef enum {
     FLT_OK = 0,
     FLT_SYNTAX,     /* not a number in the accepted syntax */
     FLT_ZERO,       /* a zero whose real bytes are not known (see above) */
-    FLT_ROUNDING,   /* the bytes depend on the real arithmetic's unknown rounding */
+    FLT_ROUNDING,   /* the bytes depend on which product the real dmul forms */
     FLT_RANGE       /* exponent outside the format at some step, or text too long */
 } FltStatus;
 

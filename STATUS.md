@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-28.
+Last updated: 2026-09-29.
 
 ---
 
@@ -88,28 +88,33 @@ producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30
 
 - **Clean rebuild** from source (`make clean && make all`), zero warnings under
   `-std=c11 -Wall -Wextra -Wpedantic`.
-- **Full regression: 73/73 golden files byte-for-byte identical**, full file compare
+- **Full regression: 74/74 golden files byte-for-byte identical**, full file compare
   (header + text + data + text-reloc + data-reloc + symtab):
   - `tests/mutos_as/kernel_opt/`: 62/62 clean (includes `mch_insw_outsw.s`, the
     hardware-parity test for the INSW/OUTSW fix below).
   - `tests/mutos_as/kernel_nonopt/`: 5/5 clean.
   - `tests/mutos_as/libc_recon/`: 1/1 clean - `ldexp.s`: a source reconstructed
     from the real `libc.a` object `ldexp.o`, which is its golden (see below).
-  - `tests/mutos_as/float_coverage/`: 5/5 clean - new this session: real-hardware
-    objects from hand-written sources, among them zeros, a `.double` and an
-    inexact `.float` (`fltzero.s`, `fltdbl.s`, `fltopen.s`), all refused before
-    this session (see "Zero `.float`, `.double`" and "The real conversion,
-    re-enacted" below).
+  - `tests/mutos_as/float_coverage/`: 6/6 clean - real-hardware objects from
+    hand-written sources, among them zeros, doubles and inexact values
+    (`fltzero.s`, `fltdbl.s`, `fltopen.s`, and new this session `fltmode.s`,
+    refused before - see "Rounding pinned, zeros on both paths" below).
   - 0 diff-mismatches, 0 assembler-invocation errors, all four directories.
 - **`.float`/`.double` against real bytes**: `libc_recon/check_floatdat.sh` - 13/13
   comparisons byte-identical to the real `atof.o`/`ecvt.o` data: six constants,
   the zero against all six of its occurrences, and `ecvt.o`'s inexact 8-byte
   `0.03` over all 8 bytes (see below).
-- **Conversion model**: `float_coverage/fltmodel.py survivors` - the 9
-  known-source constants in the 5 goldens leave 48 of 64 rounding-mode
-  combinations, exactly the set `fltconst.c` uses; `fltmodel.py check` - 0
-  differences between `fltconst.c` and the independent Python model (2,049 texts
-  in `make test`; 170,778 in a one-off run, see below).
+- **Conversion model**: `float_coverage/fltmodel.py survivors` - the 19
+  known-source constants in the 6 goldens leave 4 of 80 combinations (the 64
+  rounding-mode combinations plus `libc.a`'s own product for `dmul`), exactly
+  the set `fltconst.c` uses; `fltmodel.py check` - 0 differences between
+  `fltconst.c` and the independent Python model (2,074 texts in `make test`;
+  190,074 in a one-off run, see below).
+- **Against the real `libc.a` `atof`**: every constant `fltconst_test` accepts
+  among 26,319 texts gives the same bytes as `libc.a`'s own `atof.o` run on
+  `libc.a`'s floating-point runtime under an 8086 emulator (zeros with the
+  runtime's `zero` routine changed as described below) - scratch harness,
+  not part of `make test`.
 - **Every real compiler output assembles**: `tests/mutos_as/assemble_cc_goldens.sh`
   - 71/71 `tests/mutos_cc` `.s.golden` files (the 62-file corpus and `11_kernel`'s
   nine), up from 69 (the two `08_float` files). There are no reference objects for
@@ -117,15 +122,15 @@ producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30
   cover the same constructs.
 - **AddressSanitizer + UBSan** (`-fsanitize=address,undefined`, `-O0 -g`,
   LeakSanitizer off - a Pass 1 error exits without freeing, as before): 0 errors
-  over 153 `.s` inputs (every file above, `floatdat.s`, the seven
-  `v30_speculative` sources and `float_open/fltmode.s`'s refusals) plus
-  hand-written `.double`/zero/rounding probes, their error paths included, each
-  object identical to the `-O2` build's; `fltconst_test` under both sanitizers
-  over 170,778 texts, output identical.
-- **Old vs. new assembler** (the conversion model against the previous commit's
-  exact-value encoder): of those 153 inputs, the 150 the previous build
-  assembled give identical objects; `fltopen.s` and the extended `floatdat.s`,
-  which it refused, now assemble; `fltmode.s` is refused by both, by design.
+  over 154 `.s` inputs (every file above, `floatdat.s`, the seven
+  `v30_speculative` sources and `float_open/fltmul.s`'s refusals) plus a
+  probe of every new `.float`/`.double` acceptance and refusal path, each
+  object and diagnostic identical to the `-O2` build's; `fltconst_test`
+  under both sanitizers over 60,074 texts, output identical.
+- **Old vs. new assembler** (this session's model against the previous
+  commit's): of those 154 inputs, 152 give identical objects; `fltmode.s`,
+  which the previous build refused, now assembles to its golden; `fltmul.s`
+  is refused by both, by design.
 
 ### Earlier fixes (prior session records; both still covered by the regression above)
 
@@ -251,6 +256,8 @@ From `tests/mutos_as/float_coverage/fltopen.o.golden` (real hardware, 2026-09-28
 keeps the divisor `flexp` = 5\*\*k's mantissa); the last is 0.1 **truncated** -
 a `.float` is the high half of the double conversion. Full derivation in
 `docs/DEVLOG.md`'s section "`mutos_as`: the real conversion, re-enacted".
+Its rounding set (48 combinations) and the refusals and zero limits below
+were narrowed the next day - see "Rounding pinned, zeros on both paths".
 
 - **`fltconst.c` rewritten** to re-enact that conversion - v7 `atof()` on the
   56-bit double (digits accumulated while below 2\*\*56, `flexp` = 5\*\*k by
@@ -279,11 +286,61 @@ a `.float` is the high half of the double conversion. Full derivation in
   `ecvt.o`'s `.03`. One-off: 170,778 texts (random and targeted - compiler
   `%.17e` form, the 2\*\*56 accumulation boundary, zeros, prefixes) through
   `fltconst_test` and the model - 0 differences.
-- **Next probe**: `tests/mutos_as/float_open/fltmode.s` (not yet run on real
-  hardware) - four compiler-style `.double` constants chosen to split the 48
-  combinations into 32 classes (all but `ddiv`'s tie rule, which a division by
-  5\*\*k never needs), the refused `2.93572534179687500e+03` itself, and zeros
-  on `atof`'s multiplication path. See its `README.md` for the predicted bytes.
+- **Next probe** (then): `fltmode.s` - four compiler-style `.double` constants
+  chosen to split the 48 combinations into 32 classes, the refused
+  `2.93572534179687500e+03` itself, and zeros on `atof`'s multiplication path.
+  Run on real hardware; see "Rounding pinned, zeros on both paths" next.
+
+### Rounding pinned, zeros on both paths (verified this session)
+
+From `tests/mutos_as/float_coverage/fltmode.o.golden` (real hardware, committed
+2026-09-29; moved from `float_open/` with its source this session). Full
+derivation in `docs/DEVLOG.md`'s section "`mutos_as`: rounding pinned, zeros on
+both paths, and `libc.a`'s own `atof` as a second oracle".
+
+- **Rounding**: only 2 of the 64 rounding-mode combinations fit its ten
+  constants and the nine before: `dmul` and `dadd` round to nearest, ties to
+  even; `ddiv` to nearest (its tie rule never matters for `atof`). The
+  compiler's `2.93572534179687500e+03` is the exact value, `9b 7b 37 8c`;
+  `.double 0.1` and a negative zero `.double` are the predicted bytes.
+- **`libc.a`'s own `atof`**, run on `libc.a`'s own floating-point runtime
+  under an 8086 emulator (scratch harness), gives all 11 nonzero real
+  constants byte for byte - the real assembler converts like it. Its zeros
+  differ: `libc.a`'s `dmul`/`ddiv` clear the accumulator `fac` for a zero
+  operand. Changed to clear only `fac`'s exponent byte, it reproduces all
+  seven real zeros with a nonzero decimal exponent k.
+- **Zero rule, now on both paths**: a zero gives the mantissa of `flexp` =
+  5\*\*k with exponent byte 0 - the last multiplication's result, still in
+  `fac` - for any k >= 1 on either path (`.float 0.0e+05` → `00 40 1c 00`,
+  `.double 0.0000000000000000000000000` → the rounded 5\*\*25's mantissa),
+  both directives and signs, unless `atof` gives up (a decimal exponent below
+  -39 minus the digit count). For k = 0 `fac` holds what the digit loop left:
+  only `Z0`'s shape is accepted (an unsigned `.float` of 18 digits,
+  `ff ff ff 00`); other k = 0 zeros stay `FLT_ZERO`.
+- **New open question - which product `dmul` rounds.** `libc.a`'s `dmul`
+  is not exact: its partial-product routine takes the a0\*b2 term from b1's
+  word (checked against the emulated routine on 20,000 random products: 0
+  differences). No real constant so far needed a product where that
+  matters, so `fltconst.c` keeps both candidates (`MODES_MUL`:
+  `RM_NEAR_EVEN`, `RM_LIBC_MUL`; `MODES_ADD`: `RM_NEAR_EVEN`; `MODES_DIV`:
+  `RM_NEAR_EVEN`, `RM_NEAR_AWAY` - replacing `MODES_MUL_ADD`) and refuses
+  (`FLT_ROUNDING`) a constant whose bytes they decide: possible only for a
+  positive decimal exponent of 4 or more (`%.17e` text from `e+20` up) and
+  for k = 50..54 (`e-33` down). Every `%.17e` text from `e-32` to `e+19` is
+  accepted - the 6% of exact floats refused before, `CF` among them,
+  included. Over the whole exponent range 19% of random exact floats and 29%
+  of exact doubles are refused (e.g. `.float 1.26765060022822940e+30`, 2\*\*100:
+  `00 00 00 e5` or `ff ff 7f e4`), against 49%/93% under the previous 48
+  combinations; 224 of 20,000 floats the previous model accepted are refused
+  now - latent mismatches if the real `dmul` is `libc.a`'s.
+- **Next probe**: `tests/mutos_as/float_open/fltmul.s` (not yet run on real
+  hardware) - five constants whose bytes the two products decide (both
+  prediction rows in its `README.md`), three zeros with k = 0 (digit count,
+  `.double` low half, sign), the LOGHUGE path and the first negative nonzero
+  constant.
+- **Tests**: `float_coverage/fltmode.s` in `make test` (6/6 there);
+  `fltmodel.py` extended the same way (`libc` as a fifth `dmul` candidate,
+  the zero rule, 25 new edge cases).
 
 ### Auxiliary deliverables (prior session records, not re-checked this session)
 - `mutos_as.1` — English troff man page (its `.float`/`.double` entries updated
@@ -2492,13 +2549,14 @@ is now fully covered (62/62). In order:
    comparisons (`stkmath.o`'s `fcmp`/`ftest`); a zero or non-float
    constant; floating parameters, globals and return types. For a zero or
    non-float constant `mutos_as` is ready as far as real bytes go (see
-   Milestone 2's "The real conversion, re-enacted"): the `%.17e` zero is the
-   real `bc a2 31 00`, and `.double 3.00000000000000000e-02` gives `ecvt.o`'s
-   `.03`; no golden shows the real compiler's text for either constant,
-   though. Conversely, `mutos_as` now refuses about 6% of the exact `%.17e`
-   floats `mutos_c1` already writes (e.g. `2.93572534179687500e+03`), because
-   the real assembler may store them one unit low -
-   `tests/mutos_as/float_open/fltmode.s` is the probe that settles it.
+   Milestone 2's "Rounding pinned, zeros on both paths"): the `%.17e` zero is
+   the real `bc a2 31 00`, and `.double 3.00000000000000000e-02` gives
+   `ecvt.o`'s `.03`; no golden shows the real compiler's text for either
+   constant, though. `mutos_as` accepts every `%.17e` constant `mutos_c1`
+   writes with an exponent from `e-32` to `e+19` (the rounding is settled);
+   above and below that it refuses those whose bytes depend on which product
+   the real `dmul` rounds (e.g. `1.26765060022822940e+30`) -
+   `tests/mutos_as/float_open/fltmul.s` is the probe that settles it.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
@@ -2759,20 +2817,18 @@ far.
    symbol-table policy; `mutos_as`'s own always-emit-`L`-labels behavior
    remains the pragmatic choice for golden parity either way (see
    `CLAUDE.md` rule 3 and `tests/mutos_as/README.md`).
-7. **Floating constants: the real conversion is re-enacted (2026-09-28); its
-   rounding is the one open part.** The zero `.float` and `.double` gaps were
-   closed from `tests/mutos_as/float_coverage/`'s first goldens, and
-   `fltopen.o.golden` then showed the real assembler's conversion itself -
-   v7 `atof()` on the 56-bit double, `.float` = its high half, truncated -
-   which `mutos_as` now re-enacts (Milestone 2's "The real conversion,
-   re-enacted"). Still open, all needing real-hardware evidence:
-   (a) how the real `dmul`/`dadd`/`ddiv` round - 48 combinations fit every
-   golden, and `mutos_as` refuses the constants they disagree on, including
-   about 6% of the compiler's exact `%.17e` floats; (b) zeros on `atof`'s
-   multiplication path (`0`, `0e5`) and zeros whose `5**k` is rounded (more
-   than 24 fraction digits). `tests/mutos_as/float_open/fltmode.s` probes
-   both - not yet run on real hardware; see its `README.md`. Reading its
-   golden: `python3 fltmodel.py survivors . ../float_open` from
+7. **Floating constants: the real conversion is re-enacted (2026-09-28), its
+   rounding pinned (2026-09-29); which product `dmul` rounds is the one open
+   part.** `fltmode.o.golden` settled the rounding (nearest-even everywhere)
+   and extended the zero rule to both paths of `atof` (Milestone 2's
+   "Rounding pinned, zeros on both paths"). Still open, all needing
+   real-hardware evidence: (a) whether the real `dmul` rounds the exact
+   product or `libc.a`'s (one partial product from the wrong word) -
+   `mutos_as` refuses the constants they disagree on, e.g. exact floats in
+   the compiler's form from `e+20` up; (b) zeros with decimal exponent 0
+   beyond `Z0`'s one shape, and the LOGHUGE path. `tests/mutos_as/float_open/
+   fltmul.s` probes both - not yet run on real hardware; see its `README.md`.
+   Reading its golden: `python3 fltmodel.py survivors . ../float_open` from
    `float_coverage/`. With `atof.o`'s and `ecvt.o`'s floating constants all
-   reproduced now (`floatdat.s`, `ecvt.o`'s `.03` included), only the `L`
-   labels (open item 6) keep them from being `libc_recon/` goldens.
+   reproduced (`floatdat.s`, `ecvt.o`'s `.03` included), only the `L` labels
+   (open item 6) keep them from being `libc_recon/` goldens.

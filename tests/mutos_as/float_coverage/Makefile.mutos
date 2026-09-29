@@ -1,4 +1,4 @@
-# Makefile.mutos -- float_coverage (this directory's 5 files only).
+# Makefile.mutos -- float_coverage (this directory's 6 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory ON THE REAL MUTOS 1700 hardware / emulator:
@@ -8,8 +8,8 @@
 #
 # Assembles each hand-written *.s source with the REAL "as" - the
 # real-hardware ground truth for mutos_as's .float/.double encoding (see
-# README.md for what each file tests and why). All five goldens exist
-# (2026-09-28) and mutos_as reproduces every one of them:
+# README.md for what each file tests and why). All six goldens exist
+# (2026-09-28, fltmode 2026-09-29) and mutos_as reproduces every one of them:
 #
 #   fltaddr.o, fltmulti.o -- lea <reg>,<label> + .float in whole objects.
 #   fltzero.o, fltdbl.o -- a zero .float and a .double; mutos_as refused
@@ -17,8 +17,11 @@
 #   fltopen.o -- a short zero, a negative zero, a zero .double and an
 #     inexact .float (written in ../float_open/, moved here once
 #     mutos_as reproduced it).
+#   fltmode.o -- the double arithmetic's rounding and zeros on atof's
+#     multiplication path (written in ../float_open/ too, moved here
+#     the same way).
 #
-# One small makefile (5 files) needs no per-category split the way
+# One small makefile (6 files) needs no per-category split the way
 # tests/mutos_cc's 62-file corpus did - see that directory's own
 # Makefile.mutos header for the "Make: out of memory" history this
 # avoids simply by staying this small.
@@ -28,11 +31,12 @@
 # carry across separate recipe lines.
 #
 # Run on real MUTOS 1700 hardware 2026-09-28 (the fltopen rule in
-# ../float_open/Makefile.mutos, where fltopen.s was assembled).
+# ../float_open/Makefile.mutos, where fltopen.s was assembled; fltmode.s
+# likewise there, its golden committed 2026-09-29).
 
 AS = as
 
-all: fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o
+all: fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o
 
 fltaddr.o: fltaddr.s
 	$(AS) -o fltaddr.o fltaddr.s
@@ -49,5 +53,8 @@ fltdbl.o: fltdbl.s
 fltopen.o: fltopen.s
 	$(AS) -o fltopen.o fltopen.s
 
+fltmode.o: fltmode.s
+	$(AS) -o fltmode.o fltmode.s
+
 clean:
-	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o
+	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o
