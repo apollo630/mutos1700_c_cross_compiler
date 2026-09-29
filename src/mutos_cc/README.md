@@ -1429,10 +1429,12 @@ di,*2.(si)`).
    assembler's conversion (real-hardware goldens in
    `tests/mutos_as/float_coverage/`) - the `%.17e` zero and `ecvt.o`'s
    `.03` come out as the real bytes - but the real compiler's text for
-   either kind of constant is in no golden. Note that `mutos_as` now
-   refuses about 6% of the exact `%.17e` floats `mutos_c1` already writes
-   (e.g. `2.93572534179687500e+03`): the real assembler may store them one
-   unit low, depending on rounding that `tests/mutos_as/float_open/fltmode.s`
+   either kind of constant is in no golden. `mutos_as` accepts every
+   `%.17e` constant `mutos_c1` writes with an exponent from `e-32` to
+   `e+19` (the real rounding is settled, `tests/mutos_as/float_coverage/
+   fltmode.s`); above and below that it refuses those whose bytes depend
+   on which product the real multiplication rounds (e.g.
+   `1.26765060022822940e+30`), which `tests/mutos_as/float_open/fltmul.s`
    is to settle (see `STATUS.md`'s "Next up"). `mutos_c1` itself still
    writes them; the refusal comes from `mutos_as`, with the reason. The 81..127-byte `chkstk` gap stays "not
    yet supported" until a golden lands in it.

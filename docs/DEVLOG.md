@@ -85,11 +85,12 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 73/73 golden object files
+**Status:** provisionally complete for the real corpus — 74/74 golden object files
 byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
 kernel files, `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
-real `libc.a` object, and the five `tests/mutos_as/float_coverage/` objects - zeros,
-a `.double` and an inexact `.float` among them), 0 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
+real `libc.a` object, and the six `tests/mutos_as/float_coverage/` objects - zeros,
+doubles, inexact values and the rounding probe `fltmode.s` among them), 0
+AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
 Guideline 6.
@@ -5600,6 +5601,170 @@ assemble and still return 1, 12345 and 1499 through the real runtime; the
 two with 53- and 54-digit texts are now refused (`atof()` keeps 17 digits,
 and the rounding decides the last bit).
 
+### `mutos_as`: rounding pinned, zeros on both paths, and `libc.a`'s own `atof` as a second oracle (2026-09-29)
+
+**The golden.** `tests/mutos_as/float_open/fltmode.s` ran on real
+hardware; `fltmode.o.golden`'s data segment, in declaration order:
+
+| Label | Text | Real bytes |
+|---|---|---|
+| `M1` | `.double 1.47397409833160963e-08` | `ff ff ff ff 10 3a 7d 66` |
+| `M2` | `.double 2.97967517326469533e-09` | `ff ff ff ff ff c2 4c 64` |
+| `M3` | `.double 1.45615926012396812e-02` | `fe ff ff ff be 93 6e 7a` |
+| `M4` | `.double 1007211910940938336` | `05 d5 52 58 5e a5 5f bc` |
+| `CF` | `.float 2.93572534179687500e+03` | `9b 7b 37 8c` |
+| `D1` | `.double 0.10000000000000000e+00` | `cd cc cc cc cc cc 4c 7d` |
+| `NZ` | `.double -0.00000000000000000e+00` | `00 00 c5 2e bc a2 b1 00` |
+| `Z0` | `.float 0.00000000000000000e+17` | `ff ff ff 00` |
+| `Z4` | `.float 0.0e+05` | `00 40 1c 00` |
+| `Z25` | `.double 0.0000000000000000000000000` | `85 14 40 61 51 59 04 00` |
+
+`fltmodel.py survivors . ../float_open`: every modelled constant fits,
+and 2 of the 64 rounding-mode combinations are left - `dmul` and `dadd`
+to nearest, ties to even, `ddiv` to nearest with either tie rule. The
+tie rule cannot matter: `atof()`'s one division has the divisor 5\*\*k,
+and an exact quotient needs the divisor mantissa's odd part to divide
+the dividend's, leaving at most 56 - log2(odd part) significant bits -
+too few for a tie (57) whenever the odd part is 3 or more. The smallest
+odd part among the in-range `flexp` mantissas (k = 1..54, 5\*\*55
+overflows) is 5. `CF` is the exact value (a truncating `dmul` would have
+given `9a`), `D1` and `NZ` are the predicted bytes, `Z4` is 5\*\*4's
+mantissa with exponent byte 0 - the division path's zero rule, on the
+multiplication path - and `Z25` the mantissa of 5\*\*25 as a
+nearest-even `dmul` builds it (truncation would end in `84`). `Z0` fits
+nothing: 1.0's mantissa would be `00 00 00`.
+
+**`libc.a`'s own `atof`, run.** `atof.o` is v7's algorithm compiled by
+the real compiler; `dmath.o`, `doubles.o`, `stacks.o`, `stkmath.o` and
+`convert.o` are the software floating-point runtime it calls (`fmuld`
+passes the operand it addresses as `dmul`'s `[si]` and the stack top as
+`[di]`; `fdivd` the stack top, the dividend, as `[si]`). Linked by
+`mutos_ld` from the base64 objects - `crt0.o`, a one-instruction
+`_main`, those members named explicitly, then `libc.a` (whose
+`__.SYMDEF` is stale, so `-u _atof` alone does not pull the runtime in)
+- and `_atof(text)` called directly under Unicorn's 8086 mode (scratch
+harness, not part of `make test`), with the result read from `fac`:
+**every nonzero constant in `float_coverage/`'s goldens comes out byte
+for byte** (11 of 11, `M1`...`M4` included), a `.float` again being the
+double's high half. Every zero comes out as eight zero bytes. Reading
+the runtime explains both. `dmath.o`'s `round` (text 0x161) compares a
+guard byte with 0x80, rounds a tie to even by the low mantissa bit, and
+every alignment or product step folds the bits it drops into the guard
+byte as a sticky bit - nearest-even; checked against exact rounding on
+4,000 random operand pairs each for `ddiv` and `dadd` (including
+`atof`'s shape, an integer below 2\*\*60 plus a digit): 0 differences.
+`dmul` (0x1ac) tests each operand's exponent byte, `ddiv` (0x1ed) the
+dividend's, and both jump to `zero` (0x1a1), which clears all eight bytes
+of `fac`.
+
+**The zero rule.** Changing only `zero` - store 0 into `fac`'s exponent
+byte, leave the other seven - makes the emulated `atof` reproduce all
+seven real zeros with k >= 1 (`fltzero`'s, `fltopen`'s `Z1`/`Z2`/`Z3`,
+`NZ`, `Z4`, `Z25`) and changes no nonzero result. The runtime computes
+`fl /= flexp` as `fldd fl` / `fdivd flexp` and `fl *= flexp` as
+`fldd flexp` / `fmuld fl`; neither load touches `fac`, and for k >= 1
+the repeated squaring ends with `flexp *= exp5`, so `fac` still holds
+`flexp` when the zero is found - on either path, which is why the
+division-path rule of the previous section and `Z4` agree. For k = 0 no
+multiplication builds `flexp`, and `fac` holds whatever the digit loop
+last left there: `-2**56` from `fcmp`'s subtraction in `libc.a`'s
+runtime (so `00 00 80 00`), `ff ff ff 00` in the real assembler's.
+Removing `dadd`'s zero shortcuts too, or its "exponents more than 56
+apart" shortcut, does not produce `ff ff ff`; the real runtime differs
+somewhere else as well, which one probe cannot show. So `fltconst.c`
+(and `fltmodel.py`) now accept a zero wherever k >= 1 - either path,
+any k whose `flexp` stays in range - and for k = 0 exactly `Z0`'s
+shape: a `.float`, 18 digits (integer and fraction digits run the same
+floating operations), no minus sign. A `.double` with k = 0, a negative
+one (`fneg` on `Z0`'s set bit 7: flip or set?), and the LOGHUGE path
+(nd - k < -39: `fl = 0`, exponent 0, so again the digit loop's
+leftover) stay `FLT_ZERO`.
+
+**`libc.a`'s multiplication is not exact - an open question the goldens
+could not raise.** Checking the model against the emulated runtime on
+random texts turned up zeros with k = 50..54 that differed in the low
+byte - `.double 0e54`: `6d 4e a6 40 3c 0c 27 00` from the model,
+`45 4e ...` from the runtime, 40 units apart. `flexp` itself differed.
+On 3,000 random pairs of full 56-bit mantissas `dmul` missed the
+correctly rounded product 2,217 times, by up to 403 units. The cause is
+one instruction in `pmuld` (text 0x2e4..0x425, sixteen 16-bit partial
+products of the mantissas' words a0..a3, b0..b3, a3/b3 the top byte
+with the leading 1): the a0\*b2 term loads its multiplier with
+`mov dx,2[di]` (b1) where `4[di]` (b2) was meant. The product it rounds
+is therefore a\*b + (a0\*b1 - a0\*b2)\*2\*\*32 (a = `[si]`), always
+between 2\*\*110 and 2\*\*112; that formula, rounded to nearest-even,
+matches the emulated `dmul` on 20,000 random pairs (including
+all-ones mantissas and ones with long runs of zeros), 0 differences.
+It equals the exact product whenever a0 = 0 or b1 = b2 - true of every
+product `atof` needs for every real constant so far: 10\*fl (10.0's
+b1 = b2 = 0), the squarings up to 5\*\*32 (the low word of 5\*\*16 is 0)
+and `flexp` up to 5\*\*49 (whenever the multiplier `exp5` has b1 != b2,
+`flexp`'s low word is still 0), and `fl *= flexp` for k <= 3 (5,
+25, 125 have b1 = b2 = 0). It differs in `fl *= flexp` for k >= 4 with
+a nonzero a0 - a positive decimal exponent of 4 or more, counting digits
+dropped past 2\*\*56, i.e. `%.17e` text from `e+20` up - and inside
+`flexp` for k = 50..54 (`e-33` down). The real assembler's runtime
+rounds like `libc.a`'s but handles zeros differently, so it is a
+different version; whether it has the same `pmuld` is not known.
+
+So `dmul` keeps two candidates: nearest-even of the exact product, and
+`RM_LIBC_MUL` - nearest-even of `libc.a`'s product (`fltmodel.py`: mode
+`libc`, a fifth `dmul` candidate beside the four rounding modes, so
+`survivors` now checks 80 combinations; 4 survive). `MODES_MUL_ADD` is
+split into `MODES_MUL` (`RM_NEAR_EVEN`, `RM_LIBC_MUL`), `MODES_ADD`
+(`RM_NEAR_EVEN`) and `MODES_DIV` (`RM_NEAR_EVEN`, `RM_NEAR_AWAY`), and a
+constant is accepted only if all four runs agree, as before
+(`FLT_ROUNDING` otherwise; its diagnostic now names the product).
+Measured over the compiler's `%.17e` form: every text with an exponent
+from `e-32` to `e+19` is accepted (60,000 random 18-digit texts plus
+zeros: 0 refused apart from the k = 0 zeros) - the 6% of exact floats
+the previous 48 combinations refused, `CF` among them, included. Over
+the whole range the `dmul` question refuses 19% of random exact floats
+and 29% of random exact doubles (binary exponents -126..127), e.g.
+`.float 1.26765060022822940e+30` = 2\*\*100: `00 00 00 e5` from the exact
+product, `ff ff 7f e4` from `libc.a`'s. The previous 48 combinations
+refused far more of that sample (49% of the floats, 93% of the doubles);
+of the 20,000 floats, 224 it accepted are refused now - latent
+mismatches if the real `pmuld` is `libc.a`'s - and no double. Every text
+both versions accept gets the same bytes.
+
+**The next probe**, `tests/mutos_as/float_open/fltmul.s`: five constants
+whose bytes the two products decide (`.float` 2\*\*70 and 2\*\*100 in the
+compiler's form, a `.double` at `e+25`, one at `e-33`, and the zero
+`0.00000000000000000e-37`, whose bytes are 5\*\*54 itself under the zero
+rule), three zeros with k = 0 (one digit instead of 18, `Z0`'s text as
+a `.double`, `Z0` negated), the LOGHUGE path (`.double 1e-41`) and the
+first negative nonzero constant. Its `README.md` has both rows of
+predicted bytes; a simulated golden built from either decodes back to
+exactly that `dmul` candidate.
+
+**Verification.** Clean `make clean && make all && make test`: zero
+warnings, `mutos_as` 74/74 (62 `kernel_opt`, 5 `kernel_nonopt`, 1
+`libc_recon`, 6 `float_coverage` - `fltmode.s` new), `check_floatdat.sh`
+13/13, `fltmodel.py survivors` ok (19 constants, 4 of 80), `fltmodel.py
+check` 0 differences in 2,074 texts, `assemble_cc_goldens.sh` 71/71,
+`mutos_cpp` 5/5, `mutos_c0`/`mutos_c1` 62/62. One-off: `fltmodel.py
+check` with 150,000 random texts and 40,000 targeted ones (`%.17e` of
+exact floats and doubles over the whole exponent range, integers
+2\*\*54...2\*\*67, zeros with 0 to 40 fraction digits and exponents
+-60...+25, prefixed spellings) - 0 differences. Every constant
+`fltconst_test` accepted among 26,319 texts (random, targeted
+large-exponent and zero texts) against the emulated `libc.a` `atof` -
+nonzero ones on the unmodified runtime, zeros with k >= 1 on the one
+with the changed `zero` - 0 differences; and `fltconst.c` built with
+`MODES_MUL` = `RM_LIBC_MUL` alone, over 9,512 nonzero texts (most of them
+exact values in the compiler's form with large exponents, where the two
+products disagree), against `fltmodel.py`'s `libc` mode and the emulated
+`libc.a` `atof`: 0 differences. Against the previous commit's
+assembler over 154 `.s` inputs (the 74 golden sources, `floatdat.s`, the
+seven `v30_speculative` sources, `float_open/fltmul.s` and the 71
+compiler goldens): 152 identical objects; `fltmode.s`, refused before,
+now assembles to its golden; `fltmul.s` is refused by both, by design.
+ASan/UBSan (`-O0 -g`, LeakSanitizer off) over the same inputs plus a
+probe of every new acceptance and refusal path: no reports, objects
+and diagnostics identical to the `-O2` build's; `fltconst_test` under
+both sanitizers over 60,074 texts: output identical.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -5844,6 +6009,14 @@ These apply to *every* milestone, not just the one where they were first learned
   `.data` between two instructions (`mutos_c1`'s floating constants) and the pad
   landed in the code. When a rule is inferred from a sample, ask which other rule the
   same sample also fits, and look for a sample that separates them (here `atof.o`).
+- **A model fitted to samples is only as good as its candidate set - run
+  the real thing on the model's whole input space when you have it.**
+  `fltmodel.py`'s rounding modes were idealized (truncate, nearest,
+  away), and 19 real constants happily picked one. `libc.a`'s own `atof`
+  on its own runtime, run under an emulator on thousands of random texts,
+  showed that the family's multiplication is none of them for wide
+  operands - one partial product loads the wrong word - in a region no
+  golden had touched. Fitting would never have proposed that candidate.
 - **Run what you build, when you can.** 67/67 byte-exact goldens said nothing about
   a pad byte in code no golden contained; linking the float goldens with the real
   `crt0.o`/`libc.a` and executing them in an emulator is what makes "it assembles"

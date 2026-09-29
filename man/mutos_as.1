@@ -289,30 +289,49 @@ gives
 .BR "cc cc 4c 7d" ,
 not the correctly rounded
 .BR "cd cc 4c 7d" .
-How the original's double arithmetic rounds each step is not fully
-known; a constant is accepted only when every rounding still possible
-gives the same bytes, and is otherwise rejected with an error saying
-so.
-This rejects some exact values too, among them some the compiler
-writes in its 18-digit form, e.g.\&
-.BR 2.93572534179687500e+03 ,
-where the original may store one unit less in the last place.
+Each step of the original's double arithmetic rounds to nearest,
+ties to even.
+Whether its multiplication rounds the exact product is not known: the
+system library's own multiplication takes one partial product from the
+wrong word.
+A constant is accepted only when both products give the same bytes,
+and is otherwise rejected with an error saying so.
+That is always the case for the compiler's 18-digit form with an
+exponent from
+.B e\-32
+to
+.BR e+19 ;
+above that, and further down, some values are rejected, e.g.\&
+.B 1.26765060022822940e+30
+(2 to the power 100), which the original stores either exactly or one
+unit less in the last place.
 .IP
 Zero is not stored as zero bytes: the original writes exponent byte 0
 with the mantissa of 5 to the power of the number of fraction digits
-less the exponent, e.g.\&
+less the exponent (or the exponent less the number of fraction
+digits), e.g.\&
 .B bc a2 31 00
 for the compiler's
-.B 0.00000000000000000e+00
-and
+.BR 0.00000000000000000e+00 ,
 .B 00 00 20 00
 for
-.BR 0.0 ,
+.B 0.0
+and
+.B 00 40 1c 00
+for
+.BR 0.0e+05 ,
 with the sign bit set for a negative zero.
-A zero is accepted when that power is 1 to 24; any other zero (such as
+When that power is 0 (as in
 .B 0
 or
-.BR 0e5 )
+.BR 0.00000000000000000e+17 )
+the bytes are known only for an unsigned
+.B .float
+of exactly 18 digits
+.RB ( "ff ff ff 00" );
+any other such zero, and a zero whose decimal exponent is below \-39
+minus its number of digits (such as
+.BR 0e\-41 ),
 is rejected with an error, since its bytes are not known.
 Values whose conversion leaves the format's exponent range at any
 step (the value itself, or the power of 5 for a large decimal
@@ -345,7 +364,7 @@ e.g.\&
 Acceptance, zeros and range follow the same rules as for
 .BR .float ;
 since all eight bytes are stored, more values depend on the unknown
-rounding and are rejected.
+product and are rejected.
 .PP
 Other directives this assembler does not implement are ignored.
 .SS "Branches and jumps"

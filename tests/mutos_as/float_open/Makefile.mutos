@@ -6,14 +6,14 @@
 #   make -f Makefile.mutos
 #   make -f Makefile.mutos clean
 #
-# Assembles fltmode.s with the REAL "as": the third round of
-# floating-point probes, to pin down how the real assembler's double
-# arithmetic rounds (see README.md). fltmode.o is expected to assemble
-# cleanly here; the CURRENT mutos_as refuses eight of its ten constants
-# by design, so this directory is NOT part of the top-level "make test".
-# (The previous probe here, fltopen.s, was run on real hardware
-# 2026-09-28 with the same rule shape and has moved to
-# ../float_coverage/.)
+# Assembles fltmul.s with the REAL "as": the fourth round of
+# floating-point probes, to pin down which product the real assembler's
+# double multiplication rounds, and zeros with decimal exponent 0 (see
+# README.md). fltmul.o is expected to assemble cleanly here; the CURRENT
+# mutos_as refuses nine of its ten constants by design, so this
+# directory is NOT part of the top-level "make test". (The previous
+# probes here, fltopen.s and fltmode.s, were run on real hardware with
+# the same rule shape and have moved to ../float_coverage/.)
 #
 # One recipe, one shell line, per make(1)'s own note (see
 # tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't carry
@@ -21,10 +21,10 @@
 
 AS = as
 
-all: fltmode.o
+all: fltmul.o
 
-fltmode.o: fltmode.s
-	$(AS) -o fltmode.o fltmode.s
+fltmul.o: fltmul.s
+	$(AS) -o fltmul.o fltmul.s
 
 clean:
-	rm -f fltmode.o
+	rm -f fltmul.o
