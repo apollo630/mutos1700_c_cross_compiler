@@ -137,6 +137,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `mutos_c1`'s output with `x86sim.py`; `--baseline` classifies every
   difference against an earlier build. It holds no `.c` files, so nothing
   that walks the corpus sees it.
+  `fltprobe/` is the other non-corpus directory: nine floating-point probe
+  programs waiting for real-hardware goldens (its own `Makefile.mutos` -
+  see its `README.md`). It does hold `.c` files, so `run_goldens.sh`,
+  `gen_mutos.sh` and the Makefiles do walk it - `run_goldens.sh` skips a
+  file with no `.i.golden` - and it is not counted in the N/62 figure.
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
   construct table above — nine real, unmodified MUTOS 1700 kernel driver
   source files (`01_delay.c` … `09_amx.c`, ordered easy to hard) plus the
@@ -596,12 +601,22 @@ scope and intent, not a snapshot of what's done.
     `libc.a`'s lost sources never did — not a symbol-table policy the
     assembler applies per invocation. `mutos_as`'s own always-emit-`L`-labels
     behavior remains the pragmatic choice for golden parity either way.
+  * **Floating shapes beyond the corpus come from `libc.a`'s compiled C**
+    (2026-09-29): `atof.o`, `ecvt.o`, `gcvt.o` and `fltpr.o` are real
+    compiler output (optimized with `-O` - take only what `c2` cannot have
+    changed), and `mutos_c0`/`mutos_c1` now compile what they show -
+    comparisons (`fcmp`/`sahf`, v7's operand exchange), int constants
+    converted to `.float` constants (zero included), `fneg`, `*=`/`/=`,
+    `itof` + `fadd` on the stack, double parameters, arguments and returns
+    through `fac` (see `docs/DEVLOG.md`'s "Floating shapes from libc.a's
+    compiled C"). `tests/mutos_cc/fltprobe/` holds the probes for real
+    hardware - four to confirm those shapes byte for byte, five for the
+    shapes still refused; running it is the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
-    dependency-ordered list: the floating shapes still refused (for zero and
-    non-float constants `mutos_as` is ready as far as real bytes go - the
-    conversion above is settled), the
+    dependency-ordered list: the floating shapes still refused (see
+    `tests/mutos_cc/fltprobe/README.md`), the
     remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
     goldens narrowed the threshold to `(80,128]`), then growing coverage
     into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently

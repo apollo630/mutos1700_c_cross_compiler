@@ -15,9 +15,11 @@ final state: main()'s return value (AX at main's "jmp cret") and every
 local variable's word(s), located through c1's own "| _name=-N." frame
 comments. Floating-point code runs against a model of libc.a's software
 floating-point runtime (the calls mutos_c1 emits - "flds"/"fldd",
-"fstsp"/"fstdp", "fadds"..."fdivd", "itof", "ftoi", "ftol" - on a stack
-of host floats, see FP_RUNTIME) and ".float" data, in MUTOS's own
-floating format (see mbf_encode()). It is a checker, not an emulator: anything outside the subset
+"fstsp"/"fstdp", "fsts"/"fstd", "fadds"..."fdivd", stkmath.o's
+"fadd"..."fdiv", "fneg" and "fcmp" (read by "sahf" and a signed branch),
+"itof", "ftoi", "ftol" - on a stack of host floats, see FP_RUNTIME),
+dmath.o's "fac" (a double function's result) and ".float" data, in
+MUTOS's own floating format (see mbf_encode()). It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
 message, never with a guess.
@@ -112,10 +114,27 @@ def mbf_decode(bs):
 FP_RUNTIME = {
     "flds": ("load", 4), "fldd": ("load", 8),
     "fstsp": ("store", 4), "fstdp": ("store", 8),
+    "fsts": ("keep", 4), "fstd": ("keep", 8),     # store, no pop (stacks.o)
     "fadds": ("+", 4), "faddd": ("+", 8), "fsubs": ("-", 4), "fsubd": ("-", 8),
     "fmuls": ("*", 4), "fmuld": ("*", 8), "fdivs": ("/", 4), "fdivd": ("/", 8),
+    # stkmath.o: the top two entries - second op top - into one
+    "fadd": ("s+", 0), "fsub": ("s-", 0), "fmul": ("s*", 0), "fdiv": ("s/", 0),
+    "fneg": ("neg", 0),                            # the top, sign flipped
+    "fcmp": ("cmp", 0),                            # pops both, AH <- flags
     "itof": ("itof", 0), "ftoi": ("ftoi", 0), "ftol": ("ftol", 0),
 }
+
+
+def fp_arith(op, a, b):
+    """a <op> b for one of "+-*/" - evaluated lazily (a table of all four
+    results would divide by a zero right operand of "*")."""
+    if op == "+":
+        return a + b
+    if op == "-":
+        return a - b
+    if op == "*":
+        return a * b
+    return a / b
 
 
 def s16(v):
@@ -166,6 +185,7 @@ class Sim:
         self.data = {}             # fixed-address variable -> address
         self.next_data = DATA0
         self.fstack = []           # the floating-point runtime's stack
+        self.fflags = None         # sign of fcmp's difference, for sahf
         for raw in text.splitlines():
             self._parse_line(raw)
 
@@ -251,6 +271,11 @@ class Sim:
         self.mem[(a + 1) & M16] = (v >> 8) & 0xFF
 
     def _ea(self, op):
+        if op == "fac":
+            # dmath.o's accumulator, where a function returning a double
+            # leaves it ("lea ax,fac" / "call fstdp" / "lea ax,fac") - 8
+            # bytes at a fixed address, made when first used
+            self._alloc("fac", 8)
         if op in self.data:         # "L4", "_counter"
             return self.data[op]
         # "(bx)", "*2.(si)", "#-132.(bp)", and an array element with a
@@ -340,11 +365,27 @@ class Sim:
         st = self.fstack
         if kind != "load" and kind != "itof" and not st:
             raise SimError(f"'{name}' with an empty floating-point stack")
+        if kind in ("s+", "s-", "s*", "s/", "cmp") and len(st) < 2:
+            raise SimError(f"'{name}' with fewer than two stack entries")
+        fflags = None
         if kind == "load":
             st.append(mbf_decode(mem))
-        elif kind == "store":
-            for i, b in enumerate(mbf_encode(st.pop(), size)):
+        elif kind in ("store", "keep"):
+            v = st.pop() if kind == "store" else st[-1]
+            for i, b in enumerate(mbf_encode(v, size)):
                 self.mem[(ax + i) & M16] = b
+        elif kind in ("s+", "s-", "s*", "s/"):
+            b = st.pop()
+            a = st.pop()
+            if kind == "s/" and b == 0:
+                raise SimError("floating division by zero")
+            st.append(fp_arith(kind[1], a, b))
+        elif kind == "neg":
+            st[-1] = -st[-1]
+        elif kind == "cmp":
+            b = st.pop()
+            a = st.pop()
+            fflags = (a > b) - (a < b)
         elif kind == "itof":
             st.append(float(s16(ax)))
         elif kind in ("ftoi", "ftol"):
@@ -357,11 +398,13 @@ class Sim:
             if kind == "/" and b == 0:
                 raise SimError("floating division by zero")
             a = st.pop()
-            st.append({"+": a + b, "-": a - b, "*": a * b, "/": a / b}[kind])
+            st.append(fp_arith(kind, a, b))
         # The runtime returns through cret: DI/SI/BP survive, AX, BX, CX
         # and DX do not - poisoned, so code relying on them shows up.
         for r in ("ax", "bx", "cx", "dx"):
             self.regs[r] = 0xDEAD
+        # fcmp leaves the flags of the difference in AH, for "sahf" only
+        self.fflags = fflags
         if kind == "ftoi":
             self.regs["ax"] = v & M16
         elif kind == "ftol":
@@ -381,6 +424,8 @@ class Sim:
             pc += 1
             if mnem in FLAG_WRITERS:
                 self.cmp = None
+            if mnem != "sahf" and not (mnem == "call" and ops[0] == "fcmp"):
+                self.fflags = None
             if mnem == "jmp":
                 if ops[0] == "cret" and depth > 0:
                     # cret (docs/MUTOS_C_ABI.md): lea sp,-4(bp) / pop si /
@@ -412,6 +457,14 @@ class Sim:
                         "blos": a <= b, "bhi": a > b}[mnem]
                 if take:
                     pc = self.labels[ops[0]]
+            elif mnem == "sahf":
+                # A floating comparison's flags (stkmath.o's fcmp: SF/ZF
+                # of left - right, OF clear), read by the signed branches
+                # exactly like "cmp <sign>,0"
+                if self.fflags is None:
+                    raise SimError("'sahf' not right after 'call fcmp'")
+                self.cmp = (self.fflags & M16, 0)
+                self.fflags = None
             elif mnem == "cmp":
                 self.cmp = (self.get(ops[0]), self.get(ops[1]))
             elif mnem == "cmpb":

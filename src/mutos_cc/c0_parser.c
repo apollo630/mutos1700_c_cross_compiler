@@ -1411,16 +1411,21 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
          * ("movb ax,*-8.(bp)" / "cbw" / "push ax" - the real compiler's
          * output in tests/mutos_as/kernel_nonopt/lp_AC.s); any other
          * char-typed value is refused - see char_nonobj_refused(). */
+        /* A floating argument is written as it is too - v7 converts
+         * none, and mutos_c1 pushes it as a double (see "Floating
+         * point"). */
         int line = p->cur.line;
         ExprVal v = parse_expr(p, t1);
         emit_materialize(t1, v);
-        (void)char_nonobj_refused(v, line, "a call argument");
+        if (!ty_is_float(v.type))
+            (void)char_nonobj_refused(v, line, "a call argument");
         while (p->cur.kind == T_COMMA) {
             advance(p);
             line = p->cur.line;
             ExprVal rhs = parse_expr(p, t1);
             emit_materialize(t1, rhs);
-            (void)char_nonobj_refused(rhs, line, "a call argument");
+            if (!ty_is_float(rhs.type))
+                (void)char_nonobj_refused(rhs, line, "a call argument");
             outcode(t1, "BN", OP_COMMA, TY_INT);
         }
     }
@@ -2965,6 +2970,15 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         ExprVal v = parse_unary(p, t1);
         if (v.is_const)
             return ev_const(trunc16(-v.value));
+        if (ty_is_float(v.type)) {
+            /* NEG on a floating value (see "Floating point"): v7's build()
+             * gives a unary operator its operand's own type - FLOAT for a
+             * float variable, DOUBLE for anything else floating; nothing
+             * is folded (fold() handles integer CONs only, so "-2.5" is
+             * FCON "2.5" and NEG). */
+            outcode(t1, "BN", OP_NEG, v.type);
+            return ev_dynamic_typed(v.type);
+        }
         c0_error_at(line, "unary '-' on a non-constant operand is not "
                            "yet supported - see src/mutos_cc/README.md");
         return ev_dynamic();
@@ -3279,6 +3293,23 @@ static int char_compare_rhs(Parser *p, FILE *t1, int op, ExprVal *l,
                             ExprVal (*rhs_parser)(Parser *, FILE *))
 {
     RhsCapture cap;
+    int line = p->cur.line;
+    if (!l->is_const && ty_is_float(l->type)) {
+        /* A floating comparison (see "Floating point"): v7's build()
+         * converts an int operand to the floating one's type and types
+         * the relational node INT ("if (dope&RELAT) t = INT"); nothing
+         * else. A floating left operand needs no conversion, so the right
+         * one follows it directly. */
+        ExprVal rv = rhs_parser(p, t1);
+        if (!rv.is_const && rv.type == TY_CHAR)
+            c0_error_at(line, "a 'char' operand compared with a 'float'/"
+                              "'double' one is not yet supported - see "
+                              "src/mutos_cc/README.md");
+        emit_materialize(t1, rv);
+        emit_to_float(t1, l->type, rv, line);
+        outcode(t1, "BN", op, TY_INT);
+        return 1;
+    }
     if (l->char_obj) {
         ExprVal rv = rhs_parser(p, capture_begin(&cap, p, t1));
         if (rv.is_const && !rv.is_long && rv.value >= 0 && rv.value <= 127) {
@@ -3293,8 +3324,42 @@ static int char_compare_rhs(Parser *p, FILE *t1, int op, ExprVal *l,
         return 0;
     }
     ExprVal v = promote_char(t1, *l);       /* before the right operand's bytes */
-    ExprVal rv = rhs_parser(p, rhs_begin(&cap, p, t1, v));
-    *l = rhs_end(&cap, p, t1, v, rv);
+    /* The right operand is buffered - it may turn out floating, and then
+     * an integer left operand's conversion must come between the two
+     * (the same capture float_arith() ends for '+ - * /'). For an integer
+     * comparison the bytes written are the same either way: rhs_end()'s
+     * order - a pending constant's CON, then the right operand. */
+    ExprVal rv = rhs_parser(p, capture_begin(&cap, p, t1));
+    if (cap.mem) {
+        fclose(cap.mem);
+        cap.mem = NULL;
+    }
+    if (!rv.is_const && ty_is_float(rv.type)) {
+        if (!v.is_const && v.type == TY_CHAR)
+            c0_error_at(line, "a 'char' operand compared with a 'float'/"
+                              "'double' one is not yet supported - see "
+                              "src/mutos_cc/README.md");
+        emit_materialize(t1, v);
+        emit_to_float(t1, rv.type, v, line);
+        if (cap.buf)
+            fwrite(cap.buf, 1, cap.len, t1);
+        free(cap.buf);
+        outcode(t1, "BN", op, TY_INT);
+        return 1;
+    }
+    if (v.is_const && rv.is_const) {
+        /* A constant writes nothing (see ExprVal) - the caller folds. */
+        if (cap.len != 0)
+            c0_error_at(p->cur.line, "internal: a constant operand wrote "
+                        "intermediate code");
+    } else {
+        emit_materialize(t1, v);
+        v.is_const = 0; /* emitted - keeps its type */
+        if (cap.buf)
+            fwrite(cap.buf, 1, cap.len, t1);
+    }
+    free(cap.buf);
+    *l = v;
     *r = promote_char(t1, rv);
     return 0;
 }
@@ -3997,7 +4062,20 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
      * function's conversions are not confirmed; mutos_c1 refuses a
      * char RFORCE either way.) */
     int rtype = p->cur_ret_type;
-    if (ty_is_float(v.type) && !v.is_const) {
+    if (ty_is_float(rtype)) {
+        /* A function returning a double (see "Floating point"): doret()'s
+         * assignment to the function's type converts an int value
+         * (ITOF(DOUBLE)); a floating one is not converted, and RFORCE
+         * takes its own type - FLOAT for a float variable. */
+        if (!v.is_const && ty_is_float(v.type))
+            rtype = v.type;
+        else if (!v.is_const && v.type == TY_CHAR)
+            c0_error_at(stmt_line, "returning a 'char' from a function "
+                                   "returning a 'double' is not yet supported "
+                                   "- see src/mutos_cc/README.md");
+        else
+            emit_to_float(t1, rtype, v, stmt_line);
+    } else if (ty_is_float(v.type) && !v.is_const) {
         /* doret()'s assignment to the function's type converts a
          * floating value: "return c;" in an int function is FTOI(INT)
          * RFORCE(INT), the stream 08_float/01_floatbas.1.golden has for
@@ -4165,10 +4243,23 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     if (optag == OP_ASSIGN) {
         if (sym)
             convert_assign(t1, assign_type, rhs, line);
+    } else if (ty_is_float(assign_type) &&
+               (optag == OP_ASTIMES || optag == OP_ASDIV) && subtype < 0) {
+        /* "a *= b", "a /= b" into a float/double variable (see "Floating
+         * point"): v7's build() converts the right-hand side to the
+         * target's own type, as for '=' (ITOF(FLOAT) into a float), and
+         * types the operator DOUBLE. */
+        if (!rhs.is_const && rhs.type == TY_CHAR)
+            c0_error_at(line, "a 'char' right-hand side of a 'float'/'double' "
+                              "compound assignment is not yet supported - see "
+                              "src/mutos_cc/README.md");
+        else
+            emit_to_float(t1, assign_type, rhs, line);
     } else if (ty_is_float(assign_type) ||
                (ty_is_float(rhs.type) && !rhs.is_const)) {
         c0_error_at(line, "a compound assignment with a 'float'/'double' "
-                          "operand is not yet supported - see "
+                          "operand is not yet supported (only '*=' and '/=' "
+                          "into a 'float'/'double' variable) - see "
                           "src/mutos_cc/README.md");
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
@@ -5045,10 +5136,14 @@ static void parse_param_decls(Parser *p, FILE *t1,
         if (symtype == TY_UNSIGN)
             c0_error_at(tline, "an 'unsigned' parameter is not yet supported - "
                                "see src/mutos_cc/README.md");
-        if (ty_is_float(symtype))
-            c0_error_at(tline, "a 'float'/'double' parameter is not yet "
-                               "supported (only 'float'/'double' local "
-                               "variables) - see src/mutos_cc/README.md");
+        /* A 'float' parameter is a double: the caller pushes every
+         * floating argument as one (K&R), and v7/cc/c02.c's funchead()
+         * retypes it ("if (cs->htype==FLOAT) cs->htype = DOUBLE") - 8
+         * bytes of the frame, like ecvt.o's "double arg" at 4(bp) with
+         * the next parameter at 12(bp) (see "Floating point"). */
+        int float_param = ty_is_float(symtype);
+        if (float_param)
+            symtype = TY_DOUBLE;
         for (;;) {
             if (symtype == TY_INT && p->cur.kind == T_LPAREN) {
                 advance(p); /* consume '(' */
@@ -5099,6 +5194,10 @@ static void parse_param_decls(Parser *p, FILE *t1,
             int ptype_full = symtype;
             for (int k = 0; k < ptr_degree; k++)
                 ptype_full = ty_ptr_of(ptype_full);
+            if (float_param && ptr_degree > 0)
+                c0_error_at(p->cur.line, "a pointer to 'float'/'double' is not "
+                                          "yet supported - see "
+                                          "src/mutos_cc/README.md");
             if (p->cur.kind != T_IDENT) {
                 c0_error_at(p->cur.line,
                     "expected a parameter name in declaration");
@@ -5147,6 +5246,10 @@ static void parse_param_decls(Parser *p, FILE *t1,
                 if (p->cur.kind == T_ICON)
                     advance(p);
                 expect(p, T_RBRACK, "']'");
+                if (float_param)
+                    c0_error_at(p->cur.line, "an array of 'float'/'double' "
+                                              "is not yet supported - see "
+                                              "src/mutos_cc/README.md");
                 if (idx >= 0) {
                     ptype[idx] = ty_ptr_of(ptype_full);
                     pptr[idx] = 1;
@@ -5170,6 +5273,7 @@ static void parse_param_decls(Parser *p, FILE *t1,
         int decltype = pfunc[i] ? TY_PTR_FUNC_INT : ptype[i];
         int size = (pfunc[i] || pptr[i]) ? MCC_SZINT
                  : (ptype[i] == TY_LONG) ? MCC_SZLONG
+                 : (ptype[i] == TY_DOUBLE) ? MCC_SZDOUB
                  : MCC_SZINT; /* slot size - a char parameter still
                                 * occupies a full word, same as a
                                 * char LOCAL (see parse_decl()'s own
@@ -5550,15 +5654,6 @@ static void parse_extdef(Parser *p, FILE *t1)
             skip_refused_extdef(p);
             return;
         }
-        if (ty_is_float(ret_type)) {
-            c0_error_at(p->cur.line, "a file-scope 'float'/'double' variable, or "
-                                      "a function returning one (or a pointer "
-                                      "to one), is not yet supported (only "
-                                      "'float'/'double' local variables) - see "
-                                      "src/mutos_cc/README.md");
-            skip_refused_extdef(p);
-            return;
-        }
     }
     /* v7/cc/c03.c's getkeywords() "isadecl": a class or a type keyword
      * was seen, so what follows is a declaration list. */
@@ -5595,6 +5690,22 @@ static void parse_extdef(Parser *p, FILE *t1)
         Token name_tok = p->cur;
         name_tok.sval = NULL; /* an IDENT never owns one; never alias it */
         advance(p); /* consume IDENT */
+
+        /* Floating point at file scope (see "Floating point"): only a
+         * function returning a double - "double atof();", "double f(x)
+         * ..." - has evidence (libc.a's atof.o); a floating variable, a
+         * function returning a float or a pointer to one has none. */
+        if (ty_is_float(base_type) &&
+            (p->cur.kind != T_LPAREN || ptr_degree > 0 ||
+             base_type == TY_FLOAT)) {
+            c0_error_at(name_tok.line, "a file-scope 'float'/'double' variable, "
+                                        "or a function returning a 'float' or "
+                                        "a pointer to one, is not yet supported "
+                                        "(only a function returning a "
+                                        "'double') - see src/mutos_cc/README.md");
+            skip_refused_extdef(p);
+            return;
+        }
 
         if (p->cur.kind != T_LPAREN) {
             if (!is_decl) {

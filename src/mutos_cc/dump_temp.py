@@ -225,6 +225,14 @@ OPCODES = {
     52:  ("FTOI", [N("type", decode_type)]),
     56:  ("FTOL", [N("type", decode_type)]),
     57:  ("LTOF", [N("type", decode_type)]),
+    37:  ("NEG", [N("type", decode_type)]),  # unary '-' - mutos_c0 writes
+                                              # it for a floating operand
+                                              # only, typed with the
+                                              # operand's own type (v7's
+                                              # build(): FLOAT for a float
+                                              # variable); the same "BN"
+                                              # shape as COMPL - no golden
+                                              # has one
     35:  ("AMPER", [N("type", decode_type)]),
     36:  ("STAR", [N("type", decode_type)]),
     38:  ("COMPL", [N("type", decode_type)]),

@@ -1184,18 +1184,64 @@ but `.03` in 8) - and of those only non-zero ones below 2**24 with at
 most 18 significant digits, whose `%.17e` is exact. The golden-confirmed
 shapes are `flds`/`fldd`/`fstsp`/`fstdp`/`fadds`/`fmuls`/`fdivs`/`itof`/
 `ftoi`/`ftol`; the rest follow the same pattern and the runtime's entry
-points. Refused: comparisons and conditions, `%`, unary operators,
-`++`/`--`, compound assignment, `&&`/`||`/`?:`/`,` around a floating
-value, floating call arguments, parameters, return types, globals,
-statics, arrays, pointers and struct members, a `char` mixed with a
-floating value; in `mutos_c1` a computed right operand (hence `a + i`,
-the int on the right), a constant right operand of a computed value, a
-converted constant, an int in AX or a register variable converted, `LTOF`
-and an unused computed value. `mutos_as` assembles the output (`.float`,
-`lea <reg>,<label>`), and linked with the real `crt0.o`/`libc.a` both
-goldens return their C sources' values under an 8086 emulator - see
-`STATUS.md`'s Milestone 2 section. Full derivation in `docs/DEVLOG.md`'s
-`08_float` section and the `mutos_as` section after it.
+points. `mutos_as` assembles the output (`.float`, `lea <reg>,<label>`),
+and linked with the real `crt0.o`/`libc.a` both goldens return their C
+sources' values under an 8086 emulator - see `STATUS.md`'s Milestone 2
+section. Full derivation in `docs/DEVLOG.md`'s `08_float` section and the
+`mutos_as` section after it.
+
+**Floating point beyond the corpus (from `libc.a`'s compiled C).**
+`libc.a`'s `atof.o`, `ecvt.o`, `gcvt.o` and `fltpr.o` are C compiled by the
+real compiler (with `-O`: only what `c2` cannot have changed is taken), and
+their code gives these shapes - see `docs/DEVLOG.md`'s "Floating shapes
+from libc.a's compiled C" for each one's source:
+
+- a **comparison** as a condition: `mutos_c0` converts an int operand to
+  the floating one's type and writes the relational typed INT; `mutos_c1`
+  exchanges the operands by v7's `degree()` rule (a double variable and
+  every constant 0, a float variable 1, anything computed more), loads
+  both, `call fcmp` / `sahf`, and branches (`gen_fp_compare()`);
+- an **int constant converted** to floating is a `.float` constant,
+  `%.17e` of its value (`gen_itof()`) - zero is `0.00000000000000000e+00`,
+  the text whose real bytes are libc's zero constants; a written zero is
+  accepted too;
+- **unary minus**: `NEG` (37), typed with its operand's type (FLOAT for a
+  float variable) - `call fneg` (`gen_fp_neg()`);
+- **`*=`** (the right operand loaded, `fmul<s|d>` on the target) and
+  **`/=`** (the target loaded, `fdiv<s|d>` by the right operand) into a
+  float or double variable, the right operand a variable or a constant (an
+  int constant converted to the target's own type - `gen_fp_asop()`);
+- a **computed left operand with an int right operand** of `+ - * /` -
+  an int variable or a variable plus or minus a constant (`float_order_
+  check()`): `call itof`, then the stack-with-stack `fadd`/`fsub`/`fmul`/
+  `fdiv`;
+- an **assignment whose value is used**: `fst<s|d>`, the value kept on the
+  stack (`gen_fp_assign()`);
+- **double and float parameters** (8 bytes of the frame; a float one is a
+  double), **double arguments** (`push_fp_arg()`: load, `sub sp,*8.` /
+  `mov ax,sp` / `call fstdp`), and **functions returning a double**
+  (`double f();`, `double f(x) ...`): `return` stores into `fac` and leaves
+  its address in AX (`lea ax,fac` / `call fstdp` / `lea ax,fac` -
+  `gen_fp_rforce()`), `RETRN` type 3 renders `|RTYP 3`, and the caller
+  loads the result with `call fldd` right after the call.
+
+Refused, each with its own diagnostic: a zero as the right operand after
+the exchange (a float variable or a computed value compared with 0), a
+floating value tested for truth, a comparison used as a value,
+`&&`/`||`/`?:`/`,` around a floating value, a constant right operand of a
+computed value (comparisons included), two computed comparison operands,
+any other computed right operand of `+ - * /` and an int right operand of
+a variable or constant (`d + i`), `+=`, `-=`, `%`, `*=`/`/=` by a computed
+value or an int variable,
+`++`/`--`, a constant that is not exactly a float or is 2\*\*24 or more,
+a written constant after an int constant converted in the same expression,
+a floating constant or a non-last computed floating value as a call
+argument, an unused double result, a doubly negated value, a function
+returning a float, floating globals, statics, arrays, pointers and struct
+members, a `char` or `long` converted to or from floating (`LTOF`), an int
+in AX or a register variable converted, and an unused computed value.
+`tests/mutos_cc/fltprobe/` has the programs that will settle these, and
+confirm the shapes above, on real hardware.
 
 ## `SETSTK` / local-frame handling
 
@@ -1420,16 +1466,21 @@ di,*2.(si)`).
    and conditions, a store into a file-scope array element - see "More
    `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
    "Floating point" under "Current scope") - all 62 of 62; `mutos_as`
-   assembles the floating output too. Left: the floating shapes still
-   refused (an int right operand - libc's `fsubrs`/`fdivrs`... "reversed"
-   entry points suggest how the real compiler does it - comparisons, a
-   zero or non-float constant, floating parameters, globals and returns),
-   each waiting for a golden. On the assembler side a zero or non-float
-   constant is no longer blocked outright: `mutos_as` re-enacts the real
+   assembles the floating output too. Comparisons, int constants
+   (zero included), unary minus, `*=`/`/=`, an int right operand of a
+   computed value, double parameters, arguments and returns followed from
+   `libc.a`'s compiled C (see "Floating point beyond the corpus"). Left:
+   the floating shapes still refused there, each waiting for its golden
+   from `tests/mutos_cc/fltprobe/` - which also confirms the new ones. On
+   the assembler side a non-float constant is no longer blocked
+   outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in
    `tests/mutos_as/float_coverage/`) - the `%.17e` zero and `ecvt.o`'s
-   `.03` come out as the real bytes - but the real compiler's text for
-   either kind of constant is in no golden. `mutos_as` accepts every
+   `.03` come out as the real bytes. For the zero that settles the text
+   too (among `%.17e` zeros, only the one with exponent 0 gives
+   `bc a2 31 00`); for a non-float constant many texts give the same
+   bytes, so the real
+   compiler's text for one is in no golden yet. `mutos_as` accepts every
    `%.17e` constant `mutos_c1` writes from `e-37` up (`e-38` when the
    real `atof` drops the 18th digit): the real conversion is settled,
    rounding and multiplication included

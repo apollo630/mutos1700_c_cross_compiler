@@ -6048,6 +6048,206 @@ and refusal path: no reports, objects, diagnostics and exit statuses
 identical to the `-O2` build's; `fltconst_test` under both sanitizers over
 the 130,107 texts: output identical.
 
+### Floating shapes from libc.a's compiled C (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-09-29)
+
+`STATUS.md`'s "Next up" item 1 listed the floating shapes `mutos_c1` still
+refused, "each waiting for a golden". Most of them turned out to be in the
+repository already, as real compiler output: four of `libc.a`'s objects
+(`tests/mutos1700_libc/`) are C compiled by the real MUTOS 1700 compiler -
+`atof.o` (v7's `atof.c`, plus a MUTOS `_fltrd` and an empty `__fltu3`),
+`ecvt.o` (v7's `ecvt.c`: `ecvt`, `fcvt`, the static `cvt`), `gcvt.o` and
+`fltpr.o` (MUTOS's `_pgen`/`_pfloat`/`_pscien`) - found by listing every
+object whose symbol table names a floating runtime entry point, then read
+with a small `a.out` reader that annotates `objdump -D -b binary -m i8086`
+output with each relocation's symbol or segment (scratch script, not in
+the repo; the sources are v7's, from memory - not in this repo either).
+
+**The caveat: `libc.a` was optimized.** `atof.o`'s `if (negexp<0) fl /=
+flexp; else fl *= flexp;` ends both arms in ONE `lea ax,fl` / `call
+fstdp` (the `if` arm jumps to the `else` arm's tail) - `c2`'s
+cross-jumping, which `c1` alone never does - and `ecvt.o`'s `if (fi != 0)`
+is `jne` over a `jmp`. So only shapes the optimizer cannot have changed
+are taken: the runtime calls and their operands, the order operands are
+loaded in, which entry point is used. Branch structure, label numbers,
+where a `.data` block sits relative to code, and whether an `Lnnn:` return
+label precedes a function's final `jmp cret` are not readable from it.
+
+**Frames.** `atof(p) register char *p;` with `register c; double fl, flexp,
+exp5; double big = 72057594037927936.; int nd; register eexp, exp, neg,
+negexp, bexp;`: `p` in DI, `c` in SI (the two register variables), `fl`
+at -12, `flexp` -20, `exp5` -28, `big` -36, `nd` -38, then the five
+surplus `register` ints as autos from -40 down; `ecvt.o`'s `cvt(arg, ndigits,
+decpt, sign, eflag) double arg;` has `arg` at `4(bp)` and `ndigits` at
+`12(bp)` - a double parameter takes 8 bytes.
+
+**What the code shows** (`fl`, `big`, ... for their frame slots, `Ln`
+for a `.data` constant - the objects hold no `L` symbols):
+
+| Source (v7) | Real code |
+|---|---|
+| `double big = 72057594037927936.;` (an auto initializer) | `lea ax,L` / `call flds` / `lea ax,big` / `call fstdp` |
+| `fl = 0;` (atof), constants `bc a2 31 00` | `lea ax,L` / `call flds` / `lea ax,fl` / `call fstdp` |
+| `if (fl<big)` | `lea ax,fl` / `call fldd` / `lea ax,big` / `call fldd` / `call fcmp` / `sahf` / `jge` (false branch) |
+| `fl = 10*fl + (c-'0');` | `lea ax,L(10.0)` / `call flds` / `lea ax,fl` / `call fmuld` / `mov ax,si` / `add ax,*-48.` / `call itof` / `call fadd` / `lea ax,fl` / `call fstdp` |
+| `flexp *= exp5;`, `exp5 *= exp5;` | `lea ax,exp5` / `call fldd` / `lea ax,flexp` / `call fmuld` / `lea ax,flexp` / `call fstdp` |
+| `fl /= flexp;` | `lea ax,fl` / `call fldd` / `lea ax,flexp` / `call fdivd` / (shared) `lea ax,fl` / `call fstdp` |
+| `fl *= flexp;` | `lea ax,flexp` / `call fldd` / `lea ax,fl` / `call fmuld` / (shared) ... |
+| `fl = ldexp(fl, negexp*bexp);` | `mov ax,negexp` / `imul bexp` / `push ax` / `lea ax,fl` / `call fldd` / `sub sp,*8.` / `mov ax,sp` / `call fstdp` / `call _ldexp` / `add sp,*10.` / `call fldd` / `lea ax,fl` / `call fstdp` |
+| `if (neg<0) fl = -fl;` | ... `lea ax,fl` / `call fldd` / `call fneg` / `lea ax,fl` / `call fstdp` |
+| `return(fl);` | `lea ax,fl` / `call fldd` / `lea ax,fac` / `call fstdp` / `lea ax,fac` / `jmp cret` |
+| `if (arg<0)` (ecvt) | `lea ax,L(0)` / `call flds` / `lea ax,arg` / `call fldd` / `call fcmp` / `sahf` / `jle` - the operands exchanged |
+| `if (fi != 0)`, `while (fi != 0)` | the zero loaded first again, `fcmp` / `sahf` / `jne` |
+| `else if (arg > 0)` | the zero first, `fcmp` / `sahf` / `jl` (true branch) |
+| `fj = modf(fi/10, &fi);` | `lea dx,fi` / `push dx` / `lea ax,fi` / `call fldd` / `lea ax,L(10.0)` / `call fdivs` / `sub sp,*8.` / `mov ax,sp` / `call fstdp` / `call _modf` / `add sp,*10.` / `call fldd` / `lea ax,fj` / `call fstdp` |
+| `(int)((fj+.03)*10) + '0'` | `lea ax,fj` / `call fldd` / `lea ax,L(.03, 8 bytes)` / `call faddd` / `lea ax,L(10.0)` / `call fmuls` / `call ftoi` / `add ax,*48.` |
+| `while ((fj = arg*10) < 1)` | `lea ax,L(10.0)` / `call flds` / `lea ax,arg` / `call fmuld` / `lea ax,fj` / `call fstd` / `lea ax,L(1.0)` / `call flds` / `call fcmp` / `sahf` / `jl` - and in `.data` the 1.0 comes BEFORE the 10.0 |
+| `arg *= 10;` | `lea ax,L(10.0)` / `call flds` / `lea ax,arg` / `call fmuld` / `lea ax,arg` / `call fstdp` |
+| `cvt(arg, ndigits, decpt, sign, 1)` (ecvt) | `mov di,*1.` / `push di` / three `push` / `lea ax,*4.(bp)` / `call fldd` / `sub sp,*8.` / `mov ax,sp` / `call fstdp` / `call _cvt` / `add sp,*16.` |
+| a store through a pointer (`_fltrd`) | `push s` / `call _atof` / `add sp,*2.` / `call fldd` / `mov bx,pp` / `mov ax,(bx)` / `call fstdp` (or `fstsp`) |
+
+**The runtime's side** (`stkmath.o`, disassembled): `fcmp` pops both
+entries, computes second minus top with `dsub`, and returns the flags of
+the difference in AH - ZF from its exponent byte (0: zero), SF from its
+sign, OF and CF clear (`or ah,ah` / `je` / `or al,7fh` / `lahf`); after
+`sahf` the ordinary signed branches read it. `fadd`/`fsub`/`fmul`/`fdiv`
+pop the top and combine it into the entry below (second op top - left op
+right for operands pushed left first); `fneg` flips the top's sign bit in
+place; `ftest` pops the top and returns its flags the same way. `stacks.o`
+has `fsts`/`fstd` - store without popping - and `dmath.o` defines `fac`.
+
+**How v7's c1 explains it.** Everything above is v7's own algorithm:
+
+- `optim()` exchanges a relational's operands when `degree(left) <
+  degree(right)`, or when the degrees are equal and the left one is a
+  NAME and the right one is not (`v7/cc/c12.c`). A DOUBLE NAME and every
+  constant have degree 0, a FLOAT NAME 1 (`degree()` gives a FLOAT leaf
+  1), anything computed at least 1 - so `arg < 0` becomes `0 > arg`
+  (equal degrees, NAME on the left), `fl < big` stays, `(fj = arg*10) <
+  1` stays.
+- `unoptim()` folds ITOF of a CON into a floating constant (SFCON); the
+  MUTOS compiler writes it like a written one, `%.17e` of its value. The
+  zeros in `atof.o`/`ecvt.o` are all `bc a2 31 00` - exactly what the
+  real assembler makes of `.float 0.00000000000000000e+00`
+  (`tests/mutos_as/float_coverage/fltzero.o.golden`), so the text is
+  that, and a zero is loaded like any other constant (`flds`), not
+  special-cased.
+- `cexpr()` prints a constant's `.data` block when the operator using it
+  is matched, before any of that operator's code - so for `(fj =
+  arg*10) < 1` the comparison's 1.0 is printed before the product's
+  10.0, as `ecvt.o`'s data order shows.
+- `acommute()` keeps equal-degree operands of `+`/`*` in source order:
+  `10*fl` loads the 10 first (`flds` / `fmuld fl`).
+- `cbranch()` treats a zero right operand specially (`op += 200`, "special
+  for ptr tests" - the PDP-11 tests instead of comparing); the MUTOS
+  counterpart is very likely `ftest`, but nothing in `libc.a` reaches it
+  (every zero there is exchanged to the left).
+
+**Refuting a guess.** The old "Next up" suggested that an int right
+operand (`d + i`) is computed first and combined through `singles.o`'s
+and `doubles.o`'s "reversed" entry points (`fsubrs`, `fdivrd`, ...).
+`atof.o`'s `10*fl + (c-'0')` does not do that: the left operand is
+computed, then the int converted (`itof`), then `stkmath.o`'s
+stack-with-stack `fadd`. No object in `libc.a` but the two that define
+the reversed entry points refers to one. Where the real compiler uses them is still unknown;
+one consistent reading of v7's tables is `-=`/`/=` with a computed right
+operand (the right operand on the stack, the target in memory) - v7's
+`table.s` has `%ad,nf` templates for exactly that - but that is a
+hypothesis, which `fltprobe/p2_arith.c` tests.
+
+**`=*` is not v7's PDP-11 template.** v7's `table.s` compiles `a =* b`
+(two addressable doubles) as "load a, multiply by b, store a" (`cr72`
+reuses `[addq1a]`); `atof.o` loads the RIGHT operand and multiplies by the
+target in memory, for variables and for `arg *= 10` alike, while `/=`
+loads the target. So the MUTOS table was changed for `=*` (a commutative
+shortcut); nothing in `libc.a` shows `=+` or `=-`, which are not assumed
+to follow either.
+
+**Implemented** (`mutos_c0` and `mutos_c1`; all in `c0_parser.c`'s and
+`c1_gen.c`'s "Floating point" sections):
+
+- **Comparisons** as conditions (`if`, `while`, `do`, `for`, `!` on
+  one): `mutos_c0` converts an int operand to the floating one's type
+  and types the node INT, as v7's `build()` does (the right operand of
+  a non-floating left one is buffered, so an int left operand's `ITOF`
+  can go between them - the same capture `+ - * /` already used);
+  `mutos_c1`'s `gen_fp_compare()` exchanges by the degree rule, loads
+  both, `call fcmp` / `sahf`, and the branch follows directly
+  (`VK_COND` with `cond_is_float`; `gen_cond_branch()` refuses anything
+  between).
+- **Int constants converted** (`gen_itof()`): a `.float` of `%.17e` of
+  the value, zero and negative values included; a written zero
+  (`fcon_render()`) too.
+- **Unary minus**: `mutos_c0` now writes `NEG`, typed like its operand
+  (FLOAT for a float variable - v7's unary `build()`); `mutos_c1`: load,
+  `call fneg`.
+- **`*=` and `/=`** into a float or double variable (`gen_fp_asop()`),
+  the right operand a variable or a constant - an int constant converted
+  to the target's own type (ITOF(FLOAT) into a float, as for `=`); a
+  computed one, an int variable's `itof` included, is refused.
+- **A computed left operand with an int right operand** of `+ - * /`:
+  `call itof`, then `call fadd`/`fsub`/`fmul`/`fdiv` - checked on the
+  pre-scanned tree (`float_order_check()`) to be `atof.o`'s kind, an int
+  variable or a variable plus or minus a constant, so that v7's
+  `acommute()` would not reorder it.
+- **An assignment whose value is used** (`gen_fp_assign()`, told by
+  `scan_consumer()`): `fst<s|d>`, the value left on the stack.
+- **Double and float parameters** (a float parameter is a double - v7's
+  `funchead()` - 8 bytes of the frame), **double arguments**
+  (`push_fp_arg()`), **functions returning a double** - `double f();`
+  prototypes and definitions, `return` through `fac` (`gen_fp_rforce()`,
+  `|RTYP 3`), and the caller's `call fldd` after the call.
+
+**Still refused, each with its own diagnostic**: a zero as the right
+operand after the exchange (a float variable or a computed value compared
+with 0), a floating truth test, a comparison as a value, `&&`/`||`/`?:`
+around floating code, a constant right operand of a computed value (in a
+comparison too - its `.data` block would have to precede the computed
+value's code), two computed comparison operands, any other computed right
+operand of `+ - * /` (`c * (a+b)`, `(a+b) * (c+d)`) and an int right
+operand of a variable (`d + i`), `+=`, `-=`, `*=`/`/=` by a computed
+value or an int variable, a
+constant that is not exactly a float or is 2\*\*24 or more, a written
+constant after an int constant converted in the same expression (v7 numbers
+a written constant while reading the tree and a converted one only in
+`optim()`; how the MUTOS compiler numbers the converted one is unknown),
+a floating constant as a call argument, a computed floating argument other
+than the last, an unused double result, a doubly negated value, a function
+returning a float, floating globals, statics, arrays, pointers and
+members, and `char`/`long` to or from floating. `tests/mutos_cc/fltprobe/`
+holds nine programs for real hardware: four that exercise only what is now
+implemented (to confirm it byte for byte, including what `libc.a`'s
+optimized code cannot show - label numbers, `.data` placement, where the
+return sequence goes) and five that exercise the refused shapes above.
+
+**Tooling.** `dump_temp.py` decodes `NEG` (`mutos_c0` writes it now).
+`x86sim.py` runs the new calls - `fsts`/`fstd`, `fadd`...`fdiv`, `fneg`,
+`fcmp` with `sahf` (only directly after it), `fac` - and no longer divides
+eagerly: its table of the four results of a floating operation computed a
+division for every `fmuls`/`fmuld` too, so a multiplication by zero
+stopped it with Python's `ZeroDivisionError` (no golden multiplies by
+zero, so it never showed).
+
+**Verification.** `make test`: 62/62 byte-exact, `mutos_as` 76/76,
+`check_floatdat.sh` 13/13, 71/71 compiler goldens assemble, `mutos_cpp`
+5/5, zero warnings. Against the previous build (`3c801a0`), on all 71
+golden inputs: `mutos_c0` (`.i` -> `.1`/`.2`, diagnostics included) and
+`mutos_c1` alone (golden `.1`/`.2` -> `.s`) identical, every file.
+`fuzz_c.py` against the previous build: 42,000 programs (18,000 with
+arrays, seed 11; 18,000 `--scope`, seed 21; 6,000 scalars only, seed 31):
+all identical, 0 WRONG, 0 BAD; 4,500 more through ASan/UBSan builds: 0
+WRONG, 0 BAD (the generator makes no floating code - what it checks is
+that the integer paths `mutos_c0`'s relational change touched stayed the
+same). Thirteen hand-written floating programs -
+the four `fltprobe` confirmation files and nine more (every new shape,
+`atof.o`'s and `ecvt.o`'s statements among them, loops with floating
+conditions, three double functions calling each other) - through
+`mutos_cpp`, both passes, `mutos_as` and `x86sim.py`, compared with the
+host C compiler: all equal; 27 refusal probes and the five `fltprobe`
+open-question files each stop with their diagnostic. ASan/UBSan builds of
+`mutos_c0`/`mutos_c1` over all of these and the 71 golden inputs: no
+reports, output and exit status identical to the `-O2` build's.
+`x86sim.py` gives the same output as before on all 53 goldens it runs.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -6208,7 +6408,12 @@ These apply to *every* milestone, not just the one where they were first learned
   disassembly gives its calling convention, and their data segments hold
   values in the target's own formats. `08_float`'s floating-point runtime
   calls, the floating format and the "4 bytes only if exactly a float" rule
-  for constants were all read there, not guessed (see that section).
+  for constants were all read there, not guessed (see that section). Four
+  of its objects (`atof.o`, `ecvt.o`, `gcvt.o`, `fltpr.o`) are C compiled by
+  the real compiler: before listing a shape as "waiting for a golden",
+  check whether their code already has it - most of the refused floating
+  shapes were there (see "Floating shapes from libc.a's compiled C"). They
+  were compiled with `-O`, so take only what `c2` cannot have changed.
 - **"Unknown, so ignored" is only safe for a directive that emits nothing.**
   `mutos_as` skipped `.float` silently, shifting every later data address;
   the first program whose compiler output used it would have been wrong with
