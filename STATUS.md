@@ -431,6 +431,15 @@ aborts".
   message now quoting the real one) is the faithful behaviour; it exits with 1,
   the real `as` with 4 (unchanged). `fltsig.s` stays in `float_open/` as the
   evidence, without a golden.
+- **What this means for the compiler's constants.** `mutos_as` accepts every
+  `%.17e` constant `mutos_c1` writes from `e-37` up (`e-38` when `atof` drops
+  the 18th digit), with the real bytes - among them the `%.17e` zero (`bc a2
+  31 00`) and `.double 3.00000000000000000e-02` (`ecvt.o`'s `.03`), which the
+  zero and non-float constants still refused in `mutos_c0`/`mutos_c1` will
+  need (Milestone 4's "Next up"). Below that, 5\*\*55 overflows and the real
+  assembler aborts, so a float or double constant below about 1e-37 cannot go
+  through the real toolchain as `%.17e` text at all: `mutos_c1` writes it as
+  the real compiler would, and both assemblers refuse it.
 - **`FLT_UNKNOWN`** (new status): LOGHUGE after a dropped digit - `fac` holds
   `fcmp`'s difference, never observed - and a text of more than 100,000 digits,
   both `FLT_RANGE` before. `FLT_RANGE` now means only what the real assembler
@@ -2652,19 +2661,8 @@ is now fully covered (62/62). In order:
    `fsubrs`/`fdivrs`/`fsubrd`/`fdivrd` ("reversed" entry points) suggest
    the real compiler computes the int first and then uses those;
    comparisons (`stkmath.o`'s `fcmp`/`ftest`); a zero or non-float
-   constant; floating parameters, globals and return types. For a zero or
-   non-float constant `mutos_as` is ready as far as real bytes go (see
-   Milestone 2's "Rounding pinned, zeros on both paths"): the `%.17e` zero is
-   the real `bc a2 31 00`, and `.double 3.00000000000000000e-02` gives
-   `ecvt.o`'s `.03`; no golden shows the real compiler's text for either
-   constant, though. `mutos_as` accepts every `%.17e` constant `mutos_c1`
-   writes from `e-37` up (the real conversion is settled, multiplication
-   included - Milestone 2's "The real product, zeros at exponent 0"); below
-   that the conversion's 5\*\*55 overflows, the real assembler aborts
-   (`float_open/fltsig.s`: "floating point over/under flow- assembly
-   aborted") and `mutos_as` refuses it the same way - so a constant that
-   small (a float or double below about 1e-37) cannot go through the real
-   toolchain as `%.17e` text either.
+   constant (no golden shows the real compiler's text for either);
+   floating parameters, globals and return types.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
