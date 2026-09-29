@@ -42,6 +42,9 @@ the six `09_abiprobe` frames (through `chkstk` from 128 bytes up),
 `10_integ/02_bubsort` (91) and `01_wordcount` (55 - byte compares and an
 initialized char array), and `04_funcs/05_staticvar` and all three
 `07_scope` files (globals, a file-scope `static`, a shadowing block).
+Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
+`16.+_ga`-style addresses were added for them) and returns its program's
+value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e`.
 `fuzz_c.py` itself generates neither chars, calls, structs nor globals
 (`--scope` adds file-scope ints); hand-written programs of that kind can
 be run through the same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s

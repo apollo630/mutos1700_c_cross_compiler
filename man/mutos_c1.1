@@ -186,16 +186,39 @@ with its address in AX. Each floating constant, an
 .B int
 constant converted to floating included, becomes a
 .B .float
-in the data segment, and a file with floating code ends with
+in the data segment, or an 8-byte
+.B .double
+when it is not exactly a
+.BR float ;
+its text is the one the original compiler's own
+.B printf
+writes \(en
+.IR libc.a 's
+.B ecvt
+of
+.IR libc.a 's
+.B atof
+on the 56-bit software double, reproduced exactly \(en and a file with
+floating code ends with
 .BR ".globl fltused" .
-Only a constant exactly representable as a
+Every expression with a floating value is generated in the original
+compiler's operand order, rebuilt from the whole expression tree (its
+.BR degree ,
+.B acommute
+and operand-exchange rules, a floating constant that is exactly a
 .B float
-is supported. The shapes beyond the two floating goldens come from the
-original compiler's own code in
-.IR libc.a
-.RB ( atof.o ,
-.BR ecvt.o );
-those it does not show are refused.
+counting as a
+.B float
+operand). File-scope, static, array, pointer and structure-member
+floating operands, compound assignments, comparisons as values and under
+.BR && / || ,
+.BR long / char
+conversions
+.RB ( ltof )
+and
+.BR float -returning
+functions are covered; the shapes no real-hardware golden has shown are
+refused.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

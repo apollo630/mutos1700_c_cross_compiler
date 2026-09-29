@@ -56,6 +56,14 @@ Usage:
       operand pairs each (default 2000) against fltmodel.py's
       arithmetic: dmul against its "libc" product, ddiv and dadd against
       nearest-even. Exit 1 on a difference.
+  libcatof.py ecvt TOOL [N]
+      The text the real compiler writes for a floating constant - its
+      printf("%.17e"), fltpr.o's _pscien() over libc.a's own ecvt.o
+      (v7's cvt()) with 18 digits, of libc.a's atof() - against TOOL
+      (src/mutos_cc/fltdec_test, mutos_c1's model in c1_fltdec.c) for
+      2*N (default 3000) C floating literals, and whether it is exactly
+      a float (a ".float") or not (a ".double"). Exit 1 on a difference.
+      Zeros (a fixed text) and texts TOOL refuses are not compared.
 """
 
 import base64
@@ -90,7 +98,7 @@ CRT0 = os.path.join(ROOT, 'tests', 'mutos1700_crt0', 'crt0.o.base64.txt')
 # Named explicitly: libc.a's __.SYMDEF is stale, so "-u _atof" alone does
 # not pull the runtime in. libc.a follows for everything else.
 MEMBERS = ('atof', 'ldexp', 'stacks', 'stkmath', 'doubles', 'dmath', 'convert',
-           'cret', 'ctype_', 'fperr', 'cuexit')
+           'cret', 'ctype_', 'fperr', 'cuexit', 'ecvt', 'modf')
 
 SEG = 0x1000                # the image's segment (CS = DS = ES = SS)
 BASE = SEG << 4
@@ -141,7 +149,8 @@ class Runtime:
             f.write('.globl\t_main\n.text\n_main:\nret\n')     # crt0.o needs one
         subprocess.run([MUTOS_AS, '-o', 'main.o', 'main.s'], cwd=work, check=True,
                        capture_output=True)
-        r = subprocess.run([MUTOS_LD, '-o', 'atof.out', '-u', '_atof', 'crt0.o', 'main.o']
+        r = subprocess.run([MUTOS_LD, '-o', 'atof.out', '-u', '_atof', '-u', '_ecvt',
+                            'crt0.o', 'main.o']
                            + [m + '.o' for m in MEMBERS] + ['libc.a'],
                            cwd=work, capture_output=True, text=True)
         if 'Undefined' in r.stdout + r.stderr or not os.path.exists(os.path.join(work, 'atof.out')):
@@ -198,6 +207,24 @@ class Runtime:
             return None
         ax = self.uc.reg_read(UC_X86_REG_AX)
         return bytes(self.uc.mem_read(BASE + ax, 8))
+
+    def ecvt(self, dbl, ndigits):
+        """ecvt(dbl, ndigits, &decpt, &sign) on the unmodified runtime -
+        the digit string, decpt and sign - or None on SIGFPE."""
+        self._prepare(False)
+        self.raised = None
+        decpt, sign = 0xE800, 0xE802
+        sp = SP_AT - 16
+        self.uc.mem_write(BASE + sp, struct.pack('<H', HLT_AT) + bytes(dbl) +
+                          struct.pack('<HHH', ndigits, decpt, sign))
+        self.uc.reg_write(UC_X86_REG_SP, sp)
+        self.uc.emu_start(BASE + self.sym['_ecvt'], BASE + HLT_AT, count=STEPS)
+        if self.raised:
+            return None
+        ax = self.uc.reg_read(UC_X86_REG_AX)
+        digits = bytes(self.uc.mem_read(BASE + ax, 100)).split(b'\0')[0].decode('ascii')
+        d, s = struct.unpack('<hh', bytes(self.uc.mem_read(BASE + decpt, 4)))
+        return digits, d, s
 
     def op(self, name, a, b):
         """dmath.o's dmul/ddiv/dadd on the double images a ([si]) and b
@@ -380,6 +407,70 @@ def cmd_ops(n):
     return 1 if any(bad.values()) else 0
 
 
+def literals(n, seed):
+    """C floating literals - the forms a source file has: fractions,
+    exponents, long integers, leading and trailing points, plus
+    fltmodel.py's texts without their sign."""
+    rng = random.Random(seed)
+    out = [t.split(' ', 1)[1].lstrip('+-') for t in F.random_texts(n, seed)]
+    for _ in range(n):
+        r = rng.random()
+        if r < 0.3:
+            t = '%d.%d' % (rng.randint(0, 99999), rng.randint(0, 999999))
+        elif r < 0.5:
+            t = '%d.%de%+d' % (rng.randint(0, 9), rng.randint(0, 99999999), rng.randint(-37, 37))
+        elif r < 0.65:
+            t = '0.%s%d' % ('0' * rng.randint(0, 12), rng.randint(1, 99999))
+        elif r < 0.8:
+            t = '%de%d' % (rng.randint(1, 999999), rng.randint(0, 30))
+        elif r < 0.9:
+            t = '%d.' % rng.randint(1, 10 ** rng.randint(1, 19))
+        else:
+            t = '.%d' % rng.randint(1, 10 ** rng.randint(1, 18))
+        out.append(t)
+    return out
+
+
+def pscien(res):
+    """fltpr.o's _pscien() for 17 decimals: the first digit, '.', the
+    rest, 'e', the exponent's sign and two digits."""
+    digits, decpt, sign = res
+    x = decpt - 1 if digits[0] != '0' else decpt
+    return '%s%s.%se%s%02d' % ('-' if sign else '', digits[0], digits[1:18],
+                               '-' if x < 0 else '+', abs(x))
+
+
+def cmd_ecvt(tool, n):
+    rt = Runtime()
+    texts = ['0.1', '.03', '3.14159265358979', '1e-5', '1e30', '16777217.',
+             '72057594037927936.', '1.5', '2.5', '0.75'] + literals(n, 3)
+    res = subprocess.run([tool], input='\n'.join(texts) + '\n', capture_output=True,
+                         text=True, check=True).stdout.splitlines()
+    if len(res) != len(texts):
+        sys.exit('libcatof.py: %s gave %d lines for %d texts' % (tool, len(res), len(texts)))
+    bad = compared = 0
+    counts = {}
+    for text, line in zip(texts, res):
+        f = line.split()
+        counts[f[1]] = counts.get(f[1], 0) + 1
+        if f[1] not in ('float', 'double'):
+            continue
+        dbl = rt.atof(text, as_zero=False)
+        if dbl is None or dbl[7] == 0:
+            continue
+        want = pscien(rt.ecvt(dbl, 18))
+        kind = 'float' if not any(dbl[:4]) else 'double'
+        compared += 1
+        if (kind, want) != (f[1], f[2]):
+            bad += 1
+            if bad <= 10:
+                print('  DIFFERENT %-28s %s %-26s libc.a: %s %s' % (text, f[1], f[2], kind, want))
+    print('%d literals (%s): %d compared with libc.a\'s ecvt(atof()), %d differ'
+          % (len(texts), ', '.join('%s %d' % kv for kv in sorted(counts.items())),
+             compared, bad))
+    return 1 if bad else 0
+
+
 def main(argv):
     if len(argv) >= 2 and argv[1] == 'atof':
         return cmd_atof(argv[2:])
@@ -389,6 +480,8 @@ def main(argv):
         return cmd_check(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
     if len(argv) in (2, 3) and argv[1] == 'ops':
         return cmd_ops(int(argv[2]) if len(argv) == 3 else 2000)
+    if len(argv) in (3, 4) and argv[1] == 'ecvt':
+        return cmd_ecvt(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
     print(__doc__)
     return 2
 

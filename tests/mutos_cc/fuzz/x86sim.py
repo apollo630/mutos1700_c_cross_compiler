@@ -17,7 +17,8 @@ comments. Floating-point code runs against a model of libc.a's software
 floating-point runtime (the calls mutos_c1 emits - "flds"/"fldd",
 "fstsp"/"fstdp", "fsts"/"fstd", "fadds"..."fdivd", stkmath.o's
 "fadd"..."fdiv", "fneg" and "fcmp" (read by "sahf" and a signed branch),
-"itof", "ftoi", "ftol" - on a stack of host floats, see FP_RUNTIME),
+"itof", "ftoi", "ftol", "ltof" - on a stack of host floats, see
+FP_RUNTIME),
 dmath.o's "fac" (a double function's result) and ".float" data, in
 MUTOS's own floating format (see mbf_encode()). It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
@@ -122,6 +123,8 @@ FP_RUNTIME = {
     "fneg": ("neg", 0),                            # the top, sign flipped
     "fcmp": ("cmp", 0),                            # pops both, AH <- flags
     "itof": ("itof", 0), "ftoi": ("ftoi", 0), "ftol": ("ftol", 0),
+    # lconvert.o: the long on the machine stack, high word on top
+    "ltof": ("ltof", 0),
 }
 
 
@@ -234,9 +237,12 @@ class Sim:
             self._put_bytes(names, [int(v[1:], 16)
                                     for v in m.group(1).split(",")])
             return
-        m = re.match(r"^\t\.float (\S+)$", line)
-        if m:                       # a floating constant ("L10000:\t.float ...")
-            self._put_bytes(names, mbf_encode(float(m.group(1)), 4))
+        m = re.match(r"^\t\.(float|double)[ \t](\S+)$", line)
+        if m:                       # a floating constant ("L10000:\t.float
+            # ...", "L10000:\t.double ...") or a file-scope variable's
+            # initializer ("_gi:\t.double\t2.5...")
+            size = 4 if m.group(1) == "float" else 8
+            self._put_bytes(names, mbf_encode(float(m.group(2)), size))
             return
         if line == ".even":
             self.next_data = (self.next_data + 1) & ~1
@@ -278,6 +284,10 @@ class Sim:
             self._alloc("fac", 8)
         if op in self.data:         # "L4", "_counter"
             return self.data[op]
+        m = re.match(r"^(\d+)\.\+(_\w+|L\d+)$", op)
+        if m and m.group(2) in self.data:
+            # an element or member of a fixed-address object: "16.+_ga"
+            return (self.data[m.group(2)] + int(m.group(1))) & M16
         # "(bx)", "*2.(si)", "#-132.(bp)", and an array element with a
         # symbol for its displacement: "_text(bx)", "#_text(bx)" (the
         # marker a load through v7's "#1" template writes)
@@ -363,7 +373,7 @@ class Sim:
         ax = self.regs["ax"]
         mem = [self.mem.get((ax + i) & M16, 0) for i in range(size)]
         st = self.fstack
-        if kind != "load" and kind != "itof" and not st:
+        if kind not in ("load", "itof", "ltof") and not st:
             raise SimError(f"'{name}' with an empty floating-point stack")
         if kind in ("s+", "s-", "s*", "s/", "cmp") and len(st) < 2:
             raise SimError(f"'{name}' with fewer than two stack entries")
@@ -388,6 +398,12 @@ class Sim:
             fflags = (a > b) - (a < b)
         elif kind == "itof":
             st.append(float(s16(ax)))
+        elif kind == "ltof":
+            sp = self.regs["sp"]
+            hi = self._rd(sp)
+            lo = self._rd((sp + 2) & M16)
+            v = (hi << 16) | lo
+            st.append(float(v - (1 << 32) if v & 0x80000000 else v))
         elif kind in ("ftoi", "ftol"):
             v = int(st.pop())                  # truncated toward zero
             lim = 1 << (15 if kind == "ftoi" else 31)

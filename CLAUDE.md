@@ -137,11 +137,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `mutos_c1`'s output with `x86sim.py`; `--baseline` classifies every
   difference against an earlier build. It holds no `.c` files, so nothing
   that walks the corpus sees it.
-  `fltprobe/` is the other non-corpus directory: nine floating-point probe
-  programs waiting for real-hardware goldens (its own `Makefile.mutos` -
-  see its `README.md`). It does hold `.c` files, so `run_goldens.sh`,
-  `gen_mutos.sh` and the Makefiles do walk it - `run_goldens.sh` skips a
-  file with no `.i.golden` - and it is not counted in the N/62 figure.
+  `fltprobe/` is the other non-corpus directory: floating-point probe
+  programs with their own `Makefile.mutos` and real-hardware goldens (see
+  its `README.md`) - round 1's nine files all byte-exact, round 2's four
+  (`p6`..`p9`) waiting for their goldens. It does hold `.c` files, so
+  `run_goldens.sh`, `gen_mutos.sh` and the Makefiles do walk it -
+  `run_goldens.sh` skips a file with no `.i.golden` - and it is not counted
+  in the N/62 figure.
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
   construct table above — nine real, unmodified MUTOS 1700 kernel driver
   source files (`01_delay.c` … `09_amx.c`, ordered easy to hard) plus the
@@ -557,7 +559,10 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator.**
+  8086 emulator. Beyond the corpus, the nine floating probes of
+  `tests/mutos_cc/fltprobe/` are byte-exact against their own real-hardware
+  goldens (v7's operand order for every floating operator, constants of any
+  value, floating globals, pointers, members, calls and conversions).**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -601,17 +606,19 @@ scope and intent, not a snapshot of what's done.
     `libc.a`'s lost sources never did — not a symbol-table policy the
     assembler applies per invocation. `mutos_as`'s own always-emit-`L`-labels
     behavior remains the pragmatic choice for golden parity either way.
-  * **Floating shapes beyond the corpus come from `libc.a`'s compiled C**
-    (2026-09-29): `atof.o`, `ecvt.o`, `gcvt.o` and `fltpr.o` are real
-    compiler output (optimized with `-O` - take only what `c2` cannot have
-    changed), and `mutos_c0`/`mutos_c1` now compile what they show -
-    comparisons (`fcmp`/`sahf`, v7's operand exchange), int constants
-    converted to `.float` constants (zero included), `fneg`, `*=`/`/=`,
-    `itof` + `fadd` on the stack, double parameters, arguments and returns
-    through `fac` (see `docs/DEVLOG.md`'s "Floating shapes from libc.a's
-    compiled C"). `tests/mutos_cc/fltprobe/` holds the probes for real
-    hardware - four to confirm those shapes byte for byte, five for the
-    shapes still refused; running it is the first "Next up" in `STATUS.md`.
+  * **Floating point beyond the corpus: `tests/mutos_cc/fltprobe/`'s nine
+    round-1 goldens are byte-exact** (2026-09-29). `libc.a`'s compiled C
+    (`atof.o`, `ecvt.o`, `gcvt.o`, `fltpr.o` - optimized) gave the first
+    shapes; the probes' real-hardware goldens corrected them (a floating
+    constant exactly a float has v7 degree 1) and settled the rest: the
+    real compiler is v7's `c1` with calls into the software runtime, so
+    `mutos_c1` plans every floating expression in v7's order on the
+    pre-scanned tree, and writes a constant's text as the real `c1`'s
+    `printf` does - `libc.a`'s `ecvt()` of `libc.a`'s `atof()`, modelled
+    exactly in `src/mutos_cc/c1_fltdec.c` and checked against the emulated
+    `libc.a` (`make check-libcatof`). See `docs/DEVLOG.md`'s "The fltprobe
+    goldens". Round 2 (`p6`..`p9`) asks about the shapes still refused;
+    running it is the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete

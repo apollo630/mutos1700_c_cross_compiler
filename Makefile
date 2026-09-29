@@ -29,9 +29,11 @@
 #                   # tests/mutos_cc/fuzz/README.md); FUZZ_ARGS passes
 #                   # options, e.g. make fuzz FUZZ_ARGS="-n 2000 -s 7"
 #   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
-#   make check-libcatof # .float/.double against libc.a's own atof, run under
-#                   # an 8086 emulator (needs the Python module "unicorn";
-#                   # see tests/mutos_as/float_coverage/libcatof.py)
+#   make check-libcatof # .float/.double against libc.a's own atof, and
+#                   # mutos_c1's floating-constant text against libc.a's
+#                   # own ecvt, run under an 8086 emulator (needs the
+#                   # Python module "unicorn"; see
+#                   # tests/mutos_as/float_coverage/libcatof.py)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
 
@@ -118,10 +120,11 @@ check-docs:
 # arithmetic. Separate from "test" because it needs the Python module
 # "unicorn" (pip install unicorn); LIBCATOF_N sets the number of texts.
 LIBCATOF_N = 3000
-check-libcatof: as ld
+check-libcatof: as ld cc
 	@python3 tests/mutos_as/float_coverage/libcatof.py goldens
 	@python3 tests/mutos_as/float_coverage/libcatof.py check $(CURDIR)/src/mutos_as/fltconst_test $(LIBCATOF_N)
 	@python3 tests/mutos_as/float_coverage/libcatof.py ops
+	@python3 tests/mutos_as/float_coverage/libcatof.py ecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

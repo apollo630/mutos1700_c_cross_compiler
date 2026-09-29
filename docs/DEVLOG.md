@@ -6268,6 +6268,204 @@ open-question files each stop with their diagnostic. ASan/UBSan builds of
 reports, output and exit status identical to the `-O2` build's.
 `x86sim.py` gives the same output as before on all 53 goldens it runs.
 
+### The fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-09-29)
+
+The nine `tests/mutos_cc/fltprobe/` programs came back from real hardware
+the same day (commit `ac4ba38`). **`mutos_c0` matched every `.1`/`.2` golden
+it produced at once** (the four confirmation files, `p1_compare`,
+`p4_const`). **`mutos_c1`'s four confirmation files differed in a few lines
+each**, and every difference traced to one v7 rule the libc.a-based model
+had slightly wrong; the five open-question goldens then answered every
+question they asked. All nine are now byte-exact end-to-end; none of the 62
+corpus files changed.
+
+**1. A floating constant has degree 1.** v7's `degree()` gives a constant
+leaf -3 (`CON`) or, as a DOUBLE leaf, 0 (`FCON`/`SFCON`), and a FLOAT leaf 1 -
+and the model gave floating constants 0. The goldens say 1: `03_fltcmp`'s `a
+< 1.5` (`a` a float) loads 1.5 first and branches `ble` (exchanged:
+degree(a) = 1 is not below degree(1.5) under the old rule, so v7 would not
+exchange), `p1_compare`'s `a < 0` and `a == 0` the same, and `1.5 < i` /
+`i < 1.5` both keep their order (the constant and the converted int
+tie at 1, the left one is no NAME). `04_fltconst`'s `d = e + 10` loads
+10.0 first and adds `e` from memory - acommute() puts the constant (1)
+before the double (0). The reading that fits: the MUTOS compiler keeps a
+constant that is exactly a float as a 4-byte `.float`, typed FLOAT, and
+`degree()` does the rest unchanged. `libc.a` could not show it: `atof.o`
+and `ecvt.o` never compare a float variable with a constant, and their
+`fl < big`, `arg < 0`, `10*fl` fit either rule.
+
+**2. The rest of v7's order, confirmed.** A '+'/'*' chain is acommute()'s -
+terms by decreasing degree, equal ones as written, rebuilt left to right:
+`p3_global`'s `(int)(gd + gi + ga[2] + arr[0] + gs.y)` starts with the
+float `gs.y`, `p2_arith`'s `(d + e) * (i * j)` with `i * j` (an int product
+has degree 2 - acommute()'s `d++` for TIMES), `b * (a + e)` with `b`. Every
+operator loads its left operand first; a right operand in memory is combined
+from there (`lea ax,<it>` / `call fadd<s|d>`), a computed one is computed
+onto the runtime stack after it and combined with `stkmath.o`'s
+stack-with-stack entry point: `d - i` is `fldd d / itof / fsub`, `d + i` is
+`itof / faddd d` (acommute: the conversion first), `i - d` is `itof / fsubd
+d`. **No "reversed" entry point** (`singles.o`'s `fsubrs`...) is used
+anywhere. A `.data` block is printed where v7's `cexpr()` prints an `FCON`
+operand - when its operator is matched, before the operator's code: `(d +
+e) * 2.0` is `.data` / `L10004:<TAB>.float 2.0...` / `.text` / `fldd d` /
+`faddd e` / `lea ax,L10004` / `fmuls`. `-(-e)` is `e`. `-1.5` is folded into
+the constant (`.float -1.50000000000000000e+00`, no `fneg`), as v7's
+`unoptim()` folds a negated `FCON`. `(d + e) - 0.5` stays a subtraction:
+v7's `optim()` makes `x - c` into `x + -c` only for a `CON`/`SFCON`.
+
+**3. A zero is compared, never tested.** `p1_compare`'s `(d + e) < 0` and
+`(d - e) != 0` load a `.float 0` and `fcmp` it - no `ftest`, although v7's
+`cbranch()` tests a zero right operand. So the MUTOS compiler makes no
+`SFCON` of a zero (or does not test one); `stkmath.o`'s `ftest` is unused
+by compiled code.
+
+**4. Labels.** A written constant takes its label when `c1` reads the tree,
+an int constant converted (unoptim()'s `ITOF(CON)` fold) one only in
+`optim()`: `p4_const`'s `d = 2 * 1.5` numbers 1.5 `L10007` and 2.0
+`L10008`, and prints 2.0's block first (it is the left operand). A file-scope
+initializer's `FCON` takes a label too, though none is written:
+`p3_global`'s first code constant is `L10002` after two initializers.
+
+**5. `x - c` is `x + -c` for an int** (v7's `optim()`, a `CON` right operand):
+`05_fltasop`'s `c - '0'` is `add ax,*-48.` - `mutos_c1` wrote `sub`, and
+`gen_charx_binop()` already had the rule for a char. `n - 1` stays `dec di`
+(`04_funcs`), now as "`+ -1`". The 62 corpus files never subtract another
+constant; the fuzzer's programs do (see Verification).
+
+**6. The register an int is converted in.** `itof` takes the int in AX. For
+an int variable the real code goes through DI - `mov di,i` / `mov ax,di` -
+when the conversion is evaluated first, after a variable or constant was
+loaded, or after a computed `+`/`-` (`05_fltasop`'s `(t + fl) / c`); but
+straight into AX after a computed floating `*`: `(fl * 2) - c` is `mov ax,c`
+/ `call itof`, and `10*fl + (c-'0')` computes `c - '0'` in AX (`mov ax,c` /
+`add ax,*-48.`). v7's `c1` hands registers out by number and its `oddreg()`
+gives a product the odd register - evidently a floating one too in the
+MUTOS compiler - and the next operand's register follows. A product itself
+is in AX already (`mov ax,i` / `imul j` / `call itof`), a char loads into AX
+(`movb ax,c` / `cbw`), and a register variable in DI goes through SI (`mov
+si,di` / `mov ax,si`, `p5_call`). After any other computed operand the
+register is not known (refused; `fltprobe/p7_itofreg.c` asks).
+
+**7. Smaller shapes.** A double argument is `sub sp,*8` - no decimal point,
+unlike every other constant (the caller's `add sp,*8.` has one), and
+`lconvert.o`'s `ltof` is called with the long pushed low word first and
+popped with `add sp,*4`. A call's unused double result is left in `fac` (no
+`fldd`); a function returning a float returns through `fac` like a double
+(`|RTYP 2`) and its caller loads it with `fldd`. A comparison used as a value
+is v7's usual 0/1 (`blt L10007` / `mov di,*0.` / `jmp L10008` / `L10007:mov
+di,*1.`), and `r + (d < e)` then adds `r` to it (`add di,*-28.(bp)`: the
+comparison has the higher degree). `+=`, `-=`, `/=` load the target and
+combine the right operand (a computed one: `fldd d` / `fldd e` / `faddd e` /
+`fdiv`), `*=` loads the right operand and multiplies the target in from
+memory (`itof` / `fmuld d`), a used value is `fstd` (no pop); `i *= e` into
+an int is `call ftoi` / `mov ax,ax` / `imul i` / `mov i,ax` - `mutos_c0`
+already converts `e` first (`FTOI`, then `ASTIMES(INT)`), v7's own semantics:
+`i * (int)e`, not `(int)(i * e)`. In a function with a register variable in
+DI, a constant argument goes through SI (`mov si,*3.` / `push si`) and a long
+lives in SI(high):DX(low) - `l = 7` is `mov ax,*7.` / `cwd` / `mov si,dx` /
+`mov dx,ax`, stored from DX and SI - the next register pair v7's allocation
+takes. Floating data: `.comm _gd,8`, `.bss` / `_sd:.blkb 8.`, and for
+`double gi = 2.5;` a `SYMDEF`, `.data` and `_gi:<TAB>.double<TAB>2.5...` (a tab
+after the directive, unlike a code constant's space); an element or member is
+addressed as one operand (`lea ax,16.+_ga`, `8.+_gs`, `*-12.(bp)`), a value
+through a pointer as `mov di,p` / `lea ax,(di)` - loaded after the right-hand
+side (`*p = 2.0` is `flds <2.0>` / `mov di,*-22.(bp)` / `lea ax,(di)` / `fstdp`),
+and `gp = &gd` is `mov _gp,#_gd`.
+
+**8. The text of a constant that is not exactly a float** (`p4_const`): an
+8-byte `.double`, loaded with `fldd` - `0.1` is `.double
+1.00000000000000000e-01` (glibc's `%.17e` would give `...06e-01`),
+`3.14159265358979` is `3.14159265358979001e+00`, `1e30`
+`1.00000000000000005e+30`, `16777217.` `1.67772170000000000e+07`; `2**56`
+(`72057594037927936.`), exactly a float, is a `.float`
+`7.20575940379279360e+16`. The real `c1` is a MUTOS program linked with
+`libc.a`: it converts with `libc.a`'s `atof()` and prints with `printf`,
+whose `%e` is `fltpr.o`'s `_pscien()` - and its disassembly shows that
+calling `_ecvt` (`libc.a`'s `ecvt.o`, v7's `cvt()` compiled; 18 digits for
+`%.17e`), then writing the first digit, `.`, the rest, `e`, the sign and two
+digits of `decpt - 1`. Running exactly that - `libc.a`'s `atof` then
+`libc.a`'s `ecvt` on `libc.a`'s runtime, under the 8086 emulator that
+`tests/mutos_as/float_coverage/libcatof.py` already had - reproduces all
+seven texts. `mutos_c1` now reproduces them without the emulator:
+`src/mutos_cc/c1_fltdec.c` takes the value from `mutos_as`'s own
+`fltconst.c` (libc.a's `atof()` exactly, for every nonzero value - compiled
+into `mutos_c1` as it is) and runs `cvt()` on exact 56-bit arithmetic.
+`cvt()` only ever multiplies by 10.0, divides by 10 and adds its own `.03`
+(`c3 f5 28 5c 8f c2 75 7b`), and 10.0's mantissa words below the top one are
+zero, so `dmul`'s wrong partial product never contributes: every operation
+is the exact result rounded to nearest-even, `modf.o` splits a value
+exactly (it shifts the integer bits out), `ftoi` truncates. Against the
+emulated `libc.a` - the new `libcatof.py ecvt` subcommand, part of `make
+check-libcatof` - 28,188 random C literals (fractions, exponents from e-37
+to e+37, long integers, leading and trailing points): 0 differences in text
+or size. The 4- or 8-byte choice is "the double's low four bytes are zero".
+An 8-byte constant's degree (0, as a DOUBLE leaf?) has no golden yet: one
+where it would decide an order - in a `+`/`*` chain or a comparison - is
+refused (`fltprobe/p6_dblcon.c` asks); elsewhere (an assignment, an
+argument, `d - 0.1`) it is compiled.
+
+**How `mutos_c1` does it now.** Every expression with a floating node is
+planned (see "Evaluation order": `plan_expression()` pre-scans the tree): a
+new part of that planner, `plan_fvalue()`, rebuilds v7's order - `fdeg()`
+(v7's `degree()` as above, with `optim()`'s rules for `-`, `/`, `*=`, `/=`,
+relationals, conversions and calls), `plan_fchain()` (acommute()'s
+`insert()` order and the rebuilt nodes' `.data` blocks, outermost first), a
+relational's exchange, `SEG_FLOAD` (a leaf left operand loaded before a
+computed right one), `SEG_FDATA` (a constant's block where `cexpr()` prints
+it), `SEG_FSWAP` (the handler mirrors the relation), `SEG_FITOF` (point 6's
+register), `SEG_FLEAF` (an element or member at a constant offset, `ffold()`
+- `v7`'s `optim()` makes `*(&x + c)` one NAME, so its opcodes are never
+streamed). `fplan_constants()` numbers the expression's constants when it is
+planned, written ones first. The handlers then just generate each node with
+its operands arriving in that order - `gen_fp_binop()` no longer guesses
+anything. `&&`/`||`/`!` over floating comparisons go through the existing
+`plan_cbranch()`. What is still refused is listed in `src/mutos_cc/README.md`'s
+"Floating point" and `tests/mutos_cc/fltprobe/`'s round 2 (`p6`..`p9`) asks
+about most of it.
+
+**`mutos_c0`.** `+=`/`-=` into a float or double (like `*=`/`/=`: the right
+operand converted to the target's type), `i *= e` into an int (`FTOI`, then
+`ASTIMES(INT)`), an embedded compound assignment whose value is used (`e =
+(d *= e)` - `parse_comma_item()`), a char to floating (`ITOC(INT)`, then
+`ITOF`) and back (`FTOI`, then `ITOC(CHAR)`), functions returning a float,
+floating struct members, local floating arrays and pointers, local `static
+double`/`float`, file-scope floating variables, arrays, pointers and
+initializers (`SYMDEF`, `DATA`, `NLABEL`, `FCON`, `INIT(type)`, `EXPR` - v7's
+`cinit()`), file-scope struct variables of any kind (`mutos_c1` refuses an
+int member's access as it refuses an int file-scope array's element), and
+`(int) (<floating expression>)`. `dump_temp.py` decodes `INIT` and an empty
+symbol name (v7's `SYMDEF("")` every 64 initializers - `11_kernel/08_tty`
+now decodes up to a `GREATQP`). `11_kernel/03_mem`'s diagnostic moved from
+line 617 to 610 (`'y' undeclared` - the K&R `register y,x;` with no type):
+its file-scope struct is accepted now.
+
+**Tooling.** `x86sim.py` runs `ltof` (the long from the machine stack),
+`.double` constants and floating initializers, and `N.+_sym` addresses;
+every round-1 golden now runs under it and returns its program's value
+(`p2_arith` 16, v7's `i *= e`; the C value is 17). `libcatof.py` links
+`ecvt.o` and `modf.o` too and gained the `ecvt` subcommand;
+`src/mutos_cc/fltdec_test` feeds it.
+
+**Verification.** `make test`: 62/62 corpus files and 9/9 `fltprobe` files
+byte-exact (71 in `run_goldens.sh`'s list), 0 genuine mismatches, zero
+warnings; `mutos_as`, `check_floatdat.sh`, `assemble_cc_goldens.sh` and
+`mutos_cpp` unchanged. `fuzz_c.py` against the previous build (`3c801a0`):
+30,000 programs (12,000 with arrays, seed 111; 12,000 `--scope`, seed 121;
+6,000 scalars only, seed 131) - 0 WRONG, 0 BAD, 398 changed but still
+correct (`x - c` is now `add ...,*-c.`, and `p[i - 1]` through a pointer
+takes `p[i + 1]`'s path, the -2 a displacement: `mov di,*-2.(di)`), 1
+formerly refused now correct; 3,000 more through
+ASan/UBSan builds: 0 WRONG, 0 BAD, no reports. ASan/UBSan builds over all
+71 golden inputs and the nine `11_kernel` refusals: clean. Seven more
+hand-written floating programs (calls with three double arguments, a float
+function, compound assignments, `&&`/`||`, loops with floating conditions,
+globals, arrays, pointers, members, `long`/`char` conversions, inexact
+constants) through `mutos_cpp`, both passes, `mutos_as` and `x86sim.py`,
+compared with the host C compiler: all equal, but for `k *= a` where the
+difference is v7's `i * (int)a`. `libcatof.py ecvt`: 28,188 literals, 0
+differences; `libcatof.py goldens`, `check` and `ops` still pass with the two
+extra objects linked in.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -6525,6 +6723,14 @@ These apply to *every* milestone, not just the one where they were first learned
   showed that the family's multiplication is none of them for wide
   operands - one partial product loads the wrong word - in a region no
   golden had touched. Fitting would never have proposed that candidate.
+- **Optimized real output supports a rule only where it tells the rules
+  apart.** Every floating line in `libc.a`'s compiled C fit a constant of
+  degree 0 - because none of it compares a float variable with a constant,
+  where degree 0 and 1 give different code. The model stood, consistent with
+  all of it, until the first probe written for exactly that case. When real
+  output confirms a model, list the cases where a rival rule would differ
+  and check that the sample contains one; if it does not, the next probe
+  should.
 - **Run what you build, when you can.** 67/67 byte-exact goldens said nothing about
   a pad byte in code no golden contained; linking the float goldens with the real
   `crt0.o`/`libc.a` and executing them in an emulator is what makes "it assembles"

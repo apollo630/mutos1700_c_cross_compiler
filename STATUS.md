@@ -588,11 +588,14 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. Beyond the corpus, floating comparisons, int constants converted to
-floating, unary minus, `*=`/`/=`, double parameters, arguments and return
-values are now compiled from the real compiler's own output in `libc.a`
-(its C-compiled `atof.o`/`ecvt.o`/`gcvt.o`/`fltpr.o`), with a probe set
-for real hardware in `tests/mutos_cc/fltprobe/` (goldens pending). ABI/
+below. Beyond the corpus, all nine floating-point probes of
+`tests/mutos_cc/fltprobe/` (real-hardware goldens, not counted in the 62)
+are byte-exact too: comparisons (a zero included), comparisons as values
+and under `&&`, v7's operand order for every floating operator, constants
+of any value (`.double` with the MUTOS `ecvt()`'s own digits), compound
+assignments, calls, float functions, file-scope and static floats, arrays,
+pointers and members, `long`/`char` conversions; a second round of four
+probes (`p6`..`p9`) waits for real hardware. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -604,6 +607,93 @@ coverage against it is 0/9 so far (each refusal diagnosed, none silent),
 tracked apart from the 62/62 figure above - see "Next up" below and
 `docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (the `fltprobe` goldens - 9/9 byte-exact; v7's floating operand order; constant text from the MUTOS `ecvt()`)
+
+**62/62 corpus files and 9/9 `fltprobe` files byte-exact.** The nine
+programs came back from real hardware (commit `ac4ba38`); `mutos_c0` matched
+every `.1`/`.2` golden it could produce at once, `mutos_c1`'s four
+confirmation files differed in a few lines each, and the five open-question
+goldens showed every shape `mutos_c1` had refused. Full derivation in
+`docs/DEVLOG.md`'s "The fltprobe goldens".
+
+- **The model corrections the confirmation files forced**: a floating
+  constant that is exactly a float has **degree 1** (typed FLOAT - `a <
+  1.5` loads 1.5 first, `e + 10` loads 10.0 first); `-1.5` is folded into
+  the constant; an int `x - c` is `x + -c` (`add ax,*-48.`, v7's `optim()` -
+  also in DI: `add di,*-5.`); an int converted to floating is loaded
+  straight into AX after a computed `*` (`mov ax,c` / `call itof`), through
+  DI otherwise; a double argument is `sub sp,*8` (no decimal point).
+- **What the open-question files showed, now compiled**: v7's order for
+  every floating operator - acommute() chains, the relational exchange,
+  the left operand always first, a computed right operand combined on the
+  runtime stack (`fldd d` / `itof` / `fsub` - no "reversed" entry points);
+  a zero compared with `fcmp`, never tested; a comparison as a value and
+  under `&&`; a constant's `.data` block where `cexpr()` prints it (ahead of
+  a computed left operand); written constants numbered before converted
+  ones; `-(-x)`; `+=`, `-=`, `/=` (target first) and `*=` (right operand
+  first) with computed right operands and used values; `i *= e` (`call
+  ftoi` / `mov ax,ax` / `imul i` - v7's `i * (int)e`); unused double
+  results; float-returning functions; non-last computed and constant
+  arguments; `long`/`char` to and from floating (`ltof`, `add sp,*4`); a
+  register variable converted; in a function with a register variable in
+  DI, SI for a constant argument and SI:DX for a long; file-scope
+  `double`/`float` (`.comm`, `.bss`, initialized `.double`/`.float` data),
+  `extern`, local `static`, arrays, pointers and members (`lea ax,16.+_ga`,
+  `8.+_gs`, `mov di,p` / `lea ax,(di)`), `&` of each.
+- **Constants that are not exactly a float**: an 8-byte `.double`, loaded
+  with `fldd`; the text is the real `c1`'s `printf("%.17e")` - `libc.a`'s
+  `ecvt()` of `libc.a`'s `atof()` on the 56-bit software double
+  (`fltpr.o`'s `_pscien()` calls `_ecvt`): `0.1` -> `1.00000000000000000e-01`,
+  `1e30` -> `1.00000000000000005e+30`. New `src/mutos_cc/c1_fltdec.c`
+  reproduces it exactly - the value from `mutos_as`'s `fltconst.c`
+  (compiled into `mutos_c1`), then v7's `cvt()` on exact 56-bit arithmetic -
+  and `libcatof.py ecvt` (in `make check-libcatof`) compares it with the
+  emulated `libc.a`.
+- **`mutos_c1`'s floating code is planned**: every expression with a
+  floating node goes through the evaluation-order planner, which rebuilds
+  v7's order on the pre-scanned tree (`plan_fvalue()`, `fdeg()`,
+  `plan_fchain()`, `fplan_constants()`), and the handlers generate each node
+  in that order.
+- **`mutos_c0`**: `+=`/`-=` into floats, `i *= e`, `e = (d *= e)`,
+  char/floating conversions, float functions, floating struct members,
+  local floating arrays/pointers/statics, file-scope floating variables,
+  arrays, pointers and initializers (a new `INIT` opcode), file-scope struct
+  variables, `(int) (<floating expression>)`.
+- **Still refused** (each with its diagnostic, most asked by round 2): an
+  8-byte constant where its degree decides an order (`d + 0.1`, `0.1 <
+  d`), an int converted after a computed operand other than `+`/`-`/`*`,
+  `x + 1`/`x - 1` converted in AX, a value read through a pointer as an
+  operand of `+`/`*`/a comparison, a double array subscripted by a variable,
+  `i += d`/`i -= d` into an int, a long converted with DI free (inferred:
+  through DI - compiled, but no golden), initializers other than a floating
+  literal that is exactly a float, `%`/`%=`, a floating zero added or
+  subtracted, a floating truth test (the real `c1` itself fails on it).
+- **`tests/mutos_cc/fltprobe/` round 2**: `p6_dblcon.c`, `p7_itofreg.c`,
+  `p8_misc.c`, `p9_init.c` (`make -f Makefile.mutos round2`).
+- **Tooling**: `dump_temp.py` decodes `INIT` and an empty symbol name;
+  `x86sim.py` runs `ltof`, `.double` data and `N.+_sym` addresses (every
+  round-1 golden runs: `p2_arith` returns 16 - v7's `i *= e` - its C value
+  is 17); `libcatof.py ecvt`; `src/mutos_cc/fltdec_test`.
+
+**Verification (this session):**
+
+- `make test`: 62/62 corpus and 9/9 `fltprobe` byte-exact (71 in
+  `run_goldens.sh`'s list), 0 genuine mismatches, zero warnings; `mutos_as`,
+  `check_floatdat.sh`, the compiler goldens' assembly and `mutos_cpp`
+  unchanged.
+- `fuzz_c.py` against the previous build (`3c801a0`): 30,000 programs (seeds
+  111, 121 `--scope`, 131 scalars only): 0 WRONG, 0 BAD, 398 changed but
+  still correct (`x - c`, `p[i - 1]`), 1 formerly refused now correct;
+  3,000 more through ASan/UBSan builds: 0 WRONG, 0 BAD.
+- ASan/UBSan builds over the 71 golden inputs and the nine `11_kernel`
+  refusals: clean.
+- `libcatof.py ecvt`: 28,188 random C literals, `mutos_c1`'s text and size
+  against the emulated `libc.a`: 0 differences; `goldens`, `check`, `ops`
+  still pass.
+- Seven more hand-written floating programs through the whole chain and
+  `x86sim.py` against the host C compiler: all equal (but for v7's own
+  `k *= a`).
 
 ### `mutos_c0`/`mutos_c1`: verified this session (floating shapes from `libc.a`'s compiled C - comparisons, int constants, `fneg`, `*=`/`/=`, double parameters, arguments and returns)
 
@@ -2737,20 +2827,15 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/` on real hardware** (`make -f
-   Makefile.mutos` there, then `make goldens` in `tests/mutos_cc` on the
-   modern host). Its four confirmation files check the floating shapes now
-   taken from `libc.a`'s optimized code byte for byte - label numbers,
-   `.data` placement, the return sequence's position, `|RTYP 3` - and move
-   into `08_float` as `03`..`06`; its five open-question files show the
-   shapes still refused: a zero compared as the right operand (`ftest`?),
-   `d + i` and other computed right operands (where do
-   `libc.a`'s "reversed" `fsubrs`/`fdivrd`... come in?), `+=`/`-=`, the
-   text of a constant that is not exactly a float, the label order of a
-   written constant after a converted one, floating globals, statics,
-   arrays, pointers and members, constant and non-last call arguments,
-   float-returning functions, `long`/`char` to and from floating. See the
-   section above and `tests/mutos_cc/fltprobe/README.md`.
+1. **Run `tests/mutos_cc/fltprobe/`'s round 2 on real hardware** (`make
+   -f Makefile.mutos round2` there, then `make goldens` in
+   `tests/mutos_cc` on the modern host): `p6_dblcon.c` (an 8-byte
+   constant's degree), `p7_itofreg.c` (the register an int is converted in
+   after a `/`, a call, a negation; `x + 1` in AX), `p8_misc.c` (`ltof` with
+   DI free, `*p` as an operand, `i += d`, a double array subscripted by a
+   variable), `p9_init.c` (int, inexact, negated and `static` floating
+   initializers). Round 1's nine files are byte-exact - see the section
+   above and `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
@@ -2768,8 +2853,11 @@ is now fully covered (62/62). In order:
    `mov di,a / push di / inc a` where the kernel pushes the memory operand
    directly (`push *-56.(bp) / inc *-56.(bp) / call _clearse`).
 4. **Struct shapes still refused** (see `src/mutos_cc/README.md`'s
-   "Structs, unions, bit-fields, enums and typedefs"): file-scope struct
-   variables, functions returning a struct or a struct pointer, block
+   "Structs, unions, bit-fields, enums and typedefs"): an int member of a
+   file-scope struct and an element of a file-scope int array (`mutos_c0`
+   accepts the declarations now - `p3_global` needed them for floats -
+   `mutos_c1` refuses the access), functions returning a struct or a struct
+   pointer, block
    copies, a computed value stored into a bit-field, a struct size that is
    not a power of two in a subscript - each needs evidence of the real
    compiler's shape first. Then the remaining 81..127-byte `chkstk` gap.

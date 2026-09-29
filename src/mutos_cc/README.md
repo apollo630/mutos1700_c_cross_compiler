@@ -30,7 +30,9 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope"). See
+"Floating point" under "Current scope") - and, beyond the corpus, all nine
+floating probes of `tests/mutos_cc/fltprobe/` with their own real-hardware
+goldens (see "Floating point beyond the corpus"). See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -1005,10 +1007,18 @@ MUTOS front end does not (`mutos_cc.h` delta 5). Every file-scope name is
 "_counter")`, the shape a callee's `NAME` already had - so `c0_sym`
 keeps a second, file-wide table (`Parser.globals`, searched after the
 function's own by `lookup_var()`), and `emit_name()` writes either shape.
-A redeclaration is accepted when type and linkage agree. Only a plain
-`int`/`char`/`long` name is supported, plus a `char name[]` initialized
-with a string (`10_integ/01_wordcount`, below); any other file-scope
-pointer, array or initializer and a `static` function are refused.
+A redeclaration is accepted when type and linkage agree. Supported: a
+plain `int`/`char`/`long` name, a `char name[]` initialized with a string
+(`10_integ/01_wordcount`, below), and - since `fltprobe/p3_global` - a
+`float`/`double` variable, array or pointer (`parse_global_fvar()`: `double
+ga[3];` is `CSPACE "_ga" 24`, `double *gp;` `CSPACE "_gp" 2`), a floating
+variable initialized with a floating literal (`double gi = 2.5;` - `SYMDEF
+"_gi"`, `DATA`, `NLABEL "_gi"`, `FCON`, `INIT(DOUBLE)` (104), `EXPR` - v7's
+`cinit()`; `mutos_c1` writes `.globl _gi` / `.data` / `_gi:<TAB>.double<TAB>
+2.50000000000000000e+00`, the `FCON` using up a c1 label) and a struct
+variable of any kind (`CSPACE` of its size; `mutos_c1` compiles a floating
+member's access and refuses an int one's). Any other file-scope pointer,
+array or initializer and a `static` function are refused.
 
 `mutos_c1` reads such a `NAME` as a memory operand named by its symbol:
 the `VK_STATIC` kind a local `static` already used, with a new `Val.sym`
@@ -1190,58 +1200,74 @@ sources' values under an 8086 emulator - see `STATUS.md`'s Milestone 2
 section. Full derivation in `docs/DEVLOG.md`'s `08_float` section and the
 `mutos_as` section after it.
 
-**Floating point beyond the corpus (from `libc.a`'s compiled C).**
-`libc.a`'s `atof.o`, `ecvt.o`, `gcvt.o` and `fltpr.o` are C compiled by the
-real compiler (with `-O`: only what `c2` cannot have changed is taken), and
-their code gives these shapes - see `docs/DEVLOG.md`'s "Floating shapes
-from libc.a's compiled C" for each one's source:
+**Floating point beyond the corpus (`libc.a`'s compiled C, then the
+`fltprobe` goldens).** `libc.a`'s `atof.o`, `ecvt.o`, `gcvt.o` and `fltpr.o`
+are C compiled by the real compiler and gave the first shapes (see
+`docs/DEVLOG.md`'s "Floating shapes from libc.a's compiled C");
+`tests/mutos_cc/fltprobe/`'s nine real-hardware goldens corrected and
+completed them - all nine are byte-exact (see `docs/DEVLOG.md`'s "The
+fltprobe goldens"). The real compiler is v7's `c1` with the PDP-11 floating
+code replaced by calls into the runtime, so its **operand order is v7's**,
+decided on the whole tree - and `mutos_c1` plans every expression with a
+floating node from the pre-scanned tree (`plan_fvalue()` in "Floating
+point", next to the integer "Evaluation order" planner):
 
-- a **comparison** as a condition: `mutos_c0` converts an int operand to
-  the floating one's type and writes the relational typed INT; `mutos_c1`
-  exchanges the operands by v7's `degree()` rule (a double variable and
-  every constant 0, a float variable 1, anything computed more), loads
-  both, `call fcmp` / `sahf`, and branches (`gen_fp_compare()`);
-- an **int constant converted** to floating is a `.float` constant,
-  `%.17e` of its value (`gen_itof()`) - zero is `0.00000000000000000e+00`,
-  the text whose real bytes are libc's zero constants; a written zero is
-  accepted too;
-- **unary minus**: `NEG` (37), typed with its operand's type (FLOAT for a
-  float variable) - `call fneg` (`gen_fp_neg()`);
-- **`*=`** (the right operand loaded, `fmul<s|d>` on the target) and
-  **`/=`** (the target loaded, `fdiv<s|d>` by the right operand) into a
-  float or double variable, the right operand a variable or a constant (an
-  int constant converted to the target's own type - `gen_fp_asop()`);
-- a **computed left operand with an int right operand** of `+ - * /` -
-  an int variable or a variable plus or minus a constant (`float_order_
-  check()`): `call itof`, then the stack-with-stack `fadd`/`fsub`/`fmul`/
-  `fdiv`;
-- an **assignment whose value is used**: `fst<s|d>`, the value kept on the
-  stack (`gen_fp_assign()`);
-- **double and float parameters** (8 bytes of the frame; a float one is a
-  double), **double arguments** (`push_fp_arg()`: load, `sub sp,*8.` /
-  `mov ax,sp` / `call fstdp`), and **functions returning a double**
-  (`double f();`, `double f(x) ...`): `return` stores into `fac` and leaves
-  its address in AX (`lea ax,fac` / `call fstdp` / `lea ax,fac` -
-  `gen_fp_rforce()`), `RETRN` type 3 renders `|RTYP 3`, and the caller
-  loads the result with `call fldd` right after the call.
+- **degree** (`fdeg()`): v7's `degree()`, with a floating constant that is
+  exactly a float at **1** (a 4-byte `.float`, typed FLOAT - `a < 1.5`
+  loads 1.5 first); a double variable 0, a float one 1, a converted int or
+  a negation `max(1, operand)`, a `+`/`*` chain acommute()'s, `-`/`/`
+  optim()'s, a call 10;
+- **`+`/`*` chains** in acommute()'s order (`plan_fchain()`), a
+  **relational's exchange** by degree (mirrored by the handler), the
+  **left operand always first**: a right operand in memory is combined
+  from there (`fadd<s|d>`), a computed one computed after the left and
+  combined on the stack (`fadd` - `d - i` is `fldd d` / `itof` / `fsub`);
+- **constants**: each written constant numbered when the expression is
+  planned, then each int constant converted (`fplan_constants()`); a
+  constant's `.data` block printed where v7's `cexpr()` prints it, when its
+  operator is matched (`SEG_FDATA` - ahead of a computed left operand); a
+  negation folded into the constant, `-(-x)` dropped; the text from
+  `c1_fltdec.c` - `libc.a`'s `ecvt()` of `libc.a`'s `atof()` on the 56-bit
+  software double, 18 digits, exactly as the real `c1`'s `printf("%.17e")`
+  writes it - a `.float` when the value is exactly a float, else an 8-byte
+  `.double` (`fldd`, `faddd`...);
+- **comparisons**: `call fcmp` / `sahf` / a signed branch, a zero compared
+  like any constant (never tested), as a condition, under `&&`/`||`/`!`
+  (`plan_cbranch()`), or as a 0/1 value;
+- **int conversions** (`gen_itof()`): through DI - `mov di,i` / `mov ax,di` /
+  `call itof` - or, after a computed `*`, straight into AX (`mov ax,c`;
+  `c - '0'` as `mov ax,c` / `add ax,*-48.`) - `SEG_FITOF`; a product is in AX
+  already, a char loads there (`movb ax,c` / `cbw`), a register variable in
+  DI goes through SI; `ltof` for a long (pushed, `add sp,*4`), `ftoi`/`ftol`
+  back, a char through `ftoi` / `movb`;
+- **compound assignments**: `+=`, `-=`, `/=` load the target first, `*=` the
+  right operand; a used value is `fst<s|d>` (no pop); `i *= e` into an int is
+  `call ftoi` / `mov ax,ax` / `imul i` / `mov i,ax`;
+- **calls**: double arguments `sub sp,*8` / `mov ax,sp` / `call fstdp` (no
+  decimal point), pushed right to left through the call planner; a double
+  or float result from `fac` (`call fldd`), none when unused; float and
+  double functions return through `fac` (`|RTYP 2`/`|RTYP 3`);
+- **objects**: locals, parameters, file-scope (`.comm`, `.bss`, initialized
+  `_gi:<TAB>.double<TAB>...` data), `extern`, local `static` (`L4`); an element or
+  member at a constant offset folded into one operand (`SEG_FLEAF` -
+  `lea ax,16.+_ga`, `8.+_gs`, `*-12.(bp)`); a value through a pointer
+  variable (`mov di,p` / `lea ax,(di)`, when its address is needed); `&` of
+  each (`mov _gp,#_gd`, `lea di,*-20.(bp)`).
 
-Refused, each with its own diagnostic: a zero as the right operand after
-the exchange (a float variable or a computed value compared with 0), a
-floating value tested for truth, a comparison used as a value,
-`&&`/`||`/`?:`/`,` around a floating value, a constant right operand of a
-computed value (comparisons included), two computed comparison operands,
-any other computed right operand of `+ - * /` and an int right operand of
-a variable or constant (`d + i`), `+=`, `-=`, `%`, `*=`/`/=` by a computed
-value or an int variable,
-`++`/`--`, a constant that is not exactly a float or is 2\*\*24 or more,
-a written constant after an int constant converted in the same expression,
-a floating constant or a non-last computed floating value as a call
-argument, an unused double result, a doubly negated value, a function
-returning a float, floating globals, statics, arrays, pointers and struct
-members, a `char` or `long` converted to or from floating (`LTOF`), an int
-in AX or a register variable converted, and an unused computed value.
-`tests/mutos_cc/fltprobe/` has the programs that will settle these, and
-confirm the shapes above, on real hardware.
+Refused, each with its own diagnostic (most of these are what
+`tests/mutos_cc/fltprobe/`'s round 2 asks about): an 8-byte constant where
+its degree would decide an order (a `+`/`*` chain, a comparison), an int
+converted after a computed operand other than `+`, `-` or `*`, `x + 1` /
+`x - 1` converted in AX, a value read through a pointer as an operand of
+`+`, `*` or a comparison, a double array subscripted by a variable, `i +=
+d`/`i -= d` into an int, a floating initializer other than a literal that
+is exactly a float, a floating zero added or subtracted, `%`/`%=`, `++`/`--`,
+a floating value tested for truth (the real `c1` itself reports "Floating
+point stack underflow" on one), `?:`/`,` with floating values, a long
+computed rather than a variable converted. A long converted with DI free
+is compiled through DI (`mov di,<low>` / `push di` ...) - inferred from the
+register allocation, the golden (`p5_call`) had DI taken by a register
+variable and used SI.
 
 ## `SETSTK` / local-frame handling
 
@@ -1466,12 +1492,11 @@ di,*2.(si)`).
    and conditions, a store into a file-scope array element - see "More
    `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
    "Floating point" under "Current scope") - all 62 of 62; `mutos_as`
-   assembles the floating output too. Comparisons, int constants
-   (zero included), unary minus, `*=`/`/=`, an int right operand of a
-   computed value, double parameters, arguments and returns followed from
-   `libc.a`'s compiled C (see "Floating point beyond the corpus"). Left:
-   the floating shapes still refused there, each waiting for its golden
-   from `tests/mutos_cc/fltprobe/` - which also confirms the new ones. On
+   assembles the floating output too. `tests/mutos_cc/fltprobe/`'s nine
+   round-1 goldens are byte-exact too (v7's operand order, constants of
+   any value, globals, pointers, calls, conversions - see "Floating point
+   beyond the corpus"). Left: the floating shapes still refused there,
+   most asked by `fltprobe`'s round 2 (`p6`..`p9`). On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in
@@ -1602,3 +1627,11 @@ every `outcode()` call site's argument shape, not something derived
 automatically from the wire format at read time - see `CLAUDE.md`'s
 Workflow Guideline 8 for the mandatory rule that keeps it in sync
 whenever an opcode's shape (or the `TY_*`/`SC_*` constants) changes.
+
+`fltdec_test` (built with `mutos_c1`) reads C floating literals, one per
+line (a leading `-` negates), and prints the text and size `mutos_c1`
+writes for each - `0.1 double 1.00000000000000000e-01` - from
+`c1_fltdec.c`, the model of the real compiler's `printf("%.17e")` (its
+`libc.a`'s `ecvt()` of `libc.a`'s `atof()`). `make check-libcatof` runs
+it against `libc.a`'s own `ecvt()` under an 8086 emulator
+(`tests/mutos_as/float_coverage/libcatof.py ecvt`).

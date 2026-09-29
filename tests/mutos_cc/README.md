@@ -101,14 +101,13 @@ fuzzing tools for `mutos_c0`/`mutos_c1` (`make fuzz` from the repo root -
 see `fuzz/README.md`). It contains no `.c` files, so nothing that walks
 this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 
-`fltprobe/` is not part of the corpus either: nine floating-point probe
-programs whose goldens still have to be generated on real hardware, with
-its own `Makefile.mutos` (see `fltprobe/README.md`) - four that confirm the
-floating shapes `mutos_c1` takes from `libc.a`'s compiled C (they move into
-`08_float` once their goldens exist) and five for the shapes it still
-refuses. Unlike `fuzz/`, it does hold `.c` files: `gen_mutos.sh` and the
-Makefiles walk it like a category, and `run_goldens.sh` skips each file
-until its `.i.golden` exists.
+`fltprobe/` is not part of the corpus either: floating-point probe programs
+with their own `Makefile.mutos` and real-hardware goldens (see
+`fltprobe/README.md`) - a first round of nine, all byte-exact (they stay
+here rather than joining `08_float`), and a second round of four (`p6`..`p9`)
+whose goldens are still to be generated. Unlike `fuzz/`, it does hold `.c`
+files: `gen_mutos.sh` and the Makefiles walk it like a category, and
+`run_goldens.sh` skips each file until its `.i.golden` exists.
 
 ## `11_kernel` — real MUTOS kernel driver golden corpus
 
