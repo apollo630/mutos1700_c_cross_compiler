@@ -317,7 +317,20 @@ python3 libcatof.py atof 0.1 1.26765060022822940e+30   # the bytes, double and f
 python3 libcatof.py goldens [DIR ...]                  # every golden constant
 python3 libcatof.py check ../../../src/mutos_as/fltconst_test 3000
 python3 libcatof.py ops 2000                           # dmul/ddiv/dadd vs fltmodel.py
+python3 libcatof.py ecvt ../../../src/mutos_cc/fltdec_test 3000
 ```
+
+`ecvt` checks the compiler side: the real `c1` writes a floating constant
+with `printf("%.17e")` - `fltpr.o`'s `_pscien()` over `libc.a`'s own
+`ecvt.o` (v7's `cvt()`, 18 digits) - of `libc.a`'s `atof()`, so the image
+also links `ecvt.o` and `modf.o`, and the subcommand runs `_ecvt` on
+`_atof`'s result (the unmodified runtime, as the compiler is an ordinary
+program) for C literals of every shape, comparing text and size (`.float`
+when the double's low four bytes are zero) with `mutos_c1`'s model,
+`src/mutos_cc/c1_fltdec.c`, through `src/mutos_cc/fltdec_test`. That model
+reproduces `tests/mutos_cc/fltprobe/p4_const.s.golden`'s texts (`0.1` ->
+`1.00000000000000000e-01`, `1e30` -> `1.00000000000000005e+30`) and, at
+the last run, 28,188 random literals with no difference.
 
 `check` sends edge cases, seeded random texts and targeted ones
 (`%.17e` of exact floats and doubles over the whole range, zeros,

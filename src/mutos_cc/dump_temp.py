@@ -191,6 +191,10 @@ OPCODES = {
     # 01_wordcount.1.golden --
     203: ("DATA", []),                         # opens the initialized-data
                                                 # block NLABEL names
+    # "double gi = 2.5;" at file scope (fltprobe/p3_global.1.golden - v7's
+    # cinit(): rcexpr(block(INIT, type, tree))): the initializer's tree
+    # (an FCON), then INIT with the variable's own type, then EXPR
+    104: ("INIT", [N("type", decode_type)]),
 
     # -- expression-tree leaves/operators (treeout()) --
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name
@@ -415,6 +419,12 @@ class Reader:
         if self.eof():
             raise DecodeError("unexpected end of file reading a symbol")
         first = self.read_byte()
+        if first == 0:
+            # An empty name - a lone NUL (v7's outcode() 'S' of ""): the
+            # SYMDEF("") v7's cinit() writes after every 64 initializers
+            # of an external array (11_kernel/08_tty.1.golden); mutos_c0
+            # itself never writes one.
+            return ""
         if first != ord('_'):
             raise DecodeError(
                 "expected a symbol ('_'-prefixed) at offset %d, found "

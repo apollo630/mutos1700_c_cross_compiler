@@ -55,6 +55,7 @@
 
 #include "mutos_cc.h"
 #include "c1_stream.h"
+#include "c1_fltdec.h"
 #include "c1_gen.h"
 
 #define VALSTACK_MAX 64
@@ -509,18 +510,24 @@ typedef struct {
      * its width - OP_FSEL's two arguments */
     int       fdouble;   /* VK_FMEM only: 1 for a 'double' (8 bytes, the
      * runtime's "...d" entry points), 0 for a 'float' (4 bytes, "...s") */
-    int       fzero;     /* VK_FCON only: the constant is zero - it may
-     * not become a comparison's right operand (see gen_fp_compare()) */
-    int       fitof;     /* VK_FACC only: an int converted by OP_ITOF (not
-     * a constant - that is a VK_FCON), the one computed right operand a
-     * floating '+ - * /' takes - see gen_fp_binop() */
-    int       fnegd;     /* VK_FACC only: the result of a floating NEG -
-     * see gen_fp_neg() */
+    int       lpair;     /* VK_LONG only: the value is in SI(high):DX(low),
+     * not DI:SI - DI holds a register variable, and v7's register
+     * allocation takes the next pair (see emit_dxax_to_long()) */
+    int       fmode;     /* VK_FMEM only: where it is - FM_BP (a local or
+     * parameter, `offset` from BP), FM_SYM (a file-scope one, `sym`, plus
+     * `imm` bytes - an element or member), FM_LAB (a local static, label
+     * `offset`) or FM_IND (through the pointer `cl`) - see fp_lea() */
+    int       fonstk;    /* VK_FMEM only: a compound assignment's target
+     * whose value SEG_FLOADT already pushed onto the floating-point stack
+     * (see gen_fp_asop()) */
     int       cond_is_float; /* VK_COND only: a floating comparison, its
      * "call fcmp" / "sahf" already written; `flags_at` is GenState.ninsn
      * right after the "sahf" - the branch must follow with nothing in
      * between (see gen_fp_compare() and gen_cond_branch()) */
 } Val;
+
+/* VK_FMEM's `fmode` - see its comment in Val. */
+enum { FM_BP = 0, FM_SYM = 1, FM_LAB = 2, FM_IND = 3 };
 
 /* VK_ARGLIST's owned backing store - see its ValKind comment above.
  * Always heap-allocated (malloc'd once, at the first OP_COMMA or at
@@ -607,8 +614,23 @@ typedef enum {
     SEG_LOADIND, /* a dereference on top loaded into its own register */
     SEG_DEFPUSH, /* the pointer variable on top pushed onto the machine
                   * stack - see is_deferred_ptr() */
-    SEG_DEFPOP   /* ... and popped into BX, below the value on top: the
+    SEG_DEFPOP,  /* ... and popped into BX, below the value on top: the
                   * operand it points to becomes "(bx)" */
+    SEG_FDATA,   /* a floating constant's .data block, written now: a =
+                  * its index in the plan's `fc` table - see the
+                  * "Floating point" section's planner */
+    SEG_FLOAD,   /* the floating operand on top (a variable or a
+                  * constant) onto the floating-point stack now, ahead
+                  * of a computed operand that follows it */
+    SEG_FLOADT,  /* the same for a compound assignment's target, which
+                  * stays the target (Val's `fonstk`) */
+    SEG_FSWAP,   /* the next floating comparison's operands were
+                  * generated in exchanged order: mirror its relation */
+    SEG_FITOF,   /* the register the next int converted to floating is
+                  * loaded into: a = FREG_DI or FREG_AX - see fafter() */
+    SEG_FLEAF    /* a floating element or member at a constant offset of
+                  * a named object, its opcodes never streamed: `start` its
+                  * NAME, a the offset, b the type - see ffold() */
 } SegKind;
 typedef struct {
     SegKind kind;
@@ -624,6 +646,22 @@ typedef struct {
  * register-occupancy guard would let through anyway. */
 #define PLAN_MAX 256
 #define PLAN_SLOTS 128
+#define FCONST_MAX 32
+
+/* One floating constant of the expression being planned - see the
+ * "Floating point" section's planner: a written one (OP_FCON) or an int
+ * constant converted (OP_ITOF of an OP_CON), `off` the temp1 offset of
+ * that opcode, its c1 label and its ".float"/".double" text, decided
+ * when the expression is planned; `printed` once its .data block is
+ * out. */
+typedef struct {
+    long off;
+    int  label;
+    int  dbl;             /* 8 bytes (".double", loaded "fldd") */
+    int  printed;
+    char text[48];
+} FConst;
+
 typedef struct {
     int  active;
     int  n, cur;          /* steps, and the one being executed */
@@ -634,6 +672,10 @@ typedef struct {
     int  nslots;          /* slots handed out while building the plan */
     int  slot[PLAN_SLOTS];
     Seg  seg[PLAN_MAX];
+    int    nfc;           /* the expression's floating constants - kept
+                           * after the plan ends, until the next
+                           * expression is planned */
+    FConst fc[FCONST_MAX];
 } Plan;
 
 /* One pooled symbol name - see intern_name(). */
@@ -735,12 +777,13 @@ typedef struct {
     int  nfloat;               /* floating-point code was generated: the
                                  * file ends with ".globl fltused" (v7/cc/
                                  * c10.c's nfloat - see "Floating point") */
-    int  sfcon_seen;           /* the current expression has an int
-                                 * constant converted to floating (gen_
-                                 * itof()'s constant case) - a floating
-                                 * constant read after it is refused, see
-                                 * gen_fcon(); cleared at every
-                                 * expression's start (c1_generate()) */
+    int  fswap;                /* SEG_FSWAP was just run - see
+                                 * gen_fp_compare() */
+    int  itof_reg;             /* SEG_FITOF's register for the next
+                                 * OP_ITOF - see fitof_reg() */
+    long op_off;               /* temp1 offset of the opcode being
+                                 * handled - a floating constant finds its
+                                 * planned label by it (fc_find()) */
 } GenState;
 
 _Noreturn static void gen_fatal(const char *fmt, ...)
@@ -806,7 +849,8 @@ static void fatal_clobbered(void)
 
 /* What a consumer is prepared to receive beyond an ordinary value - see
  * Val's `bytev` field and VK_CHARX. */
-enum { POP_BYTE = 1, POP_CHARX = 2, POP_STRUCT = 4, POP_FLOAT = 8 };
+enum { POP_BYTE = 1, POP_CHARX = 2, POP_STRUCT = 4, POP_FLOAT = 8,
+       POP_LPAIR = 16 };
 
 /* Refuses a 'char' operand a consumer has not been written for (see
  * POP_BYTE/POP_CHARX): generating code from it with a word
@@ -882,6 +926,10 @@ static Val pop_val_ex(GenState *g, int allow)
     if (v.kind == VK_FIELD)
         gen_fatal("internal: a bit-field assignment target reached a "
                   "consumer other than OP_ASSIGN");
+    if (v.kind == VK_LONG && v.lpair && !(allow & POP_LPAIR))
+        gen_fatal("this use of a 'long' value in a function with a "
+                  "register variable in DI is not yet supported (only "
+                  "storing it) - see src/mutos_cc/README.md");
     return v;
 }
 
@@ -1564,6 +1612,26 @@ static const Insn SEQ_DXAX_TO_DISI[] = {
     { NULL,  0, {""},   {""} }
 };
 
+/* Moves DX(high):AX(low) into the register pair a 'long' value is
+ * handed on in - DI:SI (SEQ_DXAX_TO_DISI) or, while DI holds a register
+ * variable, SI(high):DX(low), the next pair v7's register allocation
+ * takes: fltprobe/p5_call.s.golden's "l = 7;" -> "mov ax,*7." / "cwd" /
+ * "mov si,dx" / "mov dx,ax" / "mov *-22.(bp),dx" / "mov *-24.(bp),si",
+ * and "call ftol" / "mov si,dx" / "mov dx,ax" the same way. Returns the
+ * VK_LONG. */
+static Val emit_dxax_to_long(GenState *g)
+{
+    Val v = val_long();
+    if (g->reserved & RB_DI) {
+        ins2(g, "mov", o_reg("si"), o_reg("dx"));
+        ins2(g, "mov", o_reg("dx"), o_reg("ax"));
+        v.lpair = 1;
+    } else {
+        put_seq(g, SEQ_DXAX_TO_DISI);
+    }
+    return v;
+}
+
 /* The reverse, for a 'long'-returning function's own "return" (OP_
  * RFORCE's TY_LONG case): DI(high):SI(low) -> AX(low):DX(high). */
 static const Insn SEQ_DISI_TO_AXDX[] = {
@@ -1928,10 +1996,19 @@ static Val materialize(GenState *g, Val v)
 {
     if (v.kind != VK_COND)
         return v;
-    if (v.cond_is_float)
-        gen_fatal("a 'float'/'double' comparison used as a value (not as an "
-                  "'if'/'while'/'for' condition) is not yet supported - see "
-                  "src/mutos_cc/README.md");
+    if (v.cond_is_float) {
+        /* The compare is out ("call fcmp" / "sahf" - gen_fp_compare());
+         * the 0/1 is the int shape after it: p1_compare's "r + (d < e)"
+         * -> "sahf" / "blt L10007" / "mov di,*0." / "jmp L10008" /
+         * "L10007:mov di,*1." / "L10008:". */
+        if (v.flags_at != g->ninsn)
+            gen_fatal("internal: code between a floating comparison and its "
+                      "branch");
+        int ltrue = g->next_lab++;
+        ins1(g, cond_true_mnem(v.true_op), o_lab(ltrue));
+        (void)gen_logval(g, ltrue);
+        return val_reg("di");
+    }
     materialize_cond(g, v);
     return val_reg("di");
 }
@@ -2698,6 +2775,18 @@ static int push_call_arg(GenState *g, Val v)
          * address takes the same path for the same reason (not
          * itself shown by a golden; before this, it was pushed as
          * "push #_f", which the 8086 cannot encode). */
+        if (g->reserved & RB_DI) {
+            /* DI holds a register variable: through SI - fltprobe/
+             * p5_call.s.golden's "fi(d + e, 3)" -> "mov si,*3." / "push
+             * si". */
+            if (v.kind != VK_IMM)
+                gen_fatal("pushing this address argument in a function with "
+                          "a register variable in DI is not yet supported - "
+                          "see src/mutos_cc/README.md");
+            ins2(g, "mov", o_reg("si"), o_val(v));
+            ins1(g, "push", o_reg("si"));
+            return 1;
+        }
         load_into_di(g, v);
         ins1(g, "push", o_reg("di"));
         if (v.kind == VK_FUNCADDR)
@@ -4036,13 +4125,24 @@ static void plan_call(Plan *p, const ETree *t, int i)
         plan_value(p, t, args[j]);
         plan_op(p, SEG_PUSHARG, words, 0, 0);
     }
-    plan_op(p, SEG_CALL, words, n->type, 0);
+    /* `start`: just past the CALL's own opcode - where its consumer is
+     * read (a floating result - see SEG_CALL) */
+    plan_add(p, (Seg){ SEG_CALL, n->end, 0, words, n->type, 0 });
 }
+
+static void plan_fvalue(Plan *p, const ETree *t, int i); /* see        */
+static int is_fnode(const ETree *t, int i);             /* "Floating  */
+static Val val_facc(void);                              /* point"     */
+static void gen_ltof(GenState *g, int type);
 
 /* Node i's value onto the value stack. */
 static void plan_value(Plan *p, const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
+    if (is_fnode(t, i)) {
+        plan_fvalue(p, t, i);
+        return;
+    }
     if (!n->planned) {
         plan_range(p, n->start, n->end);
         return;
@@ -4160,7 +4260,7 @@ static void plan_value(Plan *p, const ETree *t, int i)
  * whole with v7's cbranch(), CBRANCH included; any other expression up
  * to its terminator, which is then read as usual. temp1's position is
  * left unchanged either way. */
-static void float_order_check(const ETree *t); /* see "Floating point" */
+static void fplan_constants(GenState *g, FILE *t1, const ETree *t);
 
 static int plan_expression(GenState *g, FILE *t1)
 {
@@ -4170,45 +4270,49 @@ static int plan_expression(GenState *g, FILE *t1)
     int op = c1_read_op(t1, "temp1");
     if (fseek(t1, pos, SEEK_SET) != 0)
         gen_fatal("internal: temp1 is not seekable (fseek failed)");
+    g->plan.nfc = 0;
     if (op != OP_NAME && op != OP_CON && op != OP_LCON && op != OP_FCON)
         return 0;
+    if (op == OP_FCON) {
+        /* A file-scope initializer, "FCON INIT" - not an expression (see
+         * gen_fcon()). */
+        (void)c1_read_op(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        free(c1_read_sym(t1, "temp1"));
+        int next = c1_read_op(t1, "temp1");
+        if (fseek(t1, pos, SEEK_SET) != 0)
+            gen_fatal("internal: temp1 is not seekable (fseek failed)");
+        if (next == OP_INIT)
+            return 0;
+    }
 
     ETree t = { NULL, 0, 0 };
     Term term = { 0, 0, 0, 0, 0 };
     int root = prescan_expr(t1, &t, &term);
-    /* An expression with a floating value in it is always streamed as
-     * it comes: every order decision below is made for integer code, and
-     * the floating handlers refuse any shape whose order would matter
-     * (see "Floating point"). A conditionally evaluated operand in one
-     * ("d = (i && j);", "d = i ? j : k;", "d = (i, j);") only a plan can
-     * generate - refused here, as no golden shows it with floating code
-     * around it. */
-    int has_float = 0, has_control = 0;
-    for (int i = 0; root >= 0 && i < t.n; i++) {
-        if (t.v[i].type == TY_FLOAT || t.v[i].type == TY_DOUBLE)
+    /* An expression with a floating value in it is always planned: its
+     * operands' order is v7's, decided on the tree (see "Floating
+     * point"), never temp1's postfix order - so an expression that cannot
+     * be pre-scanned is refused. Its constants get their labels now, as
+     * v7's c1 numbers them while reading the tree. */
+    int has_float = (op == OP_FCON);
+    for (int i = 0; i < t.n; i++)       /* all it indexed, even if it stopped */
+        if (is_fnode(&t, i))
             has_float = 1;
-        if (is_control(t.v[i].op) || t.v[i].op == OP_COLON ||
-            is_logic(&t, i))
-            has_control = 1;
-    }
-    if (has_float) {
-        if (has_control) {
-            free(t.v);
-            gen_fatal("'&&', '||', '?:' or ',' in an expression with a "
-                      "'float'/'double' value is not yet supported - see "
-                      "src/mutos_cc/README.md");
-        }
-        float_order_check(&t);
+    if (has_float && root < 0) {
         free(t.v);
-        return 0;
+        gen_fatal("a 'float'/'double' expression with an operator mutos_c1 "
+                  "cannot pre-scan is not yet supported - see "
+                  "src/mutos_cc/README.md");
     }
+    if (has_float)
+        fplan_constants(g, t1, &t);
     /* Postfix order: every node's operands come before it, so one
      * forward pass sees a node's children fully marked. */
     for (int i = 0; root >= 0 && i < t.n; i++) {
         ENode *n = &t.v[i];
         n->order = eval_order(&t, i);
         n->planned = n->order != ORD_POSTFIX || is_control(n->op) ||
-                     call_needs_plan(&t, i);
+                     call_needs_plan(&t, i) || is_fnode(&t, i);
         for (int k = 0; k < 2; k++)
             if (n->kid[k] >= 0 && t.v[n->kid[k]].planned)
                 n->planned = 1;
@@ -4413,25 +4517,52 @@ static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
         region_close(g, &p->slot[s->c]);
         return;
     case SEG_PUSHARG:
-        /* A char argument is widened as it is pushed - see
-         * push_call_arg(). */
-        p->slot[s->a] += push_call_arg(g, pop_val_ex(g, POP_BYTE | POP_CHARX));
+        /* A char argument is widened as it is pushed, a floating one
+         * pushed as a double - see push_call_arg(). */
+        p->slot[s->a] += push_call_arg(g, pop_val_ex(g, POP_BYTE | POP_CHARX |
+                                                        POP_FLOAT));
         return;
     case SEG_CALL: {
         /* OP_CALL's own handler, for a call whose arguments a plan
          * already pushed - see plan_call(). */
-        if (!ty_is_word(s->b) && s->b != TY_LONG)
+        int fres = (s->b == TY_DOUBLE || s->b == TY_FLOAT);
+        if (!ty_is_word(s->b) && s->b != TY_LONG && !fres)
             gen_fatal("a call returning type %d is not yet supported "
-                      "(only a function returning an int, a long or a "
-                      "pointer is covered so far)", s->b);
+                      "(only a function returning an int, a long, a float, "
+                      "a double or a pointer is covered so far)", s->b);
         Val callee = pop_val(g);
-        push_val(g, finish_call(g, callee, p->slot[s->a], s->b == TY_LONG));
+        Val res = finish_call(g, callee, p->slot[s->a], s->b == TY_LONG);
+        if (fres) {
+            /* The callee left its value in dmath.o's "fac" and AX
+             * pointing at it (gen_fp_rforce()): loaded from there, "call
+             * fldd" - a float result too (p5_call's "e = ff(d)"). Unused,
+             * it stays in "fac": p5_call's "tw(d);" is just "call _tw" /
+             * "add sp,*8.". The CALL's consumer is read where its opcode
+             * stands (`start`). */
+            long pos = ftell(t1);
+            if (fseek(t1, s->start, SEEK_SET) != 0)
+                gen_fatal("internal: temp1 is not seekable (fseek failed)");
+            Consumer c = scan_consumer(t1);
+            if (fseek(t1, pos, SEEK_SET) != 0)
+                gen_fatal("internal: temp1 is not seekable (fseek failed)");
+            if (c.op == OP_EXPR) {
+                res.kind = VK_FDONE;
+            } else {
+                ins1(g, "call", o_sym("fldd"));
+                res = val_facc();
+            }
+            g->nfloat = 1;
+        }
+        push_val(g, res);
         return;
     }
     default:
         gen_fatal("internal: unknown evaluation-order step %d", (int)s->kind);
     }
 }
+
+static void fplan_step(GenState *g, FILE *t1, const Seg *s); /* "Floating
+                                                   * point" */
 
 /* Called at the top of the dispatch loop: while a plan is active, runs
  * the non-range steps that are due and positions temp1 at the next
@@ -4469,6 +4600,13 @@ static void plan_step(GenState *g, FILE *t1)
             case SEG_DEFPUSH: plan_defpush(g); break;
             default:          plan_defpop(g);  break;
             }
+            p->cur++;
+            continue;
+        }
+        if (s->kind == SEG_FDATA || s->kind == SEG_FLOAD ||
+            s->kind == SEG_FLOADT || s->kind == SEG_FSWAP ||
+            s->kind == SEG_FITOF || s->kind == SEG_FLEAF) {
+            fplan_step(g, t1, s);        /* see "Floating point" */
             p->cur++;
             continue;
         }
@@ -4587,7 +4725,7 @@ static void gen_strings(GenState *g, FILE *t2)
 }
 
 /* -------------------------------------------------------------- */
-/* Floating point (tests/mutos_cc/08_float).
+/* Floating point (tests/mutos_cc/08_float, tests/mutos_cc/fltprobe).
  *
  * The 8086 targets MUTOS 1700 ran on have no FPU: the real compiler
  * does all floating arithmetic by calling the software floating-point
@@ -4611,238 +4749,160 @@ static void gen_strings(GenState *g, FILE *t2)
  *
  * and a file with any of it ends ".globl<TAB>fltused" ahead of the final
  * ".data" (v7/cc/c10.c's nfloat: the reference that pulls the floating
- * part of printf in). So: the left operand (or an assignment's right-hand
- * side) is pushed onto that stack - "flds"/"fldd" for a float/double
- * variable, "flds" for a constant, "itof" for an int (in AX) - an operator
- * then combines the top with its right operand in memory ("fadds"/
- * "fmuls"/"fdivs" for a float operand or a constant), an assignment pops
- * the top into its target ("fstsp"/"fstdp"), and "ftoi"/"ftol" pop it
- * into AX / DX:AX. The runtime's other entry points follow the same
- * naming - singles.o has fadds, fsubs, fmuls, fdivs; doubles.o faddd,
- * fsubd, fmuld, fdivd, a double right operand - so '-' and a double
- * right operand use those, in the same shape (no golden has either).
+ * part of printf in). An operand is pushed onto that stack - "flds"/
+ * "fldd" for a float/double in memory, "itof" for an int (in AX) - an
+ * operator combines the top with an operand in memory ("fadds", "faddd",
+ * ...), an assignment pops the top into its target ("fstsp"/"fstdp"),
+ * and "ftoi"/"ftol" pop it into AX / DX:AX.
  *
- * The real compiler's own output for more shapes is in libc.a itself:
- * atof.o, ecvt.o, gcvt.o and fltpr.o are v7's C sources compiled by the
- * real MUTOS 1700 compiler (with -O - libc was optimized: atof.o shares
- * the "fstdp" tail of an if/else, c2's cross-jumping), and their code
- * shows the shapes below - taken only where the optimizer cannot have
- * changed them (see docs/DEVLOG.md's "Floating shapes from libc.a's
- * compiled C"):
+ * Nine probe programs (tests/mutos_cc/fltprobe/, real-hardware goldens
+ * 2026-09-29) settled the rest, after libc.a's own compiled C (atof.o,
+ * ecvt.o, gcvt.o, fltpr.o - optimized, so only a first reading) had
+ * shown most of it (docs/DEVLOG.md's "Floating shapes from libc.a's
+ * compiled C" and "The fltprobe goldens"). The real compiler is v7's c1
+ * with the PDP-11 floating code replaced by calls into that runtime -
+ * its trees, optim(), acommute() and degree() unchanged, so the ORDER in
+ * which it evaluates operands is v7's, decided on the whole tree before
+ * any code. mutos_c1 streams temp1, so every expression with a floating
+ * node in it is planned (see "Evaluation order"): plan_fvalue() below
+ * rebuilds v7's order, and the ordinary handlers generate each node
+ * with its operands arriving in that order. The rules, each confirmed
+ * by the goldens:
  *
- * - A comparison loads both operands, calls stkmath.o's "fcmp" (pops
- *   both, sets AH from their difference - SF/ZF, OF clear) and moves AH
- *   into the flags; the branch is the ordinary signed one: atof.o's "fl
- *   < big" -> "lea ax,fl / call fldd / lea ax,big / call fldd / call
- *   fcmp / sahf / bge". v7's c1 exchanges the operands first by degree
- *   (optim(), as for an int comparison), so a variable compared with a
- *   constant is loaded second: ecvt.o's "arg < 0" -> "lea ax,<zero> /
- *   call flds / lea ax,arg / call fldd / call fcmp / sahf / ble" (0 >
- *   arg). See gen_fp_compare().
- * - An int constant becomes a floating constant, like a written one: v7
- *   c1's unoptim() folds ITOF(CON) (SFCON) - atof.o's "fl = 0", "10*fl",
- *   ecvt.o's "fi/10", "arg *= 10", "< 1". Its text is "%.17e" of the
- *   value: atof.o's and ecvt.o's zeros are all "bc a2 31 00", exactly
- *   what the real assembler makes of ".float 0.00000000000000000e+00"
- *   (tests/mutos_as/float_coverage/fltzero.o.golden). See gen_itof().
- * - A computed left operand combined with an int converted to floating
- *   is a stack-with-stack operation: atof.o's "10*fl + (c-'0')" ->
- *   "lea ax,<10.0> / call flds / lea ax,fl / call fmuld / (c - '0') /
- *   call itof / call fadd" - see gen_fp_binop().
- * - Unary minus is stkmath.o's "fneg" on the stack top: atof.o's "fl =
- *   -fl", ecvt.o's "arg = -arg" (gen_fp_neg()).
- * - "a *= b" loads the RIGHT operand and multiplies by the target in
- *   memory ("flexp *= exp5" -> "fldd exp5 / fmuld flexp / fstdp flexp",
- *   "arg *= 10" -> "flds <10.0> / fmuld arg / fstdp arg"); "a /= b"
- *   loads the target ("fl /= flexp" -> "fldd fl / fdivd flexp / fstdp
- *   fl") - see gen_fp_asop().
- * - An assignment whose value is used keeps it: "fstd" (no pop) - ecvt.o's
- *   "(fj = arg*10) < 1" -> "... lea ax,fj / call fstd / ... call fcmp".
- * - A double parameter is 8 bytes of the frame (ecvt.o's "double arg"
- *   at 4(bp), the next parameter at 12(bp)); a double argument is loaded
- *   and stored into 8 bytes of machine stack: "lea ax,4(bp) / call fldd
- *   / sub sp,*8. / mov ax,sp / call fstdp" (push_fp_arg()); a function
- *   returning a double leaves it in dmath.o's "fac" with AX pointing at
- *   it - atof.o's "return(fl)" -> "lea ax,fl / call fldd / lea ax,fac /
- *   call fstdp / lea ax,fac" - and its caller loads it from there: "call
- *   _ldexp / add sp,*10. / call fldd" (gen_fp_rforce(), OP_CALL).
+ * - degree() (v7/cc/c11.c): a leaf is 0, a FLOAT (or char) leaf 1, a
+ *   constant -3 - but a FLOATING constant is 1: the MUTOS compiler keeps
+ *   one that is exactly a single-precision value as a 4-byte ".float",
+ *   typed FLOAT, and degree() gives a FLOAT leaf 1. "a < 1.5" (a float)
+ *   loads 1.5 first (03_fltcmp), "e + 10" loads 10.0 first and adds e
+ *   from memory (04_fltconst), "1.5 < i" / "i < 1.5" keep their order
+ *   (p1_compare: the converted int has degree 1 too). A converted int,
+ *   a negation, a conversion: max(1, degree(operand)); a '+'/'*' chain
+ *   acommute()'s; '-' and '/' optim()'s (with '/' two more); a call 10.
+ *   See fdeg().
+ * - A relational exchanges its operands (and mirrors itself) when
+ *   degree(left) < degree(right), or when they are equal and only the
+ *   left is a NAME (optim()). See plan_fvalue().
+ * - A '+'/'*' chain is acommute()'s: its terms in order of decreasing
+ *   degree, equal ones as written, rebuilt left to right - "(int)(gd +
+ *   gi + ga[2] + arr[0] + gs.y)" starts with the float gs.y (p3_global),
+ *   "(d + e) * (i * j)" with i * j (p2_arith: an int product has degree
+ *   2). See plan_fchain().
+ * - Every operator loads its left operand first. A right operand in
+ *   memory is combined from there ("lea ax,<it>" / "call fadd<s|d>");
+ *   a computed one is computed onto the stack after the left, and the
+ *   two are combined by the stack-with-stack entry point, "call fadd"
+ *   (stkmath.o): "d - i" -> "fldd d / itof / fsub", "b * (a + e)" ->
+ *   "flds b / flds a / faddd e / fmul", "tw(d) + tw(e)" -> ... "fadd"
+ *   (p2_arith, p5_call). No "reversed" entry point (singles.o's fsubrs,
+ *   ...) is used. A comparison is "call fcmp" (pops both, flags of left
+ *   - right in AH) / "sahf" and a signed branch; a zero is compared like
+ *   any constant, never tested (p1_compare).
+ * - A floating constant is written in .data under a c1 label where v7's
+ *   cexpr() prints it: when the operator it is a direct operand of is
+ *   matched - before that operator's code, so ahead of a computed left
+ *   operand: "(d + e) * 2.0" -> ".data / L10004: .float 2.0 / .text /
+ *   fldd d / faddd e / lea ax,L10004 / fmuls" (p2_arith). Its label is
+ *   taken as v7's c1 reads the tree: every written constant of the
+ *   expression in order, then every int constant converted (unoptim()'s
+ *   ITOF(CON) fold, after the reading) - "2 * 1.5" -> L10007 is 1.5,
+ *   L10008 is 2.0, printed 2.0 first (p4_const). See fplan_constants().
+ *   A negated constant is folded ("-1.5" -> ".float -1.50...", no
+ *   "fneg" - 04_fltconst), "-(-e)" is e (p2_arith). The text is "%.17e"
+ *   of the value, which the real compiler's printf writes digit for
+ *   digit the same for a value exactly representable as a float (see
+ *   fcon_render()); a constant that is not one is 8 bytes, ".double"
+ *   (p4_const), with digits from the MUTOS ecvt() that are not
+ *   reproduced here - refused.
+ * - "a += b", "-=", "/=" load the target and combine the right operand
+ *   ("fldd d / faddd e / fstdp d"; a computed one: "fldd d / fldd e /
+ *   faddd e / fdiv / fstdp d"); "a *= b" loads the RIGHT operand and
+ *   multiplies the target in from memory ("fldd e / fmuld d / fstdp d",
+ *   "itof / fmuld d") - v7's optim() puts ASTIMES among the operators
+ *   whose degree it raises, like TIMES. A used value is kept on the
+ *   stack: "fstd" (no pop). See gen_fp_asop().
+ * - An int converted is computed into AX: "mov di,i / mov ax,di / call
+ *   itof" for a variable (through SI when DI holds a register variable:
+ *   "mov si,di / mov ax,si"), "mov ax,c / add ax,*-48." for "c - '0'"
+ *   (v7's optim() turns "x - 48" into "x + -48"), "mov ax,i / imul j"
+ *   for a product, "movb ax,c / cbw" for a char. See gen_itof().
+ * - A call returning a double or a float leaves the value in dmath.o's
+ *   "fac" (the callee: "lea ax,fac / call fstdp / lea ax,fac") and the
+ *   caller loads it, "call fldd" - or, unused, leaves it there. A double
+ *   argument is "sub sp,*8" (no decimal point) / "mov ax,sp" / "call
+ *   fstdp" (push_fp_arg()).
  *
- * A floating constant is written where it is read - the value it stands
- * for rendered "%.17e" as a ".float" in .data under the next c1 label
- * (v7's c1 numbers FCONs from its own isn, the counter behind L10000+)
- * - which is where v7/cc/c10.c's cexpr() prints it for a constant
- * operand of an operator whose other operand has no code yet (the
- * goldens' shapes). Only a constant that is exactly a single-precision
- * value takes that form: the real compiler's own output in libc.a keeps
- * 10.0 and 1.0 as 4-byte data but .03 as 8 bytes (ecvt.o's data
- * segment, "faddd" on it), and that 8-byte constant's TEXT - the real
- * compiler's own printf rendering of an inexact value - is not known, so
- * a constant that is not a float is refused (see fcon_render()).
- *
- * Refused explicitly: any other computed right operand, a constant
- * right operand of an already computed value (v7 prints its .data block
- * before the left operand's code, which here has already been written),
- * a zero compared as the right operand (v7's cbranch() tests one with
- * "tst" - stkmath.o has "ftest", no evidence of its use) - so also a
- * float variable or a computed value compared with zero - a comparison
- * used as a value, a constant converted to an integer, an int already
- * in AX (a call's result, a product) or a register variable converted
- * to floating, a long converted to floating (LTOF - the argument
- * registers of lconvert.o's ltof are unconfirmed), an unused computed
- * value, '+=', '-=', '*=' or '/=' by a computed value (an int variable
- * included) and any other floating compound assignment, and
- * every other consumer of a floating value (pop_val_ex()). Evaluation-
- * order plans never touch a floating expression (plan_expression(),
- * which also checks the one stack-with-stack shape - float_order_check()). */
+ * Refused explicitly: a constant that is not exactly a float (above),
+ * '%', '%=', a zero added or subtracted (v7's acommute() may toss a
+ * "+0"), a constant converted to an integer, and every node the planner
+ * has no degree for (fdeg()). */
 
-/* Renders FCON's source text `text` as a ".float" operand into `out`, or
- * returns 0 and sets `*why` when the constant is outside what is
- * accepted: a value exactly representable as a single-precision float
- * (a 24-bit mantissa - MUTOS's float, like its double, keeps the
- * exponent in its own highest byte with v7's excess-128 "0.1xxx"
- * normalization: atof.o's 2**56 is the bytes 00 00 00 b9, 10.0 is
- * 00 00 20 84), that the literal denotes exactly, below 2**24, with at
- * most 18 significant digits - or zero. Such a value's "%.17e" is its
- * exact decimal expansion, which the real compiler's own printf
- * (libc.a's ecvt(), v7's digit-by-digit algorithm - exact for these
- * values) writes the same way; "e+00"/"e-01" - a sign and two exponent
- * digits - is fltpr.o's _pscien(). A zero is "0.00000000000000000e+00":
- * the bytes the real assembler makes of exactly that text are libc.a's
- * zero constants (see this section's header). `*is_zero` is set for a
- * zero. */
-static int fcon_render(const char *text, char *out, size_t n, const char **why,
-                       int *is_zero)
+/* The text and size of floating literal `text` (negated when `negate`),
+ * as the real compiler writes it - libc.a's ecvt() of libc.a's atof(),
+ * see c1_fldec.h/c1_fltdec.c - into out[0..n), *dbl set for an 8-byte
+ * ".double"; refused when libc.a's atof() would not give its value. */
+static void fconst_text(const char *text, int negate, char *out, size_t n,
+                        int *dbl, int *is_zero)
 {
-    /* The literal's exact decimal value: its significant digits and
-     * the power of ten of the last one. */
-    char dig[64];
-    int nd = 0, exp10 = 0, seen_dot = 0, too_many = 0;
-    const char *s = text;
-    *is_zero = 0;
-    for (; *s && *s != 'e' && *s != 'E'; s++) {
-        if (*s == '.') {
-            seen_dot = 1;
-            continue;
-        }
-        if (*s < '0' || *s > '9') {
-            *why = "malformed floating constant";
-            return 0;
-        }
-        if (nd == 0 && *s == '0') {
-            if (seen_dot)
-                exp10--;
-            continue;
-        }
-        if (nd < (int)sizeof dig - 1)
-            dig[nd++] = *s;
-        else
-            too_many = 1;
-        if (seen_dot)
-            exp10--;
-    }
-    if (*s == 'e' || *s == 'E')
-        exp10 += atoi(s + 1);
-    while (nd > 0 && dig[nd - 1] == '0') {
-        nd--;
-        exp10++;
-    }
-    dig[nd] = '\0';
-
-    double v = strtod(text, NULL);
-    if (nd == 0) {
-        /* Every digit is zero: the value is exactly zero, whatever the
-         * exponent - v7 c1's getree() takes atof() of the text. */
-        snprintf(out, n, "%.17e", 0.0);
-        *is_zero = 1;
-        return 1;
-    }
-    if (!(v > 0.0)) {
-        *why = "malformed floating constant";
-        return 0;
-    }
-    if (too_many || nd > 18) {
-        *why = "a floating constant with more than 18 significant digits is "
-               "not yet supported";
-        return 0;
-    }
-    if (!(v < 16777216.0)) {
-        *why = "a floating constant of 2**24 or more is not yet supported "
-               "(the real compiler's printf renders large integer parts "
-               "through inexact divisions - no golden confirms the digits)";
-        return 0;
-    }
-    /* A 24-bit mantissa: v * 2**p is an integer below 2**24 for the
-     * smallest such p (at most 64 - a smaller value has more than 18
-     * digits anyway, and stays well inside the excess-128 exponent). */
-    int p = 0;
-    double scaled = v;
-    while (scaled < 16777216.0 && scaled != (double)(int64_t)scaled) {
-        scaled *= 2.0;
-        p++;
-    }
-    if (scaled >= 16777216.0 || p > 64) {
-        *why = "a floating constant that is not exactly a single-precision "
-               "value is not yet supported (the real compiler keeps such a "
-               "constant in 8 bytes - libc.a's ecvt.o - but the text it "
-               "writes for one is not known)";
-        return 0;
-    }
-    /* Does the literal denote v exactly? v's own exact decimal expansion
-     * has p digits after the point ("%.*f" prints it exactly). */
-    char exact[128];
-    snprintf(exact, sizeof exact, "%.*f", p, v);
-    char edig[128];
-    int ne = 0, eexp = 0, edot = 0;
-    for (const char *q = exact; *q; q++) {
-        if (*q == '.') {
-            edot = 1;
-            continue;
-        }
-        if (ne == 0 && *q == '0') {
-            if (edot)
-                eexp--;
-            continue;
-        }
-        edig[ne++] = *q;
-        if (edot)
-            eexp--;
-    }
-    while (ne > 0 && edig[ne - 1] == '0') {
-        ne--;
-        eexp++;
-    }
-    edig[ne] = '\0';
-    if (ne != nd || eexp != exp10 || strcmp(edig, dig) != 0) {
-        *why = "a floating constant that is not exactly a single-precision "
-               "value is not yet supported (the real compiler keeps such a "
-               "constant in 8 bytes - libc.a's ecvt.o - but the text it "
-               "writes for one is not known)";
-        return 0;
-    }
-    snprintf(out, n, "%.17e", v);
-    return 1;
+    int is_float;
+    FdecStatus st = fdec_render(text, negate, out, n, &is_float, is_zero);
+    if (st == FDEC_SYNTAX)
+        gen_fatal("malformed floating constant %s", text);
+    if (st != FDEC_OK)
+        gen_fatal("floating constant %s: %s - see src/mutos_cc/README.md",
+                  text, st == FDEC_RANGE
+                        ? "outside the range libc.a's atof() converts "
+                          "(the real compiler's own conversion would overflow "
+                          "or wrap its exponent)"
+                        : "its value is not known exactly (libc.a's atof() "
+                          "gives up on it in a way no golden shows)");
+    *dbl = !is_float;
 }
 
-/* Writes a floating constant's .data block - ".data" / "L<n>:<TAB>.float
- * <text>" / ".text" - under the next c1 label, and returns the label. */
-static int put_float_data(GenState *g, const char *text)
+/* The planned constant with temp1 offset `off` (see fplan_constants()),
+ * or NULL. */
+static FConst *fc_find(GenState *g, long off)
 {
-    int lab = g->next_lab++;
+    for (int i = 0; i < g->plan.nfc; i++)
+        if (g->plan.fc[i].off == off)
+            return &g->plan.fc[i];
+    return NULL;
+}
+
+/* Writes constant `c`'s .data block - ".data" / "L<n>:<TAB>.float
+ * <text>" / ".text" - unless it is out already. */
+static void put_float_data(GenState *g, FConst *c)
+{
+    if (c->printed)
+        return;
     ins0(g, ".data");
-    put_label(g, lab);
-    put_line(g, "\t.float %s", text);
+    put_label(g, c->label);
+    put_line(g, "\t.%s %s", c->dbl ? "double" : "float", c->text);
     ins0(g, ".text");
+    c->printed = 1;
     g->nfloat = 1;
-    return lab;
 }
 
-/* OP_FCON: the constant's .data block, written now - see this section's
- * header - and a VK_FCON naming it. A written constant read after an int
- * constant converted to floating in the same expression (gen_itof()) is
- * refused: v7's c1 numbers a written constant as it reads the tree and a
- * converted one only later, in optim() - how the MUTOS compiler numbers
- * the converted one is not known, and here the two would get their
- * labels in the other order. */
+/* A planned constant's value: a VK_FCON naming its label. Its .data
+ * block is normally out already (SEG_FDATA, where v7 prints it); a
+ * constant with no step of its own is printed where it is read. */
+static Val fconst_val(GenState *g, FConst *c)
+{
+    put_float_data(g, c);
+    Val v = {0};
+    v.kind = VK_FCON;
+    v.offset = c->label;
+    v.fdouble = c->dbl;
+    return v;
+}
+
+/* OP_FCON: the constant planned for this opcode (fplan_constants()) -
+ * or a file-scope variable's initializer, "FCON INIT(type) EXPR" after
+ * its "DATA NLABEL": fltprobe/p3_global.s.golden's ".data" /
+ * "_gi:<TAB>.double<TAB>2.50000000000000000e+00", "_gfi:<TAB>.float<TAB>
+ * 1.50000000000000000e+00" for a float (a tab after the directive,
+ * unlike a code constant's space). v7's getree() takes a label for every
+ * FCON it reads, an initializer's too, though none is written:
+ * p3_global's first code constant is L10002. */
 static void gen_fcon(GenState *g, FILE *t1)
 {
     int type = c1_read_num(t1, "temp1");
@@ -4850,37 +4910,77 @@ static void gen_fcon(GenState *g, FILE *t1)
     if (type != TY_DOUBLE)
         gen_fatal("FCON of type %d not yet supported (mutos_c0 writes every "
                   "floating constant as a double)", type);
-    if (g->sfcon_seen)
-        gen_fatal("a floating constant after an int constant converted to "
-                  "'float'/'double' in the same expression is not yet "
-                  "supported (the real compiler's label order for the two "
-                  "is not known) - see src/mutos_cc/README.md");
-    char buf[64];
-    const char *why = NULL;
-    int is_zero = 0;
-    if (!fcon_render(text, buf, sizeof buf, &why, &is_zero))
-        gen_fatal("floating constant %s: %s - see src/mutos_cc/README.md",
-                  text, why);
+    FConst *c = fc_find(g, g->op_off);
+    if (c) {
+        free(text);
+        push_val(g, fconst_val(g, c));
+        return;
+    }
+    long pos = ftell(t1);
+    int next = c1_read_op(t1, "temp1");
+    if (next != OP_INIT)
+        gen_fatal("internal: a floating constant outside a planned "
+                  "expression");
+    int itype = c1_read_num(t1, "temp1");
+    (void)pos;
+    if (itype != TY_DOUBLE && itype != TY_FLOAT)
+        gen_fatal("INIT of type %d not yet supported", itype);
+    char buf[48];
+    int is_zero = 0, dbl = 0;
+    fconst_text(text, 0, buf, sizeof buf, &dbl, &is_zero);
     free(text);
-    Val v = {0};
-    v.kind = VK_FCON;
-    v.offset = put_float_data(g, buf);
-    v.fzero = is_zero;
-    push_val(g, v);
+    if (itype == TY_FLOAT && dbl)
+        gen_fatal("a 'float' initialized with a constant that is not exactly "
+                  "a float is not yet supported - see src/mutos_cc/README.md");
+    if (itype == TY_DOUBLE && dbl)
+        gen_fatal("a 'double' initialized with a constant that is not exactly "
+                  "a float is not yet supported (no golden shows the "
+                  "initializer's text then) - see src/mutos_cc/README.md");
+    g->next_lab++;
+    put_line(g, "\t.%s\t%s", itype == TY_DOUBLE ? "double" : "float", buf);
 }
 
-/* The address of a floating operand in memory, for "lea ax,<it>". */
-static Opnd fp_addr(Val v)
+/* "lea ax,<address of v>" for a floating operand in memory: a constant's
+ * label, a local's "*-12.(bp)", a file-scope one's symbol - "_gd", an
+ * element or member "16.+_ga", "8.+_gs" - a local static's label "L4",
+ * or, through a pointer, the pointer loaded into DI first and "(di)"
+ * (fltprobe/p3_global.s.golden's every form). */
+static void fp_lea(GenState *g, Val v)
 {
-    return v.kind == VK_FCON ? o_lab(v.offset) : o_mem(v.offset);
+    if (v.kind == VK_FCON) {
+        ins2(g, "lea", o_reg("ax"), o_lab(v.offset));
+        return;
+    }
+    if (v.kind != VK_FMEM)
+        gen_fatal("internal: a floating operand with no address");
+    switch (v.fmode) {
+    case FM_BP:
+        ins2(g, "lea", o_reg("ax"), o_mem(v.offset));
+        return;
+    case FM_SYM:
+        ins2(g, "lea", o_reg("ax"),
+             v.imm ? o_fmt("%ld.+%s", v.imm, v.sym) : o_sym(v.sym));
+        return;
+    case FM_LAB:
+        ins2(g, "lea", o_reg("ax"), o_lab(v.offset));
+        return;
+    default:
+        if (g->reserved & RB_DI)
+            gen_fatal("a 'float'/'double' read through a pointer while DI "
+                      "holds a register variable is not yet supported - see "
+                      "src/mutos_cc/README.md");
+        load_into_di(g, val_from_simple(v.cl));
+        ins2(g, "lea", o_reg("ax"), o_sym("(di)"));
+        return;
+    }
 }
 
 /* The precision suffix of the runtime entry point that reads `v` from
- * memory: 'd' for a double variable, 's' for a float one or a constant
- * (always a single-precision ".float" - see gen_fcon()). */
+ * memory: 'd' for a double (a variable, or an 8-byte constant), 's' for
+ * a float or a ".float" constant. */
 static char fp_suffix(Val v)
 {
-    return (v.kind == VK_FMEM && v.fdouble) ? 'd' : 's';
+    return v.fdouble ? 'd' : 's';
 }
 
 static int is_float_val(const Val *v)
@@ -4892,13 +4992,13 @@ static int is_float_val(const Val *v)
  * "lea ax,<v>" / "call fld<s|d>". */
 static void fp_load(GenState *g, Val v)
 {
-    if (v.kind == VK_FACC)
+    if (v.kind == VK_FACC || (v.kind == VK_FMEM && v.fonstk))
         return;
     if (v.kind != VK_FMEM && v.kind != VK_FCON)
         gen_fatal("internal: a non-floating value reached fp_load()");
     char fn[8];
     snprintf(fn, sizeof fn, "fld%c", fp_suffix(v));
-    ins2(g, "lea", o_reg("ax"), fp_addr(v));
+    fp_lea(g, v);
     ins1(g, "call", o_sym(fn));
     g->nfloat = 1;
 }
@@ -4927,20 +5027,18 @@ static Val val_facc(void)
 static const char *fp_opname(int op)
 {
     switch (op) {
-    case OP_PLUS:   return "fadd";
-    case OP_MINUS:  return "fsub";
-    case OP_TIMES:  return "fmul";
-    case OP_DIVIDE: return "fdiv";
+    case OP_PLUS:   case OP_ASPLUS:  return "fadd";
+    case OP_MINUS:  case OP_ASMINUS: return "fsub";
+    case OP_TIMES:  case OP_ASTIMES: return "fmul";
+    case OP_DIVIDE: case OP_ASDIV:   return "fdiv";
     default:        return NULL;
     }
 }
 
-/* '+', '-', '*', '/' typed DOUBLE: the left operand onto the stack, then
- * "lea ax,<right>" / "call f<op><s|d>" - see this section's header. A
- * computed left operand with an int converted to floating as the right
- * one is stkmath.o's stack-with-stack form: both are on the stack in that
- * order already (the left computed first, then the int's "itof" -
- * atof.o's "10*fl + (c-'0')"), and "call f<op>" combines them. */
+/* '+', '-', '*', '/' typed DOUBLE, its operands in the planned order
+ * (the left one generated first - see this section's header): the left
+ * onto the stack, then the right from memory - "lea ax,<right>" / "call
+ * f<op><s|d>" - or, computed onto the stack after it, "call f<op>". */
 static void gen_fp_binop(GenState *g, int op)
 {
     const char *fn = fp_opname(op);
@@ -4950,95 +5048,691 @@ static void gen_fp_binop(GenState *g, int op)
     Val r = pop_float(g, "floating operator");
     Val l = pop_float(g, "floating operator");
     if (r.kind == VK_FACC) {
-        if (!r.fitof)
-            gen_fatal("a 'float'/'double' operator whose right operand is "
-                      "itself computed (not a variable, a constant or an int) "
-                      "is not yet supported - no golden or libc.a code shows "
-                      "the real compiler's code for it - see "
-                      "src/mutos_cc/README.md");
         if (l.kind != VK_FACC)
-            gen_fatal("an int right operand of a 'float'/'double' '+', '-', "
-                      "'*' or '/' whose left operand is a variable or a "
-                      "constant (\"d + i\") is not yet supported - libc.a's "
-                      "compiled code shows it only after a computed left "
-                      "operand (atof.o's \"10*fl + (c-'0')\") - see "
-                      "src/mutos_cc/README.md");
+            gen_fatal("internal: a floating operator's left operand is not "
+                      "on the stack below its computed right one");
         ins1(g, "call", o_sym(fn));
-        g->nfloat = 1;
-        push_val(g, val_facc());
-        return;
+    } else {
+        fp_load(g, l);
+        char name[8];
+        snprintf(name, sizeof name, "%s%c", fn, fp_suffix(r));
+        fp_lea(g, r);
+        ins1(g, "call", o_sym(name));
     }
-    if (r.kind == VK_FCON && l.kind == VK_FACC)
-        gen_fatal("a floating constant as the right operand of a computed "
-                  "value is not yet supported (the real compiler writes the "
-                  "constant ahead of the left operand's code) - see "
-                  "src/mutos_cc/README.md");
-    fp_load(g, l);
-    char name[8];
-    snprintf(name, sizeof name, "%s%c", fn, fp_suffix(r));
-    ins2(g, "lea", o_reg("ax"), fp_addr(r));
-    ins1(g, "call", o_sym(name));
+    g->nfloat = 1;
     push_val(g, val_facc());
 }
 
-/* v7's degree() for a floating operand, as far as a comparison's operand
- * order needs it (see gen_fp_compare()): 0 for a double variable or a
- * constant (a LEAF; every floating constant is typed DOUBLE), 1 for a
- * float variable (degree() gives a FLOAT leaf 1), and anything computed
- * at least 1 - 2 here, which orders it the same way against every leaf. */
-static int fp_degree(const Val *v)
+/* ---- The planner (see this section's header and "Evaluation order") */
+
+static int ty_isfloat(int type)
 {
-    if (v->kind == VK_FMEM)
-        return v->fdouble ? 0 : 1;
-    if (v->kind == VK_FCON)
-        return 0;
-    return 2;
+    return type == TY_FLOAT || type == TY_DOUBLE;
 }
 
-/* A relational or equality operator over floating operands (mutos_c0
- * types the node INT, as v7's build() does; the operands say it is
- * floating). v7/cc/c12.c's optim() first exchanges the operands - and
- * mirrors the relation - when degree(left) < degree(right), or when the
- * degrees are equal and only the left one is a NAME; then both are loaded
- * (left first), "call fcmp" pops them and leaves the flags of left -
- * right in AH, and "sahf" moves them into the flags - see this section's
- * header for the libc.a code this follows. The result is a VK_COND the
- * branch reads straight away (gen_cond_branch()).
- *
- * Refused: two computed operands (v7's "%nf,nf"), a zero right operand
- * after the exchange (v7's cbranch() compares with zero by testing -
- * "tst", stkmath.o's "ftest" - which no evidence shows: a float variable
- * or a computed value compared with 0), and a constant right operand of a
- * computed value (its .data block would come after the value's code, not
- * before it). */
+/* A floating comparison or equality: a relational whose operands are
+ * floating (mutos_c0 types the node INT, as v7's build() does). */
+static int is_frel(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    return find_relop(n->op) && n->kid[0] >= 0 &&
+           ty_isfloat(t->v[n->kid[0]].type);
+}
+
+/* Node i is planned by plan_fvalue(): a floating-typed node or a
+ * floating comparison. */
+static int is_fnode(const ETree *t, int i)
+{
+    return ty_isfloat(t->v[i].type) || is_frel(t, i);
+}
+
+/* A floating NEG - see fconst_base(). */
+static int is_fneg(const ETree *t, int i)
+{
+    return t->v[i].op == OP_NEG && ty_isfloat(t->v[i].type);
+}
+
+/* Node i is a floating constant - a written one, an int constant
+ * converted, or either negated (folded) - and its base, the FCON or
+ * ITOF node its constant is planned under; -1 when not a constant. */
+static int fconst_base(const ETree *t, int i)
+{
+    while (is_fneg(t, i))
+        i = t->v[i].kid[0];
+    const ENode *n = &t->v[i];
+    if (n->op == OP_FCON)
+        return i;
+    if (n->op == OP_ITOF && ty_isfloat(n->type) &&
+        t->v[n->kid[0]].op == OP_CON)
+        return i;
+    return -1;
+}
+
+static int fconst_node(const ETree *t, int i)
+{
+    return fconst_base(t, i) >= 0;
+}
+
+/* The address `i` computes, when it is a named object plus constants -
+ * "&x + c", "&a + i*size" with i and size constants - as v7's optim()
+ * folds it (acommute()'s "&x+c" subsumed into the NAME): the NAME node
+ * and the total offset. */
+static int ffold(const ETree *t, int i, int *name, long *disp)
+{
+    *disp = 0;
+    for (;;) {
+        const ENode *n = &t->v[i];
+        if (n->op == OP_PLUS && ty_is_ptr(n->type)) {
+            const ENode *r = &t->v[n->kid[1]];
+            if (r->op == OP_CON) {
+                *disp += r->aux;
+            } else if (r->op == OP_ITOP && t->v[r->kid[0]].op == OP_CON &&
+                       t->v[r->kid[1]].op == OP_CON) {
+                *disp += t->v[r->kid[0]].aux * t->v[r->kid[1]].aux;
+            } else {
+                return 0;
+            }
+            i = n->kid[0];
+            continue;
+        }
+        if (n->op == OP_AMPER && t->v[n->kid[0]].op == OP_NAME &&
+            (t->v[n->kid[0]].aux == SC_AUTO || t->v[n->kid[0]].aux == SC_EXTERN)) {
+            *name = n->kid[0];
+            return 1;
+        }
+        return 0;
+    }
+}
+
+/* Node i is a floating operand in memory reached with no code: a NAME,
+ * or an element or member at a constant offset of a named object
+ * (ffold()) - v7's degree() and optim() treat either as the NAME leaf
+ * it is. */
+static int fnamed(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (!ty_isfloat(n->type))
+        return 0;
+    if (n->op == OP_NAME)
+        return 1;
+    int name;
+    long disp;
+    return n->op == OP_STAR && ffold(t, n->kid[0], &name, &disp);
+}
+
+/* A leaf: a floating operand that can be the memory operand of an
+ * operator, with no code of its own before it is loaded. */
+static int fleaf(const ETree *t, int i)
+{
+    return fnamed(t, i) || fconst_node(t, i);
+}
+
+static int v7_islong(int type)
+{
+    return type == TY_LONG ? 2 : 1;
+}
+
+static int imax(int a, int b)
+{
+    return a > b ? a : b;
+}
+
+/* The link nodes of the '+' or '*' chain topped by `top`: nodes of the
+ * same operator and type (for an int '+', also an int "x - constant",
+ * which v7's optim() makes "x + -constant" first). */
+static int is_chain_link(const ETree *t, int i, int op, int type)
+{
+    const ENode *n = &t->v[i];
+    if (n->type != type)
+        return 0;
+    if (n->op == op)
+        return 1;
+    return op == OP_PLUS && !ty_isfloat(type) && n->op == OP_MINUS &&
+           t->v[n->kid[1]].op == OP_CON;
+}
+
+#define FCHAIN_MAX 16
+
+/* The terms of the chain topped by `top`, in source order (v7's
+ * insert() walks both operands of every link, left first), into
+ * terms[]; its links in postfix order - innermost first - into links[].
+ * Returns the number of terms. */
+static int fchain_terms(const ETree *t, int top, int *terms, int *links,
+                        int *nlinks)
+{
+    int op = t->v[top].op == OP_MINUS ? OP_PLUS : t->v[top].op;
+    int type = t->v[top].type;
+    int stack[2 * FCHAIN_MAX], sp = 0, n = 0;
+    stack[sp++] = top;
+    while (sp > 0) {
+        int i = stack[--sp];
+        if (is_chain_link(t, i, op, type)) {
+            if (sp + 2 > 2 * FCHAIN_MAX)
+                gen_fatal("a floating expression with too many terms "
+                          "(internal limit %d)", FCHAIN_MAX);
+            stack[sp++] = t->v[i].kid[1];
+            stack[sp++] = t->v[i].kid[0];
+            continue;
+        }
+        if (n == FCHAIN_MAX)
+            gen_fatal("a floating expression with too many terms (internal "
+                      "limit %d)", FCHAIN_MAX);
+        terms[n++] = i;
+    }
+    *nlinks = 0;
+    for (int i = 0; i <= top; i++) {
+        if (!is_chain_link(t, i, op, type))
+            continue;
+        int j = i;
+        while (j != top && t->v[j].parent >= 0 &&
+               is_chain_link(t, t->v[j].parent, op, type))
+            j = t->v[j].parent;
+        if (j == top)
+            links[(*nlinks)++] = i;
+    }
+    return n;
+}
+
+static int fdeg(const ETree *t, int i);
+
+/* The plan whose constants fdeg() consults - set by fplan_constants()
+ * for the expression being planned. */
+static const Plan *fdeg_plan;
+
+static int fc_index(const Plan *p, const ETree *t, int i);
+
+/* v7's insert(): each term goes before the first one of strictly lower
+ * degree, the displaced one carried on the same way - decreasing
+ * degree, equal ones in source order. */
+static void fchain_order(const ETree *t, const int *terms, int n, int *order)
+{
+    int nl = 0;
+    for (int k = 0; k < n; k++) {
+        int cur = terms[k];
+        int d = fdeg(t, cur);
+        for (int j = 0; j < nl; j++) {
+            int dj = fdeg(t, order[j]);
+            if (dj < d) {
+                int tmp = order[j];
+                order[j] = cur;
+                cur = tmp;
+                d = dj;
+            }
+        }
+        order[nl++] = cur;
+    }
+}
+
+/* acommute()'s degree of the rebuilt chain topped by `top`. */
+static int fchain_degree(const ETree *t, int top)
+{
+    int terms[FCHAIN_MAX], links[FCHAIN_MAX], order[FCHAIN_MAX], nlinks;
+    int n = fchain_terms(t, top, terms, links, &nlinks);
+    fchain_order(t, terms, n, order);
+    int type = t->v[top].type;
+    int op = t->v[top].op == OP_MINUS ? OP_PLUS : t->v[top].op;
+    int flt = ty_isfloat(type);
+    int d = imax(fdeg(t, order[0]), v7_islong(t->v[order[0]].type));
+    if (op == OP_TIMES && !flt)
+        d++;
+    for (int k = 1; k < n; k++) {
+        /* An int chain's constants are folded into one (acommute()). */
+        if (!flt && t->v[order[k]].op == OP_CON && k > 1 &&
+            t->v[order[k - 1]].op == OP_CON)
+            continue;
+        int d1 = fdeg(t, order[k]);
+        d = (d == d1) ? d + v7_islong(type) : imax(d, d1);
+    }
+    /* "x * 2**n": the degree of x (acommute()'s ispow2() case). */
+    if (op == OP_TIMES && !flt && n == 2 && t->v[order[1]].op == OP_CON) {
+        long c = t->v[order[1]].aux;
+        if (c > 0 && (c & (c - 1)) == 0)
+            d = imax(fdeg(t, order[0]), v7_islong(type));
+    }
+    return d;
+}
+
+/* v7/cc/c11.c's degree() of node i after optim() - as far as floating
+ * operand order needs it (see this section's header). */
+static int fdeg(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (fconst_node(t, i)) {
+        /* A ".float" constant is typed FLOAT (degree 1 - see this
+         * section's header); an 8-byte ".double" one would be DOUBLE,
+         * degree 0 - which no golden shows deciding an order. */
+        if (fdeg_plan && fdeg_plan->fc[fc_index(fdeg_plan, t, i)].dbl)
+            gen_fatal("an 8-byte floating constant (not exactly a float) as "
+                      "an operand whose order depends on it - a '+' or '*' "
+                      "chain or a comparison - is not yet supported (no "
+                      "golden shows its degree) - see src/mutos_cc/README.md");
+        return 1;
+    }
+    if (fnamed(t, i))
+        return n->type == TY_FLOAT ? 1 : 0;
+    switch (n->op) {
+    case OP_NAME:
+        return (n->type == TY_FLOAT || n->type == TY_CHAR) ? 1 : 0;
+    case OP_CON:
+        return -3;
+    case OP_AMPER:
+        if (t->v[n->kid[0]].op == OP_NAME)
+            return -2;
+        break;
+    case OP_ITOF: case OP_LTOF: case OP_NEG: case OP_FTOI: case OP_FTOL:
+    case OP_ITOC: case OP_ITOL: case OP_LTOI:
+        /* unoptim(): max(islong(type), degree(operand)) */
+        return imax(v7_islong(n->type), fdeg(t, n->kid[0]));
+    case OP_CALL:
+        return 10;
+    case OP_PLUS: case OP_TIMES:
+        return fchain_degree(t, i);
+    case OP_MINUS:
+        if (!ty_isfloat(n->type) && t->v[n->kid[1]].op == OP_CON)
+            return fchain_degree(t, i);
+        break;
+    default:
+        break;
+    }
+    int binary = n->kid[0] >= 0 && n->kid[1] >= 0;
+    int extra;
+    switch (n->op) {
+    case OP_MINUS: case OP_ASSIGN: case OP_ASPLUS: case OP_ASMINUS:
+        extra = 0;
+        break;
+    case OP_DIVIDE: case OP_MOD: case OP_ASTIMES: case OP_ASDIV:
+    case OP_ASMOD:
+        extra = 2;
+        break;
+    default:
+        extra = find_relop(n->op) ? 0 : -1;
+        break;
+    }
+    if (binary && extra >= 0) {
+        /* optim()'s "def:" - with its "d1 += 2; d2 += 2" for '/', '%',
+         * '*=' and '/=' */
+        int l = n->kid[0], r = n->kid[1];
+        if (find_relop(n->op) && is_frel(t, i)) {
+            int dl = fdeg(t, l), dr = fdeg(t, r);
+            if (dl < dr || (dl == dr && fnamed(t, l) && !fnamed(t, r))) {
+                int tmp = l;
+                l = r;
+                r = tmp;
+            }
+        }
+        int d1 = imax(fdeg(t, l), v7_islong(n->type)) + extra;
+        int d2 = imax(fdeg(t, r), 0) + extra;
+        return d1 == d2 ? d1 + v7_islong(n->type) : imax(d1, d2);
+    }
+    if (n->op == OP_STAR)
+        gen_fatal("a 'float'/'double' value read through a pointer as an "
+                  "operand of '+', '*' or a comparison is not yet supported "
+                  "(its v7 degree(), which decides the operand order, has no "
+                  "golden) - see src/mutos_cc/README.md");
+    gen_fatal("this operator (opcode %d) in a 'float'/'double' expression "
+              "is not yet supported (mutos_c1 has no v7 degree() for it, "
+              "which decides the operand order) - see "
+              "src/mutos_cc/README.md", n->op);
+}
+
+/* The index in the plan's constant table of constant node i. */
+static int fc_index(const Plan *p, const ETree *t, int i)
+{
+    long off = t->v[fconst_base(t, i)].off;
+    for (int k = 0; k < p->nfc; k++)
+        if (p->fc[k].off == off)
+            return k;
+    gen_fatal("internal: an unplanned floating constant");
+}
+
+/* v7's cexpr() prints a constant operand's .data block when its
+ * operator is matched: SEG_FDATA for node i if it is a constant. */
+static void plan_fdata(Plan *p, const ETree *t, int i)
+{
+    if (i >= 0 && fconst_node(t, i))
+        plan_op(p, SEG_FDATA, fc_index(p, t, i), 0, 0);
+}
+
+/* A floating operand about to be combined with a computed one generated
+ * after it: a leaf is loaded now, ahead of that code. */
+static void plan_fload(Plan *p, const ETree *t, int first, int second)
+{
+    if (fleaf(t, first) && !fleaf(t, second))
+        plan_op(p, SEG_FLOAD, 0, 0, 0);
+}
+
+static void plan_call(Plan *p, const ETree *t, int i);
+
+/* The register an int converted to floating is loaded into - "itof"
+ * takes it in AX, and the real compiler gets it there two ways
+ * (fltprobe goldens): through DI - "mov di,i / mov ax,di / call itof" -
+ * when the conversion is evaluated first, after a variable or constant
+ * loaded, or after a computed '+'/'-' ("(t + fl) / c", 05_fltasop); but
+ * straight into AX - "mov ax,c / call itof", "mov ax,c / add ax,*-48."
+ * - after a computed floating '*' ("(fl * 2) - c", "10*fl + (c-'0')",
+ * 05_fltasop). v7's c1 hands registers out by number, and its oddreg()
+ * gives a product the odd register - evidently also a floating one in
+ * the MUTOS compiler - which the next operand's register follows; how
+ * any other computed operand shifts it is not known (FREG_UNKNOWN: a
+ * conversion there is refused). */
+enum { FREG_DI = 0, FREG_AX = 1, FREG_UNKNOWN = 2 };
+
+/* The register context for the operand evaluated after `first`, when
+ * `first` was evaluated in context `freg`: a leaf or a computed '+'/'-'
+ * leaves it, a computed '*' moves it to AX. `first_op` is its operator
+ * when `first` is a rebuilt chain node rather than a tree node (-1). */
+static int fafter(const ETree *t, int first, int first_op, int freg)
+{
+    int op = first_op >= 0 ? first_op : t->v[first].op;
+    if (first_op < 0 && fleaf(t, first))
+        return freg;
+    if (op == OP_PLUS || op == OP_MINUS)
+        return freg;
+    if (op == OP_TIMES)
+        return FREG_AX;
+    return FREG_UNKNOWN;
+}
+
+static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg);
+
+/* A '+'/'*' chain of type DOUBLE - see this section's header. The
+ * rebuilt nodes are matched outermost first, so their constants' .data
+ * blocks come out in that order (the innermost node's left operand
+ * before its right one), all ahead of the chain's code; each link then
+ * replays one of the chain's own opcodes. */
+static void plan_fchain(Plan *p, const ETree *t, int top, int freg)
+{
+    int terms[FCHAIN_MAX], links[FCHAIN_MAX], order[FCHAIN_MAX], nlinks;
+    int n = fchain_terms(t, top, terms, links, &nlinks);
+    if (n != nlinks + 1)
+        gen_fatal("internal: a floating chain is not a binary tree");
+    fchain_order(t, terms, n, order);
+    if (t->v[top].op == OP_PLUS)
+        for (int k = 0; k < n; k++)
+            if (fconst_node(t, order[k]) &&
+                strtod(p->fc[fc_index(p, t, order[k])].text, NULL) == 0.0)
+                gen_fatal("adding a floating zero is not yet supported (v7's "
+                          "acommute() may drop a \"+0\") - see "
+                          "src/mutos_cc/README.md");
+    for (int k = n - 1; k >= 2; k--)
+        plan_fdata(p, t, order[k]);
+    plan_fdata(p, t, order[0]);
+    plan_fdata(p, t, order[1]);
+    plan_fvalue_r(p, t, order[0], freg);
+    for (int k = 1; k < n; k++) {
+        int ctx = (k == 1) ? fafter(t, order[0], -1, freg)
+                           : fafter(t, top, t->v[top].op, freg);
+        if (k == 1)
+            plan_fload(p, t, order[0], order[1]);
+        plan_fvalue_r(p, t, order[k], ctx);
+        const ENode *ln = &t->v[links[k - 1]];
+        plan_range(p, ln->off, ln->end);
+    }
+}
+
+static void plan_fvalue(Plan *p, const ETree *t, int i)
+{
+    plan_fvalue_r(p, t, i, FREG_DI);
+}
+
+/* Node i's floating value (or a floating comparison's condition) onto
+ * the value stack, in v7's order - see this section's header; `freg` is
+ * the register context an int conversion in it is loaded in (see
+ * fafter()). */
+static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg)
+{
+    const ENode *n = &t->v[i];
+    if (fconst_node(t, i)) {
+        /* Any NEG above it is folded into the planned text - its opcode
+         * is never streamed. */
+        int b = fconst_base(t, i);
+        plan_fdata(p, t, b);
+        plan_range(p, t->v[b].start, t->v[b].end);
+        return;
+    }
+    if (fnamed(t, i)) {
+        int name;
+        long disp;
+        if (n->op == OP_NAME)
+            plan_range(p, n->start, n->end);
+        else if (ffold(t, n->kid[0], &name, &disp))
+            plan_add(p, (Seg){ SEG_FLEAF, t->v[name].off, 0, (int)disp,
+                               n->type, 0 });
+        return;
+    }
+    int l = n->kid[0], r = n->kid[1];
+    switch (n->op) {
+    case OP_NEG:
+        if (is_fneg(t, l)) {
+            plan_fvalue_r(p, t, t->v[l].kid[0], freg);  /* -(-x) is x */
+            return;
+        }
+        plan_fvalue_r(p, t, l, freg);
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_ITOF:
+        if (freg == FREG_UNKNOWN)
+            gen_fatal("an int converted to 'float'/'double' after a computed "
+                      "operand other than '+', '-' or '*' is not yet "
+                      "supported (the register the real compiler loads it "
+                      "in is not known) - see src/mutos_cc/README.md");
+        plan_op(p, SEG_FITOF, freg, 0, 0);
+        plan_value(p, t, l);            /* the int operand */
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_LTOF:
+        plan_value(p, t, l);            /* the long operand */
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_PLUS: case OP_TIMES:
+        plan_fchain(p, t, i, freg);
+        return;
+    case OP_MINUS: case OP_DIVIDE:
+        if (n->op == OP_MINUS && fconst_node(t, r) &&
+            strtod(p->fc[fc_index(p, t, r)].text, NULL) == 0.0)
+            gen_fatal("subtracting a floating zero is not yet supported - "
+                      "see src/mutos_cc/README.md");
+        plan_fdata(p, t, l);
+        plan_fdata(p, t, r);
+        plan_fvalue_r(p, t, l, freg);
+        plan_fload(p, t, l, r);
+        plan_fvalue_r(p, t, r, fafter(t, l, -1, freg));
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_ASSIGN:
+        plan_fdata(p, t, r);
+        plan_fvalue_r(p, t, l, freg);
+        plan_fvalue_r(p, t, r, freg);
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_ASPLUS: case OP_ASMINUS: case OP_ASDIV:
+        plan_fdata(p, t, r);
+        plan_fvalue_r(p, t, l, freg);
+        if (!fleaf(t, r))
+            plan_op(p, SEG_FLOADT, 0, 0, 0);
+        plan_fvalue_r(p, t, r, freg);
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_ASTIMES:
+        plan_fdata(p, t, r);
+        plan_fvalue_r(p, t, l, freg);
+        plan_fvalue_r(p, t, r, freg);
+        plan_range(p, n->off, n->end);
+        return;
+    case OP_CALL:
+        plan_call(p, t, i);
+        return;
+    case OP_RFORCE:
+        plan_fdata(p, t, l);
+        plan_fvalue_r(p, t, l, freg);
+        plan_range(p, n->off, n->end);
+        return;
+    default:
+        break;
+    }
+    if (is_frel(t, i)) {
+        int dl = fdeg(t, l), dr = fdeg(t, r);
+        int swap = dl < dr || (dl == dr && fnamed(t, l) && !fnamed(t, r));
+        int first = swap ? r : l, second = swap ? l : r;
+        plan_fdata(p, t, first);
+        plan_fdata(p, t, second);
+        plan_fvalue_r(p, t, first, freg);
+        plan_fload(p, t, first, second);
+        plan_fvalue_r(p, t, second, fafter(t, first, -1, freg));
+        if (swap)
+            plan_op(p, SEG_FSWAP, 0, 0, 0);
+        plan_range(p, n->off, n->end);
+        return;
+    }
+    /* Everything else has no plan of its own: its opcodes stream as
+     * written, and its handler refuses what it does not know. */
+    for (int k = 0; k < 2; k++)
+        if (n->kid[k] >= 0)
+            plan_value(p, t, n->kid[k]);
+    plan_range(p, n->off, n->end);
+}
+
+/* Plans the expression's floating constants - see this section's
+ * header: every written one in temp1 order, then every int constant
+ * converted, each with the next c1 label and its text, a negation above
+ * it folded in. */
+static void fplan_constants(GenState *g, FILE *t1, const ETree *t)
+{
+    Plan *p = &g->plan;
+    p->nfc = 0;
+    fdeg_plan = p;
+    long savepos = ftell(t1);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < t->n; i++) {
+            const ENode *n = &t->v[i];
+            int is_fcon = (n->op == OP_FCON);
+            int is_icon = (n->op == OP_ITOF && ty_isfloat(n->type) &&
+                           n->kid[0] >= 0 && t->v[n->kid[0]].op == OP_CON);
+            if (pass == 0 ? !is_fcon : !is_icon)
+                continue;
+            if (p->nfc == FCONST_MAX)
+                gen_fatal("too many floating constants in one expression "
+                          "(internal limit %d)", FCONST_MAX);
+            FConst *c = &p->fc[p->nfc++];
+            memset(c, 0, sizeof *c);
+            c->off = n->off;
+            int neg = 0;
+            for (int j = n->parent; j >= 0 && is_fneg(t, j); j = t->v[j].parent)
+                neg = !neg;
+            int is_zero = 0;
+            if (is_fcon) {
+                if (fseek(t1, n->off, SEEK_SET) != 0)
+                    gen_fatal("internal: temp1 is not seekable (fseek failed)");
+                (void)c1_read_op(t1, "temp1");
+                int type = c1_read_num(t1, "temp1");
+                char *text = c1_read_sym(t1, "temp1");
+                if (type != TY_DOUBLE)
+                    gen_fatal("FCON of type %d not yet supported (mutos_c0 "
+                              "writes every floating constant as a double)",
+                              type);
+                fconst_text(text, neg, c->text, sizeof c->text, &c->dbl,
+                            &is_zero);
+                free(text);
+            } else {
+                long v = t->v[n->kid[0]].aux;
+                char num[24];
+                snprintf(num, sizeof num, "%ld", v < 0 ? -v : v);
+                fconst_text(num, neg != (v < 0), c->text, sizeof c->text,
+                            &c->dbl, &is_zero);
+            }
+            if (neg && is_zero)
+                gen_fatal("a negated floating zero is not yet supported - see "
+                          "src/mutos_cc/README.md");
+            c->label = g->next_lab++;
+        }
+    }
+    if (fseek(t1, savepos, SEEK_SET) != 0)
+        gen_fatal("internal: temp1 is not seekable (fseek failed)");
+}
+
+/* The planner's own steps. */
+static void fplan_step(GenState *g, FILE *t1, const Seg *s)
+{
+    switch (s->kind) {
+    case SEG_FLEAF: {
+        /* The object's NAME, read where it stands; the element's or
+         * member's offset added (plan_fvalue()'s folding - v7's optim()
+         * makes the whole "*(&x + c)" one NAME). */
+        long pos = ftell(t1);
+        if (fseek(t1, s->start, SEEK_SET) != 0)
+            gen_fatal("internal: temp1 is not seekable (fseek failed)");
+        (void)c1_read_op(t1, "temp1");
+        int hclass = c1_read_num(t1, "temp1");
+        (void)c1_read_num(t1, "temp1");
+        Val fv = {0};
+        fv.kind = VK_FMEM;
+        fv.fdouble = (s->b == TY_DOUBLE);
+        if (hclass == SC_EXTERN) {
+            fv.fmode = FM_SYM;
+            fv.sym = intern_name(g, c1_read_sym(t1, "temp1"));
+            fv.imm = s->a;
+        } else if (hclass == SC_AUTO) {
+            fv.fmode = FM_BP;
+            fv.offset = c1_read_num(t1, "temp1") + s->a;
+        } else {
+            gen_fatal("an element or member of a 'float'/'double' object of "
+                      "this storage class is not yet supported - see "
+                      "src/mutos_cc/README.md");
+        }
+        if (fseek(t1, pos, SEEK_SET) != 0)
+            gen_fatal("internal: temp1 is not seekable (fseek failed)");
+        push_val(g, fv);
+        return;
+    }
+    case SEG_FDATA:
+        put_float_data(g, &g->plan.fc[s->a]);
+        return;
+    case SEG_FLOAD:
+    case SEG_FLOADT: {
+        if (g->valsp < 1)
+            gen_fatal("expression stack underflow - malformed temp1 stream");
+        Val *top = &g->valstack[g->valsp - 1];
+        if (!is_float_val(top))
+            gen_fatal("internal: a floating load step without a floating "
+                      "operand on top");
+        fp_load(g, *top);
+        if (s->kind == SEG_FLOADT) {
+            if (top->kind != VK_FMEM)
+                gen_fatal("internal: a compound assignment's target is not "
+                          "in memory");
+            top->fonstk = 1;
+        } else {
+            *top = val_facc();
+        }
+        return;
+    }
+    case SEG_FSWAP:
+        g->fswap = 1;
+        return;
+    case SEG_FITOF:
+        g->itof_reg = s->a;
+        return;
+    default:
+        gen_fatal("internal: unknown floating plan step %d", (int)s->kind);
+    }
+}
+
+/* A relational or equality operator over floating operands, generated
+ * in the planned order (plan_fvalue()): both loaded - the first below -
+ * "call fcmp" pops them and leaves the flags of first - second in AH,
+ * and "sahf" moves them into the flags; when the plan exchanged the
+ * operands (SEG_FSWAP), the relation is mirrored. The result is a
+ * VK_COND a branch reads straight away (gen_cond_branch()) or a value
+ * materializes (materialize()). */
 static void gen_fp_compare(GenState *g, int op)
 {
     Val r = pop_float(g, "floating comparison");
     Val l = pop_float(g, "floating comparison");
-    int relop = op;
-    int dl = fp_degree(&l), dr = fp_degree(&r);
-    if (dl < dr || (dl == dr && l.kind == VK_FMEM && r.kind != VK_FMEM)) {
-        Val t = l;
-        l = r;
-        r = t;
-        relop = find_relop(op)->mirror;
-    }
-    if (l.kind == VK_FACC && r.kind == VK_FACC)
-        gen_fatal("comparing two computed 'float'/'double' values is not yet "
-                  "supported - see src/mutos_cc/README.md");
-    if (r.kind == VK_FACC)
-        gen_fatal("internal: a computed floating comparison operand left on "
-                  "the right");
-    if (r.kind == VK_FCON && r.fzero)
-        gen_fatal("comparing a float variable or a computed 'float'/'double' "
-                  "value with zero is not yet supported (the real compiler "
-                  "tests such a value instead of comparing it - no evidence "
-                  "of its code) - see src/mutos_cc/README.md");
-    if (l.kind == VK_FACC && r.kind == VK_FCON)
-        gen_fatal("comparing a computed 'float'/'double' value with a "
-                  "constant is not yet supported (the real compiler writes "
-                  "the constant ahead of the value's code) - see "
-                  "src/mutos_cc/README.md");
+    int relop = g->fswap ? find_relop(op)->mirror : op;
+    g->fswap = 0;
+    if (l.kind != VK_FACC && r.kind == VK_FACC)
+        gen_fatal("internal: a floating comparison's first operand is not "
+                  "on the stack below its computed second one");
     fp_load(g, l);
     fp_load(g, r);
     ins1(g, "call", o_sym("fcmp"));
@@ -5053,105 +5747,158 @@ static void gen_fp_compare(GenState *g, int op)
 }
 
 /* OP_NEG typed FLOAT or DOUBLE (v7's build() types a unary operator with
- * its operand's type): the operand onto the stack, "call fneg" - see
- * this section's header. A negated negation is v7 unoptim()'s "-(-x)" ->
- * "x", which cannot be undone here once the first "fneg" is out -
- * refused. */
+ * its operand's type): the operand onto the stack, "call fneg" - atof.o's
+ * "fl = -fl", 04_fltconst's "f = -f". A negated constant and a double
+ * negation never get here (plan_fvalue()). */
 static void gen_fp_neg(GenState *g)
 {
     Val v = pop_float(g, "floating unary '-'");
-    if (v.kind == VK_FACC && v.fnegd)
-        gen_fatal("a doubly negated 'float'/'double' value is not yet "
-                  "supported - see src/mutos_cc/README.md");
     fp_load(g, v);
     ins1(g, "call", o_sym("fneg"));
     g->nfloat = 1;
-    Val res = val_facc();
-    res.fnegd = 1;
+    push_val(g, val_facc());
+}
+
+/* Stores the value on top of the stack into floating target `lhs` and
+ * pops it ("lea ax,<target>" / "call fst<s|d>p"), or - its value used,
+ * the consumer is not the statement's end - keeps it ("fst<s|d>") as
+ * the result: ecvt.o's "(fj = arg*10) < 1", p2_arith's "e = (d *= e)". */
+static void fp_store(GenState *g, FILE *t1, Val lhs)
+{
+    Consumer c = scan_consumer(t1);
+    int keep = (c.op != OP_EXPR);
+    char fn[8];
+    snprintf(fn, sizeof fn, keep ? "fst%c" : "fst%cp", fp_suffix(lhs));
+    fp_lea(g, lhs);
+    ins1(g, "call", o_sym(fn));
+    g->nfloat = 1;
+    if (keep) {
+        push_val(g, val_facc());
+        return;
+    }
+    Val res = {0};
+    res.kind = VK_FDONE;
     push_val(g, res);
 }
 
-/* OP_ASTIMES/OP_ASDIV typed DOUBLE - "a *= b" and "a /= b" into a float
- * or double variable, as statements (mutos_c0 writes a compound
- * assignment only as one), the right operand a variable or a constant
- * (an int constant converted - ecvt.o's "arg *= 10"). '*=': the right
- * operand onto the stack, the target multiplied in from memory, stored
- * and popped; '/=': the target onto the stack, divided by the right
- * operand in memory - see this section's header for the libc.a code. A
- * computed right operand (an int variable's "itof" included) has no
- * evidence - for '/=' it would need the operand order the other way round
- * (doubles.o's "reversed" fdivrd?) - and is refused; so is every other
- * floating compound assignment ('+=', '-=': no evidence either). */
-static void gen_fp_asop(GenState *g, int op)
+/* A floating compound assignment into a float or double variable - see
+ * this section's header: "+=", "-=", "/=" with the target loaded first
+ * (by SEG_FLOADT ahead of a computed right operand), "*=" with the right
+ * operand loaded and the target multiplied in from memory. */
+static void gen_fp_asop(GenState *g, FILE *t1, int op)
 {
+    const char *fn = fp_opname(op);
+    if (!fn)
+        gen_fatal("'%%=' on a 'float'/'double' variable is not defined - see "
+                  "src/mutos_cc/README.md");
     Val rhs = pop_float(g, "floating compound assignment");
     Val lhs = pop_val_ex(g, POP_FLOAT);
     if (lhs.kind != VK_FMEM)
         gen_fatal("a compound assignment to this 'float'/'double' target is "
                   "not yet supported (only a variable) - see "
                   "src/mutos_cc/README.md");
-    char fn[8];
-    if ((op == OP_ASTIMES || op == OP_ASDIV) && rhs.kind == VK_FACC)
-        gen_fatal("'*=' or '/=' with a computed 'float'/'double' right-hand "
-                  "side (an int variable included) is not yet supported - "
-                  "see src/mutos_cc/README.md");
+    char name[8];
     if (op == OP_ASTIMES) {
         fp_load(g, rhs);
-        snprintf(fn, sizeof fn, "fmul%c", fp_suffix(lhs));
-        ins2(g, "lea", o_reg("ax"), fp_addr(lhs));
-        ins1(g, "call", o_sym(fn));
-    } else if (op == OP_ASDIV) {
-        fp_load(g, lhs);
-        snprintf(fn, sizeof fn, "fdiv%c", fp_suffix(rhs));
-        ins2(g, "lea", o_reg("ax"), fp_addr(rhs));
+        snprintf(name, sizeof name, "%s%c", fn, fp_suffix(lhs));
+        fp_lea(g, lhs);
+        ins1(g, "call", o_sym(name));
+    } else if (rhs.kind == VK_FACC) {
+        if (!lhs.fonstk)
+            gen_fatal("internal: a compound assignment's target is not on "
+                      "the stack below its computed right operand");
         ins1(g, "call", o_sym(fn));
     } else {
-        gen_fatal("'+=', '-=' and '%%=' on a 'float'/'double' variable are not "
-                  "yet supported (only '*=' and '/=' - libc.a's compiled code "
-                  "shows those two) - see src/mutos_cc/README.md");
+        fp_load(g, lhs);
+        snprintf(name, sizeof name, "%s%c", fn, fp_suffix(rhs));
+        fp_lea(g, rhs);
+        ins1(g, "call", o_sym(name));
     }
-    snprintf(fn, sizeof fn, "fst%cp", fp_suffix(lhs));
-    ins2(g, "lea", o_reg("ax"), fp_addr(lhs));
-    ins1(g, "call", o_sym(fn));
-    g->nfloat = 1;
+    lhs.fonstk = 0;
+    fp_store(g, t1, lhs);
 }
 
-/* OP_ITOF: an int onto the floating-point stack - "itof" takes it in AX,
- * where it arrives through DI, the working register: "mov di,*-14.(bp)"
- * / "mov ax,di" / "call itof" (02_dblconv.s.golden). An int already
- * computed into DI goes on from there. An int CONSTANT is converted at
- * compile time instead - v7 c1's unoptim() folds ITOF(CON) into a
- * floating constant (SFCON), which the MUTOS compiler writes like a
- * written one, "%.17e" of the value (see this section's header). */
+/* OP_ITOF: an int onto the floating-point stack - "itof" takes it in AX
+ * (see this section's header), loaded there in the register context the
+ * plan set (SEG_FITOF - see fafter()): through DI, "mov di,i / mov ax,di"
+ * (a register variable in DI through SI: p5_call's "mov si,di / mov
+ * ax,si"), or straight into AX, "mov ax,c"; a product (in AX already,
+ * p2_arith's "mov ax,i / imul j / call itof"), a char ("movb ax,c /
+ * cbw", p5_call) and "x + c" computed for AX (OP_PLUS) need no move. A
+ * constant was planned as a floating constant (fplan_constants()). */
 static void gen_itof(GenState *g, int type)
 {
     if (type != TY_DOUBLE && type != TY_FLOAT)
         gen_fatal("ITOF of type %d not yet supported", type);
-    Val v = pop_val(g);
+    int reg = g->itof_reg;
+    g->itof_reg = FREG_DI;
+    Val v = pop_val_ex(g, POP_CHARX);
     if (v.kind == VK_IMM) {
-        char buf[40];
-        snprintf(buf, sizeof buf, "%.17e", (double)v.imm);
-        Val c = {0};
-        c.kind = VK_FCON;
-        c.offset = put_float_data(g, buf);
-        c.fzero = (v.imm == 0);
-        g->sfcon_seen = 1;
-        push_val(g, c);
+        FConst *c = fc_find(g, g->op_off);
+        if (!c)
+            gen_fatal("internal: a converted int constant outside a planned "
+                      "expression");
+        push_val(g, fconst_val(g, c));
         return;
     }
-    if ((v.kind == VK_MEM || v.kind == VK_STATIC) && !v.bytev && !v.structv) {
-        load_into_di(g, v);
-    } else if (!(v.kind == VK_REG && strcmp(v.reg, "di") == 0 && !v.regvar)) {
+    v = materialize(g, v);
+    if (v.kind == VK_CHARX) {
+        (void)load_charx(g, v);
+    } else if ((v.kind == VK_MEM || v.kind == VK_STATIC) && !v.bytev &&
+               !v.structv) {
+        if (reg == FREG_AX) {
+            ins2(g, "mov", o_reg("ax"), o_val(v));
+        } else {
+            if (g->reserved & RB_DI)
+                gen_fatal("converting an int variable to 'float'/'double' "
+                          "while DI holds a register variable is not yet "
+                          "supported - see src/mutos_cc/README.md");
+            load_into_di(g, v);
+            ins2(g, "mov", o_reg("ax"), o_reg("di"));
+        }
+    } else if (v.kind == VK_REG && v.regvar && strcmp(v.reg, "di") == 0 &&
+               reg == FREG_DI) {
+        ins2(g, "mov", o_reg("si"), o_reg("di"));
+        ins2(g, "mov", o_reg("ax"), o_reg("si"));
+    } else if (!(v.kind == VK_REG && strcmp(v.reg, "ax") == 0 && !v.regvar)) {
         gen_fatal("converting this int operand to 'float'/'double' is not yet "
-                  "supported (only an int variable, a constant, or an int "
-                  "computed into DI) - see src/mutos_cc/README.md");
+                  "supported (only a variable, a constant, a char, a product "
+                  "or a variable plus or minus a constant) - see "
+                  "src/mutos_cc/README.md");
     }
-    ins2(g, "mov", o_reg("ax"), o_reg("di"));
     ins1(g, "call", o_sym("itof"));
     g->nfloat = 1;
-    Val res = val_facc();
-    res.fitof = 1;
-    push_val(g, res);
+    push_val(g, val_facc());
+}
+
+/* OP_LTOF: a 'long' variable onto the floating-point stack - lconvert.o's
+ * "ltof" takes it on the machine stack, the low word pushed first (the
+ * high word ends up at the lower address, as a long is kept in memory),
+ * each through the working register, and the caller pops it:
+ * fltprobe/p5_call.s.golden's "d = l;" -> "mov si,*-22.(bp)" / "push
+ * si" / "mov si,*-24.(bp)" / "push si" / "call ltof" / "add sp,*4" (no
+ * decimal point, like push_fp_arg()'s "*8"). That function has a
+ * register variable in DI, so the working register there is SI; with DI
+ * free it is DI - the same register v7's allocation hands out first
+ * everywhere else (an inference, not yet a golden). */
+static void gen_ltof(GenState *g, int type)
+{
+    if (type != TY_DOUBLE && type != TY_FLOAT)
+        gen_fatal("LTOF of type %d not yet supported", type);
+    Val v = pop_val(g);
+    if (v.kind != VK_MEM)
+        gen_fatal("converting this 'long' operand to 'float'/'double' is "
+                  "not yet supported (only a 'long' variable) - see "
+                  "src/mutos_cc/README.md");
+    const char *r = (g->reserved & RB_DI) ? "si" : "di";
+    ins2(g, "mov", o_reg(r), o_mem(v.offset + MCC_SZINT));
+    ins1(g, "push", o_reg(r));
+    ins2(g, "mov", o_reg(r), o_mem(v.offset));
+    ins1(g, "push", o_reg(r));
+    ins1(g, "call", o_sym("ltof"));
+    ins2(g, "add", o_reg("sp"), o_sym("*4"));
+    g->nfloat = 1;
+    push_val(g, val_facc());
 }
 
 /* OP_FTOI/OP_FTOL: the value onto the stack, then "call ftoi" (the int in
@@ -5169,20 +5916,14 @@ static void gen_fp_to_int(GenState *g, int op, int type)
                   "supported - see src/mutos_cc/README.md");
     fp_load(g, v);
     ins1(g, "call", o_sym(op == OP_FTOI ? "ftoi" : "ftol"));
-    if (op == OP_FTOI) {
+    if (op == OP_FTOI)
         push_val(g, val_reg("ax"));
-    } else {
-        put_seq(g, SEQ_DXAX_TO_DISI);
-        push_val(g, val_long());
-    }
+    else
+        push_val(g, emit_dxax_to_long(g));
 }
 
-/* OP_ASSIGN typed DOUBLE: the right-hand side onto the stack, popped into
- * the target - "lea ax,<target>" / "call fst<s|d>p" - or, when the
- * assignment's own value is used (its consumer is not the statement's
- * end - scan_consumer()), stored without popping, "call fst<s|d>", and
- * left on the stack as the value (ecvt.o's "(fj = arg*10) < 1" - see
- * this section's header). */
+/* OP_ASSIGN typed DOUBLE: the right-hand side onto the stack, then
+ * stored into the target (fp_store()). */
 static void gen_fp_assign(GenState *g, FILE *t1)
 {
     Val rhs = pop_float(g, "floating assignment");
@@ -5191,28 +5932,16 @@ static void gen_fp_assign(GenState *g, FILE *t1)
         gen_fatal("assigning to this 'float'/'double' target is not yet "
                   "supported (only a local variable or a parameter) - see "
                   "src/mutos_cc/README.md");
-    Consumer c = scan_consumer(t1);
-    int keep = (c.op != OP_EXPR);
     fp_load(g, rhs);
-    char fn[8];
-    snprintf(fn, sizeof fn, keep ? "fst%c" : "fst%cp", fp_suffix(lhs));
-    ins2(g, "lea", o_reg("ax"), fp_addr(lhs));
-    ins1(g, "call", o_sym(fn));
-    if (keep) {
-        push_val(g, val_facc());
-        return;
-    }
-    Val res = {0};
-    res.kind = VK_FDONE;
-    push_val(g, res);
+    fp_store(g, t1, lhs);
 }
 
 /* OP_RFORCE typed DOUBLE or FLOAT - "return <floating value>;" in a
- * function returning a double (v7/cc/c04.c's doret() types RFORCE with
- * the converted value's own type, so a float variable returned is
- * RFORCE(FLOAT)): the value onto the stack, stored and popped into
- * dmath.o's "fac", and its address left in AX - atof.o's "return(fl)":
- * "lea ax,fl / call fldd / lea ax,fac / call fstdp / lea ax,fac". */
+ * function returning a double or a float (v7/cc/c04.c's doret() types
+ * RFORCE with the converted value's own type): the value onto the stack,
+ * stored and popped into dmath.o's "fac", and its address left in AX -
+ * atof.o's "return(fl)": "lea ax,fl / call fldd / lea ax,fac / call
+ * fstdp / lea ax,fac" (p5_call's float function returns the same way). */
 static void gen_fp_rforce(GenState *g)
 {
     Val v = pop_float(g, "a returned floating value");
@@ -5226,86 +5955,27 @@ static void gen_fp_rforce(GenState *g)
 /* Pushes a floating call argument - a double, which is what a float
  * becomes on the runtime's stack - onto the machine stack: the value
  * onto the floating-point stack, 8 bytes of machine stack reserved and
- * the value stored and popped into them - ecvt.o's "cvt(arg, ...)":
- * "lea ax,*4.(bp) / call fldd / sub sp,*8. / mov ax,sp / call fstdp".
- * Returns the words pushed, 4. A constant argument is refused: its .data
- * block would be written when it is read, ahead of the arguments pushed
- * before it - v7 writes it right before its own push. */
+ * the value stored and popped into them - "lea ax,*-12.(bp) / call fldd
+ * / sub sp,*8 / mov ax,sp / call fstdp" (06_fltfunc, p4_const, p5_call:
+ * "*8", no decimal point, unlike every other constant). Returns the
+ * words pushed, 4. */
 static int push_fp_arg(GenState *g, Val v)
 {
-    if (v.kind == VK_FCON)
-        gen_fatal("a floating constant as a call argument is not yet "
-                  "supported - see src/mutos_cc/README.md");
     fp_load(g, v);
-    ins2(g, "sub", o_reg("sp"), o_imm(8));
+    ins2(g, "sub", o_reg("sp"), o_sym("*8"));
     ins2(g, "mov", o_reg("ax"), o_reg("sp"));
     ins1(g, "call", o_sym("fstdp"));
     g->nfloat = 1;
     return 4;
 }
 
-/* The arguments of a call with a floating one are pushed right to left
- * as they stand, so every argument but the last (pushed first) must
- * still be where its NAME/CON/AMPER left it - an argument computed when
- * read would have its code ahead of the pushes that the real compiler
- * does first (and the evaluation-order plans, which place such code,
- * never handle a floating expression). */
+/* A streamed call (no plan) never has a floating argument: every
+ * expression with one is planned, and plan_call() pushes it. */
 static void check_fp_args(const Val *items, int nargs)
 {
-    int any = 0;
-    for (int i = 0; i < nargs; i++) {
-        if (items[i].kind == VK_FCON)
-            gen_fatal("a floating constant as a call argument is not yet "
-                      "supported - see src/mutos_cc/README.md");
+    for (int i = 0; i < nargs; i++)
         if (is_float_val(&items[i]))
-            any = 1;
-    }
-    if (!any)
-        return;
-    for (int i = 0; i < nargs - 1; i++) {
-        const Val *v = &items[i];
-        int codefree = v->kind == VK_IMM || v->kind == VK_MEM ||
-                       v->kind == VK_STATIC || v->kind == VK_MEM_DIRECT ||
-                       v->kind == VK_FMEM || v->kind == VK_STATICADDR ||
-                       v->kind == VK_LCON ||
-                       (v->kind == VK_REG && v->regvar);
-        if (!codefree)
-            gen_fatal("a call with a 'float'/'double' argument whose other "
-                      "arguments (but the last) are not plain variables or "
-                      "constants is not yet supported - see "
-                      "src/mutos_cc/README.md");
-    }
-}
-
-/* The one stack-with-stack shape gen_fp_binop() accepts - a computed
- * left operand and an int converted to floating on the right - is
- * generated in postfix order, which is v7's order only while the int is
- * no harder than the left operand (acommute() would put a harder '+'/'*'
- * operand first; '-'/'/' would take a different template): so the int
- * must be what atof.o shows, a variable or a variable plus or minus a
- * constant ("c - '0'"). Checked on the pre-scanned tree
- * (plan_expression()). */
-static void float_order_check(const ETree *t)
-{
-    for (int i = 0; i < t->n; i++) {
-        const ENode *n = &t->v[i];
-        if (n->type != TY_DOUBLE || !fp_opname(n->op))
-            continue;
-        const ENode *r = &t->v[n->kid[1]];
-        if (r->op != OP_ITOF)
-            continue;
-        const ENode *x = &t->v[r->kid[0]];
-        if (x->op == OP_CON || x->op == OP_NAME)
-            continue;
-        if ((x->op == OP_PLUS || x->op == OP_MINUS) && x->type == TY_INT &&
-            t->v[x->kid[0]].op == OP_NAME && t->v[x->kid[1]].op == OP_CON)
-            continue;
-        gen_fatal("an int right operand of a floating '+', '-', '*' or '/' "
-                  "is not yet supported unless it is a variable, or a "
-                  "variable plus or minus a constant (the real compiler's "
-                  "operand order for anything harder is not known) - see "
-                  "src/mutos_cc/README.md");
-    }
+            gen_fatal("internal: a floating call argument outside a plan");
 }
 
 int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
@@ -5319,11 +5989,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
          * where the next opcode is read from; otherwise, at the start
          * of each expression, check whether it needs one. */
         plan_step(&g, temp1);
-        if (g.valsp == 0)
-            g.sfcon_seen = 0;    /* see its own comment */
         if (!g.plan.active && g.valsp == 0 && plan_expression(&g, temp1))
             plan_step(&g, temp1);
 
+        g.op_off = ftell(temp1);
         int op = c1_read_op(temp1, "temp1");
         if (op == OP_EOFC)
             break;
@@ -5514,6 +6183,17 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_NAME: {
             int hclass = c1_read_num(temp1, "temp1");
             int type   = c1_read_num(temp1, "temp1");
+            if (hclass == SC_EXTERN && !ty_is_func(type) &&
+                (type == TY_FLOAT || type == TY_DOUBLE)) {
+                /* A file-scope float or double - see "Floating point". */
+                Val fv = {0};
+                fv.kind = VK_FMEM;
+                fv.fmode = FM_SYM;
+                fv.sym = intern_name(&g, c1_read_sym(temp1, "temp1"));
+                fv.fdouble = (type == TY_DOUBLE);
+                push_val(&g, fv);
+                break;
+            }
             if (hclass == SC_EXTERN && !ty_is_func(type)) {
                 /* A file-scope variable ("int counter;", "static int
                  * hidden;", "extern int total;" - every file-scope name
@@ -5552,13 +6232,25 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * to char"); the result's own type is checked again by
                  * OP_CALL. */
                 if (!(ty_is_word(ty_decref(type)) || ty_decref(type) == TY_LONG ||
-                      ty_decref(type) == TY_DOUBLE))
+                      ty_decref(type) == TY_DOUBLE ||
+                      ty_decref(type) == TY_FLOAT))
                     gen_fatal("NAME with storage class SC_EXTERN and "
                               "type %d not yet supported (only a called "
-                              "function returning an int, a long, a double "
-                              "or a pointer is covered so far)", type);
+                              "function returning an int, a long, a float, a "
+                              "double or a pointer is covered so far)", type);
                 char *name = c1_read_sym(temp1, "temp1");
                 push_val(&g, val_func(name));
+                break;
+            }
+            if (hclass == SC_STATIC && (type == TY_FLOAT || type == TY_DOUBLE)) {
+                /* A local static float or double - "L4" (fltprobe/
+                 * p3_global.s.golden's "lea ax,L4"). */
+                Val fv = {0};
+                fv.kind = VK_FMEM;
+                fv.fmode = FM_LAB;
+                fv.offset = c1_read_num(temp1, "temp1");
+                fv.fdouble = (type == TY_DOUBLE);
+                push_val(&g, fv);
                 break;
             }
             if (hclass == SC_STATIC) {
@@ -5694,9 +6386,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             break;
 
         case OP_LTOF:
-            gen_fatal("converting a 'long' to 'float'/'double' (LTOF) is not "
-                      "yet supported - no golden confirms the registers libc's "
-                      "ltof takes it in - see src/mutos_cc/README.md");
+            gen_ltof(&g, c1_read_num(temp1, "temp1")); /* "Floating point" */
+            break;
 
         case OP_LCON: {
             /* A 'long' constant. Deliberately deferred (unlike every
@@ -5865,8 +6556,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "TY_LONG is covered so far)", type);
             Val v = materialize(&g, pop_val(&g));
             emit_cwd_from(&g, o_val(v));
-            put_seq(&g, SEQ_DXAX_TO_DISI);
-            push_val(&g, val_long());
+            push_val(&g, emit_dxax_to_long(&g));
             break;
         }
 
@@ -6182,10 +6872,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
             Val l, r;
+            int rcond = g.valsp >= 1 &&
+                        g.valstack[g.valsp - 1].kind == VK_COND;
             pop_operands_ex(&g, &l, &r, POP_CHARX);
             if (l.kind == VK_MEM_DIRECT || r.kind == VK_MEM_DIRECT)
                 gen_fatal("an address used in int %s is not yet supported - "
                           "see src/mutos_cc/README.md", aluop(op)->name);
+            /* v7's optim() makes "x - c" (a constant right operand) "x +
+             * -c" before any code is chosen: fltprobe/05_fltasop.s.golden's
+             * "c - '0'" -> "add ax,*-48." (as gen_charx_binop() already
+             * did for a char). "n - 1" stays "dec di" (04_funcs/
+             * 03_recfact) - "+ -1" below. */
+            if (op == OP_MINUS && r.kind == VK_IMM && !r.charcon &&
+                l.kind != VK_CHARX) {
+                op = OP_PLUS;
+                r.imm = -r.imm;
+            }
             if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
                 /* A char operand read as an int (VK_CHARX): each one
                  * can only be loaded into AX (movb/cbw), so of two of
@@ -6230,6 +6932,35 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     push_val(&g, x);
                     break;
                 }
+                if (cons.op == OP_ITOF && !l.bytev && !l.structv &&
+                    g.itof_reg == 1 /* FREG_AX - see gen_itof() */) {
+                    /* Converted to floating next: computed in AX, where
+                     * "itof" takes it - fltprobe/05_fltasop.s.golden's
+                     * "10*fl + (c-'0')" -> "mov ax,*-42.(bp)" / "add
+                     * ax,*-48." / "call itof" (see gen_itof()). "+ 1" and
+                     * "- 1" ("inc"/"dec"?) have no golden in AX. */
+                    if (r.imm == 1 || r.imm == -1 || r.imm == 0)
+                        gen_fatal("converting \"x + 1\", \"x - 1\" or \"x + "
+                                  "0\" to 'float'/'double' is not yet "
+                                  "supported - see src/mutos_cc/README.md");
+                    ins2(&g, "mov", o_reg("ax"), o_val(l));
+                    ins2(&g, "add", o_reg("ax"), o_imm(r.imm));
+                    push_val(&g, val_reg("ax"));
+                    break;
+                }
+            }
+            if (op == OP_PLUS && rcond && r.kind == VK_REG &&
+                strcmp(r.reg, "di") == 0 && !r.regvar &&
+                (l.kind == VK_MEM || l.kind == VK_STATIC) && !l.bytev &&
+                !l.structv) {
+                /* A comparison's 0/1 (just materialized into DI) plus a
+                 * variable: v7's acommute() puts the comparison first (its
+                 * degree is higher) and adds the variable to it -
+                 * fltprobe/p1_compare.s.golden's "r = r + (d < e)" ->
+                 * ... "L10008:add di,*-28.(bp)". */
+                ins2(&g, "add", o_reg("di"), o_val(l));
+                push_val(&g, val_reg("di"));
+                break;
             }
             if (op == OP_PLUS && (r.kind == VK_IND || l.kind == VK_IND)) {
                 /* One operand is itself a dereferenced pointer
@@ -6336,10 +7067,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * "add di,*1." - confirmed against 07_ternary.s.golden's
                  * "a = a + 1;" -> "inc\tdi" (never an "add"). */
                 ins1(&g, "inc", o_reg("di"));
-            } else if (r.kind == VK_IMM && r.imm == 1 && op == OP_MINUS) {
-                /* The symmetric "- 1" -> DEC case, now confirmed
-                 * against 04_funcs/03_recfact.s.golden's "n - 1" ->
-                 * "dec\tdi" (never a "sub") and 04_mutrec.s.golden's
+            } else if (r.kind == VK_IMM && r.imm == -1 && op == OP_PLUS) {
+                /* The symmetric "- 1" (made "+ -1" above) -> DEC case,
+                 * confirmed against 04_funcs/03_recfact.s.golden's "n -
+                 * 1" -> "dec\tdi" (never a "sub") and 04_mutrec.s.golden's
                  * identical "n - 1" in both isodd()/iseven(). */
                 ins1(&g, "dec", o_reg("di"));
             } else {
@@ -6503,9 +7234,31 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* The address of a char is an ordinary word - taking it
              * reads no byte (a char array's or string literal's NAME is
              * typed with its char element - see OP_NAME). */
-            Val v = pop_val_ex(&g, POP_BYTE | POP_STRUCT);
+            Val v = pop_val_ex(&g, POP_BYTE | POP_STRUCT | POP_FLOAT);
             v.bytev = 0;
             v.structv = 0;     /* "&p" of a struct: an ordinary address */
+            if (v.kind == VK_FMEM) {
+                /* A float or double object's address: a local's as any
+                 * local's (an array decaying - p3_global's "p = arr" ->
+                 * "lea di,*-20.(bp)"), a file-scope or static one's a
+                 * link-time constant ("gp = &gd" -> "mov _gp,#_gd"). */
+                if (v.fmode == FM_BP) {
+                    v.kind = VK_MEM;
+                } else if ((v.fmode == FM_SYM || v.fmode == FM_LAB) &&
+                           v.imm == 0) {
+                    Val r = {0};
+                    r.kind = VK_STATICADDR;
+                    r.offset = (v.fmode == FM_LAB) ? v.offset : 0;
+                    r.sym = (v.fmode == FM_SYM) ? v.sym : NULL;
+                    push_val(&g, r);
+                    break;
+                } else {
+                    gen_fatal("'&' of this 'float'/'double' operand is not yet "
+                              "supported - see src/mutos_cc/README.md");
+                }
+            } else if (is_float_val(&v)) {
+                gen_fatal("'&' of a 'float'/'double' value is not supported");
+            }
             if (v.kind == VK_STATIC) {
                 /* The address of a static object - a string literal's
                  * (c0's putstr() NAME(SC_STATIC, TY_CHAR, <label>) +
@@ -6617,8 +7370,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "not yet supported - see src/mutos_cc/README.md");
                 long sz = size.imm;
                 if (sz != 1 && sz != 2 && sz != 4)
-                    gen_fatal("ITOP scaling by a non-power-of-two size "
-                              "(%ld) is not yet supported", sz);
+                    gen_fatal("ITOP scaling by %ld is not yet supported "
+                              "(only an element of 1, 2 or 4 bytes)", sz);
                 /* A base register either way: the displacement is added
                  * through it ("*2.(si)"). */
                 const char *reg = di_busy(&g) ? "si" : "di";
@@ -6739,8 +7492,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             load_into(&g, reg, amt);
             long sz = size.imm;
             if (sz != 1 && sz != 2 && sz != 4)
-                gen_fatal("ITOP scaling by a non-power-of-two size "
-                          "(%ld) is not yet supported", sz);
+                gen_fatal("ITOP scaling by %ld is not yet supported "
+                          "(only an element of 1, 2 or 4 bytes)", sz);
             for (long s = sz; s > 1; s /= 2)
                 ins2(&g, "sal", o_reg(reg), o_shift1());
             push_val(&g, val_reg(reg));
@@ -6883,6 +7636,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * 'char' result is a byte operand (see the TY_CHAR case
              * below); a 'long' one (a two-word load) is a different
              * instruction shape no golden shows yet. */
+            if (type == TY_FLOAT || type == TY_DOUBLE) {
+                /* Through a pointer variable - loaded into DI only when
+                 * the value's address is needed (fp_lea()): p3_global's
+                 * "*p = 2.0" -> "lea ax,L10003" / "call flds" / "mov di,
+                 * *-22.(bp)" / "lea ax,(di)" / "call fstdp". An element
+                 * or member at a constant offset never gets here (the
+                 * planner folds it - see "Floating point"). */
+                Val ptr = pop_val(&g);
+                if (ptr.kind != VK_MEM && ptr.kind != VK_STATIC)
+                    gen_fatal("reading a 'float'/'double' through anything but "
+                              "a pointer variable is not yet supported - see "
+                              "src/mutos_cc/README.md");
+                Val fv = {0};
+                fv.kind = VK_FMEM;
+                fv.fmode = FM_IND;
+                fv.cl = simple_of(ptr);
+                fv.fdouble = (type == TY_DOUBLE);
+                push_val(&g, fv);
+                break;
+            }
             if (!ty_is_word(type) && type != TY_CHAR)
                 gen_fatal("STAR of type %d not yet supported (only an "
                           "int, char, pointer or function result is covered "
@@ -7666,6 +8439,10 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * node following these in temp1, so the memory-operand
              * write has to be this node's own job. */
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_DOUBLE && (op == OP_ASPLUS || op == OP_ASMINUS)) {
+                gen_fp_asop(&g, temp1, op);     /* see "Floating point" */
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
@@ -7743,7 +8520,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * compiler's actual strength-reduction thresholds. */
             int type = c1_read_num(temp1, "temp1");
             if (type == TY_DOUBLE) {
-                gen_fp_asop(&g, op);     /* see "Floating point" */
+                gen_fp_asop(&g, temp1, op);     /* see "Floating point" */
                 break;
             }
             if (type != TY_INT)
@@ -7753,6 +8530,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
                           "not yet supported");
+            if (rhs.kind == VK_REG && strcmp(rhs.reg, "ax") == 0 &&
+                !rhs.regvar) {
+                /* A right-hand side computed into AX - so far only a
+                 * floating value converted ("i *= e", mutos_c0's FTOI):
+                 * fltprobe/p2_arith.s.golden's "call ftoi" / "mov ax,ax"
+                 * / "imul *-30.(bp)" / "mov *-30.(bp),ax" - the template's
+                 * "mov ax,R" with R = AX itself. */
+                ins2(&g, "mov", o_reg("ax"), o_reg("ax"));
+                ins1(&g, "imul", o_val(lhs));
+                ins2(&g, "mov", o_val(lhs), o_reg("ax"));
+                break;
+            }
             int shift = 0;
             if (rhs.kind == VK_IMM && rhs.imm >= 2) {
                 long v = rhs.imm;
@@ -7797,7 +8586,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * AX/DX, never directly in memory. */
             int type = c1_read_num(temp1, "temp1");
             if (type == TY_DOUBLE) {
-                gen_fp_asop(&g, op);     /* see "Floating point" - '%=' is
+                gen_fp_asop(&g, temp1, op);     /* see "Floating point" - '%=' is
                                           * refused there */
                 break;
             }
@@ -7898,7 +8687,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * ASSIGN case below, so it is handled first and
                  * separately rather than folded into the single
                  * mov/movb path. */
-                Val rhs = pop_val(&g);
+                Val rhs = pop_val_ex(&g, POP_LPAIR);
                 Val lhs = pop_val(&g);
                 if (lhs.kind != VK_MEM)
                     gen_fatal("assignment to a non-memory 'long' lvalue "
@@ -7917,8 +8706,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                               "lvalue is not yet supported (no golden "
                               "reference confirms the widening sequence "
                               "a real compiler would need here)");
-                ins2(&g, "mov", o_mem(lhs.offset + MCC_SZINT), o_reg("si"));
-                ins2(&g, "mov", o_mem(lhs.offset), o_reg("di"));
+                /* low word, then high word - from SI and DI, or DX and SI
+                 * (see Val's `lpair`) */
+                ins2(&g, "mov", o_mem(lhs.offset + MCC_SZINT),
+                     o_reg(rhs.lpair ? "dx" : "si"));
+                ins2(&g, "mov", o_mem(lhs.offset),
+                     o_reg(rhs.lpair ? "si" : "di"));
                 push_val(&g, rhs);
                 break;
             }

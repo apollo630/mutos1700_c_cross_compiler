@@ -796,6 +796,14 @@ static void emit_to_float(FILE *t1, int ft, ExprVal v, int line)
         outcode(t1, "BN", OP_ITOF, ft);
         return;
     }
+    if (v.type == TY_CHAR && !v.is_const) {
+        /* A char widened first, as for any int operator (ITOC(INT)),
+         * then converted: fltprobe/p5_call.1.golden's "d = c" - NAME c
+         * (CHAR), ITOC(INT), ITOF(DOUBLE). */
+        outcode(t1, "BN", OP_ITOC, TY_INT);
+        outcode(t1, "BN", OP_ITOF, ft);
+        return;
+    }
     c0_error_at(line, "converting a '%s' value to 'float'/'double' is not yet "
                       "supported - see src/mutos_cc/README.md",
                 v.type == TY_CHAR ? "char" : v.type == TY_UNSIGN ? "unsigned"
@@ -806,14 +814,20 @@ static void emit_to_float(FILE *t1, int ft, ExprVal v, int line)
  * `target`: FTOI to int, FTOL to long. */
 static void emit_from_float(FILE *t1, int target, int line)
 {
-    if (target == TY_INT)
+    if (target == TY_INT) {
         outcode(t1, "BN", OP_FTOI, TY_INT);
-    else if (target == TY_LONG)
+    } else if (target == TY_LONG) {
         outcode(t1, "BN", OP_FTOL, TY_LONG);
-    else
+    } else if (target == TY_CHAR) {
+        /* Through an int: fltprobe/p5_call.1.golden's "c = d" - FTOI(INT),
+         * ITOC(CHAR). */
+        outcode(t1, "BN", OP_FTOI, TY_INT);
+        outcode(t1, "BN", OP_ITOC, TY_CHAR);
+    } else {
         c0_error_at(line, "converting a 'float'/'double' value to this type "
-                          "is not yet supported (only to 'int' and 'long') - "
-                          "see src/mutos_cc/README.md");
+                          "is not yet supported (only to 'int', 'long' and "
+                          "'char') - see src/mutos_cc/README.md");
+    }
 }
 
 /* The type an assignment of type `t` is written with: a float target's
@@ -1306,6 +1320,32 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
          * "t = t1" for an assignment operator). */
         return ev_dynamic_typed(sym ? sym->type : TY_INT);
     }
+    if (p->cur.kind == T_IDENT) {
+        /* An embedded floating compound assignment whose value is used,
+         * "e = (d *= e)" (fltprobe/p2_arith.1.golden: NAME d, NAME e,
+         * ASTIMES(DOUBLE), then the outer ASSIGN) - a float or double
+         * variable as the target, as parse_assign_stmt() takes one. */
+        TokKind k2 = peek2_kind(p);
+        int optag = k2 == T_STAREQ ? OP_ASTIMES : k2 == T_SLASHEQ ? OP_ASDIV :
+                    k2 == T_PLUSEQ ? OP_ASPLUS : k2 == T_MINUSEQ ? OP_ASMINUS : 0;
+        SymEntry *sym = optag ? lookup_var(p, p->cur.ident) : NULL;
+        if (sym && ty_is_float(sym->type) && !sym->is_array) {
+            int line = p->cur.line;
+            advance(p); /* consume IDENT */
+            advance(p); /* consume the operator */
+            emit_name(t1, sym, sym->type);
+            ExprVal rhs = parse_expr(p, t1);
+            emit_materialize(t1, rhs);
+            if (!rhs.is_const && rhs.type == TY_CHAR)
+                c0_error_at(line, "a 'char' right-hand side of a 'float'/"
+                                  "'double' compound assignment is not yet "
+                                  "supported - see src/mutos_cc/README.md");
+            else
+                emit_to_float(t1, sym->type, rhs, line);
+            outcode(t1, "BN", optag, TY_DOUBLE);
+            return ev_dynamic_typed(sym->type);
+        }
+    }
     return parse_expr(p, t1);
 }
 
@@ -1713,11 +1753,6 @@ static void parse_struct_body(Parser *p, StructDef *sd)
             continue;
         }
         TypeSpec ts = parse_type_spec(p);
-        if (ty_is_float(ts.type))
-            c0_error_at(p->cur.line, "a 'float'/'double' struct member is not "
-                                      "yet supported (only 'float'/'double' "
-                                      "local variables) - see "
-                                      "src/mutos_cc/README.md");
         for (;;) {
             int ptr_degree = 0;
             while (p->cur.kind == T_STAR) {
@@ -2621,6 +2656,23 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             int target = cts.type;
             if (!expect(p, T_RPAREN, "')'"))
                 return ev_dynamic();
+            if (p->cur.kind == T_LPAREN &&
+                (target == TY_INT || target == TY_LONG)) {
+                /* A parenthesized floating expression converted to an
+                 * integer: fltprobe/p3_global.1.golden's "(int) (gd + gi
+                 * + ...)" - the expression's tree, then FTOI. */
+                int line = p->cur.line;
+                ExprVal v = parse_primary(p, t1);
+                emit_materialize(t1, v);
+                if (v.is_const || !ty_is_float(v.type)) {
+                    c0_error_at(line, "a cast of a parenthesized expression is "
+                                      "only supported for a 'float'/'double' "
+                                      "one so far - see src/mutos_cc/README.md");
+                    return ev_dynamic();
+                }
+                emit_from_float(t1, target, line);
+                return ev_dynamic_typed(target);
+            }
             if (p->cur.kind != T_IDENT) {
                 c0_error_at(p->cur.line,
                     "a cast's operand must be a plain variable name so "
@@ -3894,10 +3946,9 @@ static void parse_decl(Parser *p, FILE *t1)
          * one), or N (x M) elements of the element's own size. */
         if (decltype == TY_STRUCT && (!bsdef || !bsdef->complete))
             c0_error_at(line, "'%s' has an incomplete struct type", name);
-        if (ty_is_float(basetype) && (ptr_degree > 0 || is_array))
-            c0_error_at(line, "a pointer to or an array of 'float'/'double' is "
-                               "not yet supported (only plain 'float'/'double' "
-                               "local variables) - see src/mutos_cc/README.md");
+        if (ty_is_float(basetype) && ptr_degree > 1)
+            c0_error_at(line, "a pointer to a pointer to 'float'/'double' is "
+                               "not yet supported - see src/mutos_cc/README.md");
         int size = rlength((is_array ? arraylen * (dim2 ? dim2 : 1) : 1) *
                            (long)type_size(decltype, bsdef, 0));
 
@@ -3980,17 +4031,22 @@ static void parse_static_decl(Parser *p, FILE *t1)
     } else if (p->cur.kind == T_KW_LONG) {
         symtype = TY_LONG;
         slotsize = MCC_SZLONG;
+    } else if (p->cur.kind == T_KW_DOUBLE || p->cur.kind == T_KW_FLOAT) {
+        /* "static double ld;" - fltprobe/p3_global.1.golden: BSS,
+         * LABEL(4), SSPACE(8), PROG, SNAME("_ld", 4). */
+        symtype = (p->cur.kind == T_KW_DOUBLE) ? TY_DOUBLE : TY_FLOAT;
+        slotsize = (symtype == TY_DOUBLE) ? 8 : 4;
     } else {
         c0_error_at(p->cur.line,
-            "only 'int'/'char'/'long' static declarations are "
-            "supported so far - see src/mutos_cc/README.md");
+            "only 'int'/'char'/'long'/'float'/'double' static declarations "
+            "are supported so far - see src/mutos_cc/README.md");
         while (p->cur.kind != T_SEMI && p->cur.kind != T_EOF)
             advance(p);
         if (p->cur.kind == T_SEMI)
             advance(p);
         return;
     }
-    advance(p); /* consume 'int'/'char'/'long' */
+    advance(p); /* consume 'int'/'char'/'long'/'float'/'double' */
 
     for (;;) {
         if (p->cur.kind != T_IDENT) {
@@ -4244,23 +4300,34 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
         if (sym)
             convert_assign(t1, assign_type, rhs, line);
     } else if (ty_is_float(assign_type) &&
-               (optag == OP_ASTIMES || optag == OP_ASDIV) && subtype < 0) {
-        /* "a *= b", "a /= b" into a float/double variable (see "Floating
-         * point"): v7's build() converts the right-hand side to the
-         * target's own type, as for '=' (ITOF(FLOAT) into a float), and
-         * types the operator DOUBLE. */
+               (optag == OP_ASTIMES || optag == OP_ASDIV ||
+                optag == OP_ASPLUS || optag == OP_ASMINUS) && subtype < 0) {
+        /* "a *= b", "a /= b", "a += b", "a -= b" into a float/double
+         * variable (see "Floating point"): v7's build() converts the
+         * right-hand side to the target's own type, as for '=' (ITOF(FLOAT)
+         * into a float), and types the operator DOUBLE - fltprobe/
+         * p2_arith.1.golden's "d += 1" (CON, ITOF(DOUBLE), ASPLUS(DOUBLE)),
+         * "a -= 0.5" into a float (the FCON as it is). */
         if (!rhs.is_const && rhs.type == TY_CHAR)
             c0_error_at(line, "a 'char' right-hand side of a 'float'/'double' "
                               "compound assignment is not yet supported - see "
                               "src/mutos_cc/README.md");
         else
             emit_to_float(t1, assign_type, rhs, line);
+    } else if (!ty_is_float(assign_type) && optag == OP_ASTIMES &&
+               subtype < 0 && (assign_type == TY_INT) &&
+               ty_is_float(rhs.type) && !rhs.is_const) {
+        /* "i *= e", an int target: the right-hand side converted to the
+         * target's type first, as for '=' (FTOI) - fltprobe/p2_arith.
+         * 1.golden: NAME i, NAME e, FTOI(INT), ASTIMES(INT). The value is
+         * then i * (int)e, not (int)(i * e): v7's own semantics. */
+        outcode(t1, "BN", OP_FTOI, TY_INT);
     } else if (ty_is_float(assign_type) ||
                (ty_is_float(rhs.type) && !rhs.is_const)) {
         c0_error_at(line, "a compound assignment with a 'float'/'double' "
-                          "operand is not yet supported (only '*=' and '/=' "
-                          "into a 'float'/'double' variable) - see "
-                          "src/mutos_cc/README.md");
+                          "operand is not yet supported (only '*=', '/=', "
+                          "'+=' and '-=' into a 'float'/'double' variable, and "
+                          "'*=' into an int) - see src/mutos_cc/README.md");
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
@@ -5408,12 +5475,21 @@ static void cfunc(Parser *p, const char *name, FILE *t1,
 static void parse_global_chararray(Parser *p, FILE *t1, int sclass,
                                    const char *name, int line);
 
+static void parse_global_fvar(Parser *p, FILE *t1, int sclass, int type,
+                              int ptr_degree, StructDef *sdef,
+                              const char *name, int line);
+
 static void parse_global_var(Parser *p, FILE *t1, int sclass, int type,
-                             int ptr_degree, const char *name, int line)
+                             int ptr_degree, StructDef *sdef,
+                             const char *name, int line)
 {
     if (ptr_degree == 0 && type == TY_CHAR && p->cur.kind == T_LBRACK &&
         peek2_kind(p) == T_RBRACK) {
         parse_global_chararray(p, t1, sclass, name, line);
+        return;
+    }
+    if (ty_is_float(type) || type == TY_STRUCT) {
+        parse_global_fvar(p, t1, sclass, type, ptr_degree, sdef, name, line);
         return;
     }
     if (ptr_degree > 0 || p->cur.kind == T_LBRACK || p->cur.kind == T_ASSIGN) {
@@ -5449,6 +5525,108 @@ static void parse_global_var(Parser *p, FILE *t1, int sclass, int type,
     }
 
     int size = rlength(size_of_type(type));
+    if (sclass == 0)
+        outcode(t1, "BSN", OP_CSPACE, sym->name, size);
+    else if (is_static)
+        outcode(t1, "BBSBN", OP_BSS, OP_NLABEL, sym->name, OP_SSPACE, size);
+    /* 'extern': a declaration only - no wire output. */
+}
+
+/*
+ * A file-scope floating variable, array of them or pointer to them, or a
+ * struct variable (fltprobe/p3_global.1.golden):
+ *
+ *   "double gd;" / "float gf;"      CSPACE("_gd", 8) / CSPACE("_gf", 4)
+ *   "static double sd;"             BSS, NLABEL("_sd"), SSPACE(8)
+ *   "extern double xd;"             nothing
+ *   "double ga[3];"                 CSPACE("_ga", 24)
+ *   "double *gp;"                   CSPACE("_gp", 2)
+ *   "struct pt {...} gs;"           CSPACE("_gs", 12)
+ *   "double gi = 2.5;"              SYMDEF("_gi"), DATA, NLABEL("_gi"),
+ *                                   FCON(DOUBLE, "2.5"), INIT(DOUBLE),
+ *                                   EXPR(line) - "float gfi = 1.5;" the
+ *                                   same with INIT(FLOAT)
+ *
+ * - v7/cc/c02.c's extdef(): the tentative definitions as for an int, an
+ * initialized one "setinit(ds); if (sclass==EXTERN) outcode(SYMDEF);
+ * outcode(DATA, NLABEL)" and cinit()'s rcexpr(block(INIT, type, tree)) -
+ * c04.c's rcexpr() writes the tree, INIT with the variable's type, and
+ * EXPR. An initializer other than a floating literal (an int one, a
+ * negated one, an expression), a pointer's or array's initializer, a
+ * struct's, a pointer to a struct, and a floating array of pointers have
+ * no golden and are refused. A struct at file scope is accepted whatever
+ * its members; mutos_c1 generates only a floating member's access (an
+ * int one it refuses, as it refuses an int file-scope array's element).
+ */
+static void parse_global_fvar(Parser *p, FILE *t1, int sclass, int type,
+                              int ptr_degree, StructDef *sdef,
+                              const char *name, int line)
+{
+    int is_static = (sclass == T_KW_STATIC);
+    int nelem = 0;
+    int refused = 0;
+    if (type == TY_STRUCT && (ptr_degree > 0 || !sdef || !sdef->complete))
+        refused = 1;
+    if (ptr_degree > 1)
+        refused = 1;
+    if (p->cur.kind == T_LBRACK) {
+        advance(p);
+        if (p->cur.kind != T_ICON || p->cur.ival <= 0 || ptr_degree > 0 ||
+            type == TY_STRUCT) {
+            refused = 1;
+        } else {
+            nelem = (int)p->cur.ival;
+            advance(p);
+        }
+        if (!refused)
+            expect(p, T_RBRACK, "']'");
+    }
+    int init = 0;
+    if (!refused && p->cur.kind == T_ASSIGN) {
+        if (!ty_is_float(type) || ptr_degree > 0 || nelem > 0 ||
+            sclass == T_KW_EXTERN || peek2_kind(p) != T_FCON)
+            refused = 1;
+        else
+            init = 1;
+    }
+    int symtype = type;
+    for (int k = 0; k < ptr_degree; k++)
+        symtype = ty_ptr_of(symtype);
+    SymEntry *sym = symtab_lookup(&p->globals, name);
+    /* Declared before: accepted when type, size and linkage agree
+     * ("extern double xd;" ... "double xd;" - p3_global's CSPACE("_xd", 8)
+     * at the end), as for an int (parse_global_var()). */
+    if (sym && (sym->type != symtype || sym->is_static != is_static ||
+                sym->is_array != (nelem > 0) || sym->sdef != sdef || init))
+        refused = 1;
+    if (refused || is_known_func(p, name)) {
+        c0_error_at(line, "this file-scope declaration of '%s' is not yet "
+                          "supported (a floating variable, array or pointer "
+                          "- with at most a floating literal as initializer "
+                          "- or a struct variable, declared once) - see "
+                          "src/mutos_cc/README.md", name);
+        while (p->cur.kind != T_SEMI && p->cur.kind != T_COMMA &&
+               p->cur.kind != T_EOF)
+            advance(p);
+        return;
+    }
+    if (!sym) {
+        sym = symtab_declare_global(&p->globals, name, symtype, is_static);
+        sym->sdef = sdef;
+        sym->is_ptr = (ptr_degree > 0);
+        sym->is_array = (nelem > 0);
+    }
+    int size = rlength((long)(nelem ? nelem : 1) * type_size(symtype, sdef, 0));
+    if (init) {
+        advance(p);                               /* '=' */
+        if (sclass == 0)
+            outcode(t1, "BS", OP_SYMDEF, sym->name);
+        outcode(t1, "BBS", OP_DATA, OP_NLABEL, sym->name);
+        (void)parse_primary(p, t1);                /* the FCON */
+        outcode(t1, "BN", OP_INIT, type);
+        outcode(t1, "BN", OP_EXPR, line);
+        return;
+    }
     if (sclass == 0)
         outcode(t1, "BSN", OP_CSPACE, sym->name, size);
     else if (is_static)
@@ -5631,11 +5809,13 @@ static void parse_extdef(Parser *p, FILE *t1)
     }
     int ret_type = TY_INT;
     int has_type = 0;
+    StructDef *base_sdef = NULL;
     if (at_type_spec(p)) {
         /* A type keyword, or a struct/union/enum specifier (with or
          * without a body) or a typedef name - see parse_type_spec(). */
         TypeSpec ts = parse_type_spec(p);
         ret_type = ts.type;
+        base_sdef = ts.sdef;
         has_type = 1;
         if (p->cur.kind == T_SEMI) {
             /* "struct point { int x; int y; };", "enum color { RED,
@@ -5645,12 +5825,15 @@ static void parse_extdef(Parser *p, FILE *t1)
             advance(p);
             return;
         }
-        if (ret_type == TY_STRUCT || ret_type == TY_UNSIGN) {
-            c0_error_at(p->cur.line, "a file-scope struct/union or 'unsigned' "
-                                      "variable, or a function returning a "
-                                      "struct/union (or a pointer to one) or "
-                                      "an unsigned value, is not yet "
-                                      "supported - see src/mutos_cc/README.md");
+        if ((ret_type == TY_STRUCT &&
+             (p->cur.kind == T_STAR || peek2_kind(p) == T_LPAREN)) ||
+            ret_type == TY_UNSIGN) {
+            c0_error_at(p->cur.line, "a file-scope pointer to a struct/union "
+                                      "or 'unsigned' variable, or a function "
+                                      "returning a struct/union (or a pointer "
+                                      "to one) or an unsigned value, is not "
+                                      "yet supported - see "
+                                      "src/mutos_cc/README.md");
             skip_refused_extdef(p);
             return;
         }
@@ -5691,18 +5874,16 @@ static void parse_extdef(Parser *p, FILE *t1)
         name_tok.sval = NULL; /* an IDENT never owns one; never alias it */
         advance(p); /* consume IDENT */
 
-        /* Floating point at file scope (see "Floating point"): only a
+        /* Floating point at file scope (see "Floating point"): a
          * function returning a double - "double atof();", "double f(x)
-         * ..." - has evidence (libc.a's atof.o); a floating variable, a
-         * function returning a float or a pointer to one has none. */
-        if (ty_is_float(base_type) &&
-            (p->cur.kind != T_LPAREN || ptr_degree > 0 ||
-             base_type == TY_FLOAT)) {
-            c0_error_at(name_tok.line, "a file-scope 'float'/'double' variable, "
-                                        "or a function returning a 'float' or "
-                                        "a pointer to one, is not yet supported "
-                                        "(only a function returning a "
-                                        "'double') - see src/mutos_cc/README.md");
+         * ..." (libc.a's atof.o) - or a float (fltprobe/p5_call.1.golden:
+         * RETRN(FLOAT), its calls CALL(FLOAT)); a floating variable or a
+         * function returning a pointer to one has no evidence yet. */
+        if (ty_is_float(base_type) && p->cur.kind == T_LPAREN &&
+            ptr_degree > 0) {
+            c0_error_at(name_tok.line, "a function returning a pointer to a "
+                                        "'float'/'double' is not yet "
+                                        "supported - see src/mutos_cc/README.md");
             skip_refused_extdef(p);
             return;
         }
@@ -5716,7 +5897,7 @@ static void parse_extdef(Parser *p, FILE *t1)
                 return;
             }
             parse_global_var(p, t1, sclass, base_type, ptr_degree,
-                             name_tok.ident, name_tok.line);
+                             base_sdef, name_tok.ident, name_tok.line);
             if (p->cur.kind == T_COMMA) {
                 advance(p);
                 continue;

@@ -160,10 +160,14 @@ floating point:
 .B float
 and
 .B double
-local variables and parameters (a
+local variables, parameters (a
 .B float
 parameter is a
 .BR double ),
+arrays, pointers, structure members and local
+.B static
+variables, and file-scope floating variables, arrays and pointers,
+initialized with a floating literal or not,
 floating constants (written with their source text, never folded),
 .BR + ,
 .BR \- ,
@@ -177,33 +181,44 @@ unary
 comparisons (the node typed
 .BR int ),
 assignment,
-.B *=
+.BR *= ,
+.BR /= ,
+.B +=
 and
-.B /=
-into a floating variable, casts,
+.B \-=
+into a floating variable (also inside parentheses, its value used),
+.B *=
+into an
+.B int
+(the floating right operand converted first, as the real front end does),
+casts (of a variable, or of a parenthesized floating expression to an
+integer),
 .BR return ,
 floating call arguments and functions returning a
+.B float
+or a
 .BR double ,
 with the real front end's conversions between
+.BR char ,
 .BR int ,
 .B long
 and the floating types.
 .PP
 A constant subexpression stays folded for as long as every operand
 feeding it is constant, matching the real compiler's own front-end
-constant folding. Not yet supported, among others: file-scope
-pointers, other arrays and other initializers, file-scope structures,
+constant folding. File-scope structures are accepted (an
+.B int
+member's access is refused by
+.BR mutos_c1 (1)).
+Not yet supported, among others: other file-scope
+pointers, arrays and initializers,
 .B static
 functions, a function returning a structure or a pointer to one, a
 structure passed by value,
 .B unsigned
-variables, floating globals, arrays, pointers and structure members, a
-function returning a
-.BR float ,
-a floating value tested for truth, other operators on a floating value
-.RB ( += ,
-.BR \-= ,
-.BR % ,
+variables, a floating value tested for truth (which the real compiler
+cannot compile either), other operators on a floating value
+.RB ( % ,
 .BR ++ ,
 \&...), arrays of three or more dimensions, pointer
 subtraction, an ordered comparison of pointers, division, a right shift
