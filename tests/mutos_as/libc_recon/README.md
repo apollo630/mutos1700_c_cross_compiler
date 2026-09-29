@@ -44,8 +44,9 @@ second point below.
   dividend), so the real assembler's runtime is not exactly this one. Run on
   it under an 8086 emulator, `atof.o` gives every nonzero real constant in
   `../float_coverage/`'s goldens, and with `dmath.o`'s `zero` routine
-  clearing only `fac`'s exponent byte also their zeros but one (2026-09-29,
-  see `docs/DEVLOG.md`). Real
+  clearing only `fac`'s exponent byte also their zeros, except the all-zero
+  texts with decimal exponent 0 (2026-09-29, see `docs/DEVLOG.md`;
+  `../float_coverage/libcatof.py` runs it). Real
   hardware settled the bytes on 2026-09-28: `.float 0.00000000000000000e+00`
   assembles to exactly `bc a2 31 00` (`../float_coverage/fltzero.o.golden`),
   and `mutos_as` writes the same (with `../float_coverage/fltopen.o.golden`,

@@ -290,21 +290,15 @@ gives
 not the correctly rounded
 .BR "cd cc 4c 7d" .
 Each step of the original's double arithmetic rounds to nearest,
-ties to even.
-Whether its multiplication rounds the exact product is not known: the
-system library's own multiplication takes one partial product from the
-wrong word.
-A constant is accepted only when both products give the same bytes,
-and is otherwise rejected with an error saying so.
-That is always the case for the compiler's 18-digit form with an
-exponent from
-.B e\-32
-to
-.BR e+19 ;
-above that, and further down, some values are rejected, e.g.\&
+ties to even, and its multiplication rounds the product the system
+library's own multiplication forms, which takes one partial product
+from the wrong word; so some values are not what an exact product would
+give, e.g.\&
 .B 1.26765060022822940e+30
-(2 to the power 100), which the original stores either exactly or one
-unit less in the last place.
+(2 to the power 100) is stored one unit less in the last place,
+.BR "ff ff 7f e4" .
+Every value the conversion keeps inside the format's range is
+accepted.
 .IP
 Zero is not stored as zero bytes: the original writes exponent byte 0
 with the mantissa of 5 to the power of the number of fraction digits
@@ -319,23 +313,29 @@ for
 and
 .B 00 40 1c 00
 for
-.BR 0.0e+05 ,
-with the sign bit set for a negative zero.
-When that power is 0 (as in
+.BR 0.0e+05 ;
+when that power is 0 (as in
 .B 0
 or
 .BR 0.00000000000000000e+17 )
-the bytes are known only for an unsigned
-.B .float
-of exactly 18 digits
-.RB ( "ff ff ff 00" );
-any other such zero, and a zero whose decimal exponent is below \-39
-minus its number of digits (such as
-.BR 0e\-41 ),
-is rejected with an error, since its bytes are not known.
+it writes
+.B ff ff ff 00
+.RB ( "00 00 00 00 ff ff ff 00"
+for a
+.BR .double ).
+A minus sign flips the top bit of the byte below the exponent.
+A value whose decimal exponent is below \-39 minus its number of digits
+(such as
+.BR 1e\-41 )
+is stored with exponent byte 0 and the mantissa of its digits (for
+.BR 1e\-41 ,
+eight zero bytes), or as above if its digits are all 0; if a digit
+beyond the seventeenth or so was dropped, it is rejected.
 Values whose conversion leaves the format's exponent range at any
 step (the value itself, or the power of 5 for a large decimal
-exponent) are rejected as out of range.
+exponent, as in
+.BR 1.00000000000000000e\-38 )
+are rejected as out of range.
 .TP
 .BI .double\  number\  "[, " number " ...]"
 Like
@@ -362,9 +362,7 @@ instead of
 e.g.\&
 .BR "0d1.5d3" .
 Acceptance, zeros and range follow the same rules as for
-.BR .float ;
-since all eight bytes are stored, more values depend on the unknown
-product and are rejected.
+.BR .float .
 .PP
 Other directives this assembler does not implement are ignored.
 .SS "Branches and jumps"

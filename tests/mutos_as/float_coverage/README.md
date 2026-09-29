@@ -1,6 +1,6 @@
 # `tests/mutos_as/float_coverage/` — closing the open floating-point gaps
 
-Six hand-written, **new** assembler sources (not reconstructed from a
+Seven hand-written, **new** assembler sources (not reconstructed from a
 real object, unlike `../libc_recon/`) targeting the specific floating-point
 gaps this project's own docs already flag as open, rather than general
 "more float coverage":
@@ -13,12 +13,13 @@ gaps this project's own docs already flag as open, rather than general
 | `fltdbl.s` | `.double` (8-byte), a value needing >24 mantissa bits | succeeds | byte-identical (was refused, `.double` not implemented, until 2026-09-28) |
 | `fltopen.s` | `.float 0.0`, `.float -0.00000000000000000e+00`, `.double 0.00000000000000000e+00`, `.float 0.10000000000000000e+00` | succeeds | byte-identical (was refused until 2026-09-28; written in `../float_open/`) |
 | `fltmode.s` | four compiler-style `.double` constants splitting the rounding modes, an 18-digit exact `.float`, `.double 0.1`, a negative zero `.double`, zeros with decimal exponent 0, +4 and -25 | succeeds (2026-09-29) | byte-identical (8 of its 10 constants were refused until 2026-09-29; written in `../float_open/`) |
+| `fltmul.s` | five constants whose bytes depend on which product `dmul` rounds, zeros with decimal exponent 0 (one digit, a `.double`, negated), a value `atof` gives up on (LOGHUGE), a negative nonzero `.float` | succeeds (2026-09-29) | byte-identical (9 of its 10 constants were refused until 2026-09-29; written in `../float_open/`) |
 
-All six run in the top-level `make test` (`../run_goldens.sh` in this
+All seven run in the top-level `make test` (`../run_goldens.sh` in this
 directory), and so does `fltmodel.py` (see "The conversion model" below),
 which reads every golden here.
 
-## Why these six, specifically
+## Why these seven, specifically
 
 `tests/mutos_as/libc_recon/floatdat.s` covers `.float` constants but has
 no code around them (its own header: "not a whole object — no real
@@ -59,7 +60,8 @@ the first round left open, and moved here with its golden once
 `mutos_as` reproduced it. `fltmode.s` is the third, written there the
 same way for the one unknown the second round left - how the real
 double arithmetic rounds - and for zeros on `atof`'s multiplication
-path; it moved here on 2026-09-29.
+path; it moved here on 2026-09-29. `fltmul.s`, the fourth, asked which
+product the real multiplication rounds and moved here the same day.
 
 ## Running this
 
@@ -69,7 +71,7 @@ corpus in this project (see `tests/mutos_cc/README.md`):
 1. `make -f Makefile.mutos` — **on real MUTOS 1700 hardware / an
    accurate emulator**, from inside this directory. Produces
    `fltaddr.o`, `fltmulti.o`, `fltzero.o`, `fltdbl.o`, `fltopen.o`,
-   `fltmode.o`.
+   `fltmode.o`, `fltmul.o`.
 2. `make goldens` — **on the modern (Linux) side**, after copying the
    `*.o` back into this directory. Produces `*.o.golden` (a
    verbatim copy) and `*.o.golden_base64.txt` (base64 text) for each —
@@ -79,9 +81,9 @@ corpus in this project (see `tests/mutos_cc/README.md`):
 **Real goldens exist as of 2026-09-28** — all five sources then here
 assembled successfully on real MUTOS 1700 hardware and were pushed (each
 `<name>.o.golden` plus its `*.o.golden_base64.txt` companion);
-`fltmode.o.golden` followed on 2026-09-29. The open questions they were
-written for are resolved — see "Results" below — and `mutos_as`
-reproduces all six objects byte for byte.
+`fltmode.o.golden` and `fltmul.o.golden` followed on 2026-09-29. The
+open questions they were written for are resolved — see "Results"
+below — and `mutos_as` reproduces all seven objects byte for byte.
 
 ## Results (2026-09-28)
 
@@ -92,7 +94,7 @@ reproduces all six objects byte for byte.
   test matches exactly.
 - **`fltzero.o.golden`'s data segment is `bc a2 31 00`** — **exactly**
   the bytes `atof.o`/`ecvt.o` were already known to hold for their zero
-  constants (see "Why these six, specifically" above), now confirmed
+  constants (see "Why these seven, specifically" above), now confirmed
   from a known, hand-written `.float 0.0` source rather than an
   unreproducible compiled-C object. `mutos_as`'s `FLT_ZERO` refusal in
   `src/mutos_as/fltconst.c` can be replaced with this confirmed encoding.
@@ -168,8 +170,8 @@ double conversion, truncated.
 `dmul` and `dadd` round to nearest, ties to even; `ddiv` to nearest (its
 tie rule never matters). Two further findings came from running
 `libc.a`'s own `atof.o` on `libc.a`'s own floating-point runtime under an
-8086 emulator (a scratch harness, not part of `make test`; see
-`docs/DEVLOG.md`):
+8086 emulator (now `libcatof.py`, see below; `docs/DEVLOG.md` has the
+derivation):
 
 - It gives every **nonzero** constant in this directory byte for byte,
   so the real assembler converts like `libc.a`'s `atof`. It gives a
@@ -180,43 +182,64 @@ tie rule never matters). Two further findings came from running
   `Z0`, where no multiplication built `flexp` and `fac` holds something
   the digit loop left there.
 - `libc.a`'s `dmul` does not form the exact product: its partial-product
-  routine takes one term, a0\*b2, from the wrong word (b1). No real
-  constant so far has needed a product where that matters, so it is an
-  open question whether the real assembler's `dmul` does the same.
+  routine takes one term, a0\*b2, from the wrong word (b1). No constant
+  here needed a product where that matters, so whether the real
+  assembler's `dmul` does the same was left to the next round.
 
-## The conversion model (implemented 2026-09-28, narrowed 2026-09-29)
+## Results, fourth round: `fltmul.o.golden` (2026-09-29)
+
+| Label | Constant | Real bytes | Reading |
+|---|---|---|---|
+| `P1` | `.float 1.18059162071741130e+21` | `ff ff 7f c6` | `libc.a`'s product (exact product: `00 00 00 c7`) |
+| `P2` | `.float 1.26765060022822940e+30` | `ff ff 7f e4` | `libc.a`'s product (exact product: `00 00 00 e5`) |
+| `P3` | `.double 1.23456789012345678e+25` | `4d ea 27 82 c9 64 23 d4` | `libc.a`'s product (exact product: `a6 ...`) |
+| `P4` | `.double 1.23456789012345678e-33` | `d5 c8 7d e1 b5 20 4d 13` | `libc.a`'s product (exact product: `cb ...`) |
+| `Z54` | `.double 0.00000000000000000e-37` | `45 4e a6 40 3c 0c 27 00` | 5\*\*54 as `libc.a`'s product builds it |
+| `K1` | `.float 0e0` | `ff ff ff 00` | like `Z0` with one digit instead of 18 |
+| `K2` | `.double 0.00000000000000000e+17` | `00 00 00 00 ff ff ff 00` | `Z0`'s high half, low half 0 |
+| `K3` | `.float -0.00000000000000000e+17` | `ff ff 7f 00` | `fneg` flips bit 7 of byte 6 |
+| `LH` | `.double 1e-41` | `00 00 00 00 00 00 00 00` | LOGHUGE: `fl` = 1.0 left in `fac`, exponent byte 0 |
+| `NG` | `.float -1.50000000000000000e+00` | `00 00 c0 81` | as predicted |
+
+All five constants the product decides have `libc.a`'s: the real
+assembler multiplies like `libc.a`'s `dmath.o`. The zeros with decimal
+exponent 0 have the same bytes whatever the digit count (1 or 18) and
+whatever constant came before, so the digit loop's leftover in `fac` is
+a fixed `00 00 00 00 ff ff ff` for an all-zero text - not what
+`libc.a`'s runtime leaves there (-2\*\*56), so one of the real runtime's
+operations on zeros differs in a way these bytes do not show. `LH` is
+the `fac` rule once more: after LOGHUGE (`fl = 0`, exponent 0) the
+multiplication by `flexp` = 1.0 finds a zero and keeps `fac`, which the
+last `fadd` of the digit loop left holding `fl` = 1.0 - whose stored
+mantissa bits are all 0.
+
+## The conversion model (implemented 2026-09-28, settled 2026-09-29)
 
 `src/mutos_as/fltconst.c` re-enacts the real assembler's conversion —
 v7 `atof()` on the 56-bit double, `.float` = the double's high four
 bytes — rather than encoding the exact decimal value (full description:
-`src/mutos_as/fltconst.h`). It runs the conversion under every
-combination of operation behaviours that still reproduces all the
-goldens here and accepts a constant only if they all agree:
-`dadd` nearest-even; `ddiv` nearest-even or nearest-away; `dmul`
-nearest-even of the exact product or of `libc.a`'s.
+`src/mutos_as/fltconst.h`): `dadd` nearest-even, `ddiv` nearest (either
+tie rule, which never matters), `dmul` nearest-even of `libc.a`'s
+product; a zero gives what `fac` held - `flexp`'s mantissa for a nonzero
+decimal exponent, the digit loop's leftover for exponent 0 - with
+exponent byte 0. Every constant it covers is determined:
 
-- **Accepted since 2026-09-29**: every constant whose conversion needs
-  no product the two `dmul` candidates disagree on — among them every
-  `%.17e` constant `mutos_c1` writes with an exponent from `e-32` to
-  `e+19` (the 6% of exact floats refused before, e.g.
-  `2.93572534179687500e+03`, included), and every zero with a nonzero
-  decimal exponent (`0.0`, `0e5`, 25 or more fraction digits), except
-  where `atof` gives up (a decimal exponent below -39 minus the digit
-  count, e.g. `0e-41`).
-- **Refused** (`FLT_ROUNDING`): constants whose bytes the `dmul`
-  question decides — possible only for a positive decimal exponent of 4
-  or more, counting digits `atof` drops past 2\*\*56 (`%.17e` text from
-  `e+20` up, e.g. `.float
-  1.26765060022822940e+30` = 2\*\*100: `00 00 00 e5` from the exact
-  product, `ff ff 7f e4` from `libc.a`'s) and for a decimal exponent
-  of -50 to -54 (`%.17e` text from `e-33` down), where `flexp` itself
-  differs. Zeros with decimal exponent 0 are accepted only in `Z0`'s
-  shape (`FLT_ZERO` otherwise).
+- **Accepted**: every text whose conversion stays inside the format's
+  exponent range - every `%.17e` constant `mutos_c1` writes, from
+  `e-37` (`e-38` when `atof` drops the 18th digit) up to the format's
+  largest value, and every zero whose `flexp` stays in range.
+- **Refused** (`FLT_RANGE`): a value, or a step of the conversion such as
+  `flexp` = 5\*\*k for k >= 55, outside the range (e.g. `.float
+  1.00000000000000000e-38`, whose value would fit) - what the real
+  runtime does on an overflow is not observed; and a text `atof` gives
+  up on (LOGHUGE) after dropping its last digit, where `fac` holds a
+  difference no real constant shows. `FLT_ROUNDING` remains only for a
+  tie in the division, which cannot occur.
 
 `fltmodel.py` is an independent Python version of the same model.
 `fltmodel.py survivors` reads every `<name>.s` here that has a golden,
 takes each constant's real bytes from the golden's data segment, and
-reports which combinations reproduce all of them — today 4 of 80 (the
+reports which combinations reproduce all of them — today 2 of 80 (the
 64 rounding-mode combinations plus `libc.a`'s product for `dmul`) — and
 fails if that set differs from the one `fltconst.c` uses, or if a golden
 holds a constant the model does not cover. `fltmodel.py check
@@ -225,3 +248,36 @@ with the model on fixed edge cases and seeded random texts. Both run in
 `make test`. A new golden dropped in here narrows the set automatically;
 `survivors` then says so, and `fltconst.c`'s `MODES_MUL`/`MODES_ADD`/
 `MODES_DIV` (and `fltmodel.py`'s `EXPECTED`) get updated to match.
+
+## `libcatof.py` — `libc.a`'s own `atof`, run
+
+A second oracle, made of the real toolchain's machine code instead of a
+model: `libc.a`'s `atof.o` and the software floating-point runtime it
+calls (`stacks.o`, `stkmath.o`, `doubles.o`, `dmath.o`, `convert.o`, ...),
+decoded from `tests/mutos1700_libc/`, linked with the real `crt0.o` by
+`mutos_ld`, and `_atof(text)` called under Unicorn's 8086 mode. By
+default `dmath.o`'s `zero` routine is patched to clear only `fac`'s
+exponent byte, as the real assembler's runtime does ("assembler
+zeros"); `--libc` runs it unmodified. It reproduces every real constant
+here except the all-zero texts with decimal exponent 0, which it reports
+separately ("not emulated": `libc.a`'s digit loop leaves -2\*\*56 in
+`fac`, the real one `ff ff ff`).
+
+Needs the Python module `unicorn` (`pip install unicorn`) and a built
+`mutos_as`/`mutos_ld`; not part of `make test` - run `make
+check-libcatof` from the repository root, or directly:
+
+```
+python3 libcatof.py atof 0.1 1.26765060022822940e+30   # the bytes, double and float
+python3 libcatof.py goldens [DIR ...]                  # every golden constant
+python3 libcatof.py check ../../../src/mutos_as/fltconst_test 3000
+python3 libcatof.py ops 2000                           # dmul/ddiv/dadd vs fltmodel.py
+```
+
+`check` sends edge cases, seeded random texts and targeted ones
+(`%.17e` of exact floats and doubles over the whole range, zeros,
+LOGHUGE texts) through `fltconst_test` and compares every constant it
+accepts with the emulation; a build with the exact product instead of
+`libc.a`'s fails it (251 of 2,558 compared texts differ). The linked
+image is checked before use: `dmath.o`'s `zero` routine, its entry
+points and `pmuld`'s misplaced load must be where the tool expects them.

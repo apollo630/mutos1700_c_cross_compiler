@@ -8,93 +8,58 @@ category 3 ("errors calling mutos_as") permanently, so this directory
 is deliberately **not** part of the top-level `make test`. Once
 `mutos_as` reproduces a probe's golden, the probe and its golden move to
 `../float_coverage/` and become regression goldens. That is what
-happened to this directory's first two probes, `fltopen.s` (2026-09-28)
-and `fltmode.s` (2026-09-29): see `../float_coverage/README.md`.
+happened to all three probes written here so far: `fltopen.s`
+(2026-09-28), `fltmode.s` and `fltmul.s` (2026-09-29) - see
+`../float_coverage/README.md`.
 
-## Current probe: `fltmul.s` (not yet run on real hardware)
+## No current probe
 
-`fltmode.s` settled the rounding: `dmul`, `dadd` and `ddiv` all round to
-nearest, ties to even (`ddiv`'s tie rule never matters). What is left is
-**which product `dmul` rounds**. `libc.a`'s own `dmath.o` does not form
-the exact one: its partial-product routine loads the mantissa word b1
-where b2 was meant, so it computes a\*b + (a0\*b1 - a0\*b2) \* 2\*\*32
-(a = the operand `fmuld` addresses, b = the one on the floating-point
-stack, words of 16 bits from the bottom). `libc.a`'s `atof` run on that
-runtime gives every nonzero real constant so far, because none of them
-needed a product where the two differ. They do differ in `atof`'s
-`fl *= flexp` for a positive decimal exponent of 4 or more (`%.17e` text
-from `e+20` up) and inside `flexp` for k = 50..54 (`e-33` down);
-`mutos_as` refuses such constants (`FLT_ROUNDING`) where the stored bytes
-differ. `fltmul.s` asks five times, and also asks the zero questions
-`fltmode.s`'s `Z0` (`.float 0.00000000000000000e+17` → `ff ff ff 00`)
-raised:
+`fltmul.s` settled the last open part of the conversion model: the real
+`dmul` rounds the product `libc.a`'s own `dmath.o` forms, one partial
+product taken from the wrong word, not the exact one - and every
+constant the model covers is now determined (`fltconst.c` refuses none
+for rounding). What `mutos_as` still refuses, and why:
 
-| Label | Data offset | Text | Purpose |
-|---|---|---|---|
-| `P1` | `data+0` | `.float 1.18059162071741130e+21` | 2\*\*70 in the compiler's form: which product |
-| `P2` | `data+4` | `.float 1.26765060022822940e+30` | 2\*\*100: which product |
-| `P3` | `data+8` | `.double 1.23456789012345678e+25` | which product (`fl *= 5**8`) |
-| `P4` | `data+16` | `.double 1.23456789012345678e-33` | which product (inside `flexp` = 5\*\*50) |
-| `Z54` | `data+24` | `.double 0.00000000000000000e-37` | a zero: its bytes are `flexp` = 5\*\*54 itself |
-| `K1` | `data+32` | `.float 0e0` | decimal exponent 0 with one digit instead of 18 |
-| `K2` | `data+36` | `.double 0.00000000000000000e+17` | `Z0`'s text as a `.double`: its low half |
-| `K3` | `data+44` | `.float -0.00000000000000000e+17` | `Z0` negated: `fneg` on a set bit 7 |
-| `LH` | `data+48` | `.double 1e-41` | `atof` gives up (nd - k < -39): what the digit loop left in `fac` |
-| `NG` | `data+56` | `.float -1.50000000000000000e+00` | a negative nonzero constant, none seen yet |
+- **Out of range at some step** (`FLT_RANGE`): a value, or `atof`'s
+  `flexp` = 5\*\*k, outside the format's exponent range - k >= 55, i.e.
+  `%.17e` text from `e-38` down (from `e-39` when `atof` drops the 18th
+  digit), e.g. `.float 1.00000000000000000e-38`, although the value fits. `libc.a`'s runtime answers an overflow with `__ovfl`,
+  which sends the process `SIGFPE`; what the real assembler does then
+  (dies, or writes something) is not observed.
+- **LOGHUGE after a dropped digit**: a text with more than 17 or so
+  digits and a decimal exponent far below -39 - `atof` leaves `fcmp`'s
+  difference in `fac`, never observed. The value is below the format's
+  range anyway.
 
-### Predicted bytes
+A probe for the first would be the natural next one, if the compiler's
+smallest floats matter. Not understood, but pinned by real bytes: where
+the `ff ff ff` that the digit loop leaves in `fac` for an all-zero text
+comes from (`libc.a`'s runtime leaves -2\*\*56 there) - see
+`src/mutos_as/fltconst.h`.
 
-- **Exact product** (`M=ne`): `P1` `00 00 00 c7` · `P2` `00 00 00 e5` ·
-  `P3` `a6 ea 27 82 c9 64 23 d4` · `P4` `cb c8 7d e1 b5 20 4d 13` ·
-  `Z54` `6d 4e a6 40 3c 0c 27 00`
-- **`libc.a`'s product** (`M=libc`): `P1` `ff ff 7f c6` · `P2`
-  `ff ff 7f e4` · `P3` `4d ea 27 82 c9 64 23 d4` · `P4`
-  `d5 c8 7d e1 b5 20 4d 13` · `Z54` `45 4e a6 40 3c 0c 27 00`
-- `NG`: `00 00 c0 81` under both.
-- `K1`, `K2`, `K3`, `LH`: no prediction. If `fac`'s leftover does not
-  depend on the digit count, `K1` is `ff ff ff 00` like `Z0`; `K2`'s
-  high half is `Z0`'s `ff ff ff 00` if the leftover does not depend on
-  the constant before it either; `K3` is `ff ff 7f 00` if `fneg` flips
-  bit 7 (as `libc.a`'s `stkmath.o` does) and `ff ff ff 00` if it sets it.
+## Adding a probe
 
-If the real bytes of `P1`…`Z54` match neither row, the product model is
-wrong, which is also a finding. A simulated golden built from either row
-decodes back to exactly that `dmul` candidate with
-`fltmodel.py survivors . ../float_open`.
-
-## Running this
-
-Same two-machine shape as `../float_coverage/`:
-
-1. `make -f Makefile.mutos` — **on real MUTOS 1700 hardware / an
-   accurate emulator**, from inside this directory. Produces
-   `fltmul.o`. If the real `as` refuses an operand instead, note which
-   one and its exact error text; that is the finding.
-2. `make goldens` — **on the modern (Linux) side**, after copying
-   `fltmul.o` back here. Produces its golden and base64 companion
+1. Write `<name>.s` here (see `../float_coverage/fltmul.s` for the
+   shape: each constant loaded the way `mutos_c1` emits one, a header
+   saying what each constant asks), list it in `Makefile`'s `SRCS` and
+   give it a rule in `Makefile.mutos`, and write down the predicted
+   bytes here - `../float_coverage/fltmodel.py` and `libcatof.py` compute
+   them.
+2. `make -f Makefile.mutos` — **on real MUTOS 1700 hardware / an
+   accurate emulator**, from inside this directory. If the real `as`
+   refuses an operand instead, note which one and its exact error text;
+   that is the finding.
+3. `make goldens` — **on the modern (Linux) side**, after copying
+   `<name>.o` back here. Produces its golden and base64 companion
    (`<name>.o.golden`, `<name>.o.golden_base64.txt` - `../mk_goldenbase64.sh`'s
    naming).
-
-## Reading the result
-
-From `../float_coverage/`:
-
-```
-python3 fltmodel.py survivors . ../float_open
-```
-
-This reads every constant of `fltmul.s` out of its golden alongside the
-existing goldens and prints the combinations that fit all of them
-(`M` should drop to one of `ne`, `libc`). It lists `K1`/`K2`/`K3`/`LH`
-as "NOT MODELLED" together with their real bytes, and reports "MODEL
-CONTRADICTED" if a modelled constant fits no combination at all. It
-exits 1 in any case until `fltconst.c` catches up. Then:
-
-- narrow `fltconst.c`'s `MODES_MUL` and `fltmodel.py`'s `EXPECTED` to the
-  surviving set - every constant the model covers becomes determined;
-- extend the zero rule for decimal exponent 0 (and, if `LH` shows a
-  rule, the LOGHUGE path) in both from `K1`/`K2`/`K3`/`LH`'s bytes;
-- move `fltmul.s` and its golden to `../float_coverage/` (add it to
-  that directory's `Makefile`/`Makefile.mutos`), and update
-  `STATUS.md`'s open item 7, `CLAUDE.md`'s "Next up" and
-  `docs/DEVLOG.md` in the same change (Workflow Guideline 6).
+4. From `../float_coverage/`: `python3 fltmodel.py survivors . ../float_open`
+   reads every constant of the probe out of its golden alongside the
+   existing goldens, prints the combinations that fit all of them, lists
+   constants outside the model as "NOT MODELLED" with their real bytes,
+   and reports "MODEL CONTRADICTED" if a modelled constant fits no
+   combination. Then update `fltconst.c` and `fltmodel.py`, move the
+   probe and its golden to `../float_coverage/` (its `Makefile`/
+   `Makefile.mutos`), and update `STATUS.md`'s open item 7, `CLAUDE.md`'s
+   "Next up" and `docs/DEVLOG.md` in the same change (Workflow
+   Guideline 6).

@@ -12,13 +12,14 @@ atof()'s algorithm on the 56-bit MUTOS double -
   * flexp = 5**k (k = |decimal exponent|) by v7's repeated squaring;
   * fl /= flexp (ddiv) for a negative exponent, else fl *= flexp;
     ldexp(fl, exponent); negated for a leading '-';
-  * nd - k < -39 (LOGHUGE) makes atof() give up: a nonzero value there
-    is out of range, a zero's bytes are unknown;
+  * nd - k < -39 (LOGHUGE) makes atof() give up: fl = 0, exponent 0;
   * a zero: the real arithmetic clears only the exponent byte of its
-    accumulator, which still holds the previous result - flexp for
+    accumulator fac, which still holds the previous result - flexp for
     k >= 1, so flexp's mantissa with exponent byte 0 on either path;
-    for k = 0 whatever the digit loop left there, observed only for an
-    unsigned .float with 18 digits (ff ff ff 00);
+    for k = 0 what the digit loop left there: 00 00 00 00 ff ff ff when
+    every digit is 0, fl itself after LOGHUGE when the last digit was
+    accumulated (after a dropped digit: unknown, RANGE);
+  * the sign: fneg flips bit 7 of byte 6;
   * a .float stores the double's high four bytes.
 
 Each of dmul (M), dadd (A) and ddiv (D) rounds to 56 significant bits
@@ -30,10 +31,9 @@ a*b + (a0*b1 - a0*b2) * 2**32 (a = the operand fmuld addresses, b = the
 one on the floating-point stack; words of 16 bits from the bottom) -
 rounded to nearest, ties even. The combinations that reproduce every
 known-source real constant "survive"; a constant is determined only if
-all survivors give the same stored bytes. Since fltmode.o.golden: A = ne,
-D = ne or na (never different in atof(), whose one division cannot tie),
-M = ne or libc (different only for products no real constant has needed
-so far).
+all survivors give the same stored bytes. Since fltmode.o.golden and
+fltmul.o.golden: M = libc, A = ne, D = ne or na (never different in
+atof(), whose one division cannot tie).
 
 Usage:
   fltmodel.py survivors [DIR ...]
@@ -44,7 +44,7 @@ Usage:
       all of them. Exit 1 if they differ from EXPECTED below - the set
       fltconst.c's MODES_MUL/MODES_ADD/MODES_DIV encode - if the model
       contradicts a golden outright, or if a golden holds a constant the
-      model does not cover (a zero outside its known shape). Also the
+      model does not cover (RANGE for every combination). Also the
       way to read a new probe's golden: "survivors . ../float_open".
   fltmodel.py check TOOL [N]
       Runs fixed edge cases plus N seeded random texts (default 2000)
@@ -67,11 +67,11 @@ SIG = 56
 BIG = 1 << 56
 
 # Must match fltconst.c's MODES_MUL (M), MODES_ADD (A) and MODES_DIV (D).
-EXPECTED = set(itertools.product(('ne', 'libc'), ('ne',), ('ne', 'na')))
+EXPECTED = set(itertools.product(('libc',), ('ne',), ('ne', 'na')))
 
-# The one zero with decimal exponent 0 seen (fltmode.o.golden, Z0).
-ZERO_K0_DIGITS = 18
-ZERO_K0_FLOAT = bytes.fromhex('ffffff00')
+# What the digit loop leaves in fac when every digit is 0, exponent byte
+# cleared (fltmode.o.golden Z0, fltmul.o.golden K1, K2).
+ZERO_LOOP_FAC = bytes.fromhex('00000000ffffff00')
 
 
 class Range(Exception):
@@ -142,33 +142,41 @@ def parse(kind, t):
 
 
 def image(neg, m, xbyte):
+    """The double image of mantissa m, exponent byte xbyte, negated by
+    fneg (bit 7 of byte 6 flipped) if neg."""
     b = bytearray((m & ((1 << 55) - 1)).to_bytes(7, 'little') + bytes([xbyte]))
     if neg:
-        b[6] |= 0x80
+        b[6] ^= 0x80
     return bytes(b)
 
 
 def convert(kind, text, M, A, D):
-    """'SYNTAX' | 'ZERO' | 'RANGE' | the stored bytes (4 or 8)."""
+    """'SYNTAX' | 'RANGE' | the stored bytes (4 or 8)."""
     p = parse(kind, text)
     if p is None:
         return 'SYNTAX'
     neg, digs, eexp = p
     try:
-        fl, exp10, nd = None, 0, 0
+        fl, exp10, nd, last_acc = None, 0, 0, True
         for d, frac in digs:
             if fl is None or as_int(fl) < BIG:
                 t = as_int(chk(rnd(as_int(fl) * 10, False, 0, M))) if fl else 0
                 fl = chk(rnd(t + d, False, 0, A)) if t + d else None
                 if frac:
                     exp10 -= 1
-            elif not frac:
-                exp10 += 1
+                last_acc = True
+            else:
+                if not frac:
+                    exp10 += 1
+                last_acc = False
             nd += 1
         exp10 += eexp
         k = abs(exp10)
-        if exp10 < 0 and nd - k < -39:
-            return 'ZERO' if fl is None else 'RANGE'
+        zero = fl is None
+        if exp10 < 0 and nd - k < -39:          # LOGHUGE: fl = 0, exponent 0
+            if not zero and not last_acc:
+                return 'RANGE'                  # fac: fcmp's difference, unknown
+            exp10, k, zero = 0, 0, True
         flexp, exp5, kk = rnd(1, False, 0, 'trunc'), rnd(5, False, 0, 'trunc'), k
         while True:
             if kk & 1:
@@ -177,12 +185,16 @@ def convert(kind, text, M, A, D):
             if kk == 0:
                 break
             exp5 = mul(exp5, exp5, M)
-        if fl is None:
-            if k == 0:
-                if kind == 'f' and not neg and nd == ZERO_K0_DIGITS:
-                    return ZERO_K0_FLOAT
-                return 'ZERO'
-            b = image(neg, flexp[0], 0)
+        if zero:
+            if k >= 1:
+                b = image(neg, flexp[0], 0)
+            elif fl is None:
+                b = bytearray(ZERO_LOOP_FAC)
+                if neg:
+                    b[6] ^= 0x80
+                b = bytes(b)
+            else:
+                b = image(neg, fl[0], 0)
             return b[4:] if kind == 'f' else b
         fl = div(fl, flexp, D) if exp10 < 0 else mul(fl, flexp, M)
         m, e = chk((fl[0], fl[1] + exp10))
@@ -195,7 +207,7 @@ def convert(kind, text, M, A, D):
 def classify(kind, text, combos):
     """What fltconst_test prints for this text under these combos."""
     outs = {convert(kind, text, *c) for c in combos}
-    for status in ('SYNTAX', 'ZERO', 'RANGE'):
+    for status in ('SYNTAX', 'RANGE'):
         if status in outs:
             return status
     if len(outs) > 1:
@@ -320,6 +332,10 @@ EDGES = [
     'd 0e-40', 'f 0e-38', 'f 0.0e-39', 'd 1e-39', 'd 1e-40', 'f 1.00000000000000000e-38',
     'f 1.26765060022822940e+30', 'd 1.23456789012345678e+25', 'd 0.00000000000000000000e-34',
     'd 0.00000000000000000000e-29', 'f 1.00000000000000000e+21',
+    'f 0e0', 'd 0e0', 'f -0e0', 'd -0.00000000000000000e+17', 'f 0.0e+01', 'd 000', 'f 0e-45',
+    'd -0.0e-60', 'd 1e-41', 'd 12e-45', 'f -7e-44', 'd 123456789e-50', 'd 0.001e-41',
+    'd 99999999999999999e-60', 'd 999999999999999999e-60', 'f 9999999999999999999e-70',
+    'd 1.18059162071741130e+21', 'f -1.50000000000000000e+00',
 ]
 
 
