@@ -1,7 +1,8 @@
 # Makefile for tests/mutos_as/float_open/'s real-hardware floating
-# point probes. Current probes: fltovf.s and fltsig.s (overflow - see
-# README.md; fltsig.s may make the real "as" die, which is its finding).
-# Earlier probes (fltopen.s, fltmode.s, fltmul.s) have moved to
+# point probes. No open probe: fltsig.s is kept here as evidence - the
+# real "as" refuses it (2026-09-29: "floating point over/under flow-
+# assembly aborted", see README.md), so it has no golden. Earlier probes
+# (fltopen.s, fltmode.s, fltmul.s, fltovf.s) have moved to
 # ../float_coverage/ with their goldens.
 #
 # THIS FILE REQUIRES GNU MAKE - same reasoning as
@@ -37,7 +38,7 @@
 # host's tools. An empty "<name>.o" (what an "as" that died may leave
 # behind) is skipped, not packaged.
 
-SRCS := fltovf.s fltsig.s
+SRCS := fltsig.s
 OBJS := $(SRCS:.s=.o)
 
 goldens:

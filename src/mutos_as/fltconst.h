@@ -35,7 +35,7 @@
  * CONVERSION MODEL. The real assembler converts with v7 libc atof()'s
  * algorithm on the 56-bit double, and a .float is the HIGH FOUR BYTES of
  * that double - truncated, not rounded. Every confirmed constant fits
- * this (29 in tests/mutos_as/float_coverage/'s goldens), and libc.a's
+ * this (38 in tests/mutos_as/float_coverage/'s goldens), and libc.a's
  * own atof.o - v7's algorithm, compiled - run on libc.a's own
  * floating-point runtime under an 8086 emulator gives the real bytes of
  * every nonzero one of them; only zeros come out differently (below):
@@ -96,9 +96,25 @@
  * exponent 0, i.e. a k = 0 zero: if the last digit was accumulated, fac
  * holds fl (".double 1e-41" -> eight 0 bytes, 1.0's mantissa, fltmul
  * LH); after a dropped digit it holds fcmp's difference, never observed
- * - FLT_RANGE. Values outside the format's exponent range at any step
- * of the conversion are refused too (FLT_RANGE): the real arithmetic's
- * overflow and underflow behaviour is unknown.
+ * - FLT_UNKNOWN.
+ *
+ * RANGE (fltovf.o.golden, float_open/fltsig.s). Two different things
+ * happen when the conversion leaves the format's exponent range:
+ *
+ *   - the last step, ldexp(), wraps the exponent byte: libc.a's ldexp.o
+ *     adds the exponent as a 16-bit sum, checks only for a signed
+ *     16-bit overflow and stores the low byte. ".float
+ *     2.00000000000000000e+38" -> 99 76 16 00 (exponent byte 256 -> 0),
+ *     ".double 1.0e+50" -> ... 27 (295 -> 39), ".double 1.0e-39" ->
+ *     ... ff (-1 -> 255) - written without any diagnostic;
+ *   - an operation of the arithmetic that overflows - flexp = 5**k from
+ *     k = 55 on, i.e. "%.17e" text from e-38 down, although such a
+ *     value may fit, or fl * flexp (".double 9.9e+54") - makes the
+ *     runtime raise SIGFPE
+ *     (libc.a's __ovfl: errno = ERANGE, kill(getpid(), 8)), and the
+ *     real assembler stops: "***ERROR*** floating point over/under
+ *     flow- assembly aborted", exit status 4, no object. mutos_as
+ *     refuses such a constant (FLT_RANGE) and writes no object either.
  */
 
 #ifndef MUTOS_AS_FLTCONST_H
@@ -116,8 +132,10 @@ typedef enum {
     FLT_OK = 0,
     FLT_SYNTAX,     /* not a number in the accepted syntax */
     FLT_ROUNDING,   /* the bytes depend on an unconfirmed rounding (see above) */
-    FLT_RANGE       /* exponent outside the format at some step, bytes not
-                     * known (LOGHUGE after a dropped digit), or text too long */
+    FLT_RANGE,      /* an operation of the conversion overflows: the real
+                     * assembler aborts (see above) */
+    FLT_UNKNOWN     /* the real bytes are not known: LOGHUGE after a dropped
+                     * digit, or a text too long */
 } FltStatus;
 
 /* Size in bytes of one constant of this kind: 4 or 8. */

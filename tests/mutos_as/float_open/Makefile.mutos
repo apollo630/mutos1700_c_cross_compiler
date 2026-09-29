@@ -1,4 +1,4 @@
-# Makefile.mutos -- float_open (this directory's current probes only).
+# Makefile.mutos -- float_open (this directory's probes only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory ON THE REAL MUTOS 1700 hardware / emulator:
@@ -6,16 +6,14 @@
 #   make -f Makefile.mutos
 #   make -f Makefile.mutos clean
 #
-# Assembles the two overflow probes with the REAL "as" (see README.md):
-# fltovf.s first - its conversions are expected to finish, with wrapped
-# exponent bytes - then fltsig.s, whose first constant is expected to
-# make the real runtime raise SIGFPE: if "as" dies there ("Floating
-# exception", maybe a "core" file), make stops at fltsig.o, and the
-# exact message is the finding - fltovf.o is made already. The CURRENT
-# mutos_as refuses most constants in both by design, so this directory
-# is NOT part of the top-level "make test". (The earlier probes here,
-# fltopen.s, fltmode.s and fltmul.s, were run with rules of this shape
-# and have moved to ../float_coverage/.)
+# No open probe. fltsig.s stays as evidence: the real "as" refuses it -
+# run 2026-09-29 with this rule, it printed "***ERROR*** floating point
+# over/under flow- assembly aborted" (twice, "line 41") and exited with
+# status 4, no object (see README.md) - so "make -f Makefile.mutos"
+# here is EXPECTED to stop with "*** Error code 4". The earlier probes
+# (fltopen.s, fltmode.s, fltmul.s, fltovf.s) were run with rules of this
+# shape and have moved to ../float_coverage/. A new probe gets its own
+# rule and goes into "all".
 #
 # One recipe, one shell line, per make(1)'s own note (see
 # tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't carry
@@ -23,13 +21,10 @@
 
 AS = as
 
-all: fltovf.o fltsig.o
-
-fltovf.o: fltovf.s
-	$(AS) -o fltovf.o fltovf.s
+all: fltsig.o
 
 fltsig.o: fltsig.s
 	$(AS) -o fltsig.o fltsig.s
 
 clean:
-	rm -f fltovf.o fltsig.o core
+	rm -f fltsig.o core

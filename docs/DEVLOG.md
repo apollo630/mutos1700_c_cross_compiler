@@ -85,11 +85,12 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 75/75 golden object files
+**Status:** provisionally complete for the real corpus — 76/76 golden object files
 byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
 kernel files, `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
-real `libc.a` object, and the seven `tests/mutos_as/float_coverage/` objects - zeros,
-doubles, inexact values and the probes `fltmode.s` and `fltmul.s` among them), 0
+real `libc.a` object, and the eight `tests/mutos_as/float_coverage/` objects - zeros,
+doubles, inexact values, results outside the exponent range and the probes
+`fltmode.s`, `fltmul.s` and `fltovf.s` among them), 0
 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
@@ -5883,7 +5884,9 @@ plus a probe of every new acceptance and refusal path: no reports,
 objects and diagnostics identical to the `-O2` build's; `fltconst_test`
 under both sanitizers over 75,092 texts: output identical.
 
-### The overflow probes: `float_open/fltovf.s` and `fltsig.s` (2026-09-29, not yet run on real hardware)
+### The overflow probes: `float_open/fltovf.s` and `fltsig.s` (2026-09-29)
+
+(Written before the real run; the results are in the next section.)
 
 What `mutos_as` still refuses is a conversion that leaves the format's
 exponent range at some step (`FLT_RANGE`). Reading `libc.a`'s runtime,
@@ -5930,6 +5933,120 @@ with it. `Makefile.mutos` assembles `fltovf.s` first; the modern
 from `libcatof.py`'s predictions decodes with `fltmodel.py survivors` as
 expected: the controls check against the model, the seven others are
 listed as "NOT MODELLED" with their bytes.
+
+### `mutos_as`: out of range - `ldexp` wraps, an overflow aborts (2026-09-29)
+
+Both probes of the previous section were run on real MUTOS 1700 hardware.
+
+**`fltovf.o.golden`** (pushed 2026-09-29). Decoded with `fltmodel.py
+survivors . ../float_open` before any change: `E1` and `E2` check against
+the model, and the seven constants the model refused are listed as "NOT
+MODELLED" with exactly the bytes `libcatof.py` had predicted:
+
+| Label | Text | Real bytes | Exponent byte |
+|---|---|---|---|
+| `E1` | `.double 1.70141183460469232e+38` | `c9 ff ff ff ff ff 7f ff` | 255 (in range) |
+| `E2` | `.double 3.0e-39` | `14 11 ff 27 1e ab 02 01` | 1 (in range) |
+| `O1` | `.float 2.00000000000000000e+38` | `99 76 16 00` | 256 → 0 |
+| `O2` | `.float -2.00000000000000000e+38` | `99 76 96 00` | 256 → 0 |
+| `O3` | `.double 1.0e+39` | `eb 50 e2 a4 3f 14 3c 02` | 258 → 2 |
+| `O4` | `.double 1.0e+50` | `ce 24 f3 2b 76 d8 08 27` | 295 → 39 |
+| `U0` | `.double 2.5e-39` | `21 c7 53 ed dc c7 59 00` | 0 |
+| `U1` | `.double 1.0e-39` | `1b 6c a9 8a 7d 39 2e ff` | -1 → 255 |
+| `U2` | `.float 5.0e-40` | `7d 39 2e fe` | -2 → 254 |
+
+The real assembler's `ldexp` is `libc.a`'s: a 16-bit sum of `fac`'s
+exponent byte and the exponent, its low byte stored, no diagnostic. The
+mantissa is always the value's own; the sign sits where `fneg` puts it
+(`O2`), and a wrapped exponent byte of 0 (`O1`, `O2`, `U0`) gives bytes
+that read as a "zero" with a nonzero mantissa - the same shape as the
+real zeros.
+
+**`fltsig.s`** - `as -o fltsig.o fltsig.s`, verbatim:
+
+```
+as -o fltsig.o fltsig.s
+***ERROR*** floating point over/under flow- assembly aborted
+W
+?h), line 41
+***ERROR*** floating point over/under flow- assembly aborted
+W
+?h), line 41
+*** Error code 4
+
+Stop.
+```
+
+Exit status 4, no object. Line 41 is `S1`, `.float
+1.00000000000000000e-38` (5\*\*23 × 5\*\*32 overflows in `dmul`), so the
+assembly stops at the first constant and `S2`/`S3` are never converted.
+There was no "Floating exception" and no core: the real `as` catches
+`SIGFPE`. The emulation explains the two messages if its handler prints
+and returns: with `__ovfl` and `__div0` hooked to return instead of
+signalling, `atof` on `S1` reaches `__ovfl` (the overflowing `dmul`) and
+then `__div0` (the division by the zero `dmul` left in `flexp`); `S2`
+the same; `S3` (`1.0e+65`, on the multiplication path) only `__ovfl`.
+Two signals at line 41, two messages, then the assembler gives up with
+exit status 4. The `W` and `?h)` lines stand where a file name might be
+expected; they are recorded as they appeared, not interpreted.
+
+**Changes.**
+
+- `fltconst.c`: the last step stores `(x + 128 + exp10) & 0xFF` as the
+  exponent byte instead of refusing a result outside 1..255. `|exp10|` is
+  at most 54 there (a larger k has already overflowed in `flexp`), so the
+  16-bit sum of the real `ldexp` never overflows and its `huge` branch is
+  unreachable. `convert()` returns `CV_OK`, `CV_RANGE` (an operation of the
+  arithmetic overflows: `flexp`, or `fl` × `flexp` as in `.double 9.9e+54`)
+  or `CV_UNKNOWN`.
+- New status `FLT_UNKNOWN` (`fltconst.h`): LOGHUGE after a dropped digit
+  (`fac` holds `fcmp`'s difference, never observed) and a text of more
+  than 100,000 digits - both were `FLT_RANGE`. `FLT_RANGE` now means
+  exactly what the real assembler aborts on, and its message quotes the
+  real one. `mutos_as` keeps its exit status 1 for every error; the real
+  `as` exits with 4 here - a difference noted, not changed, since nothing
+  shows the real status of any other error.
+- `fltconst_test` prints `UNKNOWN`; `fltmodel.py` implements the same wrap
+  and the `UNKNOWN` status, and its edge cases gain the nine `fltovf.s`
+  texts, `fltsig.s`'s `S2` and `S3` (`S1` was one already) and four more
+  (`9.9e+38`, `1.0e+38` as a float, `9.9e+54`, an 18-digit text with
+  exponent +54).
+- `libcatof.py`: `__ovfl` and `__div0` are hooked; reaching either stops
+  the emulation, and `atof` prints `SIGFPE (__ovfl)` instead of bytes.
+  `check` now requires that every text `fltconst_test` refuses as `RANGE`
+  raises `SIGFPE` and that no accepted one does. Mutation checks: a
+  `fltconst.c` that refuses the wrapped results instead fails it with 57
+  `RANGE` texts that raise no `SIGFPE` (of 8,357 texts at `LIBCATOF_N` =
+  3000); one with the exact product fails with 749 of 7,588 compared
+  texts different.
+- `fltovf.s` and its golden moved to `float_coverage/` (header rewritten as
+  resolved, code unchanged; its `Makefile`/`Makefile.mutos` now list eight
+  files). `fltsig.s` stays in `float_open/` unchanged, so that "line 41"
+  keeps meaning `S1`; that directory has no open probe, its
+  `Makefile.mutos` has only the `fltsig` rule and is expected to stop with
+  `*** Error code 4`, and its `README.md` records the output above.
+
+**Verification.** Clean `make clean && make all && make test`: zero
+warnings, `mutos_as` 76/76 (62 `kernel_opt`, 5 `kernel_nonopt`, 1
+`libc_recon`, 8 `float_coverage` - `fltovf.s` new), `check_floatdat.sh`
+13/13, `fltmodel.py survivors` ok (38 constants, 2 of 80), `fltmodel.py
+check` 0 differences in 2,107 texts (150,107 in a one-off run),
+`assemble_cc_goldens.sh` 71/71, `mutos_cpp` 5/5, `mutos_c0`/`mutos_c1`
+62/62; `make check-docs` clean. `make check-libcatof`: 34 of 38 golden
+constants identical to the emulated `atof`, 4 "not emulated" (the known
+all-zero exponent-0 texts), 0 different; 8,357 texts, 0 differences, 210
+`RANGE` all raising `SIGFPE`; `ops` 0 differences. A one-off `check` with
+30,000: 82,607 texts, 75,589 compared, 1,717 `RANGE` all raising `SIGFPE`,
+0 differences. The previous commit's assembler against this one over 156
+`.s` inputs (every golden source, `floatdat.s`, `float_open/fltsig.s`, the
+seven `v30_speculative` sources, the 71 compiler goldens): 155 identical
+results, `fltovf.s` newly assembled to its golden; over 130,107 texts
+through both `fltconst_test`s no text both accept has different bytes,
+1,853 are newly accepted (wrapped), 2 went from `RANGE` to `UNKNOWN`.
+ASan/UBSan over the same 156 inputs plus a probe of every new acceptance
+and refusal path: no reports, objects, diagnostics and exit statuses
+identical to the `-O2` build's; `fltconst_test` under both sanitizers over
+the 130,107 texts: output identical.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

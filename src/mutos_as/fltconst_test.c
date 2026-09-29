@@ -8,7 +8,7 @@
  * directive. Writes one line per input:
  *
  *     OK xx xx xx xx [xx xx xx xx]   - the bytes, lowest address first
- *     SYNTAX | ROUNDING | RANGE
+ *     SYNTAX | ROUNDING | RANGE | UNKNOWN
  *
  * Exit status 0; 1 on a malformed input line.
  */
@@ -21,7 +21,7 @@
 int main(void)
 {
     static char line[1 << 16];
-    static const char *names[] = { "OK", "SYNTAX", "ROUNDING", "RANGE" };
+    static const char *names[] = { "OK", "SYNTAX", "ROUNDING", "RANGE", "UNKNOWN" };
 
     while (fgets(line, sizeof line, stdin)) {
         size_t n = strlen(line);

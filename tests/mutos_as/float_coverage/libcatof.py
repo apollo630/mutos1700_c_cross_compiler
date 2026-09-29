@@ -26,6 +26,12 @@ left in fac - -2**56 here, 00 00 00 00 ff ff ff in the real assembler
 (see src/mutos_as/fltconst.h). The subcommands report those separately
 and do not count them as differences.
 
+An overflow inside the arithmetic reaches fperr.o's __ovfl (or, after
+it, __div0), which would raise SIGFPE - where the real assembler stops
+with "***ERROR*** floating point over/under flow- assembly aborted"
+(float_open/fltsig.s). The emulation stops there and reports "SIGFPE";
+mutos_as refuses exactly those texts (FLT_RANGE).
+
 Requires Python 3, the unicorn module (pip install unicorn) and a built
 mutos_as and mutos_ld (top-level "make"). Not part of "make test"; run
 it with "make check-libcatof".
@@ -34,7 +40,7 @@ Usage:
   libcatof.py atof [--libc] TEXT ...
       Prints the double (and its .float high half) atof() gives for each
       text - an atof() text: a "0f"/"0d" prefix is dropped and a d/D
-      exponent read as e, as the assembler does.
+      exponent read as e, as the assembler does - or "SIGFPE".
   libcatof.py goldens [DIR ...]
       Every .float/.double constant in the goldens of the given
       directories (default: this script's own) against the emulation
@@ -42,8 +48,9 @@ Usage:
   libcatof.py check TOOL [N]
       Runs fixed edge cases plus N seeded random and targeted texts
       (default 3000) through TOOL (src/mutos_as/fltconst_test) and,
-      for every one TOOL accepts, through the emulation; exit 1 if any
-      accepted constant's bytes differ.
+      for every one TOOL accepts or refuses as RANGE, through the
+      emulation; exit 1 if an accepted constant's bytes differ, or if
+      the emulation raises SIGFPE exactly where TOOL does not say RANGE.
   libcatof.py ops [N]
       Checks the runtime's dmul, ddiv and dadd directly on N random
       operand pairs each (default 2000) against fltmodel.py's
@@ -68,7 +75,7 @@ sys.dont_write_bytecode = True      # no __pycache__ in the test directory
 import fltmodel as F  # noqa: E402
 
 try:
-    from unicorn import Uc, UC_ARCH_X86, UC_MODE_16
+    from unicorn import Uc, UC_ARCH_X86, UC_MODE_16, UC_HOOK_CODE
     from unicorn.x86_const import (UC_X86_REG_AX, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_DI,
                                    UC_X86_REG_ES, UC_X86_REG_FLAGS, UC_X86_REG_SI,
                                    UC_X86_REG_SP, UC_X86_REG_SS)
@@ -111,6 +118,15 @@ class Runtime:
             shutil.rmtree(work)
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
         self.uc.mem_map(0, 0x100000)
+        # fperr.o's __ovfl and __div0 would raise SIGFPE: stop there.
+        self.raised = None
+        for name in ('__ovfl', '__div0'):
+            addr = BASE + self.sym[name]
+            self.uc.hook_add(UC_HOOK_CODE, self._signal, name, addr, addr)
+
+    def _signal(self, uc, addr, size, name):
+        self.raised = name
+        uc.emu_stop()
 
     @staticmethod
     def _link(work):
@@ -167,15 +183,19 @@ class Runtime:
         self.uc.reg_write(UC_X86_REG_FLAGS, 0x0002)
 
     def atof(self, text, as_zero=True):
-        """The eight bytes of the double atof(text) returns (in fac)."""
+        """The eight bytes of the double atof(text) returns (in fac), or
+        None if the runtime would raise SIGFPE (self.raised says where)."""
         s = text.encode('ascii') + b'\0'
         if len(s) > HLT_AT - TEXT_AT:
             raise ValueError('text too long')
         self._prepare(as_zero)
+        self.raised = None
         self.uc.mem_write(BASE + TEXT_AT, s)
         self.uc.mem_write(BASE + SP_AT - 4, struct.pack('<HH', HLT_AT, TEXT_AT))
         self.uc.reg_write(UC_X86_REG_SP, SP_AT - 4)
         self.uc.emu_start(BASE + self.sym['_atof'], BASE + HLT_AT, count=STEPS)
+        if self.raised:
+            return None
         ax = self.uc.reg_read(UC_X86_REG_AX)
         return bytes(self.uc.mem_read(BASE + ax, 8))
 
@@ -218,7 +238,11 @@ def not_emulated(kind, text):
 
 
 def stored(kind, b):
-    return b[4:] if kind == 'f' else b
+    return None if b is None else b[4:] if kind == 'f' else b
+
+
+def show(b):
+    return 'SIGFPE' if b is None else b.hex(' ')
 
 
 def cmd_atof(args):
@@ -231,7 +255,10 @@ def cmd_atof(args):
     rt = Runtime()
     for t in args:
         b = rt.atof(atof_text('d', t), as_zero)
-        print('%-36s double %s   float %s' % (t, b.hex(' '), b[4:].hex(' ')))
+        if b is None:
+            print('%-36s SIGFPE (%s) - the real assembler aborts' % (t, rt.raised))
+        else:
+            print('%-36s double %s   float %s' % (t, b.hex(' '), b[4:].hex(' ')))
     return 0
 
 
@@ -247,10 +274,10 @@ def cmd_goldens(dirs):
         elif not_emulated(kind, text):
             skipped += 1
             print('  not emulated: %-40s real %s, emulated %s (%s) - digit-loop leftover'
-                  % (name, real.hex(' '), got.hex(' '), where))
+                  % (name, real.hex(' '), show(got), where))
         else:
             bad += 1
-            print('  DIFFERENT:    %-40s real %s, emulated %s (%s)' % (name, real.hex(' '), got.hex(' '), where))
+            print('  DIFFERENT:    %-40s real %s, emulated %s (%s)' % (name, real.hex(' '), show(got), where))
     print('%d real constants: %d byte-identical to libc.a\'s atof with assembler zeros, %d not emulated, '
           '%d different' % (len(consts), same, skipped, bad))
     return 1 if bad else 0
@@ -291,19 +318,29 @@ def cmd_check(tool, n):
     counts, bad = {}, 0
     for line, got in zip(texts, res.stdout.splitlines()):
         kind, text = line[0], line[2:]
+        if got == 'RANGE':
+            # the refusal claims the real runtime overflows: check it does
+            sig = rt.atof(atof_text(kind, text)) is None
+            counts['RANGE, SIGFPE' if sig else 'RANGE, no SIGFPE'] = \
+                counts.get('RANGE, SIGFPE' if sig else 'RANGE, no SIGFPE', 0) + 1
+            if not sig:
+                bad += 1
+                if bad <= 10:
+                    print('  NO SIGFPE %-45s fltconst.c RANGE, emulated %s' % (line, show(rt.atof(atof_text(kind, text)))))
+            continue
         if not got.startswith('OK '):
             counts[got] = counts.get(got, 0) + 1
             continue
         if not_emulated(kind, text):
             counts['OK, not emulated'] = counts.get('OK, not emulated', 0) + 1
             continue
-        emu = stored(kind, rt.atof(atof_text(kind, text))).hex(' ')
+        emu = show(stored(kind, rt.atof(atof_text(kind, text))))
         counts['OK, compared'] = counts.get('OK, compared', 0) + 1
         if emu != got[3:]:
             bad += 1
             if bad <= 10:
                 print('  DIFFERENT %-45s fltconst.c %-24s emulated %s' % (line, got[3:], emu))
-    print('%d texts (%s): %d accepted constants differ from libc.a\'s atof'
+    print('%d texts (%s): %d differ from libc.a\'s atof'
           % (len(texts), ', '.join('%s %d' % kv for kv in sorted(counts.items())), bad))
     return 1 if bad else 0
 
