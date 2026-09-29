@@ -588,7 +588,11 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. ABI/
+below. Beyond the corpus, floating comparisons, int constants converted to
+floating, unary minus, `*=`/`/=`, double parameters, arguments and return
+values are now compiled from the real compiler's own output in `libc.a`
+(its C-compiled `atof.o`/`ecvt.o`/`gcvt.o`/`fltpr.o`), with a probe set
+for real hardware in `tests/mutos_cc/fltprobe/` (goldens pending). ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -600,6 +604,83 @@ coverage against it is 0/9 so far (each refusal diagnosed, none silent),
 tracked apart from the 62/62 figure above - see "Next up" below and
 `docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (floating shapes from `libc.a`'s compiled C - comparisons, int constants, `fneg`, `*=`/`/=`, double parameters, arguments and returns)
+
+**Still 62/62 byte-exact; the new shapes come from real compiler output that
+is not a golden.** Four `libc.a` objects are C compiled by the real MUTOS
+1700 compiler - `atof.o`, `ecvt.o`, `gcvt.o`, `fltpr.o` - and their code
+has most of what "Next up" item 1 listed as waiting for a golden. They were
+compiled with `-O` (`atof.o` shows `c2`'s cross-jumping), so only what the
+optimizer cannot have changed is taken. Full derivation - per-statement
+code, the runtime's `fcmp`/`fadd`/`fneg`, how v7's `optim()`/`cexpr()`/
+`acommute()` explain each shape - in `docs/DEVLOG.md`'s "Floating shapes
+from libc.a's compiled C".
+
+- **Comparisons** as conditions: both operands loaded (after v7's
+  `degree()` exchange - `arg < 0` becomes `0 > arg`), `call fcmp`, `sahf`,
+  the ordinary signed branch (`atof.o`'s `fl<big`, `ecvt.o`'s `arg<0`,
+  `fi != 0`, `arg > 0`). `mutos_c0` types the node INT and converts an int
+  operand to the floating one's type, as v7's `build()` does.
+- **Int constants converted** to floating are `.float` constants, `%.17e`
+  of the value - zero included, `.float 0.00000000000000000e+00`, whose
+  real bytes `bc a2 31 00` are every zero constant in `atof.o`/`ecvt.o`; a
+  written zero is accepted the same way.
+- **Unary minus** (`mutos_c0` now writes `NEG`, typed like its operand):
+  load, `call fneg`.
+- **`*=`** loads the right operand and multiplies by the target in memory,
+  **`/=`** loads the target (`atof.o`'s `flexp *= exp5`, `fl /= flexp`,
+  `ecvt.o`'s `arg *= 10`) - the right operand a variable or a constant.
+- **A computed left operand with an int right operand**: `call itof`, then
+  `stkmath.o`'s stack-with-stack `fadd`/`fsub`/`fmul`/`fdiv` (`atof.o`'s
+  `10*fl + (c-'0')`) - not the "reversed" `fsubrs`/`fdivrd`... the old
+  "Next up" guessed; nothing compiled in `libc.a` uses those.
+- **An assignment's value used**: `fstd`/`fsts`, no pop (`ecvt.o`).
+- **Double and float parameters** (8 bytes; a float parameter is a
+  double), **double arguments** (`sub sp,*8.` / `mov ax,sp` / `call
+  fstdp`), **functions returning a double**: `lea ax,fac` / `call fstdp` /
+  `lea ax,fac` before the return jump, `|RTYP 3`, and `call fldd` after
+  the call in the caller.
+- **Still refused**, each with a diagnostic: a zero compared as the right
+  operand (a float variable or a computed value against 0 - v7 tests
+  those, stkmath.o's `ftest`, never seen), truth tests, a comparison as a
+  value, `&&`/`||`/`?:`, a constant right operand of a computed value,
+  other computed right operands and `d + i`, `+=`/`-=`, `*=`/`/=` by a
+  computed value or an int variable, non-float and 2\*\*24+ constants, a written constant
+  after a converted one in one expression, constant or non-last computed
+  call arguments, an unused double result, `-(-x)`, float-returning
+  functions, floating globals/statics/arrays/pointers/members,
+  `char`/`long` to and from floating.
+- **`tests/mutos_cc/fltprobe/`** (new): nine programs for real hardware -
+  four exercising only the new shapes (they become `08_float/03`..`06`
+  once their goldens exist; `mutos_c1`'s output for each runs under
+  `x86sim.py` and returns the host C compiler's value), five exercising the
+  refused ones.
+- **Tooling**: `dump_temp.py` decodes `NEG`; `x86sim.py` runs `fsts`/
+  `fstd`, `fadd`...`fdiv`, `fneg`, `fcmp` + `sahf` and `fac`, and no longer
+  divides eagerly (a floating multiplication by zero used to stop it with a
+  Python `ZeroDivisionError`).
+
+**Verification (this session):**
+
+- `make test`: 62/62 byte-exact, 0 genuine mismatches, zero warnings;
+  `mutos_as` 76/76, `check_floatdat.sh` 13/13, 71/71 compiler goldens
+  assemble, `mutos_cpp` 5/5.
+- Against the previous build (`3c801a0`), all 71 golden inputs:
+  `mutos_c0` and `mutos_c1` alone byte-identical, diagnostics included.
+- `fuzz_c.py` against the previous build: 42000 programs (18000 with
+  arrays, seed 11; 18000 `--scope`, seed 21; 6000 scalars only, seed 31):
+  all identical, 0 WRONG, 0 BAD; 4500 more (seeds 41, 51) through the
+  ASan/UBSan builds: 0 WRONG, 0 BAD. The generator makes no floating
+  code.
+- 13 hand-written floating programs (the four `fltprobe` confirmation
+  files among them) through `mutos_cpp`, both passes, `mutos_as` and
+  `x86sim.py`, compared with the host C compiler: all equal; 27 refusal
+  probes and the five `fltprobe` open-question files each stop with their
+  diagnostic.
+- ASan/UBSan builds of `mutos_c0`/`mutos_c1` over the 71 golden inputs and
+  all of the above: clean, output identical to the `-O2` build's.
+- `x86sim.py`: output unchanged on all 53 goldens it runs.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (`08_float` - floating point through libc's software floating-point runtime)
 
@@ -2656,13 +2737,20 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Floating shapes still refused** (see `08_float` above), each waiting
-   for a golden: an int RIGHT operand of `+ - * /` (`d + i`) - libc's
-   `fsubrs`/`fdivrs`/`fsubrd`/`fdivrd` ("reversed" entry points) suggest
-   the real compiler computes the int first and then uses those;
-   comparisons (`stkmath.o`'s `fcmp`/`ftest`); a zero or non-float
-   constant (no golden shows the real compiler's text for either);
-   floating parameters, globals and return types.
+1. **Run `tests/mutos_cc/fltprobe/` on real hardware** (`make -f
+   Makefile.mutos` there, then `make goldens` in `tests/mutos_cc` on the
+   modern host). Its four confirmation files check the floating shapes now
+   taken from `libc.a`'s optimized code byte for byte - label numbers,
+   `.data` placement, the return sequence's position, `|RTYP 3` - and move
+   into `08_float` as `03`..`06`; its five open-question files show the
+   shapes still refused: a zero compared as the right operand and truth
+   tests (`ftest`?), `d + i` and other computed right operands (where do
+   `libc.a`'s "reversed" `fsubrs`/`fdivrd`... come in?), `+=`/`-=`, the
+   text of a constant that is not exactly a float, the label order of a
+   written constant after a converted one, floating globals, statics,
+   arrays, pointers and members, constant and non-last call arguments,
+   float-returning functions, `long`/`char` to and from floating. See the
+   section above and `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb

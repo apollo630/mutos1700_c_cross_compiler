@@ -158,19 +158,44 @@ store it,
 .B ftoi
 and
 .B ftol
-convert; each floating constant becomes a
+convert,
+.B fcmp
+and
+.B sahf
+compare (the operands exchanged first as the original compiler does)
+before an ordinary signed branch,
+.BR fadd ,
+.BR fsub ,
+.B fmul
+and
+.B fdiv
+combine the top two stack entries,
+.B fneg
+negates the top, and
+.B fsts
+or
+.B fstd
+store without popping when an assignment's value is used; a
+.B double
+argument is stored into eight bytes of machine stack, and a function
+returning a
+.B double
+leaves it in
+.B fac
+with its address in AX. Each floating constant, an
+.B int
+constant converted to floating included, becomes a
 .B .float
 in the data segment, and a file with floating code ends with
 .BR ".globl fltused" .
 Only a constant exactly representable as a
 .B float
-is supported.
-.BR mutos_as (1)
-refuses some of those in the 18-digit form written here (about one in
-twenty), where the original assembler's conversion may store one unit
-less in the last place; see its
-.B .float
-entry.
+is supported. The shapes beyond the two floating goldens come from the
+original compiler's own code in
+.IR libc.a
+.RB ( atof.o ,
+.BR ecvt.o );
+those it does not show are refused.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

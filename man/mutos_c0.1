@@ -160,8 +160,11 @@ floating point:
 .B float
 and
 .B double
-local variables, floating constants (written with their source text,
-never folded),
+local variables and parameters (a
+.B float
+parameter is a
+.BR double ),
+floating constants (written with their source text, never folded),
 .BR + ,
 .BR \- ,
 .B *
@@ -169,8 +172,18 @@ and
 .B /
 (always computed in
 .BR double ),
-assignment, casts and
+unary
+.BR \- ,
+comparisons (the node typed
+.BR int ),
+assignment,
+.B *=
+and
+.B /=
+into a floating variable, casts,
 .BR return ,
+floating call arguments and functions returning a
+.BR double ,
 with the real front end's conversions between
 .BR int ,
 .B long
@@ -184,9 +197,15 @@ pointers, other arrays and other initializers, file-scope structures,
 functions, a function returning a structure or a pointer to one, a
 structure passed by value,
 .B unsigned
-variables, floating parameters, globals, arrays, pointers, structure
-members and return types, floating comparisons and conditions, other
-operators on a floating value, arrays of three or more dimensions, pointer
+variables, floating globals, arrays, pointers and structure members, a
+function returning a
+.BR float ,
+a floating value tested for truth, other operators on a floating value
+.RB ( += ,
+.BR \-= ,
+.BR % ,
+.BR ++ ,
+\&...), arrays of three or more dimensions, pointer
 subtraction, an ordered comparison of pointers, division, a right shift
 or an ordered comparison of an
 .B unsigned
