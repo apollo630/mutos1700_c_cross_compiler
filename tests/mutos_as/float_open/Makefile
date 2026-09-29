@@ -1,5 +1,8 @@
 # Makefile for tests/mutos_as/float_open/'s real-hardware floating
-# point probe (currently fltmul.s).
+# point probes. There is NO CURRENT PROBE: the last one, fltmul.s, was
+# run on real hardware 2026-09-29 and has moved to ../float_coverage/
+# with its golden, like fltopen.s and fltmode.s before it. A new probe
+# goes into SRCS below (and into Makefile.mutos) - see README.md.
 #
 # THIS FILE REQUIRES GNU MAKE - same reasoning as
 # ../float_coverage/Makefile (the real MUTOS 1700 make(1) has no
@@ -10,31 +13,30 @@
 # ../float_coverage/Makefile:
 #
 #   1. `make -f Makefile.mutos [clean]` -- ON the real MUTOS 1700
-#      hardware/emulator. Assembles fltmul.s with the real "as",
-#      producing "fltmul.o" - see README.md for what it is expected
-#      to do there (assemble cleanly; only mutos_as itself refuses it,
-#      by design - see fltmul.s's own header).
+#      hardware/emulator. Assembles each probe with the real "as",
+#      producing "<name>.o" (only mutos_as itself refuses a probe, by
+#      design - see the probe's own header).
 #   2. `make goldens` -- on the MODERN (Linux) side, after copying the
-#      "fltmul.o" produced in step 1 back here. Turns it into
-#      "fltmul.o.golden" (verbatim copy) plus
-#      "fltmul.o.golden_base64.txt" (base64 text) - the SAME naming
+#      "<name>.o" produced in step 1 back here. Turns it into
+#      "<name>.o.golden" (verbatim copy) plus
+#      "<name>.o.golden_base64.txt" (base64 text) - the SAME naming
 #      convention already used by ../kernel_opt/, ../kernel_nonopt/,
 #      ../libc_recon/ and ../float_coverage/ (see ../mk_goldenbase64.sh).
 #
-# Once fltmul.o.golden exists, read it with
+# Once a golden exists, read it with
 # `python3 ../float_coverage/fltmodel.py survivors ../float_coverage .`
 # (see README.md), then update src/mutos_as/fltconst.c accordingly -
 # this directory does NOT wire into the top-level "make test" (unlike
-# ../float_coverage/), because the current mutos_as refuses most
-# constants in fltmul.s by design until that's done.
+# ../float_coverage/), because the current mutos_as refuses a probe's
+# constants by design until that's done.
 #
 # goldens is intentionally prerequisite-free, same reasoning as
 # ../float_coverage/Makefile's own "goldens" target: it only packages
-# whatever "fltmul.o" already exists on disk and must never try to
+# whatever "<name>.o" already exists on disk and must never try to
 # (re)create it - that needs the real MUTOS 1700 toolchain, not this
 # host's tools.
 
-SRCS := fltmul.s
+SRCS :=
 OBJS := $(SRCS:.s=.o)
 
 goldens:

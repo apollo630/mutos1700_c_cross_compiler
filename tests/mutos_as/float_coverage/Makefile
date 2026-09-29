@@ -11,7 +11,7 @@
 #   1. `make -f Makefile.mutos [clean]` -- ON the real MUTOS 1700
 #      hardware/emulator. Assembles every *.s here with the real "as",
 #      producing "<name>.o" next to each "<name>.s" - see README.md
-#      (all six assemble there, and mutos_as reproduces all six).
+#      (all seven assemble there, and mutos_as reproduces all seven).
 #   2. `make goldens` -- on the MODERN (Linux) side, after copying every
 #      "*.o" produced in step 1 back here. Turns them into
 #      "*.o.golden" (verbatim copy) plus "*.o.golden_base64.txt" (base64
@@ -21,10 +21,10 @@
 #      whose two competing variants are deliberately named differently
 #      (*_base64.txt without ".golden") because they are candidates, not
 #      yet-confirmed goldens - there is no such ambiguity here: each of
-#      these six files has exactly one real-hardware answer.
+#      these seven files has exactly one real-hardware answer.
 #
-# fltopen.s and fltmode.s were generated in ../float_open/ (the directory
-# for probes mutos_as still refuses) and moved here with their goldens
+# fltopen.s, fltmode.s and fltmul.s were generated in ../float_open/ (the
+# directory for probes mutos_as still refuses) and moved here with their goldens
 # once mutos_as reproduced them. Any new golden here also feeds fltmodel.py, which
 # re-derives the conversion model's unknowns from every golden in this
 # directory (top-level "make test").
@@ -35,7 +35,7 @@
 # them - that needs the real MUTOS 1700 toolchain, not this host's
 # tools.
 
-SRCS := fltaddr.s fltmulti.s fltzero.s fltdbl.s fltopen.s fltmode.s
+SRCS := fltaddr.s fltmulti.s fltzero.s fltdbl.s fltopen.s fltmode.s fltmul.s
 OBJS := $(SRCS:.s=.o)
 
 goldens:

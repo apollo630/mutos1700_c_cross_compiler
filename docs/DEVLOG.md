@@ -85,11 +85,11 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
 
 ## Milestone 2 — `mutos_as` (cross-assembler)
 
-**Status:** provisionally complete for the real corpus — 74/74 golden object files
+**Status:** provisionally complete for the real corpus — 75/75 golden object files
 byte-for-byte identical (full file: header + text + data + trel + drel + symtab: the 67
 kernel files, `tests/mutos_as/libc_recon/ldexp.s`, a source reconstructed from a
-real `libc.a` object, and the six `tests/mutos_as/float_coverage/` objects - zeros,
-doubles, inexact values and the rounding probe `fltmode.s` among them), 0
+real `libc.a` object, and the seven `tests/mutos_as/float_coverage/` objects - zeros,
+doubles, inexact values and the probes `fltmode.s` and `fltmul.s` among them), 0
 AddressSanitizer/UBSan errors. See `STATUS.md` for the current, re-verified opcode
 coverage tables (implemented/unconfirmed/missing) — those tables are kept there, not
 duplicated here, since they need re-verification every session per Workflow
@@ -5764,6 +5764,124 @@ ASan/UBSan (`-O0 -g`, LeakSanitizer off) over the same inputs plus a
 probe of every new acceptance and refusal path: no reports, objects
 and diagnostics identical to the `-O2` build's; `fltconst_test` under
 both sanitizers over 60,074 texts: output identical.
+
+### `mutos_as`: the real product, zeros at exponent 0, and `libcatof.py` (2026-09-29)
+
+**The golden.** `float_open/fltmul.s` ran on real hardware the same day;
+`fltmul.o.golden`'s data segment, in declaration order:
+
+| Label | Text | Real bytes | Exact product | `libc.a`'s product |
+|---|---|---|---|---|
+| `P1` | `.float 1.18059162071741130e+21` | `ff ff 7f c6` | `00 00 00 c7` | `ff ff 7f c6` |
+| `P2` | `.float 1.26765060022822940e+30` | `ff ff 7f e4` | `00 00 00 e5` | `ff ff 7f e4` |
+| `P3` | `.double 1.23456789012345678e+25` | `4d ea 27 82 c9 64 23 d4` | `a6 ea ...` | `4d ea ...` |
+| `P4` | `.double 1.23456789012345678e-33` | `d5 c8 7d e1 b5 20 4d 13` | `cb c8 ...` | `d5 c8 ...` |
+| `Z54` | `.double 0.00000000000000000e-37` | `45 4e a6 40 3c 0c 27 00` | `6d 4e ...` | `45 4e ...` |
+| `K1` | `.float 0e0` | `ff ff ff 00` | | |
+| `K2` | `.double 0.00000000000000000e+17` | `00 00 00 00 ff ff ff 00` | | |
+| `K3` | `.float -0.00000000000000000e+17` | `ff ff 7f 00` | | |
+| `LH` | `.double 1e-41` | `00 00 00 00 00 00 00 00` | | |
+| `NG` | `.float -1.50000000000000000e+00` | `00 00 c0 81` | `00 00 c0 81` | `00 00 c0 81` |
+
+`fltmodel.py survivors . ../float_open`: 2 of 80 combinations,
+`M=libc A=ne D=ne|na`. **The real assembler's multiplication rounds the
+product `libc.a`'s `dmath.o` forms**, with its misplaced partial product -
+five times over, two of them exact floats in the compiler's own form,
+which the real assembler stores one unit below their value.
+`fltconst.c`'s `MODES_MUL` becomes `RM_LIBC_MUL` alone, `fltmodel.py`'s
+`EXPECTED` likewise; with `ddiv`'s tie rule the only choice left, and
+`atof` never dividing to a tie, every constant the model covers is
+determined and `FLT_ROUNDING` cannot occur any more. Over 130,092 texts
+(random, compiler-style over the whole range, zeros, LOGHUGE) through the
+previous commit's `fltconst_test` and this one: 9,773 refused as
+`FLT_ROUNDING` before are accepted now, and no text both accept has
+different bytes.
+
+**Zeros with decimal exponent 0.** `K1` has one digit, `Z0` (fltmode) 18,
+and both are `ff ff ff 00`; `K2` shows the low half of the same double,
+`00 00 00 00`; `K3` shows the sign: `fneg` flips bit 7 of byte 6 (`ff` →
+`7f`), as `libc.a`'s `stkmath.o` does - the first observation where
+flipping and setting differ. `Z0`, `K1`, `K2`, `K3` follow four
+different constants in their files (`NZ`, `Z54`, `K1`, `K2`), so the
+leftover does not come from the previous conversion either. So the
+digit loop, run over any number of zero digits, leaves the same double in
+`fac`: `00 00 00 00 ff ff ff`, exponent byte then cleared by the zero
+rule. Why is still not known - `libc.a`'s runtime leaves `-2**56` there
+(`fcmp`'s difference; `dadd` of two zeros returns one of them), so one of
+the real runtime's operations on zero operands differs from `libc.a`'s in
+a way these bytes do not identify. Its float-shaped low half (0) suggests
+a value produced at float precision, but that is a guess. `fltconst.c`
+accepts every such zero now, both sizes and signs, as `ZERO_LOOP_FAC`
+with bit 7 of byte 6 flipped for a minus sign.
+
+**LOGHUGE.** `.double 1e-41` (nd - k = -40) is eight 0 bytes. `atof`
+gives up here - `fl = 0` (the dirty-zero constant `bc a2 31 00`),
+exponent 0 - so the result is a k = 0 zero, and `fac` holds whatever the
+digit loop left: the last operation was the `fadd` that made `fl` = 1.0
+(0 + 1 through the zero rule's `10*fl`), whose stored mantissa bits are
+all 0. The emulated runtime with the changed `zero` routine gives the
+same, and for other LOGHUGE texts whose last digit was accumulated it
+gives `fl`'s mantissa with exponent byte 0 (`12e-45` → `00 ... 40 00`,
+`123456789e-50` → `00 00 00 a0 a2 79 6b 00`; `libcatof.py check` compares
+thousands of such texts); a nonzero leftover is the same arithmetic the
+model already tracks. So
+LOGHUGE is accepted when the text's last digit was accumulated (`fl`'s
+mantissa) or all digits are 0 (`ZERO_LOOP_FAC`); after a dropped digit
+the last operation was `fcmp`, whose difference `fl - 2**56` no real
+constant shows, and the text stays `FLT_RANGE` (its value is below the
+format's range anyway). `FLT_ZERO` is gone from `fltconst.h` and
+`fltconst_test`: nothing returns it.
+
+**`NG`** (`-1.5` → `00 00 c0 81`) is the first negative nonzero constant
+observed; the model's sign handling (now a flip of bit 7 of byte 6
+everywhere) already gave it.
+
+**Still refused**: a step outside the format's exponent range. The
+practical case is `flexp` = 5\*\*k for k >= 55 - `%.17e` text from `e-38`
+down (`e-39` when `atof` drops the 18th digit), e.g. `.float
+1.00000000000000000e-38`, whose value would fit. In `libc.a`'s runtime
+the overflow reaches `__ovfl` (`fperr.o`), which sets `errno` and sends
+the process `SIGFPE` - the real assembler may simply die there, which a
+probe would show.
+
+**`libcatof.py`.** The emulator harness of the previous section is now
+a tool, `tests/mutos_as/float_coverage/libcatof.py` (`make
+check-libcatof`; needs the Python module `unicorn`, so not part of `make
+test`). It decodes the real objects from `tests/mutos1700_libc/` and
+`crt0.o`, assembles a one-instruction `_main` with `mutos_as`, links with
+`mutos_ld` (the members named explicitly - `libc.a`'s `__.SYMDEF` is
+stale), loads the 0407 image into one 64K segment and calls `_atof` (or
+`dmul`/`ddiv`/`dadd` directly) with a HLT as return address; each call
+starts from a fresh copy of the image. Before use it checks the linked
+code it depends on: `dmath.o`'s `zero` routine (`lea di,fac` / `sub
+ax,ax` / four `stosw` / `ret`), its entry points, and `pmuld`'s
+`mov dx,2[di]`. By default `zero` is patched to `mov byte fac+7,0` /
+`ret` (the real assembler's zero handling), `--libc` leaves it alone.
+Subcommands: `atof` (bytes for given texts), `goldens` (every golden
+constant; the all-zero exponent-0 texts are reported as "not emulated",
+not as differences), `check` (`fltconst_test`'s accepted output on edge
+cases, seeded random texts and targeted ones - `%.17e` over the whole
+range, zeros, LOGHUGE), `ops` (the runtime's `dmul`/`ddiv`/`dadd` on
+random operand pairs against `fltmodel.py`'s `libc` product and
+nearest-even). A build of `fltconst.c` with the exact product fails its
+`check` (251 of 2,558 compared constants differ).
+
+**Verification.** Clean `make clean && make all && make test`: zero
+warnings, `mutos_as` 75/75 (62 `kernel_opt`, 5 `kernel_nonopt`, 1
+`libc_recon`, 7 `float_coverage` - `fltmul.s` new), `check_floatdat.sh`
+13/13, `fltmodel.py survivors` ok (29 constants, 2 of 80), `fltmodel.py
+check` 0 differences in 2,092 texts, `assemble_cc_goldens.sh` 71/71,
+`mutos_cpp` 5/5, `mutos_c0`/`mutos_c1` 62/62. `make check-libcatof`: 25
+of 29 golden constants identical to the emulated `atof`, 4 "not
+emulated", 0 different; 7,528 accepted constants compared, 0 different;
+6,000 operations, 0 different. One-off: `fltmodel.py check` with 150,000
+random texts, 0 differences; `libcatof.py check` with 30,000 (82,592
+texts, 75,150 accepted constants compared), 0 differences. Against the
+previous commit's assembler over 154 `.s` inputs: 153 identical objects,
+`fltmul.s` newly assembled to its golden. ASan/UBSan over the same inputs
+plus a probe of every new acceptance and refusal path: no reports,
+objects and diagnostics identical to the `-O2` build's; `fltconst_test`
+under both sanitizers over 75,092 texts: output identical.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

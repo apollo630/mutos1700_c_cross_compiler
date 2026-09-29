@@ -7,17 +7,16 @@
  * v7 libc atof()'s algorithm on the MUTOS 56-bit double (digits
  * accumulated while below 2**56, flexp = 5**k by repeated squaring, one
  * division or multiplication, ldexp), then .float = the high four bytes
- * of the double. Addition and division round to nearest, ties to even
+ * of the double. Every double operation rounds to nearest, ties to even
  * (float_coverage/fltmode.o.golden; the division's tie rule is left
- * open but never matters). The multiplication rounds to nearest-even
- * too, but of which product is open: the exact one, or the one
- * libc.a's own dmath.o forms (one partial product taken from the wrong
- * word - see dbl_mul()); every real constant so far fits both. So the
- * conversion is run once for each combination still consistent with
- * the real bytes (MODES_MUL, MODES_ADD, MODES_DIV below), and a
- * constant is accepted only if every run gives the same bytes. All
- * arithmetic is exact integer arithmetic on 64-bit words; no host
- * floating point is involved anywhere.
+ * open but never matters), and the multiplication rounds the product
+ * libc.a's own dmath.o forms, one partial product taken from the wrong
+ * word (float_coverage/fltmul.o.golden - see dbl_mul()). The conversion
+ * is run once for each combination still consistent with the real
+ * bytes (MODES_MUL, MODES_ADD, MODES_DIV below) and a constant is
+ * accepted only if every run gives the same bytes - which they always
+ * do now. All arithmetic is exact integer arithmetic on 64-bit words;
+ * no host floating point is involved anywhere.
  */
 
 #include <stdbool.h>
@@ -35,16 +34,20 @@
 
 /* v7 atof()'s LOGHUGE (libc.a's atof.o compares with -39): with nd
  * digits and a decimal exponent of -k, nd - k < -LOGHUGE makes atof()
- * give up - fl = 0 and the exponent 0 - and return bytes no real
- * constant shows. A nonzero value there is below both formats' range
- * anyway. */
+ * give up - fl = 0 and the exponent 0 - so the result is a zero (see the
+ * zero rule in convert()), whatever the digits. */
 #define LOGHUGE 39
 
-/* The one zero with decimal exponent 0 the real assembler has shown:
- * ".float 0.00000000000000000e+17" -> ff ff ff 00 (fltmode.o.golden,
- * Z0), 18 digits. See the zero rule in convert(). */
-#define ZERO_K0_DIGITS 18
-static const unsigned char ZERO_K0_FLOAT[4] = { 0xFF, 0xFF, 0xFF, 0x00 };
+/* What the digit loop leaves in the runtime's accumulator fac when every
+ * digit is 0, as a double image: 00 00 00 00 ff ff ff (exponent byte
+ * cleared). Real constants: ".float 0.00000000000000000e+17" -> ff ff ff
+ * 00 (fltmode.o.golden Z0, 18 digits), ".float 0e0" -> ff ff ff 00
+ * (fltmul.o.golden K1, one digit), ".double 0.00000000000000000e+17" ->
+ * 00 00 00 00 ff ff ff 00 (K2). libc.a's runtime leaves -2**56 there
+ * instead (fcmp's difference); which of the real runtime's operations
+ * differs is not known, but the bytes do not depend on the digit count
+ * or on the constant before. */
+static const unsigned char ZERO_LOOP_FAC[8] = { 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x00 };
 
 /* ------------------------------------------------------------------ */
 /* The emulated MUTOS double.                                          */
@@ -220,20 +223,17 @@ typedef struct {
     long        eexp;
 } FltText;
 
-/* CV_OK: out[0..8) is the double image. CV_OK_HIGH: only out[4..8), the
- * image's high half (all a .float stores), is known. CV_ZERO: a zero
- * whose real bytes are not known. CV_RANGE: a step leaves the format's
- * exponent range. */
-typedef enum { CV_OK, CV_OK_HIGH, CV_ZERO, CV_RANGE } ConvResult;
+/* CV_OK: out[0..8) is the double image. CV_RANGE: a step leaves the
+ * format's exponent range, or its bytes are not known. */
+typedef enum { CV_OK, CV_RANGE } ConvResult;
 
-/* Writes a double image: the low 55 bits of m (the leading 1 is not
- * stored), the sign in bit 7 of byte 6, the exponent byte xbyte. */
-static void put_image(uint64_t m, bool neg, unsigned xbyte, unsigned char out[8])
+/* Writes a positive double image: the low 55 bits of m (the leading 1
+ * is not stored), the exponent byte xbyte. */
+static void put_image(uint64_t m, unsigned xbyte, unsigned char out[8])
 {
     uint64_t mant = m & ((UINT64_C(1) << (SIG - 1)) - 1);
     for (int i = 0; i < 7; i++)
         out[i] = (unsigned char)((mant >> (8 * i)) & 0xFF);
-    out[6] = (unsigned char)(out[6] | (neg ? 0x80 : 0));   /* fl = -fl */
     out[7] = (unsigned char)xbyte;
 }
 
@@ -245,6 +245,7 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
     Dbl fl = { 0, 0 };
     bool fl_zero = true;
     bool frac = false;
+    bool last_acc = true;       /* the last digit was accumulated into fl */
     long exp10 = 0, nd = 0;
 
     /* Digits: while fl < 2**56 ("big"), fl = 10*fl + digit - a dmul and
@@ -274,16 +275,33 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
             }
             if (frac)
                 exp10--;
-        } else if (!frac) {
-            exp10++;
+            last_acc = true;
+        } else {
+            if (!frac)
+                exp10++;
+            last_acc = false;
         }
         nd++;
     }
     exp10 += t->eexp;
     long k = exp10 < 0 ? -exp10 : exp10;
 
-    if (exp10 < 0 && nd - k < -LOGHUGE)
-        return fl_zero ? CV_ZERO : CV_RANGE;
+    /* LOGHUGE: atof() sets fl = 0 and the exponent to 0, so the result is
+     * the k = 0 zero below, with whatever the digit loop left in fac:
+     * fl itself if the last digit was accumulated (the last operation
+     * was the fadd that built it - fltmul.o.golden LH, ".double 1e-41" ->
+     * 1.0's mantissa, eight 0 bytes), the all-zero loop's leftover if
+     * every digit was 0. After a dropped digit it is fcmp's difference
+     * fl - 2**56, never observed: refused (the value is below the
+     * format's range anyway). */
+    bool zero = fl_zero;
+    if (exp10 < 0 && nd - k < -LOGHUGE) {
+        if (!fl_zero && !last_acc)
+            return CV_RANGE;
+        exp10 = 0;
+        k = 0;
+        zero = true;
+    }
 
     /* flexp = 5**k: flexp *= exp5 for every set bit of k, exp5 squared
      * in between - v7's loop, including its last squaring rule. For
@@ -306,20 +324,21 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
      * exponent byte of its accumulator fac and leaves the rest of fac as
      * the previous operation left it (fltconst.h). For k >= 1 that is
      * flexp - the divisor or the multiplier - so the result is flexp's
-     * mantissa with exponent byte 0, the sign applied afterwards
-     * (fltopen.o.golden, fltmode.o.golden: k = 1, 4, 17, 25). For k = 0
-     * no multiplication builds flexp, and fac holds whatever the digit
-     * loop left there: observed only for an unsigned .float with 18
-     * digits. ldexp() leaves an exponent byte of 0 alone. */
-    if (fl_zero) {
-        if (k == 0) {
-            if (t->neg || nd != ZERO_K0_DIGITS)
-                return CV_ZERO;
-            memset(out, 0, 4);
-            memcpy(out + 4, ZERO_K0_FLOAT, 4);
-            return CV_OK_HIGH;
-        }
-        put_image(flexp.m, t->neg, 0, out);
+     * mantissa with exponent byte 0 (fltopen.o.golden, fltmode.o.golden,
+     * fltmul.o.golden: k = 1, 4, 17, 25, 54). For k = 0 no
+     * multiplication builds flexp, and fac holds what the digit loop
+     * left there: ZERO_LOOP_FAC, or fl after LOGHUGE. ldexp() leaves an
+     * exponent byte of 0 alone; fneg then flips bit 7 of byte 6
+     * (fltmul.o.golden K3: ff ff 7f 00). */
+    if (zero) {
+        if (k >= 1)
+            put_image(flexp.m, 0, out);
+        else if (fl_zero)
+            memcpy(out, ZERO_LOOP_FAC, 8);
+        else
+            put_image(fl.m, 0, out);
+        if (t->neg)
+            out[6] ^= 0x80;
         return CV_OK;
     }
 
@@ -334,11 +353,13 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
     if (!x_in_range(x))
         return CV_RANGE;
 
-    put_image(fl.m, t->neg, (unsigned)(x + 128), out);
+    put_image(fl.m, (unsigned)(x + 128), out);
+    if (t->neg)
+        out[6] ^= 0x80;                                 /* fl = -fl: fneg */
     return CV_OK;
 }
 
-/* The modes the real double arithmetic may use, per operation. Of the
+/* The modes the real double arithmetic uses, per operation. Of the
  * combinations of truncation, nearest-even, nearest-away and
  * away-from-zero for dmul, dadd and ddiv - plus libc.a's own product
  * for dmul - only these reproduce every real constant
@@ -350,19 +371,16 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
  *         atof()'s one division has the divisor 5**k, whose mantissa
  *         has an odd factor of at least 5 for every k in range, so an
  *         exact quotient has at most 54 significant bits;
- *   dmul: nearest-even (M1..M4, CF, Z25) - of the exact product or of
- *         libc.a's (RM_LIBC_MUL, see dbl_mul()). libc.a's atof run on
- *         libc.a's runtime gives every nonzero real constant's bytes;
- *         no real constant has needed a product where the two differ.
- *         In atof() they can differ only in fl * flexp for k >= 4 (a
- *         positive decimal exponent, counting digits dropped past
- *         2**56: "%.17e" text from e+20 up - 5**4 is the first power
- *         whose word b2 is not 0) and in flexp itself for k = 50..54
- *         ("%.17e" text from e-33 down). A constant whose stored bytes
- *         they decide is FLT_ROUNDING until a real one decides.
+ *   dmul: nearest-even of libc.a's product (RM_LIBC_MUL, see
+ *         dbl_mul()): fltmul.o.golden's five constants whose bytes the
+ *         product decides (P1..P4, Z54) all have libc.a's, none the
+ *         exact one's. libc.a's atof run on libc.a's own runtime gives
+ *         every nonzero real constant's bytes.
  *
- * Keep in sync with fltmodel.py's EXPECTED. */
-static const RoundMode MODES_MUL[] = { RM_NEAR_EVEN, RM_LIBC_MUL };
+ * With one candidate per operation apart from ddiv's tie rule, every
+ * run agrees: FLT_ROUNDING cannot occur. Keep in sync with fltmodel.py's
+ * EXPECTED. */
+static const RoundMode MODES_MUL[] = { RM_LIBC_MUL };
 static const RoundMode MODES_ADD[] = { RM_NEAR_EVEN };
 static const RoundMode MODES_DIV[] = { RM_NEAR_EVEN, RM_NEAR_AWAY };
 
@@ -458,8 +476,6 @@ FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
         for (int b = 0; b < NELEM(MODES_ADD); b++) {
             for (int c = 0; c < NELEM(MODES_DIV); c++) {
                 ConvResult r = convert(&t, MODES_MUL[a], MODES_ADD[b], MODES_DIV[c], cur);
-                if (r == CV_ZERO || (r == CV_OK_HIGH && kind == FP_DOUBLE))
-                    return FLT_ZERO;        /* independent of the modes */
                 if (r == CV_RANGE)
                     return FLT_RANGE;
                 if (!have) {
@@ -481,16 +497,9 @@ const char *flt_status_text(FltStatus st, FpKind kind)
     switch (st) {
         case FLT_OK:       return "ok";
         case FLT_SYNTAX:   return "not a floating-point number";
-        case FLT_ZERO:
-            return "this zero is not supported (the real assembler's bytes for a zero are known when its "
-                   "fraction digits and exponent do not cancel - e.g. 0.00000000000000000e+00, 0.0, 0e5 - "
-                   "unless its decimal exponent is below -39 minus its digit count (e.g. 0e-41); when "
-                   "they cancel, only for an unsigned .float of 18 digits, e.g. 0.00000000000000000e+17)";
         case FLT_ROUNDING:
-            return dbl ? "the real assembler's result depends on how its double multiplication forms "
-                         "its product, which is unconfirmed for this value"
-                       : "the real assembler's result depends on how its double multiplication forms "
-                         "its product, which is unconfirmed for this value (the last place may differ)";
+            return "the real assembler's result depends on how its double division breaks a tie, "
+                   "which is unconfirmed";
         case FLT_RANGE:
             return dbl ? "out of range for a double (the value, or a step of the real assembler's "
                          "conversion such as 5**k for a large decimal exponent)"

@@ -1430,13 +1430,12 @@ di,*2.(si)`).
    `tests/mutos_as/float_coverage/`) - the `%.17e` zero and `ecvt.o`'s
    `.03` come out as the real bytes - but the real compiler's text for
    either kind of constant is in no golden. `mutos_as` accepts every
-   `%.17e` constant `mutos_c1` writes with an exponent from `e-32` to
-   `e+19` (the real rounding is settled, `tests/mutos_as/float_coverage/
-   fltmode.s`); above and below that it refuses those whose bytes depend
-   on which product the real multiplication rounds (e.g.
-   `1.26765060022822940e+30`), which `tests/mutos_as/float_open/fltmul.s`
-   is to settle (see `STATUS.md`'s "Next up"). `mutos_c1` itself still
-   writes them; the refusal comes from `mutos_as`, with the reason. The 81..127-byte `chkstk` gap stays "not
+   `%.17e` constant `mutos_c1` writes from `e-37` up (`e-38` when the
+   real `atof` drops the 18th digit): the real conversion is settled,
+   rounding and multiplication included
+   (`tests/mutos_as/float_coverage/fltmode.s`, `fltmul.s`). Below that the
+   conversion's 5\*\*55 overflows, and `mutos_as` refuses the constant
+   with the reason - `mutos_c1` itself still writes it. The 81..127-byte `chkstk` gap stays "not
    yet supported" until a golden lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens

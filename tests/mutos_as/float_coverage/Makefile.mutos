@@ -1,4 +1,4 @@
-# Makefile.mutos -- float_coverage (this directory's 6 files only).
+# Makefile.mutos -- float_coverage (this directory's 7 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory ON THE REAL MUTOS 1700 hardware / emulator:
@@ -8,8 +8,9 @@
 #
 # Assembles each hand-written *.s source with the REAL "as" - the
 # real-hardware ground truth for mutos_as's .float/.double encoding (see
-# README.md for what each file tests and why). All six goldens exist
-# (2026-09-28, fltmode 2026-09-29) and mutos_as reproduces every one of them:
+# README.md for what each file tests and why). All seven goldens exist
+# (2026-09-28, fltmode and fltmul 2026-09-29) and mutos_as reproduces
+# every one of them:
 #
 #   fltaddr.o, fltmulti.o -- lea <reg>,<label> + .float in whole objects.
 #   fltzero.o, fltdbl.o -- a zero .float and a .double; mutos_as refused
@@ -20,8 +21,10 @@
 #   fltmode.o -- the double arithmetic's rounding and zeros on atof's
 #     multiplication path (written in ../float_open/ too, moved here
 #     the same way).
+#   fltmul.o -- which product the double multiplication rounds, and
+#     zeros with decimal exponent 0 (likewise).
 #
-# One small makefile (6 files) needs no per-category split the way
+# One small makefile (7 files) needs no per-category split the way
 # tests/mutos_cc's 62-file corpus did - see that directory's own
 # Makefile.mutos header for the "Make: out of memory" history this
 # avoids simply by staying this small.
@@ -32,11 +35,11 @@
 #
 # Run on real MUTOS 1700 hardware 2026-09-28 (the fltopen rule in
 # ../float_open/Makefile.mutos, where fltopen.s was assembled; fltmode.s
-# likewise there, its golden committed 2026-09-29).
+# and fltmul.s likewise there, their goldens committed 2026-09-29).
 
 AS = as
 
-all: fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o
+all: fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o fltmul.o
 
 fltaddr.o: fltaddr.s
 	$(AS) -o fltaddr.o fltaddr.s
@@ -56,5 +59,8 @@ fltopen.o: fltopen.s
 fltmode.o: fltmode.s
 	$(AS) -o fltmode.o fltmode.s
 
+fltmul.o: fltmul.s
+	$(AS) -o fltmul.o fltmul.s
+
 clean:
-	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o
+	rm -f fltaddr.o fltmulti.o fltzero.o fltdbl.o fltopen.o fltmode.o fltmul.o

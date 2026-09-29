@@ -35,7 +35,7 @@
  * CONVERSION MODEL. The real assembler converts with v7 libc atof()'s
  * algorithm on the 56-bit double, and a .float is the HIGH FOUR BYTES of
  * that double - truncated, not rounded. Every confirmed constant fits
- * this (19 in tests/mutos_as/float_coverage/'s goldens), and libc.a's
+ * this (29 in tests/mutos_as/float_coverage/'s goldens), and libc.a's
  * own atof.o - v7's algorithm, compiled - run on libc.a's own
  * floating-point runtime under an 8086 emulator gives the real bytes of
  * every nonzero one of them; only zeros come out differently (below):
@@ -51,30 +51,29 @@
  *   - .float 0.10000000000000000e+00 -> cc cc 4c 7d (fltopen IN): the
  *     high half of the double for 0.1 - correct rounding would give cd.
  *
- * ROUNDING (fltmode.o.golden). Addition and division round to nearest,
- * ties to even - exactly what libc.a's dmath.o implements (a guard byte
- * with sticky bits); the division's tie rule never matters, since
- * atof()'s one division cannot tie. The multiplication rounds to
- * nearest, ties to even as well, but of which product is open:
- * libc.a's dmath.o forms a*b plus (a0*b1 - a0*b2) * 2**32 (a0..b2 the
- * mantissas' 16-bit words - one partial product loads the wrong word),
- * and no real constant has yet needed a product where that differs from
- * the exact one. It can in atof()'s fl * flexp for k >= 4 (a positive
- * decimal exponent, counting digits dropped past 2**56: "%.17e" text
- * from e+20 up) and inside flexp for k = 50..54 (from e-33 down).
- * flt_encode() runs the conversion under every combination still
- * possible and accepts a constant only if all give the same bytes;
- * otherwise FLT_ROUNDING. E.g. .float
- * 1.26765060022822940e+30 (2**100) is 00 00 00 e5 with the exact
- * product and ff ff 7f e4 with libc.a's.
+ * ROUNDING (fltmode.o.golden, fltmul.o.golden). Every double operation
+ * rounds to nearest, ties to even - what libc.a's dmath.o implements (a
+ * guard byte with sticky bits); the division's tie rule never matters,
+ * since atof()'s one division cannot tie. The multiplication rounds the
+ * product libc.a's dmath.o forms: a*b plus (a0*b1 - a0*b2) * 2**32
+ * (a0..b2 the mantissas' 16-bit words - one partial product loads the
+ * wrong word), not the exact one. That changes atof()'s fl * flexp for
+ * k >= 4 (a positive decimal exponent, counting digits dropped past
+ * 2**56: "%.17e" text from e+20 up) and flexp itself for k = 50..54
+ * (from e-33 down), e.g. .float 1.26765060022822940e+30 (2**100) is
+ * ff ff 7f e4, one unit below the value (fltmul P2). flt_encode() still
+ * runs the conversion under every combination left (ddiv's two tie
+ * rules) and accepts a constant only if all give the same bytes, which
+ * they always do.
  *
  * ZERO. The real arithmetic, given a zero operand, does not clear its
  * accumulator fac as libc.a's does: it zeroes only fac's exponent byte
  * and leaves the rest as the previous operation left it - libc.a's
- * runtime changed in just that way reproduces all seven real zeros with
+ * runtime changed in just that way reproduces all eight real zeros with
  * k >= 1. For k >= 1 the previous operation built flexp, so the result
  * is flexp's mantissa with exponent byte 0 on either path (ldexp()
- * leaves an exponent byte of 0 alone), the sign applied afterwards:
+ * leaves an exponent byte of 0 alone), the sign applied afterwards by
+ * fneg, which flips bit 7 of byte 6:
  *
  *     ".float 0.0" -> 00 00 20 00 (5**1, fltopen Z1),
  *     ".float 0.00000000000000000e+00" -> bc a2 31 00 (5**17, fltzero -
@@ -83,17 +82,23 @@
  *     (fltopen Z3), "-0.00000000000000000e+00" -> bc a2 b1 00 (fltopen
  *     Z2), ".float 0.0e+05" -> 00 40 1c 00 (5**4 on the multiplication
  *     path, fltmode Z4), ".double 0.0000000000000000000000000" ->
- *     85 14 40 61 51 59 04 00 (the rounded 5**25, fltmode Z25).
+ *     85 14 40 61 51 59 04 00 (the rounded 5**25, fltmode Z25),
+ *     ".double 0.00000000000000000e-37" -> 45 4e a6 40 3c 0c 27 00
+ *     (5**54 as libc.a's product builds it, fltmul Z54).
  *
  * For k = 0 nothing builds flexp, and fac holds what the digit loop
- * left there: ".float 0.00000000000000000e+17" -> ff ff ff 00 (fltmode
- * Z0), which libc.a's runtime does not reproduce. So a zero with k = 0
- * is accepted only in that shape - a .float, 18 digits, no minus sign -
- * and the LOGHUGE path is refused; every other zero is accepted, both
- * directives and signs (FLT_ZERO otherwise). Values outside the format's
- * exponent range at any step of the conversion are refused too
- * (FLT_RANGE): the real arithmetic's overflow and underflow behaviour is
- * unknown.
+ * left there. With every digit 0 that is 00 00 00 00 ff ff ff (fltmode
+ * Z0 with 18 digits, fltmul K1 with one, K2 as a .double; K3 negated:
+ * ff ff 7f 00) - libc.a's runtime leaves -2**56 instead, so one of the
+ * real runtime's operations on zeros differs in a way these bytes do not
+ * pin down, but they depend on neither the digit count nor the constant
+ * before. LOGHUGE (nd - k < -39) makes atof() set fl = 0 and the
+ * exponent 0, i.e. a k = 0 zero: if the last digit was accumulated, fac
+ * holds fl (".double 1e-41" -> eight 0 bytes, 1.0's mantissa, fltmul
+ * LH); after a dropped digit it holds fcmp's difference, never observed
+ * - FLT_RANGE. Values outside the format's exponent range at any step
+ * of the conversion are refused too (FLT_RANGE): the real arithmetic's
+ * overflow and underflow behaviour is unknown.
  */
 
 #ifndef MUTOS_AS_FLTCONST_H
@@ -110,9 +115,9 @@ typedef enum {
 typedef enum {
     FLT_OK = 0,
     FLT_SYNTAX,     /* not a number in the accepted syntax */
-    FLT_ZERO,       /* a zero whose real bytes are not known (see above) */
-    FLT_ROUNDING,   /* the bytes depend on which product the real dmul forms */
-    FLT_RANGE       /* exponent outside the format at some step, or text too long */
+    FLT_ROUNDING,   /* the bytes depend on an unconfirmed rounding (see above) */
+    FLT_RANGE       /* exponent outside the format at some step, bytes not
+                     * known (LOGHUGE after a dropped digit), or text too long */
 } FltStatus;
 
 /* Size in bytes of one constant of this kind: 4 or 8. */

@@ -6,14 +6,15 @@
 #   make -f Makefile.mutos
 #   make -f Makefile.mutos clean
 #
-# Assembles fltmul.s with the REAL "as": the fourth round of
-# floating-point probes, to pin down which product the real assembler's
-# double multiplication rounds, and zeros with decimal exponent 0 (see
-# README.md). fltmul.o is expected to assemble cleanly here; the CURRENT
-# mutos_as refuses nine of its ten constants by design, so this
-# directory is NOT part of the top-level "make test". (The previous
-# probes here, fltopen.s and fltmode.s, were run on real hardware with
-# the same rule shape and have moved to ../float_coverage/.)
+# There is NO CURRENT PROBE: fltopen.s (2026-09-28), fltmode.s and
+# fltmul.s (2026-09-29) were run here with rules of this shape and have
+# moved to ../float_coverage/ with their goldens. A new probe gets its
+# own rule, e.g.
+#
+#   all: fltnew.o
+#
+#   fltnew.o: fltnew.s
+#   	$(AS) -o fltnew.o fltnew.s
 #
 # One recipe, one shell line, per make(1)'s own note (see
 # tests/mutos_cc/00_smoke/Makefile.mutos) that shell state doesn't carry
@@ -21,10 +22,6 @@
 
 AS = as
 
-all: fltmul.o
-
-fltmul.o: fltmul.s
-	$(AS) -o fltmul.o fltmul.s
+all:
 
 clean:
-	rm -f fltmul.o
