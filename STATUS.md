@@ -91,37 +91,41 @@ producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30
 
 - **Clean rebuild** from source (`make clean && make all`), zero warnings under
   `-std=c11 -Wall -Wextra -Wpedantic`.
-- **Full regression: 75/75 golden files byte-for-byte identical**, full file compare
+- **Full regression: 76/76 golden files byte-for-byte identical**, full file compare
   (header + text + data + text-reloc + data-reloc + symtab):
   - `tests/mutos_as/kernel_opt/`: 62/62 clean (includes `mch_insw_outsw.s`, the
     hardware-parity test for the INSW/OUTSW fix below).
   - `tests/mutos_as/kernel_nonopt/`: 5/5 clean.
   - `tests/mutos_as/libc_recon/`: 1/1 clean - `ldexp.s`: a source reconstructed
     from the real `libc.a` object `ldexp.o`, which is its golden (see below).
-  - `tests/mutos_as/float_coverage/`: 7/7 clean - real-hardware objects from
-    hand-written sources, among them zeros, doubles and inexact values
-    (`fltzero.s`, `fltdbl.s`, `fltopen.s`, `fltmode.s`, and new this session
-    `fltmul.s`, refused before - see "The real product, zeros at exponent 0"
-    below).
+  - `tests/mutos_as/float_coverage/`: 8/8 clean - real-hardware objects from
+    hand-written sources, among them zeros, doubles, inexact values and
+    results outside the exponent range (`fltzero.s`, `fltdbl.s`, `fltopen.s`,
+    `fltmode.s`, `fltmul.s`, and new this session `fltovf.s`, 7 of whose 9
+    constants were refused before - see "Range: `ldexp` wraps, an overflow
+    aborts" below).
   - 0 diff-mismatches, 0 assembler-invocation errors, all four directories.
 - **`.float`/`.double` against real bytes**: `libc_recon/check_floatdat.sh` - 13/13
   comparisons byte-identical to the real `atof.o`/`ecvt.o` data: six constants,
   the zero against all six of its occurrences, and `ecvt.o`'s inexact 8-byte
   `0.03` over all 8 bytes (see below).
-- **Conversion model**: `float_coverage/fltmodel.py survivors` - the 29
-  known-source constants in the 7 goldens leave 2 of 80 combinations (the 64
+- **Conversion model**: `float_coverage/fltmodel.py survivors` - the 38
+  known-source constants in the 8 goldens leave 2 of 80 combinations (the 64
   rounding-mode combinations plus `libc.a`'s own product for `dmul`), exactly
   the set `fltconst.c` uses; `fltmodel.py check` - 0 differences between
-  `fltconst.c` and the independent Python model (2,092 texts in `make test`;
-  150,092 in a one-off run).
+  `fltconst.c` and the independent Python model (2,107 texts in `make test`;
+  150,107 in a one-off run).
 - **Against the real `libc.a` `atof`** (`float_coverage/libcatof.py`, `make
-  check-libcatof`): 25 of the 29 golden constants byte-identical to
+  check-libcatof`): 34 of the 38 golden constants byte-identical to
   `libc.a`'s own `atof.o` run on `libc.a`'s own floating-point runtime under
   an 8086 emulator with the real assembler's zero handling, the other 4 the
   known exception (all-zero texts with decimal exponent 0, reported
-  separately); every constant `fltconst_test` accepts among 82,592 texts
-  (75,150 compared) identical to it; the runtime's `dmul`/`ddiv`/`dadd` on
-  2,000 random operand pairs each identical to `fltmodel.py`'s arithmetic.
+  separately); every constant `fltconst_test` accepts among 82,607 texts
+  (75,589 compared) identical to it, and every one of the 1,717 it refuses
+  as `RANGE` raises `SIGFPE` in the emulated runtime (8,357 texts in `make
+  check-libcatof`, 210 of them `RANGE`); the runtime's `dmul`/`ddiv`/`dadd`
+  on 2,000 random operand pairs each identical to `fltmodel.py`'s
+  arithmetic.
 - **Every real compiler output assembles**: `tests/mutos_as/assemble_cc_goldens.sh`
   - 71/71 `tests/mutos_cc` `.s.golden` files (the 62-file corpus and `11_kernel`'s
   nine), up from 69 (the two `08_float` files). There are no reference objects for
@@ -129,16 +133,19 @@ producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30
   cover the same constructs.
 - **AddressSanitizer + UBSan** (`-fsanitize=address,undefined`, `-O0 -g`,
   LeakSanitizer off - a Pass 1 error exits without freeing, as before): 0 errors
-  over 154 `.s` inputs (every file above, `floatdat.s`, the seven
-  `v30_speculative` sources and the 71 compiler goldens) plus a probe of
-  every new `.float`/`.double` acceptance and refusal path, each object and
-  diagnostic identical to the `-O2` build's; `fltconst_test` under both
-  sanitizers over 75,092 texts, output identical.
+  over 156 `.s` inputs (every file above, `floatdat.s`, `float_open/fltsig.s`,
+  the seven `v30_speculative` sources and the 71 compiler goldens) plus a probe
+  of every new `.float`/`.double` acceptance and refusal path (wrapped
+  results, `FLT_RANGE`, `FLT_UNKNOWN`), each object, diagnostic and exit status
+  identical to the `-O2` build's; `fltconst_test` under both sanitizers over
+  130,107 texts, output identical.
 - **Old vs. new assembler** (this session's model against the previous
-  commit's): of those 154 inputs, 153 give identical objects; `fltmul.s`,
+  commit's): of those 156 inputs, 155 give identical results; `fltovf.s`,
   which the previous build refused, now assembles to its golden. Over
-  130,092 texts through both `fltconst_test`s, no text both accept has
-  different bytes.
+  130,107 texts through both `fltconst_test`s, no text both accept has
+  different bytes; 1,853 refused before (`FLT_RANGE`) are now written with
+  the wrapped exponent byte, and 2 (LOGHUGE after a dropped digit) are now
+  `FLT_UNKNOWN` instead of `FLT_RANGE`.
 
 ### Earlier fixes (prior session records; both still covered by the regression above)
 
@@ -383,7 +390,8 @@ exponent 0, and `libcatof.py`".
 - **Still refused**: out of range at some step (`FLT_RANGE`), e.g. `.float
   1.00000000000000000e-38`, whose 5\*\*55 overflows although the value fits;
   `libc.a`'s runtime answers an overflow with `SIGFPE`, what the real
-  assembler does is not observed.
+  assembler does is not observed. (Settled in the next section: `ldexp`
+  wraps, an overflow inside the arithmetic aborts the real assembler.)
 - **`libcatof.py`** (new, `tests/mutos_as/float_coverage/`, `make
   check-libcatof`): the emulator harness of the previous section as a tool -
   links `libc.a`'s `atof` and floating-point runtime from the base64 objects,
@@ -393,13 +401,54 @@ exponent 0, and `libcatof.py`".
   checks the linked image's code where it patches or relies on it. A build
   with the exact product instead of `libc.a`'s fails its `check`.
 - **Tests**: `float_coverage/fltmul.s` in `make test` (7/7 there). Next
-  probes: `float_open/fltovf.s` and `fltsig.s` (see open item 7).
+  probes: `float_open/fltovf.s` and `fltsig.s` (see open item 7) - run, see
+  the next section.
+
+### Range: `ldexp` wraps, an overflow aborts (verified this session)
+
+From `tests/mutos_as/float_coverage/fltovf.o.golden` (real hardware, committed
+2026-09-29; moved from `float_open/` with its source this session) and the real
+assembler's refusal of `tests/mutos_as/float_open/fltsig.s`. Full derivation in
+`docs/DEVLOG.md`'s section "`mutos_as`: out of range - `ldexp` wraps, an overflow
+aborts".
+
+- **A result only `ldexp` takes out of range wraps.** All nine constants of
+  `fltovf.s` have exactly the bytes `libcatof.py` predicted: `libc.a`'s
+  `ldexp` adds the exponent to `fac`'s exponent byte as a 16-bit sum and stores
+  the low byte, so `.float 2.00000000000000000e+38` is `99 76 16 00` (exponent
+  byte 256 → 0), `.double 1.0e-39` ends in `ff` (-1 → 255), `.double 1.0e+50`
+  in `27` (295 → 39) - no diagnostic. The two in-range controls just inside
+  both ends are as modelled. `fltconst.c` and `fltmodel.py` write the wrapped
+  byte now; `mutos_as` reproduces `fltovf.o.golden` byte for byte.
+- **An overflow inside the arithmetic aborts the real assembler.** `as -o
+  fltsig.o fltsig.s` printed `***ERROR*** floating point over/under flow-
+  assembly aborted` (followed by `W` and `?h), line 41`) twice, exit status 4,
+  no object; line 41 is the first constant, `.float 1.00000000000000000e-38`
+  (5\*\*55 overflows). Emulated, `libc.a`'s runtime raises `SIGFPE` twice for
+  it - `__ovfl` in `dmul`, then `__div0` in the division by the zero left
+  behind - which fits two messages if the real `as` catches the signal, prints
+  and gives up after the constant. `mutos_as`'s refusal (`FLT_RANGE`, its
+  message now quoting the real one) is the faithful behaviour; it exits with 1,
+  the real `as` with 4 (unchanged). `fltsig.s` stays in `float_open/` as the
+  evidence, without a golden.
+- **`FLT_UNKNOWN`** (new status): LOGHUGE after a dropped digit - `fac` holds
+  `fcmp`'s difference, never observed - and a text of more than 100,000 digits,
+  both `FLT_RANGE` before. `FLT_RANGE` now means only what the real assembler
+  aborts on.
+- **`libcatof.py`**: `__ovfl`/`__div0` stop the emulation (`atof` prints
+  `SIGFPE`); `check` requires every text `fltconst_test` refuses as `RANGE` to
+  raise it and no accepted one to. A build without the wrap (refusing those
+  results) fails it with 57 `RANGE` texts that raise no `SIGFPE`; one with the
+  exact product with 749 of 7,588 compared texts different.
+- **Tests**: `float_coverage/fltovf.s` in `make test` (8/8 there);
+  `float_open/` has no open probe.
 
 ### Auxiliary deliverables (prior session records, not re-checked this session)
 - `mutos_as.1` — English troff man page (its `.float`/`.double` entries updated
   this session).
 - `fltconst_test` — reads `f <text>`/`d <text>` lines and prints what
-  `.float`/`.double` would store (for `float_coverage/fltmodel.py check` and
+  `.float`/`.double` would store, or why it is refused (`SYNTAX`, `ROUNDING`,
+  `RANGE`, `UNKNOWN`) (for `float_coverage/fltmodel.py check` and
   `libcatof.py check`).
 - `float_coverage/libcatof.py` — new this session (verified this session, see
   above): `libc.a`'s own `atof` under an 8086 emulator.
@@ -2611,7 +2660,11 @@ is now fully covered (62/62). In order:
    constant, though. `mutos_as` accepts every `%.17e` constant `mutos_c1`
    writes from `e-37` up (the real conversion is settled, multiplication
    included - Milestone 2's "The real product, zeros at exponent 0"); below
-   that the conversion's 5\*\*55 overflows and `mutos_as` refuses it.
+   that the conversion's 5\*\*55 overflows, the real assembler aborts
+   (`float_open/fltsig.s`: "floating point over/under flow- assembly
+   aborted") and `mutos_as` refuses it the same way - so a constant that
+   small (a float or double below about 1e-37) cannot go through the real
+   toolchain as `%.17e` text either.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
@@ -2872,23 +2925,23 @@ far.
    symbol-table policy; `mutos_as`'s own always-emit-`L`-labels behavior
    remains the pragmatic choice for golden parity either way (see
    `CLAUDE.md` rule 3 and `tests/mutos_as/README.md`).
-7. **Floating constants: settled (2026-09-29) except for overflow.** The real
+7. **Floating constants: settled (2026-09-29), overflow included.** The real
    conversion is re-enacted (Milestone 2's "The real conversion, re-enacted",
-   "Rounding pinned, zeros on both paths" and "The real product, zeros at
-   exponent 0"): v7 `atof()` on the 56-bit double, nearest-even rounding
-   everywhere, `libc.a`'s inexact product in the multiplication, zeros from
-   what the accumulator `fac` held. Every constant the model covers is
-   determined. Still open, needing real-hardware evidence: what the real
-   assembler does when a step overflows (5\*\*k for k >= 55, e.g. `.float
-   1.00000000000000000e-38` - refused now; `libc.a`'s runtime raises
-   `SIGFPE`), and LOGHUGE after a dropped digit (refused; the value is below
-   the format's range anyway). `tests/mutos_as/float_open/fltovf.s` and
-   `fltsig.s` (not yet run on real hardware) probe the first: `fltovf.s`
-   values whose last step, `ldexp`, leaves the range - `libc.a`'s `ldexp`
-   wraps the exponent byte, and `libcatof.py` gives the bytes that predicts -
-   and `fltsig.s` the overflow inside the squaring for 5\*\*k, which in
-   `libc.a`'s runtime raises `SIGFPE` (the real `as` may die; that is then
-   the finding). See that directory's `README.md`. With `atof.o`'s and
+   "Rounding pinned, zeros on both paths", "The real product, zeros at
+   exponent 0" and "Range: `ldexp` wraps, an overflow aborts"): v7 `atof()` on
+   the 56-bit double, nearest-even rounding everywhere, `libc.a`'s inexact
+   product in the multiplication, zeros from what the accumulator `fac` held,
+   and `libc.a`'s `ldexp`, which wraps the exponent byte of a result outside
+   the range (`float_coverage/fltovf.o.golden`). A step of the arithmetic that
+   overflows (5\*\*k for k >= 55, e.g. `.float 1.00000000000000000e-38`)
+   makes the real assembler abort - `***ERROR*** floating point over/under
+   flow- assembly aborted`, exit status 4, no object
+   (`tests/mutos_as/float_open/fltsig.s`, kept there as the evidence) - and
+   `mutos_as` refuses it too (`FLT_RANGE`; exit status 1, not 4). Still
+   unobserved, and refused (`FLT_UNKNOWN`): LOGHUGE after a dropped digit
+   (the value is below the format's range anyway; the compiler never writes
+   such a text). Not understood but pinned by real bytes: where the digit
+   loop's `ff ff ff` for an all-zero text comes from. With `atof.o`'s and
    `ecvt.o`'s floating constants all reproduced (`floatdat.s`, `ecvt.o`'s
    `.03` included), only the `L` labels (open item 6) keep them from being
    `libc_recon/` goldens.

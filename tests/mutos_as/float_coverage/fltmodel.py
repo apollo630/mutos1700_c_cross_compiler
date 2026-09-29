@@ -11,14 +11,18 @@ atof()'s algorithm on the 56-bit MUTOS double -
     digit raises it and a fraction digit is dropped;
   * flexp = 5**k (k = |decimal exponent|) by v7's repeated squaring;
   * fl /= flexp (ddiv) for a negative exponent, else fl *= flexp;
-    ldexp(fl, exponent); negated for a leading '-';
+    ldexp(fl, exponent), which wraps the exponent byte (a 16-bit sum,
+    low byte stored) when the result leaves the range; negated for a
+    leading '-';
+  * an operation that overflows (5**k from k = 55 on): the real
+    assembler aborts - RANGE;
   * nd - k < -39 (LOGHUGE) makes atof() give up: fl = 0, exponent 0;
   * a zero: the real arithmetic clears only the exponent byte of its
     accumulator fac, which still holds the previous result - flexp for
     k >= 1, so flexp's mantissa with exponent byte 0 on either path;
     for k = 0 what the digit loop left there: 00 00 00 00 ff ff ff when
     every digit is 0, fl itself after LOGHUGE when the last digit was
-    accumulated (after a dropped digit: unknown, RANGE);
+    accumulated (after a dropped digit: UNKNOWN);
   * the sign: fneg flips bit 7 of byte 6;
   * a .float stores the double's high four bytes.
 
@@ -44,7 +48,7 @@ Usage:
       all of them. Exit 1 if they differ from EXPECTED below - the set
       fltconst.c's MODES_MUL/MODES_ADD/MODES_DIV encode - if the model
       contradicts a golden outright, or if a golden holds a constant the
-      model does not cover (RANGE for every combination). Also the
+      model does not cover (no bytes under any combination). Also the
       way to read a new probe's golden: "survivors . ../float_open".
   fltmodel.py check TOOL [N]
       Runs fixed edge cases plus N seeded random texts (default 2000)
@@ -151,7 +155,7 @@ def image(neg, m, xbyte):
 
 
 def convert(kind, text, M, A, D):
-    """'SYNTAX' | 'RANGE' | the stored bytes (4 or 8)."""
+    """'SYNTAX' | 'RANGE' | 'UNKNOWN' | the stored bytes (4 or 8)."""
     p = parse(kind, text)
     if p is None:
         return 'SYNTAX'
@@ -175,7 +179,7 @@ def convert(kind, text, M, A, D):
         zero = fl is None
         if exp10 < 0 and nd - k < -39:          # LOGHUGE: fl = 0, exponent 0
             if not zero and not last_acc:
-                return 'RANGE'                  # fac: fcmp's difference, unknown
+                return 'UNKNOWN'                # fac: fcmp's difference
             exp10, k, zero = 0, 0, True
         flexp, exp5, kk = rnd(1, False, 0, 'trunc'), rnd(5, False, 0, 'trunc'), k
         while True:
@@ -197,17 +201,17 @@ def convert(kind, text, M, A, D):
                 b = image(neg, fl[0], 0)
             return b[4:] if kind == 'f' else b
         fl = div(fl, flexp, D) if exp10 < 0 else mul(fl, flexp, M)
-        m, e = chk((fl[0], fl[1] + exp10))
     except Range:
         return 'RANGE'
-    b = image(neg, m, e + SIG + 128)
+    # ldexp: the exponent byte plus exp10, low byte stored (wraps)
+    b = image(neg, fl[0], (fl[1] + SIG + 128 + exp10) & 0xff)
     return b[4:] if kind == 'f' else b
 
 
 def classify(kind, text, combos):
     """What fltconst_test prints for this text under these combos."""
     outs = {convert(kind, text, *c) for c in combos}
-    for status in ('SYNTAX', 'RANGE'):
+    for status in ('SYNTAX', 'UNKNOWN', 'RANGE'):
         if status in outs:
             return status
     if len(outs) > 1:
@@ -336,6 +340,9 @@ EDGES = [
     'd -0.0e-60', 'd 1e-41', 'd 12e-45', 'f -7e-44', 'd 123456789e-50', 'd 0.001e-41',
     'd 99999999999999999e-60', 'd 999999999999999999e-60', 'f 9999999999999999999e-70',
     'd 1.18059162071741130e+21', 'f -1.50000000000000000e+00',
+    'd 1.70141183460469232e+38', 'd 3.0e-39', 'f 2.00000000000000000e+38', 'f -2.00000000000000000e+38',
+    'd 1.0e+39', 'd 1.0e+50', 'd 2.5e-39', 'd 1.0e-39', 'f 5.0e-40', 'f 1.0e+38', 'd 9.9e+38',
+    'd 9.9e+54', 'd 2.93873587705571877e-39', 'f 1.0e+65', 'd 123456789012345678e+54',
 ]
 
 

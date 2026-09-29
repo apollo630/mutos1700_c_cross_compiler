@@ -56,16 +56,17 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Workflow Guideline 3's "Known, deliberate exception") — meant to assemble every real kernel `.s` both with and without `-L` to settle whether the kernel build actually used it. **Concluded 2026-09-28, without needing a full comparison run**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated — there is nothing to diff. See `STATUS.md`'s open item 6 for the finding and the new source-level angle it points to instead.
-* `/tests/mutos_as/float_coverage/`: real-hardware goldens (generated on real MUTOS 1700 hardware 2026-09-28/29) from seven hand-written `.float`/`.double` sources — `lea`+`.float` in whole objects, zeros, a `.double`, an inexact `.float` (`fltopen.s`), the probes `fltmode.s` and `fltmul.s` — which pinned down the real assembler's conversion itself: v7 `atof()` on the 56-bit double, `.float` = its high half, truncated, every step rounded to nearest-even, the multiplication rounding `libc.a`'s own (inexact) product, a zero keeping what the accumulator `fac` held (see `src/mutos_as/fltconst.h`). All seven are byte-identical and part of `make test`, as is `fltmodel.py`, an independent Python model of that conversion that re-derives its unknowns from every golden here and checks `fltconst.c` against it. `libcatof.py` there is a second oracle: `libc.a`'s own `atof` run on `libc.a`'s own floating-point runtime under an 8086 emulator (Unicorn; `make check-libcatof`, not part of `make test`). See that directory's own `README.md` and `STATUS.md`'s open item 7.
+* `/tests/mutos_as/float_coverage/`: real-hardware goldens (generated on real MUTOS 1700 hardware 2026-09-28/29) from eight hand-written `.float`/`.double` sources — `lea`+`.float` in whole objects, zeros, a `.double`, an inexact `.float` (`fltopen.s`), the probes `fltmode.s`, `fltmul.s` and `fltovf.s` — which pinned down the real assembler's conversion itself: v7 `atof()` on the 56-bit double, `.float` = its high half, truncated, every step rounded to nearest-even, the multiplication rounding `libc.a`'s own (inexact) product, a zero keeping what the accumulator `fac` held, a result outside the exponent range stored with `ldexp`'s wrapped exponent byte (see `src/mutos_as/fltconst.h`). All eight are byte-identical and part of `make test`, as is `fltmodel.py`, an independent Python model of that conversion that re-derives its unknowns from every golden here and checks `fltconst.c` against it. `libcatof.py` there is a second oracle: `libc.a`'s own `atof` run on `libc.a`'s own floating-point runtime under an 8086 emulator (Unicorn; `make check-libcatof`, not part of `make test`). See that directory's own `README.md` and `STATUS.md`'s open item 7.
 * `/tests/mutos_as/float_open/`: hand-written probes for the real `as` whose constants
   `mutos_as` still refuses — deliberately **not** in `make test`; a probe moves to
   `float_coverage/` once `mutos_as` reproduces its golden (`fltopen.s` did,
-  2026-09-28, `fltmode.s` and `fltmul.s` 2026-09-29). Current probes: `fltovf.s`
-  and `fltsig.s`, **not yet run on real hardware**, which show what the real `as`
-  does when a conversion leaves the format's exponent range - a wrapped exponent
-  byte from `ldexp` (predicted) and an overflow inside `atof` (`SIGFPE` in `libc.a`'s
-  runtime; the real `as` may die). Its `README.md` has the predicted bytes and how
-  to run and read them (`fltmodel.py survivors`).
+  2026-09-28, `fltmode.s`, `fltmul.s` and `fltovf.s` 2026-09-29). **No open
+  probe** at present: `fltsig.s` stays here as evidence without a golden - an
+  overflow inside `atof` (5\*\*55), on which the real `as` aborts (2026-09-29:
+  `***ERROR*** floating point over/under flow- assembly aborted`, exit status 4,
+  no object), as `mutos_as` refuses it (`FLT_RANGE`). Its `README.md` has the
+  real output and how to add, run and read a new probe (`fltmodel.py
+  survivors`).
 * `/tests/mutos_as/libc_recon/`: real `libc.a` objects as assembler goldens, with
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
@@ -575,11 +576,13 @@ scope and intent, not a snapshot of what's done.
     `libc.a`'s own inexact product (one partial product from the wrong
     word), so every constant the model covers is determined, and
     `mutos_as` accepts every `%.17e` constant `mutos_c1` writes from
-    `e-37` up. Left: a step outside the format's range (5\*\*55 for text
-    from `e-38` down) stays refused - **run
-    `tests/mutos_as/float_open/fltovf.s` and `fltsig.s` on real hardware**
-    to see what the real `as` does there (see that directory's
-    `README.md`). All of `atof.o`'s and
+    `e-37` up. The range is settled too (`fltovf.o.golden`, `fltsig.s`,
+    2026-09-29): a result only `ldexp` takes out of range gets a wrapped
+    exponent byte, as `mutos_as` now writes it; an overflow inside the
+    arithmetic (5\*\*55 for text from `e-38` down) aborts the real `as`,
+    and `mutos_as` refuses it (exit status 1 where the real `as` exits
+    with 4). Unobserved and refused (`FLT_UNKNOWN`): LOGHUGE after a
+    dropped digit. No real-hardware float probe is pending. All of `atof.o`'s and
     `ecvt.o`'s floating constants are reproduced, `ecvt.o`'s inexact
     `.03` included, so only the `L`-label question below keeps them from
     being `libc_recon/` goldens.

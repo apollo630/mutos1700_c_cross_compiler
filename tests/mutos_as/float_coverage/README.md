@@ -1,6 +1,6 @@
 # `tests/mutos_as/float_coverage/` — closing the open floating-point gaps
 
-Seven hand-written, **new** assembler sources (not reconstructed from a
+Eight hand-written, **new** assembler sources (not reconstructed from a
 real object, unlike `../libc_recon/`) targeting the specific floating-point
 gaps this project's own docs already flag as open, rather than general
 "more float coverage":
@@ -14,12 +14,13 @@ gaps this project's own docs already flag as open, rather than general
 | `fltopen.s` | `.float 0.0`, `.float -0.00000000000000000e+00`, `.double 0.00000000000000000e+00`, `.float 0.10000000000000000e+00` | succeeds | byte-identical (was refused until 2026-09-28; written in `../float_open/`) |
 | `fltmode.s` | four compiler-style `.double` constants splitting the rounding modes, an 18-digit exact `.float`, `.double 0.1`, a negative zero `.double`, zeros with decimal exponent 0, +4 and -25 | succeeds (2026-09-29) | byte-identical (8 of its 10 constants were refused until 2026-09-29; written in `../float_open/`) |
 | `fltmul.s` | five constants whose bytes depend on which product `dmul` rounds, zeros with decimal exponent 0 (one digit, a `.double`, negated), a value `atof` gives up on (LOGHUGE), a negative nonzero `.float` | succeeds (2026-09-29) | byte-identical (9 of its 10 constants were refused until 2026-09-29; written in `../float_open/`) |
+| `fltovf.s` | results outside the format's exponent range (above the largest value, below the smallest, either sign) while every step before `ldexp` stays in range, and two controls just inside the range | succeeds (2026-09-29) | byte-identical (7 of its 9 constants were refused until 2026-09-29; written in `../float_open/`) |
 
-All seven run in the top-level `make test` (`../run_goldens.sh` in this
+All eight run in the top-level `make test` (`../run_goldens.sh` in this
 directory), and so does `fltmodel.py` (see "The conversion model" below),
 which reads every golden here.
 
-## Why these seven, specifically
+## Why these eight, specifically
 
 `tests/mutos_as/libc_recon/floatdat.s` covers `.float` constants but has
 no code around them (its own header: "not a whole object — no real
@@ -62,6 +63,11 @@ same way for the one unknown the second round left - how the real
 double arithmetic rounds - and for zeros on `atof`'s multiplication
 path; it moved here on 2026-09-29. `fltmul.s`, the fourth, asked which
 product the real multiplication rounds and moved here the same day.
+`fltovf.s`, the fifth, asked what the real assembler writes when only
+the result leaves the format's exponent range; it moved here the same
+day too. Its partner `../float_open/fltsig.s`, an overflow inside the
+conversion, has no golden and stays there: the real assembler aborts
+on it (see "Results, fifth round" below).
 
 ## Running this
 
@@ -71,7 +77,7 @@ corpus in this project (see `tests/mutos_cc/README.md`):
 1. `make -f Makefile.mutos` — **on real MUTOS 1700 hardware / an
    accurate emulator**, from inside this directory. Produces
    `fltaddr.o`, `fltmulti.o`, `fltzero.o`, `fltdbl.o`, `fltopen.o`,
-   `fltmode.o`, `fltmul.o`.
+   `fltmode.o`, `fltmul.o`, `fltovf.o`.
 2. `make goldens` — **on the modern (Linux) side**, after copying the
    `*.o` back into this directory. Produces `*.o.golden` (a
    verbatim copy) and `*.o.golden_base64.txt` (base64 text) for each —
@@ -81,9 +87,10 @@ corpus in this project (see `tests/mutos_cc/README.md`):
 **Real goldens exist as of 2026-09-28** — all five sources then here
 assembled successfully on real MUTOS 1700 hardware and were pushed (each
 `<name>.o.golden` plus its `*.o.golden_base64.txt` companion);
-`fltmode.o.golden` and `fltmul.o.golden` followed on 2026-09-29. The
-open questions they were written for are resolved — see "Results"
-below — and `mutos_as` reproduces all seven objects byte for byte.
+`fltmode.o.golden`, `fltmul.o.golden` and `fltovf.o.golden` followed on
+2026-09-29. The open questions they were written for are resolved — see
+"Results" below — and `mutos_as` reproduces all eight objects byte for
+byte.
 
 ## Results (2026-09-28)
 
@@ -94,7 +101,7 @@ below — and `mutos_as` reproduces all seven objects byte for byte.
   test matches exactly.
 - **`fltzero.o.golden`'s data segment is `bc a2 31 00`** — **exactly**
   the bytes `atof.o`/`ecvt.o` were already known to hold for their zero
-  constants (see "Why these seven, specifically" above), now confirmed
+  constants (see "Why these eight, specifically" above), now confirmed
   from a known, hand-written `.float 0.0` source rather than an
   unreproducible compiled-C object. `mutos_as`'s `FLT_ZERO` refusal in
   `src/mutos_as/fltconst.c` can be replaced with this confirmed encoding.
@@ -213,6 +220,37 @@ multiplication by `flexp` = 1.0 finds a zero and keeps `fac`, which the
 last `fadd` of the digit loop left holding `fl` = 1.0 - whose stored
 mantissa bits are all 0.
 
+## Results, fifth round: `fltovf.o.golden` and `fltsig.s` (2026-09-29)
+
+| Label | Constant | Real bytes | Reading |
+|---|---|---|---|
+| `E1` | `.double 1.70141183460469232e+38` | `c9 ff ff ff ff ff 7f ff` | control: 2\*\*127 in the compiler's form, in range |
+| `E2` | `.double 3.0e-39` | `14 11 ff 27 1e ab 02 01` | control: just above the smallest value |
+| `O1` | `.float 2.00000000000000000e+38` | `99 76 16 00` | exponent byte 256 → 0 |
+| `O2` | `.float -2.00000000000000000e+38` | `99 76 96 00` | the same, negative |
+| `O3` | `.double 1.0e+39` | `eb 50 e2 a4 3f 14 3c 02` | 258 → 2 |
+| `O4` | `.double 1.0e+50` | `ce 24 f3 2b 76 d8 08 27` | 295 → 39 |
+| `U0` | `.double 2.5e-39` | `21 c7 53 ed dc c7 59 00` | exponent byte 0 |
+| `U1` | `.double 1.0e-39` | `1b 6c a9 8a 7d 39 2e ff` | -1 → 255 |
+| `U2` | `.float 5.0e-40` | `7d 39 2e fe` | -2 → 254 |
+
+Every byte is what `libcatof.py` predicted before the run. `atof`'s
+last step is `ldexp(fl, exponent)` (10\*\*k = 5\*\*k × 2\*\*k), and
+`libc.a`'s `ldexp` adds the exponent to `fac`'s exponent byte as a
+16-bit sum, checks only for a signed 16-bit overflow and stores the low
+byte - so the exponent byte wraps, and the real assembler writes the
+result without a diagnostic. The mantissa is always the value's own.
+
+`fltsig.s` (still in `../float_open/`) asked the other question: an
+overflow **inside** the conversion, `flexp` = 5\*\*k from k = 55 on
+(the compiler's `%.17e` text from `e-38` down, a value that may fit).
+The real assembler refuses it: `***ERROR*** floating point over/under
+flow- assembly aborted`, twice for line 41 (its first constant), exit
+status 4, no object. `libc.a`'s runtime raises `SIGFPE` there (`__ovfl`
+in `dmul`, then `__div0` in the division by the zero left behind - two
+signals, two messages); the real `as` evidently catches the signal and
+gives up. The full output is in `../float_open/README.md`.
+
 ## The conversion model (implemented 2026-09-28, settled 2026-09-29)
 
 `src/mutos_as/fltconst.c` re-enacts the real assembler's conversion —
@@ -224,17 +262,24 @@ product; a zero gives what `fac` held - `flexp`'s mantissa for a nonzero
 decimal exponent, the digit loop's leftover for exponent 0 - with
 exponent byte 0. Every constant it covers is determined:
 
-- **Accepted**: every text whose conversion stays inside the format's
+- **Accepted**: every text whose arithmetic stays inside the format's
   exponent range - every `%.17e` constant `mutos_c1` writes, from
   `e-37` (`e-38` when `atof` drops the 18th digit) up to the format's
-  largest value, and every zero whose `flexp` stays in range.
-- **Refused** (`FLT_RANGE`): a value, or a step of the conversion such as
-  `flexp` = 5\*\*k for k >= 55, outside the range (e.g. `.float
-  1.00000000000000000e-38`, whose value would fit) - what the real
-  runtime does on an overflow is not observed; and a text `atof` gives
-  up on (LOGHUGE) after dropping its last digit, where `fac` holds a
-  difference no real constant shows. `FLT_ROUNDING` remains only for a
-  tie in the division, which cannot occur.
+  largest value, every zero whose `flexp` stays in range, and a result
+  that only `ldexp` takes out of the range, with the exponent byte
+  wrapped as the real one does (`fltovf.o.golden`: `.float
+  2.00000000000000000e+38` → `99 76 16 00`).
+- **Refused, as the real assembler refuses it** (`FLT_RANGE`): a step of
+  the arithmetic that overflows - `flexp` = 5\*\*k for k >= 55 (e.g.
+  `.float 1.00000000000000000e-38`, whose value would fit), or the
+  product `fl` × `flexp` (e.g. `.double 9.9e+54`). The real assembler
+  aborts there (`fltsig.s`); `mutos_as` reports the constant and writes
+  no object either (exit status 1, the real one 4).
+- **Refused, unknown** (`FLT_UNKNOWN`): a text `atof` gives up on
+  (LOGHUGE) after dropping its last digit, where `fac` holds a
+  difference no real constant shows, and a text of more than 100,000
+  digits. `FLT_ROUNDING` remains only for a tie in the division, which
+  cannot occur.
 
 `fltmodel.py` is an independent Python version of the same model.
 `fltmodel.py survivors` reads every `<name>.s` here that has a golden,
@@ -276,8 +321,14 @@ python3 libcatof.py ops 2000                           # dmul/ddiv/dadd vs fltmo
 
 `check` sends edge cases, seeded random texts and targeted ones
 (`%.17e` of exact floats and doubles over the whole range, zeros,
-LOGHUGE texts) through `fltconst_test` and compares every constant it
-accepts with the emulation; a build with the exact product instead of
-`libc.a`'s fails it (251 of 2,558 compared texts differ). The linked
+LOGHUGE texts, results past both ends of the range) through
+`fltconst_test` and compares every constant it accepts with the
+emulation. `__ovfl` and `__div0`, where the runtime would send itself
+`SIGFPE`, stop the emulation: `atof` then prints `SIGFPE` instead of
+bytes, and `check` requires that every text `fltconst_test` refuses as
+`RANGE` raises it and that no accepted one does. A build with the exact
+product instead of `libc.a`'s fails `check` (749 of 7,588 compared texts
+differ), and so does one that refuses the wrapped results instead of
+writing them (57 `RANGE` texts without `SIGFPE`). The linked
 image is checked before use: `dmath.o`'s `zero` routine, its entry
 points and `pmuld`'s misplaced load must be where the tool expects them.

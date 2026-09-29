@@ -29,7 +29,8 @@
 #define SIG 56
 
 /* Guards the digit and exponent counters against overflow on absurd
- * input; anything this long is out of range anyway. */
+ * input: more digits than this is FLT_UNKNOWN, a longer exponent is
+ * capped here (an overflow of 5**k either way). */
 #define COUNT_LIMIT  100000L
 
 /* v7 atof()'s LOGHUGE (libc.a's atof.o compares with -39): with nd
@@ -223,9 +224,12 @@ typedef struct {
     long        eexp;
 } FltText;
 
-/* CV_OK: out[0..8) is the double image. CV_RANGE: a step leaves the
- * format's exponent range, or its bytes are not known. */
-typedef enum { CV_OK, CV_RANGE } ConvResult;
+/* CV_OK: out[0..8) is the double image. CV_RANGE: an operation of the
+ * arithmetic leaves the format's exponent range - the real runtime
+ * raises SIGFPE and the real assembler aborts (float_open/fltsig.s).
+ * CV_UNKNOWN: the real bytes are not known (LOGHUGE after a dropped
+ * digit). */
+typedef enum { CV_OK, CV_RANGE, CV_UNKNOWN } ConvResult;
 
 /* Writes a positive double image: the low 55 bits of m (the leading 1
  * is not stored), the exponent byte xbyte. */
@@ -297,7 +301,7 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
     bool zero = fl_zero;
     if (exp10 < 0 && nd - k < -LOGHUGE) {
         if (!fl_zero && !last_acc)
-            return CV_RANGE;
+            return CV_UNKNOWN;
         exp10 = 0;
         k = 0;
         zero = true;
@@ -348,12 +352,17 @@ static ConvResult convert(const FltText *t, RoundMode mode_m, RoundMode mode_a,
     } else if (!dbl_mul(fl, flexp, mode_m, &fl)) {
         return CV_RANGE;
     }
-    fl.e += exp10;                                      /* ldexp: exact */
-    long x = dbl_x(fl);
-    if (!x_in_range(x))
-        return CV_RANGE;
+    /* ldexp(fl, exp10). libc.a's ldexp.o adds the exponent to fac's
+     * exponent byte as a 16-bit sum, checks only for a signed 16-bit
+     * overflow and stores the low byte, so a result outside the range
+     * WRAPS the exponent byte, silently (float_coverage/fltovf.o.golden:
+     * 2.0e38 -> exponent byte 256 -> 0, 1.0e-39 -> -1 -> 255). |exp10| is
+     * at most 54 here (flexp = 5**k is in range), so the 16-bit sum never
+     * overflows. */
+    long x = dbl_x(fl);                                 /* in range */
+    unsigned xbyte = (unsigned)((x + 128 + exp10) & 0xFF);
 
-    put_image(fl.m, (unsigned)(x + 128), out);
+    put_image(fl.m, xbyte, out);
     if (t->neg)
         out[6] ^= 0x80;                                 /* fl = -fl: fneg */
     return CV_OK;
@@ -438,7 +447,7 @@ FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
         if (!is_digit(s[i]))
             break;
         if (++ndigits > COUNT_LIMIT)
-            return FLT_RANGE;
+            return FLT_UNKNOWN;
     }
     t.digits_end = s + i;
     if (ndigits == 0)
@@ -478,6 +487,8 @@ FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
                 ConvResult r = convert(&t, MODES_MUL[a], MODES_ADD[b], MODES_DIV[c], cur);
                 if (r == CV_RANGE)
                     return FLT_RANGE;
+                if (r == CV_UNKNOWN)
+                    return FLT_UNKNOWN;
                 if (!have) {
                     memcpy(first, cur, 8);
                     have = true;
@@ -501,10 +512,15 @@ const char *flt_status_text(FltStatus st, FpKind kind)
             return "the real assembler's result depends on how its double division breaks a tie, "
                    "which is unconfirmed";
         case FLT_RANGE:
-            return dbl ? "out of range for a double (the value, or a step of the real assembler's "
-                         "conversion such as 5**k for a large decimal exponent)"
-                       : "out of range for a float (the value, or a step of the real assembler's "
-                         "conversion such as 5**k for a large decimal exponent)";
+            return "a step of the real assembler's conversion overflows (such as the power 5**k it "
+                   "builds, from k = 55 on, k being the decimal exponent counted from the last digit); "
+                   "the real assembler aborts here: \"***ERROR*** floating point over/under flow- "
+                   "assembly aborted\"";
+        case FLT_UNKNOWN:
+            return dbl ? "the real assembler's bytes for this double are not known (a digit past "
+                         "2**56 and a decimal exponent below -39 minus the digit count, or a text too long)"
+                       : "the real assembler's bytes for this float are not known (a digit past "
+                         "2**56 and a decimal exponent below -39 minus the digit count, or a text too long)";
     }
     return "invalid";
 }

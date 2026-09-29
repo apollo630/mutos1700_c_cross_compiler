@@ -297,8 +297,8 @@ give, e.g.\&
 .B 1.26765060022822940e+30
 (2 to the power 100) is stored one unit less in the last place,
 .BR "ff ff 7f e4" .
-Every value the conversion keeps inside the format's range is
-accepted.
+Every value whose conversion stays inside the format's range until
+its last step is accepted.
 .IP
 Zero is not stored as zero bytes: the original writes exponent byte 0
 with the mantissa of 5 to the power of the number of fraction digits
@@ -330,12 +330,28 @@ A value whose decimal exponent is below \-39 minus its number of digits
 is stored with exponent byte 0 and the mantissa of its digits (for
 .BR 1e\-41 ,
 eight zero bytes), or as above if its digits are all 0; if a digit
-beyond the seventeenth or so was dropped, it is rejected.
-Values whose conversion leaves the format's exponent range at any
-step (the value itself, or the power of 5 for a large decimal
+beyond the seventeenth or so was dropped, its bytes are unknown and it
+is rejected.
+A value outside the format's exponent range whose last step alone
+leaves the range is stored as the original stores it: with its own
+mantissa and the exponent byte wrapped modulo 256, without a warning,
+e.g.\&
+.B 99 76 16 00
+for
+.B 2.00000000000000000e+38
+(exponent byte 256) and
+.B 7d 39 2e ff
+for
+.B 1.0e\-39
+(exponent byte \-1).
+If an earlier step overflows (the power of 5 for a large decimal
 exponent, as in
-.BR 1.00000000000000000e\-38 )
-are rejected as out of range.
+.BR 1.00000000000000000e\-38 ,
+whose value would fit, or the product with it, as in
+.BR 9.9e+54 ),
+the original aborts with
+.RB \(lq "***ERROR*** floating point over/under flow\- assembly aborted" \(rq
+and exit status 4; such a constant is rejected here too.
 .TP
 .BI .double\  number\  "[, " number " ...]"
 Like

@@ -1434,9 +1434,14 @@ di,*2.(si)`).
    real `atof` drops the 18th digit): the real conversion is settled,
    rounding and multiplication included
    (`tests/mutos_as/float_coverage/fltmode.s`, `fltmul.s`). Below that the
-   conversion's 5\*\*55 overflows, and `mutos_as` refuses the constant
-   with the reason - `mutos_c1` itself still writes it. The 81..127-byte `chkstk` gap stays "not
-   yet supported" until a golden lands in it.
+   conversion's 5\*\*55 overflows: the real assembler aborts there
+   ("floating point over/under flow- assembly aborted",
+   `tests/mutos_as/float_open/fltsig.s`), and `mutos_as` refuses the
+   constant with the reason - `mutos_c1` itself still writes it, as the
+   real compiler would, so a program with such a constant fails at the
+   assembler step either way. The
+   81..127-byte `chkstk` gap stays "not yet supported" until a golden
+   lands in it.
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
    already present, currently 0/9 through `mutos_c0`): a second, separate
