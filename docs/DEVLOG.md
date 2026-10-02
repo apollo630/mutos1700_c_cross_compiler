@@ -6611,6 +6611,160 @@ their diagnostic. `make check-libcatof`: `goldens` 34/38 identical (4 not
 emulated), `check` 8,357 texts 0 differences, `ops` 0, `ecvt` 5,630
 literals compared 0 differences, `fecvt` 5,649 compared 0 differences.
 
+### The round-3 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-02)
+
+The four round-3 programs (`p10_elem`, `p11_itof2`, `p12_init2`,
+`p13_open`) came back from real hardware in commit `33ec944`, all four
+kinds of file this time; round 2's four `.i` files followed in commit
+`34c9195`. Those four `.i` goldens are byte-identical with `mutos_cpp`'s
+output, so `p6`..`p9` moved from category 7 into category 1 with no
+change, and category 7 is empty again. Of round 3, `p11` and `p12` matched
+at once - every inference they asked about holds - `p10` differed in two
+places of its `.s`, and `mutos_c0` refused `p13` (`j /= e`). All four are
+byte-exact now, the 75 others unchanged.
+
+**1. An element of a local array has degree 2** (`p10_elem`'s `d = 1.5 +
+arr[i]`). The golden computes the element's address, loads the element
+and adds the constant from memory - `lea di,*-28.(bp)` / ... / `lea
+ax,(di)` / `call fldd` / `lea ax,L10003` / `call fadds` - where `mutos_c1`
+had loaded 1.5 first. By v7's own numbers the two would tie: `degree()`
+gives an `AMPER` -2, `acommute()` puts `i*8` (degree 1, `TIMES` by a power
+of two) ahead of `&arr` and gives the sum 1, the `STAR` `max(1, 1)` = 1,
+the `.float` constant's degree - so `insert()` would keep the source order,
+constant first. The element going first means its degree is at least 2.
+The same golden's address code says why: `lea di,<arr>` comes BEFORE the
+index is scaled, which `insert()` only does when the address term's degree
+is not below the index's 1. One change fits both: a local's address is not
+a link-time constant on the 8086 but a computed `lea`, and counts as
+computed - degree 1; the two terms tie (the `lea` first, as written) and
+their sum has degree 2. `fdeg()` now gives an `AMPER` of an `SC_AUTO` name
+1; a static or file-scope object's address stays -2 (a constant: `_ga(si)`,
+`16.+_ga`). The integer planner's `enode_degree()` already gave such an
+element 2 (its "anything computed at least 1" clamp). The rest of `p10`'s
+`main()` matched before and after - `d < arr[i]` exchanged (`ble`), `arr[i]
+< arr[j]` and `arr[i] + arr[j]` the first element loaded before the
+second's address, `fa[i] * arr[i]` as written.
+
+**2. A dereferenced left operand of an int `*` is loaded first** (`p10`'s
+`ps[i].c * qs[i].g`, arrays of 8- and 16-byte structs subscripted by a
+variable): `lea di,*-20.(bp)` / `mov si,*4.(bp)` / `mov cx,*3.` / `sal
+si,cl` / `add di,si` / `mov di,*4.(di)` / `lea si,*-52.(bp)` / `mov dx,*4.
+(bp)` / `mov cx,*4.` / `sal dx,cl` / `add si,dx` / `mov ax,di` / `imul
+*12.(si)`. v7's `F` then `S1`, as for `+`/`-` (`02_bubsort`, `05_nestst`):
+`load_now()` now includes `*`, and the multiply's ordinary `mov ax,<left>`
+moves the loaded value. `mutos_c1` had left the element as `*4.(di)` and
+loaded it into AX at the end. This is also the first golden of a product
+of two 1-D elements: it is NOT spilled - the right operand fits in the
+registers left over - so the "Evaluation order" sections' guess that the
+real compiler "very probably spills `a[i] * b[j]`" like `05_matmul`'s 2-D
+elements is wrong for these. (`a[i] * b[j]` of int arrays itself was no
+longer refused - it compiled with the late load; `p14_axint` asks.)
+
+**3. The register an int is converted in, completed** (`p13_open`):
+
+| Computed first | Register | Golden |
+|---|---|---|
+| `(double) i` - a conversion, through DI | DI | `mov di,*-40.(bp)` / `mov ax,di` / `call itof` / `call fadd` |
+| `arr[i]` - an element, its address in DI | DI | the same |
+| `d * e`, int `i - j` | AX | `mov ax,*-38.(bp)` / `sub ax,*-40.(bp)` / `call itof` |
+| `d / e`, int `i << 1` | AX | `mov ax,*-38.(bp)` / `sal ax,*1` / `call itof` |
+| `d * e`, int `j + 0` | AX | `mov ax,*-40.(bp)` / `call itof` - no `add` |
+
+The reading from round 2 holds: the next operand takes the register the
+previous one's result was given - an int converted through DI leaves DI,
+and so does an element whose address was computed there. `fafter()` keeps
+the context after an `ITOF`, and after an element when the context is DI
+(after a `*`, `/` or call no golden shows an element, and its address needs
+a base register anyway - still refused there). In AX the `OP_PLUS` handler
+forms a difference as it forms a sum (`mov ax,i` / `sub ax,j`), and
+`OP_LSHIFT`/`OP_RSHIFT` shift a variable there by a constant - `sal ax,*1`;
+a count of 3 or more by CL and a right shift are inferred from DI's rule
+(`emit_const_shift()`; `p15_fltinf` asks).
+
+**4. An int `+ 0` is dropped.** `(j + 0)` converted is just `mov ax,j`:
+v7's `acommute()` "toss[es] out +0" (`c12.c`, for `PLUS`/`OR` whose last
+term is a constant 0 - `isconstant()`, an int `CON`) before any code is
+chosen. `mutos_c1` refused it converted in AX and everywhere else emitted
+`add di,*0.`, a shape no golden had; now the `OP_PLUS` handler pushes the
+other operand unchanged for any int `x + 0` - and `x - 0`, which v7's
+`optim()` makes `x + -0` first - so `s = j + 0` is `mov di,j` / `mov s,di`
+(`p14_axint` asks).
+
+**5. `j /= e` into an int** (`p13`): `.1` - NAME j, NAME e, `FTOI(INT)`,
+`ASDIV(INT)`, as `i *= e` and `i += d` (v7's `build()` converts the right
+operand to the target's type first, so the value is `j / (int)e` = 3 where
+C gives 2 - the golden returns 42, the host 41); `.s` - `lea ax,*-20.(bp)` /
+`call fldd` / `call ftoi` / `mov cx,ax` / `mov ax,*-40.(bp)` / `cwd` / `idiv
+cx` / `mov *-40.(bp),ax`: the converted divisor moved to CX out of the way
+of the dividend. `mutos_c0` accepts `/=` into an int; `mutos_c1`'s
+`ASDIV`/`ASMOD` take a right operand in AX that way - a call's result
+(`x /= f()`, `y %= f()`) by inference (`p14_axint` asks).
+
+**6. A floating zero is an ordinary constant** (`p13`): `d + 0.0` is
+`.data` / `L10004:<TAB>.float 0.00000000000000000e+00` / `.text` / `lea
+ax,L10004` / `call flds` / `lea ax,*-12.(bp)` / `call faddd` - kept (the
+toss only sees an int `CON`), and loaded first (degree 1, `d` 0); `d - 0.0`
+is `fldd d` / `lea ax,L10005` / `call fsubs`. Both refusals are gone; a
+negated zero is still refused (`p16_open2` asks).
+
+**7. A value in AX plus a constant stays in AX** (`p13`'s `return r + (int)
+d - 30`): `call ftoi` / `add ax,*-42.(bp)` / `add ax,*-30.` (`optim()`'s
+`- 30` as `+ -30`), no `mov ax,di` - the sum never left AX. v7's templates
+compute into the register their left operand's code returned, and the MUTOS
+`c1` returns AX for `ftoi`, `imul`, `idiv` and a call;
+`kernel_nonopt/amx.s` shows the same for a product (`imul cx` / `add ax,di`
+/ `add ax,*22.`). The `OP_PLUS` handler's AX branch now takes a constant
+too, `+ 1` / `- 1` as `inc ax` / `dec ax` (as in DI, and as `p7_itofreg`'s
+int converted in AX). By inference: that value stored to memory (`mov
+s,ax`) or to a register variable (`mov di,ax`, where `mutos_c1` had `mov
+di,ax` / `add di,*3.`); `kernel_opt/clock.s`'s `idiv cx` / `add ax,bx` /
+`mov si,ax` / `add si,*-20.` is optimized code from a source not in this
+repository, so it settles neither (`p14_axint` asks).
+
+**8. Confirmed as inferred** (`p11`, `p12`, the rest of `p10`): ints
+computed in DI converted (a shift, `i - 6` as `add di,*-6.`, `0 - i` as
+`mov di,*0.` / `sub di,i`), a quotient
+converted from AX (`idiv *-24.(bp)` / `call itof`), a product by a constant
+after a `/` (`mov ax,i` / `mov cx,*3.` / `imul cx`), `i += f()` / `i -=
+f()` (`call _seven` / `add *-22.(bp),ax`); an int constant into a float
+(`.float<TAB>4.0...`), a negated int into a double, `-0.1` into a float
+truncated (`-9.99999940395355225e-02`), a `static float`, `0.3` truncated
+(`2.99999982118606567e-01`) - `p12`'s golden returns 6, the host 7;
+elements of 8- and 16-byte structs subscripted by a variable (`mov cx,*3.`
+/ `sal si,cl`, `mov cx,*4.`), an element as a second operand and next to
+another.
+
+**Round 4** (`tests/mutos_cc/fltprobe/`, `make -f Makefile.mutos round4`)
+asks about what this round's changes infer and what is still refused:
+`p14_axint` (no floating point - a value in AX plus a constant stored,
+`f() + 1`, `x * y - 1`, `j + 0` / `j - 0` in DI, `a[i] * b[j]` and `a[i] &
+b[j]` of int arrays, `x /= f()`, `y %= f()`), `p15_fltinf` (`(d * d) +
+arr[i] + i` - the element first by its degree, i through DI; `i << 3` and
+`j >> 1` converted in AX; a call's result then an element) and `p16_open2`
+(refused: an int converted after `*p` and after an assignment, a remainder
+converted, `-0.0`, `(int) 2.5`, `i = 2.5`, `d += c` with a char, an
+`unsigned` converted - none is known to stop the real compiler, so they
+share one file; a floating truth test, which does, stays out).
+
+**Tooling.** `x86sim.py` needed nothing new: all seventeen goldens run
+under it and return their programs' values (`p10` 21, `p11` 109, `p12` 6,
+`p13` 42). `fltprobe/Makefile.mutos`'s `round4`.
+
+**Verification.** `make test`: 79 files byte-exact at all four stages
+(62/62 corpus, 17/17 `fltprobe`), category 7 empty, 0 mismatches, zero
+warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 88/88 compiler
+goldens assemble, `mutos_cpp` 5/5. Against the previous build (`33ec944`)
+over all 88 inputs (the 79, the nine `11_kernel` refusals): identical
+output and diagnostics but for `p10` and `p13`. `fuzz_c.py` against
+`33ec944`: 8,000 programs (3,000 seed 1; 3,000 seed 7 `--scope`; 2,000
+seed 3 scalars only), 0 WRONG, 0 BAD, 37 changed and still correct (the
+dropped `+ 0` and a value kept in AX), the rest identical; 500 more (seed
+11) through ASan/UBSan builds: 0 WRONG, 0 BAD. ASan/UBSan builds over the
+88 inputs: no reports, the 79 byte-exact. Round 4 through `mutos_cpp`, both
+passes, `mutos_as` and `x86sim.py`: `p14_axint` 129 and `p15_fltinf` 45,
+the host C compiler's values; `p16_open2` stops with four `mutos_c0`
+diagnostics.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a

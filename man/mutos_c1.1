@@ -1,7 +1,7 @@
 .\" mutos_c1.1 - manual page for the MUTOS 1700 cross C compiler back end
 .\" Formatted with the standard man(7) macro set (.TH/.SH/.TP/...).
 .\" View with: man ./mutos_c1.1   or   groff -man -Tascii mutos_c1.1 | less
-.TH MUTOS_C1 1 "September 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
+.TH MUTOS_C1 1 "October 2026" "MUTOS 1700" "MUTOS 1700 Programmer's Manual"
 .SH NAME
 mutos_c1 \- MUTOS 1700 cross C compiler, second pass (code generator)
 .SH SYNOPSIS
@@ -239,10 +239,13 @@ and
 functions are covered; a few shapes are inferred from the goldens'
 rules (see the source's
 .I README.md
-\(en an element next to another, an
-.B int
-computed in a register then converted), and the shapes no real-hardware
-golden has shown are refused.
+\(en a value in AX plus a constant kept there, a shift by more than one
+converted in AX), and the shapes no real-hardware golden has shown are
+refused. An integer
+.B "+ 0"
+is dropped, as the original
+.B acommute
+does; a floating zero is an ordinary constant.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

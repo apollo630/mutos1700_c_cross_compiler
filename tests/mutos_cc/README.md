@@ -103,13 +103,14 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 
 `fltprobe/` is not part of the corpus either: floating-point probe programs
 with their own `Makefile.mutos` and real-hardware goldens (see
-`fltprobe/README.md`) - a first round of nine and a second of four, all
-byte-exact (they stay here rather than joining `08_float`), and a third
-round of four (`p10`..`p13`) whose goldens are still to be generated.
-Unlike `fuzz/`, it does hold `.c` files: `gen_mutos.sh` and the Makefiles
-walk it like a category, and `run_goldens.sh` skips each file until it has
-goldens - one with a `.1.golden` but no `.i.golden` (round 2's, whose `.i`
-files were not brought back) it checks from `mutos_c0` on and lists apart.
+`fltprobe/README.md`) - a first round of nine, a second and a third of
+four, all byte-exact (they stay here rather than joining `08_float`), and
+a fourth round of three (`p14`..`p16`) whose goldens are still to be
+generated. Unlike `fuzz/`, it does hold `.c` files: `gen_mutos.sh` and the
+Makefiles walk it like a category, and `run_goldens.sh` skips each file
+until it has goldens - one with a `.1.golden` but no `.i.golden` (a set
+brought back without its `.i` files, as round 2's first was) it checks from
+`mutos_c0` on and lists apart.
 
 ## `11_kernel` — real MUTOS kernel driver golden corpus
 

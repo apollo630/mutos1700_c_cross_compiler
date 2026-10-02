@@ -4315,25 +4315,25 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
         else
             emit_to_float(t1, assign_type, rhs, line);
     } else if (!ty_is_float(assign_type) &&
-               (optag == OP_ASTIMES || optag == OP_ASPLUS ||
-                optag == OP_ASMINUS) &&
+               (optag == OP_ASTIMES || optag == OP_ASDIV ||
+                optag == OP_ASPLUS || optag == OP_ASMINUS) &&
                subtype < 0 && (assign_type == TY_INT) &&
                ty_is_float(rhs.type) && !rhs.is_const) {
-        /* "i *= e", "i += d", "i -= d", an int target: the right-hand side
-         * converted to the target's type first, as for '=' (FTOI) -
-         * fltprobe/p2_arith.1.golden: NAME i, NAME e, FTOI(INT),
+        /* "i *= e", "i /= e", "i += d", "i -= d", an int target: the
+         * right-hand side converted to the target's type first, as for '='
+         * (FTOI) - fltprobe/p2_arith.1.golden: NAME i, NAME e, FTOI(INT),
          * ASTIMES(INT); p8_misc.1.golden: NAME i, NAME d, FTOI(INT),
-         * ASPLUS(INT) and ASMINUS(INT). The value is then i * (int)e, not
-         * (int)(i * e): v7's own semantics (its build() converts an
-         * assignment operator's right operand to the left's type). */
+         * ASPLUS(INT) and ASMINUS(INT); p13_open.1.golden: NAME j, NAME e,
+         * FTOI(INT), ASDIV(INT). The value is then i * (int)e, not (int)(i
+         * * e): v7's own semantics (its build() converts an assignment
+         * operator's right operand to the left's type). */
         outcode(t1, "BN", OP_FTOI, TY_INT);
     } else if (ty_is_float(assign_type) ||
                (ty_is_float(rhs.type) && !rhs.is_const)) {
         c0_error_at(line, "a compound assignment with a 'float'/'double' "
                           "operand is not yet supported (only '*=', '/=', "
-                          "'+=' and '-=' into a 'float'/'double' variable, and "
-                          "'*=', '+=' and '-=' into an int) - see "
-                          "src/mutos_cc/README.md");
+                          "'+=' and '-=' into a 'float'/'double' or an int "
+                          "variable) - see src/mutos_cc/README.md");
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
