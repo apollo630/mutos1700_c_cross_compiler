@@ -4314,20 +4314,26 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
                               "src/mutos_cc/README.md");
         else
             emit_to_float(t1, assign_type, rhs, line);
-    } else if (!ty_is_float(assign_type) && optag == OP_ASTIMES &&
+    } else if (!ty_is_float(assign_type) &&
+               (optag == OP_ASTIMES || optag == OP_ASPLUS ||
+                optag == OP_ASMINUS) &&
                subtype < 0 && (assign_type == TY_INT) &&
                ty_is_float(rhs.type) && !rhs.is_const) {
-        /* "i *= e", an int target: the right-hand side converted to the
-         * target's type first, as for '=' (FTOI) - fltprobe/p2_arith.
-         * 1.golden: NAME i, NAME e, FTOI(INT), ASTIMES(INT). The value is
-         * then i * (int)e, not (int)(i * e): v7's own semantics. */
+        /* "i *= e", "i += d", "i -= d", an int target: the right-hand side
+         * converted to the target's type first, as for '=' (FTOI) -
+         * fltprobe/p2_arith.1.golden: NAME i, NAME e, FTOI(INT),
+         * ASTIMES(INT); p8_misc.1.golden: NAME i, NAME d, FTOI(INT),
+         * ASPLUS(INT) and ASMINUS(INT). The value is then i * (int)e, not
+         * (int)(i * e): v7's own semantics (its build() converts an
+         * assignment operator's right operand to the left's type). */
         outcode(t1, "BN", OP_FTOI, TY_INT);
     } else if (ty_is_float(assign_type) ||
                (ty_is_float(rhs.type) && !rhs.is_const)) {
         c0_error_at(line, "a compound assignment with a 'float'/'double' "
                           "operand is not yet supported (only '*=', '/=', "
                           "'+=' and '-=' into a 'float'/'double' variable, and "
-                          "'*=' into an int) - see src/mutos_cc/README.md");
+                          "'*=', '+=' and '-=' into an int) - see "
+                          "src/mutos_cc/README.md");
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
@@ -5583,8 +5589,10 @@ static void parse_global_fvar(Parser *p, FILE *t1, int sclass, int type,
     }
     int init = 0;
     if (!refused && p->cur.kind == T_ASSIGN) {
+        TokKind k2 = peek2_kind(p);
         if (!ty_is_float(type) || ptr_degree > 0 || nelem > 0 ||
-            sclass == T_KW_EXTERN || peek2_kind(p) != T_FCON)
+            sclass == T_KW_EXTERN ||
+            (k2 != T_FCON && k2 != T_ICON && k2 != T_MINUS))
             refused = 1;
         else
             init = 1;
@@ -5622,7 +5630,35 @@ static void parse_global_fvar(Parser *p, FILE *t1, int sclass, int type,
         if (sclass == 0)
             outcode(t1, "BS", OP_SYMDEF, sym->name);
         outcode(t1, "BBS", OP_DATA, OP_NLABEL, sym->name);
-        (void)parse_primary(p, t1);                /* the FCON */
+        /* The constant converted to the variable's type, as for '='
+         * (v7's cinit(): build(ASSIGN), then INIT of its right operand):
+         * a floating literal as it is, "-1.5" FCON then NEG(DOUBLE) (v7's
+         * c0 folds a negated int constant, not a floating one), an int
+         * constant CON then ITOF(type) - p9_init.1.golden. */
+        int neg = 0;
+        if (p->cur.kind == T_MINUS) {
+            neg = 1;
+            advance(p);
+        }
+        if (p->cur.kind == T_FCON) {
+            (void)parse_primary(p, t1);            /* the FCON */
+            if (neg)
+                outcode(t1, "BN", OP_NEG, TY_DOUBLE);
+        } else if (p->cur.kind == T_ICON && p->cur.ival <= 32767) {
+            long v = neg ? -p->cur.ival : p->cur.ival;
+            advance(p);
+            emit_materialize(t1, ev_const(v));
+            outcode(t1, "BN", OP_ITOF, type);
+        } else {
+            c0_error_at(line, "this initializer of '%s' is not yet supported "
+                              "(only a floating literal or an int constant, "
+                              "either negated) - see src/mutos_cc/README.md",
+                        name);
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_COMMA &&
+                   p->cur.kind != T_EOF)
+                advance(p);
+            return;
+        }
         outcode(t1, "BN", OP_INIT, type);
         outcode(t1, "BN", OP_EXPR, line);
         return;

@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-09-29.
+Last updated: 2026-10-02.
 
 ---
 
@@ -25,10 +25,11 @@ golden-diff suite from one place (`mutos_as`'s `kernel_nonopt`/`kernel_opt`/
 and `float_coverage/fltmodel.py`, the latter Python 3 - and the assembly of every real compiler
 `.s` in `tests/mutos_cc`, `mutos_cpp`'s, and `mutos_cc`'s — see each
 milestone's section below for current results). Verified this session via a
-full `make clean && make all && make test`. `make check-libcatof` (new this
-session, not part of `make test`: it needs the Python module `unicorn`)
-checks `.float`/`.double` against `libc.a`'s own `atof` run under an 8086
-emulator - see Milestone 2.
+full `make clean && make all && make test`. `make check-libcatof` (not
+part of `make test`: it needs the Python module `unicorn`) checks
+`.float`/`.double` against `libc.a`'s own `atof` run under an 8086
+emulator - see Milestone 2 - and `mutos_c1`'s constant and float-initializer
+texts against `libc.a`'s own `ecvt` and `fstsp` (Milestone 4).
 
 ---
 
@@ -588,14 +589,18 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. Beyond the corpus, all nine floating-point probes of
-`tests/mutos_cc/fltprobe/` (real-hardware goldens, not counted in the 62)
-are byte-exact too: comparisons (a zero included), comparisons as values
-and under `&&`, v7's operand order for every floating operator, constants
-of any value (`.double` with the MUTOS `ecvt()`'s own digits), compound
-assignments, calls, float functions, file-scope and static floats, arrays,
-pointers and members, `long`/`char` conversions; a second round of four
-probes (`p6`..`p9`) waits for real hardware. ABI/
+below. Beyond the corpus, all thirteen floating-point probes of
+`tests/mutos_cc/fltprobe/`'s first two rounds (real-hardware goldens, not
+counted in the 62) are byte-exact too - round 2's four from `mutos_c0` on,
+their `.i` files not yet brought back: comparisons (a zero included),
+comparisons as values and under `&&`, v7's operand order for every
+floating operator, constants of any value (`.double` with the MUTOS
+`ecvt()`'s own digits, degree 0 where it decides an order), compound
+assignments (`i += d` into an int too), calls, float functions, the
+register an int is converted in, file-scope and static floats with any
+constant initializer, arrays (subscripted by a variable too), pointers and
+members, `long`/`char` conversions; a third round of four probes
+(`p10`..`p13`) waits for real hardware. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -607,6 +612,79 @@ coverage against it is 0/9 so far (each refusal diagnosed, none silent),
 tracked apart from the 62/62 figure above - see "Next up" below and
 `docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (the round-2 `fltprobe` goldens - 4/4 byte-exact; an 8-byte constant's degree, the register an int is converted in, elements by a variable, `i += d`, v7's `doinit()`)
+
+**62/62 corpus files and 13/13 `fltprobe` files byte-exact** - the four of
+round 2 (commit `4c668c2`) from `mutos_c0` on: their `.s`, `.1` and `.2`
+came back, their `.i` did not, and `run_goldens.sh` skipped them silently.
+It now checks such a file from `mutos_c0` on (`mutos_cpp`'s own `.i`
+feeding it) and lists a match apart (category 7); bringing back `p6`..`p9`'s
+`.i` files moves them into category 1 with no change (see "Next up").
+`mutos_c0` matched `p6`/`p7` at once; `mutos_c1` refused both, `mutos_c0`
+refused `p8`/`p9`. Full derivation in `docs/DEVLOG.md`'s "The round-2
+fltprobe goldens".
+
+- **An 8-byte constant has degree 0** (`p6_dblcon`), as a DOUBLE leaf:
+  `d + 0.1` and `0.1 + d` keep their order, `0.1 * a` loads the float `a`
+  first, `d < 0.1` is exchanged. Only a constant exactly a float (a
+  `.float`) has degree 1.
+- **The register an int is converted in** (`p7_itofreg`): AX after a
+  computed `*`, `/` or a call, DI after a leaf, `+`, `-` or a negation; in
+  AX `x + 1` is `mov ax,x` / `inc ax`, `x - 1` `dec ax`, `i + j` `mov ax,i` /
+  `add ax,j`; in DI `i + j` is `mov di,i` / `add di,j` / `mov ax,di`.
+- **`p8_misc`**: `ltof` with DI free goes through DI (the inference holds);
+  `*p + 1.5` loads `*p` first (a STAR's degree, `max(1, degree(p))`); `i +=
+  d` / `i -= d` - `FTOI`, then `ASPLUS(INT)` / `ASMINUS(INT)` in `mutos_c0`,
+  `call ftoi` / `add *-44.(bp),ax` in `mutos_c1`; a double array subscripted
+  by a variable - `lea di,arr` / `mov si,i` / `mov cx,*3.` / `sal si,cl` /
+  `add di,si` / `lea ax,(di)`, as a target after the right-hand side.
+- **`p9_init`: v7's `doinit()`** - a double variable's initializer is a
+  `.double` whatever its value (`= 2`: `.double 2.0...`; `= 0.1`: the MUTOS
+  `ecvt()`'s text), a float's the double truncated to a float (`float gy =
+  0.1;` -> `.float 9.99999940395355225e-02`: `libc.a`'s `fstsp` keeps the
+  high four bytes - confirmed under the emulator, `libcatof.py fecvt`), a
+  negated one folded (`-1.5`); each initializer takes a `c1` label (the
+  first code constant after five is `L10005`). `mutos_c0` accepts an int
+  constant, a negated int and a negated floating literal as initializer;
+  `mutos_c1`'s new `gen_finit()` writes them all.
+- **Compiled by inference** (round 3 asks): an element subscripted by a
+  variable as a second operand or next to another element (the first
+  loaded before the second's address), any int computed in DI converted,
+  a quotient converted, elements of any power-of-two size (`mov cx,*N.` /
+  `sal si,cl` - struct arrays too), `i += f()`, `float`, negated and `static
+  float` initializers.
+- **Still refused** (`p13_open` asks): an int converted after a
+  conversion, an element or an assignment, a difference or a shift for AX,
+  `x + 0` for AX, `i /= d`, a floating zero added or subtracted, `%`.
+- **`tests/mutos_cc/fltprobe/` round 3**: `p10_elem.c`, `p11_itof2.c`,
+  `p12_init2.c`, `p13_open.c` (`make -f Makefile.mutos round3`).
+- **Tooling**: `run_goldens.sh` category 7; `libcatof.py fecvt` and
+  `fltdec_test -f` (in `make check-libcatof`). `x86sim.py` runs all four
+  round-2 goldens unchanged (9, 62, 6, 6 - their programs' values).
+
+**Verification (this session):**
+
+- `make test`: 71 files byte-exact at all four stages (62/62 corpus, 9/9
+  round-1 `fltprobe`) and the four round-2 files from `mutos_c0` on, 0
+  mismatches, zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13,
+  84/84 compiler goldens assemble, `mutos_cpp` 5/5. With scratch `.i`
+  goldens from `mutos_cpp`, all 75 in category 1.
+- Against the previous build (`4c668c2`), all 84 inputs (the 71, round 2,
+  the nine `11_kernel` refusals): output and diagnostics identical but for
+  round 2's four.
+- `fuzz_c.py` against `4c668c2`: 30,000 programs (seeds 411, 421 `--scope`,
+  431 scalars only): all identical, 0 WRONG, 0 BAD; 3,000 more (seed 441)
+  through ASan/UBSan builds: 0 WRONG, 0 BAD.
+- ASan/UBSan builds over the 84 inputs: no reports, output identical to
+  the `-O2` build's.
+- Seven hand-written programs (the round-3 probes among them) through the
+  whole chain and `x86sim.py` against the host C compiler: equal, but for
+  v7's `i -= d` and a truncated float initializer; ten refusal probes each
+  stop with their diagnostic.
+- `make check-libcatof`: `goldens`, `check`, `ops`, `ecvt` unchanged (0
+  differences); `fecvt` 5,649 literals, 0 differences, every one `fstsp`'s
+  high four bytes.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (the `fltprobe` goldens - 9/9 byte-exact; v7's floating operand order; constant text from the MUTOS `ecvt()`)
 
@@ -2827,15 +2905,17 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/`'s round 2 on real hardware** (`make
-   -f Makefile.mutos round2` there, then `make goldens` in
-   `tests/mutos_cc` on the modern host): `p6_dblcon.c` (an 8-byte
-   constant's degree), `p7_itofreg.c` (the register an int is converted in
-   after a `/`, a call, a negation; `x + 1` in AX), `p8_misc.c` (`ltof` with
-   DI free, `*p` as an operand, `i += d`, a double array subscripted by a
-   variable), `p9_init.c` (int, inexact, negated and `static` floating
-   initializers). Round 1's nine files are byte-exact - see the section
-   above and `tests/mutos_cc/fltprobe/README.md`.
+1. **Run `tests/mutos_cc/fltprobe/`'s round 3 on real hardware** (`make
+   -f Makefile.mutos round3` there, then `make goldens` in
+   `tests/mutos_cc` on the modern host - bringing back the `.i` files
+   too, and round 2's four `.i` files, `p6_dblcon.i` ... `p9_init.i`,
+   which are still missing): `p10_elem.c` (elements subscripted by a
+   variable in every position, struct arrays of 8 and 16 bytes),
+   `p11_itof2.c` (ints computed in DI or AX converted, `i += f()`),
+   `p12_init2.c` (float, negated and `static float` initializers),
+   `p13_open.c` (the floating shapes still refused). Rounds 1 and 2 are
+   byte-exact - see the sections above and
+   `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb

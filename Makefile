@@ -30,8 +30,9 @@
 #                   # options, e.g. make fuzz FUZZ_ARGS="-n 2000 -s 7"
 #   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
 #   make check-libcatof # .float/.double against libc.a's own atof, and
-#                   # mutos_c1's floating-constant text against libc.a's
-#                   # own ecvt, run under an 8086 emulator (needs the
+#                   # mutos_c1's floating-constant and float-initializer
+#                   # text against libc.a's own ecvt and fstsp, run under
+#                   # an 8086 emulator (needs the
 #                   # Python module "unicorn"; see
 #                   # tests/mutos_as/float_coverage/libcatof.py)
 #   make install-hooks # one-time per clone: run check-docs automatically
@@ -116,8 +117,10 @@ check-docs:
 # mutos_as's .float/.double conversion against libc.a's own atof() on
 # libc.a's own floating-point runtime, run under an 8086 emulator
 # (Unicorn): every golden constant, fltconst.c's accepted output on
-# seeded texts, and the runtime's dmul/ddiv/dadd against fltmodel.py's
-# arithmetic. Separate from "test" because it needs the Python module
+# seeded texts, the runtime's dmul/ddiv/dadd against fltmodel.py's
+# arithmetic, and mutos_c1's constant texts (fltdec_test, "-f" a float
+# initializer's) against libc.a's ecvt() (of fstsp's float). Separate
+# from "test" because it needs the Python module
 # "unicorn" (pip install unicorn); LIBCATOF_N sets the number of texts.
 LIBCATOF_N = 3000
 check-libcatof: as ld cc
@@ -125,6 +128,7 @@ check-libcatof: as ld cc
 	@python3 tests/mutos_as/float_coverage/libcatof.py check $(CURDIR)/src/mutos_as/fltconst_test $(LIBCATOF_N)
 	@python3 tests/mutos_as/float_coverage/libcatof.py ops
 	@python3 tests/mutos_as/float_coverage/libcatof.py ecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
+	@python3 tests/mutos_as/float_coverage/libcatof.py fecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

@@ -23,6 +23,13 @@
 #   MUTOS_C0=../../src/mutos_cc/mutos_c0 \
 #   MUTOS_C1=../../src/mutos_cc/mutos_c1 ./run_goldens.sh
 #
+# A file with a .1 golden but no .i golden (a golden set brought back
+# without cpp's output) is still checked from mutos_c0 on - mutos_cpp's
+# own output feeding mutos_c0, nothing to diff it against - and a match
+# is listed apart (category 7), so the pass count above stays the count
+# of files verified at all four stages. A file with no .1 golden either
+# is skipped.
+#
 # Exit status: 0 if every file with goldens produced a byte-exact
 # match at every stage, 1 otherwise (this is expected/normal until
 # grammar coverage grows well beyond 00_smoke - see README.md).
@@ -46,6 +53,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 pass=()
+pass_no_i=()
 cpp_mismatch=()
 c0_unsupported=()
 c0_mismatch=()
@@ -59,7 +67,13 @@ for cat in */; do
         [ -f "$src" ] || continue
         name="$(basename "${src%.c}")"
         golden_i="$cat/$name.i.golden"
-        [ -f "$golden_i" ] || continue   # no golden yet for this file
+        no_i=0
+        if [ ! -f "$golden_i" ]; then
+            # No .i golden: checked from mutos_c0 on if a .1 golden
+            # exists (see this script's header), skipped otherwise.
+            [ -f "$cat/$name.1.golden" ] || continue
+            no_i=1
+        fi
 
         out_i="$WORK/$name.i"
         out_1="$WORK/$name.1"
@@ -70,7 +84,7 @@ for cat in */; do
             cpp_mismatch+=("$cat/$name (mutos_cpp itself failed)")
             continue
         fi
-        if ! diff -q "$out_i" "$golden_i" >/dev/null 2>&1; then
+        if [ "$no_i" -eq 0 ] && ! diff -q "$out_i" "$golden_i" >/dev/null 2>&1; then
             cpp_mismatch+=("$cat/$name (.i differs from golden)")
             continue
         fi
@@ -100,7 +114,11 @@ for cat in */; do
             continue
         fi
 
-        pass+=("$cat/$name")
+        if [ "$no_i" -eq 1 ]; then
+            pass_no_i+=("$cat/$name")
+        else
+            pass+=("$cat/$name")
+        fi
     done
 done
 
@@ -130,6 +148,11 @@ echo
 echo "6. mutos_c1: genuine byte mismatch vs golden (${#c1_mismatch[@]})"
 if [ ${#c1_mismatch[@]} -eq 0 ]; then echo "  (none)"; fi
 for f in "${c1_mismatch[@]}"; do echo "  $f"; done
+
+echo
+echo "7. Byte-exact from mutos_c0 on - no .i golden, so mutos_cpp's own output"
+echo "   was used unchecked (${#pass_no_i[@]})"
+for f in "${pass_no_i[@]}"; do echo "  $f"; done
 echo "=================================================================="
 
 # Success means: nothing in the "genuine mismatch" categories (2, 4, 6).

@@ -35,6 +35,14 @@ typedef enum {
 FdecStatus fdec_render(const char *text, int negate, char *out, size_t n,
                        int *is_float, int *is_zero);
 
+/* The text of a 'float' variable's initializer: the real c1's doinit()
+ * converts the double to a float ("sfval = fval" - the high half of its
+ * image kept, the low four bytes dropped: truncated) and prints that with
+ * "%.17e" - fltprobe/p9_init.s.golden's "float gy = 0.1;" -> ".float
+ * 9.99999940395355225e-02". Otherwise as fdec_render(). */
+FdecStatus fdec_render_single(const char *text, int negate, char *out,
+                              size_t n, int *is_zero);
+
 /* The digits libc.a's ecvt() gives for the MUTOS double image dbl[8]
  * (lowest address first) and `ndigits` digits - into buf (at least 80
  * bytes) - with *decpt and *sign as ecvt() sets them. For tests. */

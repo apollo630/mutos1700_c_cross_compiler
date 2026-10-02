@@ -64,6 +64,12 @@ Usage:
       2*N (default 3000) C floating literals, and whether it is exactly
       a float (a ".float") or not (a ".double"). Exit 1 on a difference.
       Zeros (a fixed text) and texts TOOL refuses are not compared.
+  libcatof.py fecvt TOOL [N]
+      The text the real compiler writes for a 'float' variable's
+      initializer - doinit()'s "sfval = fval" (fldd / fstsp on libc.a's
+      runtime), printed as above - against "TOOL -f" (c1_fltdec.c's
+      fdec_render_single()) for 2*N texts, and whether fstsp stored
+      the double's high four bytes (truncated). Exit 1 on a difference.
 """
 
 import base64
@@ -238,6 +244,27 @@ class Runtime:
         self.uc.reg_write(UC_X86_REG_SP, SP_AT - 2)
         self.uc.emu_start(BASE + self.sym[name], BASE + HLT_AT, count=STEPS)
         return bytes(self.uc.mem_read(BASE + self.fac, 8))
+
+    def _call_ax(self, name, ax):
+        self.uc.reg_write(UC_X86_REG_AX, ax)
+        self.uc.mem_write(BASE + SP_AT - 2, struct.pack('<H', HLT_AT))
+        self.uc.reg_write(UC_X86_REG_SP, SP_AT - 2)
+        self.uc.emu_start(BASE + self.sym[name], BASE + HLT_AT, count=STEPS)
+
+    def single(self, dbl):
+        """The double dbl stored as a float and read back - the real
+        compiler's doinit() "sfval = fval", then sfval promoted for its
+        printf: "fldd <dbl> / fstsp <f>", "flds <f> / fstdp <d>". The
+        four bytes stored and the eight read back."""
+        self._prepare(False)
+        self.uc.mem_write(BASE + 0xD000, bytes(dbl))
+        self.uc.mem_write(BASE + 0xD010, b'\xaa' * 16)
+        self._call_ax('fldd', 0xD000)
+        self._call_ax('fstsp', 0xD010)
+        self._call_ax('flds', 0xD010)
+        self._call_ax('fstdp', 0xD018)
+        return (bytes(self.uc.mem_read(BASE + 0xD010, 4)),
+                bytes(self.uc.mem_read(BASE + 0xD018, 8)))
 
 
 def atof_text(kind, text):
@@ -471,6 +498,42 @@ def cmd_ecvt(tool, n):
     return 1 if bad else 0
 
 
+def cmd_fecvt(tool, n):
+    rt = Runtime()
+    texts = ['0.1', '-0.1', '.03', '0.3', '3.14159265358979', '1e-5', '1e30',
+             '16777217.', '1.5', '-1.5', '2'] + literals(n, 5)
+    res = subprocess.run([tool, '-f'], input='\n'.join(texts) + '\n', capture_output=True,
+                         text=True, check=True).stdout.splitlines()
+    if len(res) != len(texts):
+        sys.exit('libcatof.py: %s -f gave %d lines for %d texts' % (tool, len(res), len(texts)))
+    bad = compared = high = 0
+    counts = {}
+    for text, line in zip(texts, res):
+        f = line.split()
+        counts[f[1]] = counts.get(f[1], 0) + 1
+        if f[1] != 'float':
+            continue
+        neg = text.startswith('-')
+        dbl = rt.atof(text.lstrip('-'), as_zero=False)
+        if dbl is None or dbl[7] == 0:
+            continue
+        stored, back = rt.single(dbl)
+        if stored == dbl[4:8]:
+            high += 1
+        digits, decpt, sign = rt.ecvt(back, 18)
+        want = pscien((digits, decpt, sign or neg))
+        compared += 1
+        if want != f[2]:
+            bad += 1
+            if bad <= 10:
+                print('  DIFFERENT %-28s %-26s libc.a: %s' % (text, f[2], want))
+    print('%d literals (%s): %d compared with libc.a\'s ecvt() of atof() stored as a '
+          'float (fstsp - %d of them its high four bytes), %d differ'
+          % (len(texts), ', '.join('%s %d' % kv for kv in sorted(counts.items())),
+             compared, high, bad))
+    return 1 if bad or high != compared else 0
+
+
 def main(argv):
     if len(argv) >= 2 and argv[1] == 'atof':
         return cmd_atof(argv[2:])
@@ -482,6 +545,8 @@ def main(argv):
         return cmd_ops(int(argv[2]) if len(argv) == 3 else 2000)
     if len(argv) in (3, 4) and argv[1] == 'ecvt':
         return cmd_ecvt(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
+    if len(argv) in (3, 4) and argv[1] == 'fecvt':
+        return cmd_fecvt(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
     print(__doc__)
     return 2
 
