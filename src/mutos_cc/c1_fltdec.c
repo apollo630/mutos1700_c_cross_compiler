@@ -270,8 +270,11 @@ void fdec_ecvt(const unsigned char dbl[8], int ndigits, char *buf,
     buf[p] = '\0';
 }
 
-FdecStatus fdec_render(const char *text, int negate, char *out, size_t n,
-                       int *is_float, int *is_zero)
+/* fdec_render() and fdec_render_single(): `single` truncates the value
+ * to a float's precision first - its double image's low four bytes
+ * cleared, the high half kept. */
+static FdecStatus render(const char *text, int negate, int single, char *out,
+                         size_t n, int *is_float, int *is_zero)
 {
     unsigned char dbl[8];
     *is_float = 0;
@@ -301,6 +304,8 @@ FdecStatus fdec_render(const char *text, int negate, char *out, size_t n,
     if (!(v < 1e38 && v > 1e-38))
         return FDEC_RANGE;
     *is_float = (dbl[0] | dbl[1] | dbl[2] | dbl[3]) == 0;
+    if (single)
+        dbl[0] = dbl[1] = dbl[2] = dbl[3] = 0;
     char buf[NDIG + 1];
     int decpt, sign;
     fdec_ecvt(dbl, 18, buf, &decpt, &sign);
@@ -308,4 +313,17 @@ FdecStatus fdec_render(const char *text, int negate, char *out, size_t n,
     snprintf(out, n, "%s%c.%.17se%c%02d", negate ? "-" : "", buf[0], buf + 1,
              x < 0 ? '-' : '+', x < 0 ? -x : x);
     return FDEC_OK;
+}
+
+FdecStatus fdec_render(const char *text, int negate, char *out, size_t n,
+                       int *is_float, int *is_zero)
+{
+    return render(text, negate, 0, out, n, is_float, is_zero);
+}
+
+FdecStatus fdec_render_single(const char *text, int negate, char *out,
+                              size_t n, int *is_zero)
+{
+    int is_float;
+    return render(text, negate, 1, out, n, &is_float, is_zero);
 }

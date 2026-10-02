@@ -201,6 +201,22 @@ of
 on the 56-bit software double, reproduced exactly \(en and a file with
 floating code ends with
 .BR ".globl fltused" .
+A file-scope variable's initializer is written as the original
+compiler's
+.B doinit
+writes it: a
+.B .double
+of the value for a
+.BR double ,
+a
+.B .float
+of the value truncated to a
+.B float
+(as
+.IR libc.a 's
+.B fstsp
+stores it) for a
+.BR float .
 Every expression with a floating value is generated in the original
 compiler's operand order, rebuilt from the whole expression tree (its
 .BR degree ,
@@ -209,16 +225,24 @@ and operand-exchange rules, a floating constant that is exactly a
 .B float
 counting as a
 .B float
-operand). File-scope, static, array, pointer and structure-member
-floating operands, compound assignments, comparisons as values and under
+operand, an 8-byte one as a
+.BR double ).
+File-scope, static, array (subscripted by a constant or a variable),
+pointer and structure-member floating operands, compound assignments,
+comparisons as values and under
 .BR && / || ,
 .BR long / char
 conversions
 .RB ( ltof )
 and
 .BR float -returning
-functions are covered; the shapes no real-hardware golden has shown are
-refused.
+functions are covered; a few shapes are inferred from the goldens'
+rules (see the source's
+.I README.md
+\(en an element next to another, an
+.B int
+computed in a register then converted), and the shapes no real-hardware
+golden has shown are refused.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered

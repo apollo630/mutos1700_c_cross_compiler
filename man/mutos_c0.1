@@ -167,7 +167,9 @@ parameter is a
 arrays, pointers, structure members and local
 .B static
 variables, and file-scope floating variables, arrays and pointers,
-initialized with a floating literal or not,
+initialized with a constant (a floating literal or an
+.B int
+constant, either negated) or not,
 floating constants (written with their source text, never folded),
 .BR + ,
 .BR \- ,
@@ -187,7 +189,10 @@ assignment,
 and
 .B \-=
 into a floating variable (also inside parentheses, its value used),
-.B *=
+.BR *= ,
+.B +=
+and
+.B \-=
 into an
 .B int
 (the floating right operand converted first, as the real front end does),

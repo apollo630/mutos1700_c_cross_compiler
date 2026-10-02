@@ -6466,6 +6466,151 @@ difference is v7's `i * (int)a`. `libcatof.py ecvt`: 28,188 literals, 0
 differences; `libcatof.py goldens`, `check` and `ops` still pass with the two
 extra objects linked in.
 
+### The round-2 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-02)
+
+The four round-2 programs (`p6_dblcon`, `p7_itofreg`, `p8_misc`,
+`p9_init`) came back from real hardware in commit `4c668c2` - their `.s`,
+`.1` and `.2`, **but not their `.i`** (`make goldens` packages whatever is
+on disk; the `.i` files stayed on the MUTOS machine). `run_goldens.sh` keyed
+on `.i.golden` and skipped all four without a word - `make test` would have
+gone on reporting 71 files byte-exact while these four were never compared.
+It now checks a file with a `.1.golden` but no `.i.golden` from `mutos_c0`
+on (`mutos_cpp`'s own output feeding it, nothing to diff that against) and
+lists a match apart, as category 7. `mutos_c0` matched `p6`'s and `p7`'s
+`.1`/`.2` at once - so `mutos_cpp`'s `.i` and the real one tokenize alike -
+and refused `p8` (`i += d`) and `p9` (its initializers); `mutos_c1` refused
+`p6` and `p7`. All four are byte-exact now, the 71 others unchanged.
+
+**1. An 8-byte constant has degree 0** (`p6_dblcon`). v7's `degree()` gives
+a DOUBLE leaf 0, and a `.double` constant is one: `d + 0.1` and `0.1 + d`
+both keep their order (equal degrees), `a * 0.1` and `0.1 * a` both load
+the float `a` first, `d < 0.1` is exchanged (equal degrees, only `d` a
+NAME: `fldd <0.1>` / `fldd d` / `fcmp` / `ble`), `0.1 < d` is not, `a >
+0.1` is not and `0.1 > a` is (`a` has 1). So only a constant that is
+exactly a float has degree 1 - it is kept as a FLOAT `.float` (round 1's
+finding); the rule is simply `degree()` on the constant's real type.
+`fdeg()` no longer refuses one.
+
+**2. The register an int is converted in** (`p7_itofreg`). After the
+operand computed before it (each statement `f + (<computed> op <int>)`):
+
+| Computed first | Register | Golden |
+|---|---|---|
+| `d / e` | AX | `mov ax,*-30.(bp)` / `call itof` |
+| `tw(d)` (a call, its result loaded with `fldd`) | AX | the same |
+| `-d` | DI | `mov di,*-30.(bp)` / `mov ax,di` / `call itof` |
+| `d * e`, int `i + 1` | AX | `mov ax,*-30.(bp)` / `inc ax` |
+| `d * e`, int `j - 1` | AX | `mov ax,*-32.(bp)` / `dec ax` |
+| `d * e`, int `i + j` | AX | `mov ax,*-30.(bp)` / `add ax,*-32.(bp)` |
+| nothing (a chain's first term), int `i + j` | DI | `mov di,i` / `add di,j` / `mov ax,di` |
+| nothing, int `i * 3` | AX | `mov ax,i` / `mov cx,*3.` / `imul cx` |
+
+With round 1 (DI after a leaf and after a computed `+`/`-`, AX after a
+computed `*`) the reading that fits: the next operand takes the register
+the previous one's result was given, and the MUTOS compiler gives a
+product, a quotient and a call's result AX - the register the 8086's
+`imul`/`idiv` and a function's return use; an addition, subtraction or
+negation stays in the register it was computed in. The operands of a
+floating `*` itself are still in DI (`p2_arith`'s `d * i`: `mov di,i` /
+`mov ax,di`), so this is the result's register, not v7's `oddreg()` applied
+to the node. `fafter()` gives AX after `*`, `/` and a call and keeps the
+context after `+`, `-` and a negation; in DI any int computed the ordinary
+way is then moved, `mov ax,di` (`gen_itof()`); in AX, `x + 1` / `x - 1` are
+`inc ax` / `dec ax` and a sum of two variables `mov ax,i` / `add ax,j` (the
+`OP_PLUS` handler, for an `ITOF` consumer). After any other computed
+operand - a conversion, an element, an assignment - the register is still
+not known, and refused.
+
+**3. `p8_misc`.** The `long` converted with DI free goes through DI, as
+inferred (`mov di,<high>` / `push di` / `mov di,<low>` / `push di` / `call
+ltof` / `add sp,*4`). `*p + 1.5` loads `*p` first: v7's `unoptim()` gives a
+STAR `max(islong(type), degree(operand))` = 1, the constant's degree, so
+the operands stay as written (`fdeg()` computes it now; ITOP as optim()'s
+TIMES). `i += d` and `i -= d` into an int are, like round 1's `i *= e`,
+the right operand converted first (`.1`: NAME i, NAME d, `FTOI(INT)`,
+`ASPLUS(INT)`/`ASMINUS(INT)` - v7's `build()` converts an assignment
+operator's right operand to the left's type, so the value is `i + (int)d`)
+and then a single in-place instruction, `call ftoi` / `add *-44.(bp),ax`
+(`sub` for `-=`). A double array subscripted by a variable is addressed as
+an int array is, with the constant-shift rule for the element size 8:
+`lea di,*-38.(bp)` / `mov si,*-44.(bp)` / `mov cx,*3.` / `sal si,cl` / `add
+di,si`, then used through DI, `lea ax,(di)` / `call fldd`; as an
+assignment's target (`arr[i] = d`) the address is computed after the
+right-hand side is loaded (`fldd d` first), as a pointer variable is loaded
+only after it (`*p = 2.5`). `return i + (int) d` is `call ftoi` / `add
+ax,*-44.(bp)`.
+
+**4. `p9_init`: v7's `doinit()`.** The real `c1` writes an initializer as
+v7's `doinit()` does, after `optim()`: the value as a double for a
+`double` variable - `double gi = 2;` is `.double<TAB>2.00000000000000000e+00`
+(a code constant 2.0 would be a `.float`), `double gx = 0.1;` `.double
+1.00000000000000000e-01` (the MUTOS `ecvt()`'s text, as for a code
+constant), `double gn = -1.5;` `.double -1.50000000000000000e+00` (`.1`:
+`FCON 1.5`, `NEG(DOUBLE)`, `INIT` - v7's `c0` folds a negated int constant,
+not a floating one; `unoptim()` folds it) - and for a `float` variable
+`sfval = fval; printf(...)` of that: `float gy = 0.1;` is `.float
+9.99999940395355225e-02`, the double **truncated** to a float, not rounded
+(0.1 rounded would be `1.00000001490116119e-01`). The MUTOS `c1` is a
+MUTOS program, so `sfval = fval` is `fldd` / `fstsp` on `libc.a`'s runtime;
+run under the emulator (`libcatof.py`'s new `fecvt` subcommand), `fstsp`
+stores the double's high four bytes for every one of 5,649 literals (and
+3,000 random doubles, 1,429 of which rounding would change), and the text
+`fdec_render_single()` writes for each matches `ecvt()` of the stored float
+exactly. `static double gs = 2.5;` is `DATA` / `NLABEL _gs` (no `SYMDEF`, no
+`.globl`) - `mutos_c0` already wrote that. Every initializer takes a `c1`
+label though none is written - the int one too (`unoptim()`'s `ITOF(CON)`
+fold, as in code): the first code constant after five initializers is
+`L10005`. `mutos_c0` now accepts an int constant (`CON`, `ITOF(type)`), a
+negated one (`CON -n`) and a negated floating literal (`FCON`, `NEG`);
+`mutos_c1`'s new `gen_finit()` reads the whole initializer, runs before any
+expression planning, and replaces the old `FCON INIT` special cases in
+`gen_fcon()` and `plan_expression()`.
+
+**5. What `mutos_c1` now compiles by inference** (no golden yet - round 3
+asks): an element subscripted by a variable as the second operand after a
+leaf (`1.5 + arr[i]`: the leaf loaded, then the address, `lea ax,(di)` /
+`call faddd`) or after another element (`arr[i] < arr[j]`: the first
+loaded before the second's address is computed - `plan_fload()`); any int
+computed in DI converted (`d + (i << 2)`: `mov di,i` / `sal di,*1` / `sal
+di,*1` / `mov ax,di`), a quotient converted from AX; an element of any
+power-of-two size subscripted by a variable (`mov cx,*N.` / `sal si,cl`
+from 8 bytes up, by the constant-shift rule - a struct array's too); `i +=
+f()` / `i -= f()` (`add i,ax`, the call's result where `ftoi`'s is);
+`float` initializers from an int constant (`ITOF(FLOAT)`), negated
+constants, `static float`; a shift's degree (optim()'s "def:").
+`tests/mutos_cc/fltprobe/`'s round 3 (`p10_elem`, `p11_itof2`, `p12_init2`)
+asks about each, `p13_open` about what is still refused (a conversion after
+a conversion, an element or an assignment; a difference or a shift for AX;
+`x + 0` for AX; `i /= d`; a floating zero added or subtracted).
+
+**Tooling.** `run_goldens.sh`'s category 7 (above); `libcatof.py fecvt`
+and `fltdec_test -f` (`make check-libcatof`); `fltprobe/Makefile.mutos`'s
+`round3`. `x86sim.py` needed nothing new: all four round-2 goldens run
+under it and return their programs' values (9, 62, 6, 6).
+
+**Verification.** `make test`: 62/62 corpus and 9/9 round-1 `fltprobe`
+files byte-exact (category 1, 71), the four round-2 files byte-exact from
+`mutos_c0` on (category 7), 0 mismatches, zero warnings; `mutos_as` 76/76,
+`check_floatdat.sh` 13/13, 84/84 compiler goldens assemble, `mutos_cpp`
+5/5. With a scratch `.i.golden` from `mutos_cpp` for each, all 75 are
+byte-exact in category 1. Against the previous build (`4c668c2`) over all
+84 inputs (the 71, the four round-2 files, the nine `11_kernel` refusals):
+identical output and diagnostics but for the four. `fuzz_c.py` against
+`4c668c2`: 30,000 programs (12,000 with arrays, seed 411; 12,000
+`--scope`, seed 421; 6,000 scalars only, seed 431), all identical, 0 WRONG,
+0 BAD; 3,000 more (seed 441, `--scope`) through ASan/UBSan builds: 0 WRONG,
+0 BAD. ASan/UBSan builds over the 84 inputs: no reports, output identical
+to the `-O2` build's. Seven hand-written floating programs (elements in
+every position, struct arrays of 8 and 16 bytes, ints computed in DI and
+AX converted, `i += d`, `i += f()`, every initializer form - the round-3
+probes among them) through `mutos_cpp`, both passes, `mutos_as` and
+`x86sim.py`, compared with the host C compiler: equal, but where v7's
+semantics differ (`i -= d` is `i - (int)d`) or a float initializer is
+truncated (`p12_init2`: 6, the host's 7); ten refusal probes each stop with
+their diagnostic. `make check-libcatof`: `goldens` 34/38 identical (4 not
+emulated), `check` 8,357 texts 0 differences, `ops` 0, `ecvt` 5,630
+literals compared 0 differences, `fecvt` 5,649 compared 0 differences.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
@@ -6735,3 +6880,10 @@ These apply to *every* milestone, not just the one where they were first learned
   a pad byte in code no golden contained; linking the float goldens with the real
   `crt0.o`/`libc.a` and executing them in an emulator is what makes "it assembles"
   mean "it works".
+- **A golden set can arrive incomplete - and a harness that skips quietly
+  hides it.** Round 2 of `tests/mutos_cc/fltprobe/` was pushed with its `.s`,
+  `.1` and `.2` but no `.i`; `run_goldens.sh` skipped every file without an
+  `.i.golden`, so all four would have gone unchecked under an unchanged "71
+  byte-exact". After new goldens arrive, list what each recipe makes and what
+  came back, and make a harness report what it skips (it now checks such a
+  file from `mutos_c0` on and lists it apart).

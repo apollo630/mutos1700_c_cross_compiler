@@ -1,4 +1,4 @@
-# Makefile.mutos -- fltprobe/ (this directory's 13 files only).
+# Makefile.mutos -- fltprobe/ (this directory's 17 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory on real MUTOS 1700 hardware - the same recipes as every
@@ -21,13 +21,16 @@ CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
 
-# Two rounds - the second (p6..p9) added after the first round's goldens
-# came back; "make -f Makefile.mutos round2" makes only the new ones.
-all: round1 round2
+# Three rounds - each added after the previous round's goldens came back
+# (p6..p9, then p10..p13); "make -f Makefile.mutos round3" makes only the
+# newest ones.
+all: round1 round2 round3
 
 round1: 03_fltcmp.s 03_fltcmp.1 04_fltconst.s 04_fltconst.1 05_fltasop.s 05_fltasop.1 06_fltfunc.s 06_fltfunc.1 p1_compare.s p1_compare.1 p2_arith.s p2_arith.1 p3_global.s p3_global.1 p4_const.s p4_const.1 p5_call.s p5_call.1
 
 round2: p6_dblcon.s p6_dblcon.1 p7_itofreg.s p7_itofreg.1 p8_misc.s p8_misc.1 p9_init.s p9_init.1
+
+round3: p10_elem.s p10_elem.1 p11_itof2.s p11_itof2.1 p12_init2.s p12_init2.1 p13_open.s p13_open.1
 
 03_fltcmp.s: 03_fltcmp.c
 	$(CC) -S 03_fltcmp.c
@@ -106,6 +109,30 @@ p9_init.s: p9_init.c
 
 p9_init.1: p9_init.c
 	$(CPP) -P p9_init.c > p9_init.i; $(C0) p9_init.i p9_init.1 p9_init.2
+
+p10_elem.s: p10_elem.c
+	$(CC) -S p10_elem.c
+
+p10_elem.1: p10_elem.c
+	$(CPP) -P p10_elem.c > p10_elem.i; $(C0) p10_elem.i p10_elem.1 p10_elem.2
+
+p11_itof2.s: p11_itof2.c
+	$(CC) -S p11_itof2.c
+
+p11_itof2.1: p11_itof2.c
+	$(CPP) -P p11_itof2.c > p11_itof2.i; $(C0) p11_itof2.i p11_itof2.1 p11_itof2.2
+
+p12_init2.s: p12_init2.c
+	$(CC) -S p12_init2.c
+
+p12_init2.1: p12_init2.c
+	$(CPP) -P p12_init2.c > p12_init2.i; $(C0) p12_init2.i p12_init2.1 p12_init2.2
+
+p13_open.s: p13_open.c
+	$(CC) -S p13_open.c
+
+p13_open.1: p13_open.c
+	$(CPP) -P p13_open.c > p13_open.i; $(C0) p13_open.i p13_open.1 p13_open.2
 
 clean:
 	rm -f *.s *.i *.1 *.2

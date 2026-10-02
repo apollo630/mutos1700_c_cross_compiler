@@ -318,6 +318,7 @@ python3 libcatof.py goldens [DIR ...]                  # every golden constant
 python3 libcatof.py check ../../../src/mutos_as/fltconst_test 3000
 python3 libcatof.py ops 2000                           # dmul/ddiv/dadd vs fltmodel.py
 python3 libcatof.py ecvt ../../../src/mutos_cc/fltdec_test 3000
+python3 libcatof.py fecvt ../../../src/mutos_cc/fltdec_test 3000
 ```
 
 `ecvt` checks the compiler side: the real `c1` writes a floating constant
@@ -331,6 +332,16 @@ when the double's low four bytes are zero) with `mutos_c1`'s model,
 reproduces `tests/mutos_cc/fltprobe/p4_const.s.golden`'s texts (`0.1` ->
 `1.00000000000000000e-01`, `1e30` -> `1.00000000000000005e+30`) and, at
 the last run, 28,188 random literals with no difference.
+
+`fecvt` does the same for a `float` variable's initializer: v7's `c1`
+writes it with `doinit()`'s `sfval = fval`, the double stored as a float
+(`fldd` / `fstsp` on `libc.a`'s runtime) and printed - so the subcommand
+runs `fstsp`, `flds` and `fstdp` on `_atof`'s result, then `_ecvt`, and
+compares with `fltdec_test -f` (`c1_fltdec.c`'s `fdec_render_single()`).
+`fstsp` truncates - it stores the double's high four bytes, which the
+subcommand also checks for every literal: `fltprobe/p9_init.s.golden`'s
+`float gy = 0.1;` -> `.float 9.99999940395355225e-02` (2026-10-02: 5,649
+literals compared, no difference).
 
 `check` sends edge cases, seeded random texts and targeted ones
 (`%.17e` of exact floats and doubles over the whole range, zeros,
