@@ -589,8 +589,8 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. Beyond the corpus, all seventeen floating-point probes of
-`tests/mutos_cc/fltprobe/`'s first three rounds (real-hardware goldens, not
+below. Beyond the corpus, all twenty floating-point probes of
+`tests/mutos_cc/fltprobe/`'s first four rounds (real-hardware goldens, not
 counted in the 62) are byte-exact too, end-to-end: comparisons (a zero
 included), comparisons as values and under `&&`, v7's operand order for
 every floating operator (an element of a local array at degree 2),
@@ -599,8 +599,9 @@ degree 0 where it decides an order; a zero kept), compound assignments
 (`i += d` and `j /= e` into an int too), calls, float functions, the
 register an int is converted in, file-scope and static floats with any
 constant initializer, arrays (subscripted by a variable too), pointers and
-members, `long`/`char` conversions; a fourth round of three probes
-(`p14`..`p16`) waits for real hardware. ABI/
+members, `long`/`char`/`unsigned` conversions, and the order of two int
+elements; a fifth round of three probes (`p17`..`p19`) waits for real
+hardware. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -612,6 +613,62 @@ coverage against it is 0/9 so far (each refusal diagnosed, none silent),
 tracked apart from the 62/62 figure above - see "Next up" below and
 `docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (the round-4 `fltprobe` goldens - 3/3 byte-exact; a right element at offset 0 computed first, the context in a chain, `unsigned` locals; silent `long`-mixing miscompiles refused)
+
+**62/62 corpus files and 20/20 `fltprobe` files byte-exact, all at every
+stage.** Round 4 came back in commit `27d0cea`. `mutos_c0` matched `p14`'s
+and `p15`'s `.1`/`.2` at once and refused `p16`; `mutos_c1` differed from
+`p14` in two places and `p15` in one. Full derivation in `docs/DEVLOG.md`'s
+"The round-4 fltprobe goldens".
+
+- **A right element at offset 0 is computed first** (`p14_axint`): `a[i] *
+  b[j]` pushes `b[j]`'s value (`push di` ... `mov ax,di` / `pop cx` / `imul
+  cx` - v7's `%n,n`, as `05_matmul`), `a[i] & b[j]` its address (`push di`
+  ... `pop bx` / `and di,(bx)` - `%n,nw*`). With an offset (`p10`'s
+  `ps[i].c * qs[i].g`) the right one comes after the left. Why the offset
+  decides is not understood; `order_right_first()` generalized,
+  `is_pushaddr()`/`ORD_PUSHADDR` new (`+`, `-`, `|` by inference).
+- **The context in a chain is the previous term's** (`p15_fltinf`: `i`
+  converted in AX after `d * d`).
+- **`p16_open2`**: DI after `*p`, an assignment's right-hand side's context
+  after it, a remainder `mov ax,dx`, `-0.0` written as `0.0`, `(int) 2.5`
+  and `i = 2.5` converted at run time (`flds` / `ftoi`), `d += c` with the
+  char first (`... / itof` / `faddd d`), an `unsigned` converted as a long
+  (`mov si,u` / `sub di,di` / `push si` / `push di` / `call ltof`).
+  `mutos_c0` accepts plain `unsigned` locals and casts of floating
+  constants; `-=` with a computed right operand is now refused (it would
+  need a reversed subtraction).
+- **Silent miscompiles found while testing `unsigned` locals, fixed**: a
+  `long` with an int-class variable (`l + i` read `i` as a long, `x = l`
+  stored the high word, `l & m` typed int) - now `LTOI` into an int target
+  and a refusal for the rest; octal/hex constants 0100000..0177777 are ints,
+  not longs (v7's `getnum()`; the `11_kernel` goldens' `CON -32768`).
+- **Compiled by inference** (round 5 asks): `+`, `-`, `|` of two elements,
+  `+=` with a computed floating right operand, `f += i`, a remainder after
+  a `*`, `(long) 3.75`, a negated zero initializer.
+- **`tests/mutos_cc/fltprobe/` round 5**: `p17_elem2.c`, `p18_fltop3.c`,
+  `p19_open3.c` (`make -f Makefile.mutos round5`).
+
+**Verification (this session):**
+
+- `make test`: 82 files byte-exact at all four stages (62/62 corpus, 20/20
+  `fltprobe`), 0 mismatches, zero warnings; `mutos_as` 76/76,
+  `check_floatdat.sh` 13/13, 91/91 compiler goldens assemble, `mutos_cpp`
+  5/5.
+- Against the previous build (`27d0cea`), all 94 inputs: identical but for
+  the round-4/5 files and, in five `11_kernel` files, new or changed
+  diagnostics and two partial `.1` outputs (the octal constants) - all
+  nine still refuse.
+- `fuzz_c.py` against `27d0cea`: 14,000 programs (seeds 1, 7 `--scope`, 3
+  scalars only, 21): 0 WRONG, 0 BAD, 53 changed and still correct, 353 now
+  correct that were refused; 1,000 more (seed 31) through ASan/UBSan
+  builds: 0 WRONG, 0 BAD.
+- ASan/UBSan builds over the 94 inputs: no reports, the 82 byte-exact.
+- `x86sim.py` runs all twenty goldens (`p14` 129, `p15` 45, `p16` 79);
+  round 5: `p17_elem2` 84 and `p18_fltop3` 27, the host's values.
+- `make check-libcatof` not run (the module `unicorn` is not installed in
+  this sandbox); `c1_fltdec.c` is unchanged.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (the round-3 `fltprobe` goldens - 4/4 byte-exact; an element's degree, an int `*`'s left operand, `+ 0`, a value kept in AX, `j /= e`, a floating zero)
 
@@ -2971,14 +3028,15 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/`'s round 4 on real hardware** (`make
-   -f Makefile.mutos round4` there, then `make goldens` in
+1. **Run `tests/mutos_cc/fltprobe/`'s round 5 on real hardware** (`make
+   -f Makefile.mutos round5` there, then `make goldens` in
    `tests/mutos_cc` on the modern host - all four kinds of file):
-   `p14_axint.c` (int shapes round 3 raised: a value in AX plus a
-   constant stored, `+ 0` in DI, products and `&` of two int elements,
-   `x /= f()`, `y %= f()`), `p15_fltinf.c` (a chain ordered by an
-   element's degree, shifts converted in AX, a call then an element),
-   `p16_open2.c` (the floating shapes still refused). Rounds 1 to 3 are
+   `p17_elem2.c` (does a right element's offset or the context decide
+   whether it is computed first? `+`, `-`, `|`, `^` of two elements),
+   `p18_fltop3.c` (`+=` with a computed right operand, `f += i`, a
+   remainder after a `*`, `(long) 3.75`, a negated zero initializer),
+   `p19_open3.c` (refused: `long` with int-class variables, `u = 40000`,
+   `-=` with a computed right operand, ...). Rounds 1 to 4 are
    byte-exact - see the sections above and
    `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see

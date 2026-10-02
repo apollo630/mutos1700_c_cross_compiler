@@ -6765,6 +6765,133 @@ passes, `mutos_as` and `x86sim.py`: `p14_axint` 129 and `p15_fltinf` 45,
 the host C compiler's values; `p16_open2` stops with four `mutos_c0`
 diagnostics.
 
+### The round-4 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-02)
+
+The three round-4 programs (`p14_axint`, `p15_fltinf`, `p16_open2`) came
+back from real hardware in commit `27d0cea`, all four kinds of file. Every
+`.1`/`.2` of `p14` and `p15` matched at once; their `.s` differed in two
+places and one, and `mutos_c0` refused `p16` (an `unsigned` local, a cast
+of a constant, `d += c`). All three are byte-exact now, the 79 others
+unchanged.
+
+**1. A right element at offset 0 is computed first** (`p14_axint`). `s =
+a[i] * b[j]` (int arrays, both subscripted by a variable): `lea di,*-16.
+(bp)` / `mov si,*-20.(bp)` / `sal si,*1` / `add di,si` / `mov di,(di)` /
+`push di` - `b[j]`'s value onto the machine stack - then `a[i]` the same
+way into DI, `mov ax,di` / `pop cx` / `imul cx`: v7's `%n,n` (SS, F), as
+`05_matmul`'s 2-D elements, NOT round 3's `ps[i].c * qs[i].g` (`p10`: the
+left loaded, the right's address into SI, `imul *12.(si)` - `%n,ew*`). And
+`s = a[i] & b[j]`: `b[j]`'s ADDRESS pushed (`push di`), `a[i]` computed and
+loaded, `pop bx` / `and di,(bx)` - v7's `%n,nw*` (SS*, F, `I *(sp)+,R`),
+which cr40 shares between `+`, `-`, `|` and `&` (`ANDN` on the PDP-11).
+
+What separates the two kinds: every right operand computed after the left
+in a golden has a constant offset (`p10`'s `qs[i].g` - 12, `02_bubsort`'s
+`a[j + 1]` - 2, `03_starray`'s `pts[i].y` - 2, `05_nestst`'s `*(rp + 2)`),
+every one computed first has none (`p14`'s `b[j]`, `05_matmul`'s
+`b[k][j]`). By v7's `degree()` both kinds have the same degree - the
+constant term never raises it, and `dcalc()` compares only the degree with
+the registers left - so the mechanism is not understood. A context rule
+also fits `*` (`p10`'s product is returned, `p14`'s assigned; `oddreg()`
+makes `*` cost one register more than `+`), but not `&` beside
+`03_starray`'s `+` (both assigned, both of degree 2, only the offset
+differs). `mutos_c1` follows the offset: `is_elem_read()` (a word read
+through an address whose index reads a variable, with `zero_off` one at
+offset 0 - `a[j + 1]`'s `+ 1` counts as an offset, v7's `insert()` makes it
+a constant term), `order_right_first()` now `*` of two such reads with the
+right one at offset 0 (the 2-D special case it replaces is one of them),
+and `is_pushaddr()` / `ORD_PUSHADDR` for `+`, `-`, `&`, `|`: the right
+element, `SEG_ADDRPUSH` (`push <its register>`), the left, `SEG_DEFPOP`
+(the `x - *p` step: load the left, `pop bx`, `(bx)`), the operator; a `+`
+chain's first link the same way. `fltprobe/p17_elem2` asks `return a[i] *
+b[j]` (offset rule: pushed; context rule: not) and `s = ps[i].c * qs[i].d`
+(the reverse), and the inferred `+`, `-`, `|`.
+
+**2. The context in a chain is the previous term's** (`p15_fltinf`'s `(d *
+d) + arr[i] + i`): the element (degree 2) first, `d * d` onto the stack,
+`fadd`, then `i` straight into AX (`mov ax,*-46.(bp)` / `call itof`) - as
+after any computed `*`. `plan_fchain()` had given every term after the
+second the chain link's context (`+`: unchanged, DI); it now passes each
+term the context the term before it leaves. The rest of `p15` matched: the
+element first by its degree (round 3's rule), `i << 3` in AX (`mov cx,*3.`
+/ `sal ax,cl`), `j >> 1` (`sar ax,*1`), a call's result then an element.
+
+**3. `p16_open2`, every refusal settled:**
+
+| Source | Golden | Now in `mutos_c0`/`mutos_c1` |
+|---|---|---|
+| `d = *p + i` | `mov di,p` / `lea ax,(di)` / `call fldd` / `mov di,i` / `mov ax,di` / `itof` / `fadd` | `*p` loaded before the right operand's code (`plan_fload()`), DI after it (`fafter()`) |
+| `d = (e = d * 2) + i` | `flds 2.0` / `fmuld d` / `lea ax,e` / `fstd` / `mov ax,i` / `itof` / `fadd` | after an assignment, its right-hand side's context (AX after the `*`) |
+| `d = d * (i % j)` | `mov ax,i` / `cwd` / `idiv j` / `mov ax,dx` / `itof` / `fmuld d` | a remainder in DX converted with `mov ax,dx` |
+| `e = -0.0` | `.float 0.00000000000000000e+00` | a negated zero written as the zero (the real `printf` writes no sign) |
+| `(int) 2.5`, `i = 2.5` | `.float 2.5...` / `flds` / `ftoi` | not folded: `mutos_c0` writes FCON, FTOI(0) for the cast, `mutos_c1` converts at run time |
+| `d += c` (char) | `movb ax,c` / `cbw` / `itof` / `lea ax,d` / `faddd` / `fstdp d` | `+=` with a computed right operand computes it first and adds the target from memory (v7's efftab `%a,n`) |
+| `unsigned u; d = u` | `mov si,u` / `sub di,di` / `push si` / `push di` / `call ltof` / `add sp,*4` | ITOF of an unsigned is v7's LTOF(ITOL): high word cleared, the long pushed as a long variable is |
+
+`.1`: `unsigned u;` is NAME typed `UNSIGN` (7), `u = 5` an `ASSIGN(7)` of
+`CON 5`; `d += c` is NAME c, `ITOC(0)`, `ITOF`, `ASPLUS(3)`; `d = u` NAME u,
+`ITOF(3)`. `mutos_c0` accepts a plain `unsigned` local (not `register`,
+not a pointer or array), a floating constant cast to an integer, and a
+char right operand of a floating compound assignment. `-=` with a computed
+right operand is now refused: by v7's table `=-` computes it first too,
+which leaves `target - value` to a reversed subtraction (singles.o has
+`fsubrs`), and no golden shows which. `p18_fltop3` and `p19_open3` ask.
+
+**4. Bugs found testing `unsigned` locals** (no golden involved - each was
+silently wrong code, now a refusal or the conversion v7 writes):
+
+- **A `long` combined with an int-class variable.** `mutos_c0` typed `l +
+  i` `PLUS(LONG)` but wrote no `ITOL` for `i`, and `mutos_c1` read `i` as
+  the first word of a long - `add si,*-4.(bp)` / `adc di,*-6.(bp)`, two
+  words at `i`'s address. The same for `-`, `*`, `/`, `%`, the comparisons
+  (`l > i`), and `&`/`|`/`^` (typed `INT` with a long operand). `x = l`
+  stored `l`'s HIGH word, `x = 40000` an unrendered long constant. Now:
+  an int or unsigned target of a long variable gets `LTOI` (as `(int) l`
+  writes it - `08_castsize.1.golden` - and v7's `build()` converts); a
+  long constant into a word, an int-class variable with a long in an
+  arithmetic operator or a comparison, `&`/`|`/`^` with any long, a
+  compound assignment of a long into a word, and an unsigned into a long
+  (which `mutos_c1`'s `ITOL` would sign-extend) are refused.
+  `fltprobe/p19_open3` asks for the real shapes.
+- **Octal and hex constants.** `mutos_c0` made every constant above 32767
+  long; v7's `getnum()` does so only for a decimal one - an octal or hex
+  constant is long above 0177777 (`(lcval>>1)>MAXINT`), K&R sect. 2.4.1.
+  `ip->i_mode = 0100000` and `ip->i_mode&0170000` in the `11_kernel`
+  sources are ints: their goldens have `CON -32768` and `CON -4096`. The
+  lexer now records the base (`Token.is_octhex`).
+
+**Round 5** (`make -f Makefile.mutos round5`): `p17_elem2` (no floating
+point: the offset-or-context question, `+`, `-`, `|`, `^` of two elements,
+a `+` chain, a comparison of two elements), `p18_fltop3` (`d += e * 2`, `f
++= i` into a float, a remainder converted after a `*`, `(long) 3.75`, a
+negated zero as an initializer) and `p19_open3` (refused: the `long`
+mixing above, `u = 40000`, an unsigned compared, `a[i] * b[j - 2]`, `x -
+b[j]`, `d -= c`, `d -= e * 2`, an unsigned converted after a `*`).
+
+**Tooling.** `x86sim.py` needed nothing new: all twenty goldens run and
+return their programs' values (`p14` 129, `p15` 45, `p16` 79).
+`fltprobe/Makefile.mutos`'s `round5`.
+
+**Verification.** `make test`: 82 files byte-exact at all four stages
+(62/62 corpus, 20/20 `fltprobe`), 0 mismatches, zero warnings; `mutos_as`
+76/76, `check_floatdat.sh` 13/13, 91/91 compiler goldens assemble,
+`mutos_cpp` 5/5. Against the previous build (`27d0cea`) over all 94
+inputs (the 82, the nine `11_kernel` refusals and round 5): identical
+output but for the round-4 and round-5 files and, in four kernel files, the
+new refusals (`long` `&` in `03_mem`) and the octal constants' `.1` (`04_pipe`,
+`08_tty`), a diagnostic gone where an `unsigned` local is now accepted
+(`07_v24`) and one replaced (`09_amx`'s `register unsigned`); every
+kernel file still refuses. `fuzz_c.py` against `27d0cea`: 14,000 programs
+(seeds 1, 7 `--scope`, 3 scalars only, 21), 0 WRONG, 0 BAD, 53 changed and
+still correct, 353 now correct that the old build refused (the pushed
+element and the spilled product free the registers the occupancy guard
+had refused on); 1,000 more (seed 31) through ASan/UBSan builds: 0 WRONG,
+0 BAD. ASan/UBSan builds over the 94 inputs: no reports. Round 5 through
+the whole chain: `p17_elem2` 84 and `p18_fltop3` 27, the host C
+compiler's values; `p19_open3` stops with its diagnostics. Hand-written
+`unsigned` programs (assignment, `+`, `*`, `&`, `==`, a call argument, to
+char, to double, from int) give the host's values; the rest refuse.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a

@@ -1,4 +1,4 @@
-# Makefile.mutos -- fltprobe/ (this directory's 20 files only).
+# Makefile.mutos -- fltprobe/ (this directory's 23 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory on real MUTOS 1700 hardware - the same recipes as every
@@ -21,10 +21,10 @@ CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
 
-# Four rounds - each added after the previous round's goldens came back
-# (p6..p9, then p10..p13, then p14..p16); "make -f Makefile.mutos round4"
-# makes only the newest ones.
-all: round1 round2 round3 round4
+# Five rounds - each added after the previous round's goldens came back
+# (p6..p9, then p10..p13, p14..p16, p17..p19); "make -f Makefile.mutos
+# round5" makes only the newest ones.
+all: round1 round2 round3 round4 round5
 
 round1: 03_fltcmp.s 03_fltcmp.1 04_fltconst.s 04_fltconst.1 05_fltasop.s 05_fltasop.1 06_fltfunc.s 06_fltfunc.1 p1_compare.s p1_compare.1 p2_arith.s p2_arith.1 p3_global.s p3_global.1 p4_const.s p4_const.1 p5_call.s p5_call.1
 
@@ -33,6 +33,8 @@ round2: p6_dblcon.s p6_dblcon.1 p7_itofreg.s p7_itofreg.1 p8_misc.s p8_misc.1 p9
 round3: p10_elem.s p10_elem.1 p11_itof2.s p11_itof2.1 p12_init2.s p12_init2.1 p13_open.s p13_open.1
 
 round4: p14_axint.s p14_axint.1 p15_fltinf.s p15_fltinf.1 p16_open2.s p16_open2.1
+
+round5: p17_elem2.s p17_elem2.1 p18_fltop3.s p18_fltop3.1 p19_open3.s p19_open3.1
 
 03_fltcmp.s: 03_fltcmp.c
 	$(CC) -S 03_fltcmp.c
@@ -153,6 +155,24 @@ p16_open2.s: p16_open2.c
 
 p16_open2.1: p16_open2.c
 	$(CPP) -P p16_open2.c > p16_open2.i; $(C0) p16_open2.i p16_open2.1 p16_open2.2
+
+p17_elem2.s: p17_elem2.c
+	$(CC) -S p17_elem2.c
+
+p17_elem2.1: p17_elem2.c
+	$(CPP) -P p17_elem2.c > p17_elem2.i; $(C0) p17_elem2.i p17_elem2.1 p17_elem2.2
+
+p18_fltop3.s: p18_fltop3.c
+	$(CC) -S p18_fltop3.c
+
+p18_fltop3.1: p18_fltop3.c
+	$(CPP) -P p18_fltop3.c > p18_fltop3.i; $(C0) p18_fltop3.i p18_fltop3.1 p18_fltop3.2
+
+p19_open3.s: p19_open3.c
+	$(CC) -S p19_open3.c
+
+p19_open3.1: p19_open3.c
+	$(CPP) -P p19_open3.c > p19_open3.i; $(C0) p19_open3.i p19_open3.1 p19_open3.2
 
 clean:
 	rm -f *.s *.i *.1 *.2

@@ -274,6 +274,7 @@ static Token lex_number(Lexer *lx, int first, int line)
     t.ival = v;
     t.is_long = is_long;
     t.is_unsigned = is_unsigned;
+    t.is_octhex = (base != 10);
     return t;
 }
 

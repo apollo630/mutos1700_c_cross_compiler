@@ -698,6 +698,25 @@ static int arith_type(ExprVal a, ExprVal b)
     return TY_INT;
 }
 
+/* A 'long' combined with an int-class VARIABLE operand: v7's build()
+ * converts that operand (ITOL - zero-extending an unsigned one), which
+ * this front end does not write yet - so mutos_c1 read the int as the
+ * first word of a long (found 2026-10-02: "l + i" added the two words at
+ * i's address). A constant operand is fine (mutos_c1 widens it). */
+static int long_mix_refused(ExprVal a, ExprVal b, int line)
+{
+    int al = (a.type == TY_LONG), bl = (b.type == TY_LONG);
+    if (al == bl)
+        return 0;
+    ExprVal o = al ? b : a;
+    if (o.is_const)
+        return 0;
+    c0_error_at(line, "a 'long' combined with an int, char or unsigned "
+                      "variable is not yet supported - see "
+                      "src/mutos_cc/README.md");
+    return 1;
+}
+
 static int unsigned_refused(ExprVal a, ExprVal b, int line, const char *op)
 {
     if (a.type != TY_UNSIGN && b.type != TY_UNSIGN)
@@ -804,6 +823,13 @@ static void emit_to_float(FILE *t1, int ft, ExprVal v, int line)
         outcode(t1, "BN", OP_ITOF, ft);
         return;
     }
+    if (v.type == TY_UNSIGN && !v.is_const) {
+        /* An unsigned value: ITOF too - fltprobe/p16_open2.1.golden's "d =
+         * u" (NAME u typed UNSIGN, ITOF(DOUBLE)); v7's c1 makes it
+         * LTOF(ITOL) (see mutos_c1's gen_itof()). */
+        outcode(t1, "BN", OP_ITOF, ft);
+        return;
+    }
     c0_error_at(line, "converting a '%s' value to 'float'/'double' is not yet "
                       "supported - see src/mutos_cc/README.md",
                 v.type == TY_CHAR ? "char" : v.type == TY_UNSIGN ? "unsigned"
@@ -872,6 +898,13 @@ static void convert_assign(FILE *t1, int lhs_type, ExprVal rhs, int line)
          * MUTOS-specific CTOL, as "(long) c" does (08_castsize). */
         if (rhs.type == TY_LONG)
             return;
+        if (rhs.type == TY_UNSIGN && !rhs.is_const) {
+            /* v7's ITOL of an unsigned clears the high word (p16_open2's
+             * "mov si,u" / "sub di,di"); mutos_c1's ITOL sign-extends. */
+            c0_error_at(line, "assigning an 'unsigned' value to a 'long' is "
+                              "not yet supported - see src/mutos_cc/README.md");
+            return;
+        }
         if (rhs.type == TY_CHAR && !rhs.is_const)
             outcode(t1, "BN", OP_CTOL, TY_LONG);
         else
@@ -880,6 +913,22 @@ static void convert_assign(FILE *t1, int lhs_type, ExprVal rhs, int line)
     }
     if (ty_is_ptr(lhs_type)) {
         (void)char_value_refused(rhs, line, "a pointer's new value");
+        return;
+    }
+    if (rhs.type == TY_LONG) {
+        /* An int or unsigned target of a long value: v7's build() converts
+         * it, LTOI - the conversion "(int) l" writes (08_castsize.1.golden:
+         * NAME l, LTOI(0)). A long constant ("x = 40000;") has no golden:
+         * refused (mutos_c1 cannot store one into a word). Until
+         * 2026-10-02 neither was converted at all - "x = l" stored l's
+         * high word. */
+        if (rhs.is_const) {
+            c0_error_at(line, "assigning a 'long' constant to an int or "
+                              "unsigned variable is not yet supported - see "
+                              "src/mutos_cc/README.md");
+            return;
+        }
+        outcode(t1, "BN", OP_LTOI, lhs_type == TY_UNSIGN ? TY_UNSIGN : TY_INT);
         return;
     }
     (void)promote_char(t1, rhs);             /* int = char */
@@ -1336,12 +1385,7 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
             emit_name(t1, sym, sym->type);
             ExprVal rhs = parse_expr(p, t1);
             emit_materialize(t1, rhs);
-            if (!rhs.is_const && rhs.type == TY_CHAR)
-                c0_error_at(line, "a 'char' right-hand side of a 'float'/"
-                                  "'double' compound assignment is not yet "
-                                  "supported - see src/mutos_cc/README.md");
-            else
-                emit_to_float(t1, sym->type, rhs, line);
+            emit_to_float(t1, sym->type, rhs, line);
             outcode(t1, "BN", optag, TY_DOUBLE);
             return ev_dynamic_typed(sym->type);
         }
@@ -2448,8 +2492,14 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
          * emit_materialize() (a direct assignment's rhs) ever reads
          * it. */
         long raw = p->cur.ival;
+        int octhex = p->cur.is_octhex;
         advance(p);
-        if (raw > 32767)
+        /* v7/cc/c00.c's getnum(): an octal or hex constant is long only
+         * above 0177777 ("(lcval>>1)>MAXINT"); 0100000 ... 0177777 are
+         * ints, their bits as written - "ip->i_mode = 0100000" and "x &
+         * 0170000" in the 11_kernel sources (K&R sect. 2.4.1). Until
+         * 2026-10-02 such a constant was made long. */
+        if (raw > 32767 && !(octhex && raw <= 0177777))
             return ev_const_long(raw);
         return ev_const(trunc16(raw));
     }
@@ -2670,6 +2720,17 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                                       "one so far - see src/mutos_cc/README.md");
                     return ev_dynamic();
                 }
+                emit_from_float(t1, target, line);
+                return ev_dynamic_typed(target);
+            }
+            if (p->cur.kind == T_FCON &&
+                (target == TY_INT || target == TY_LONG)) {
+                /* A floating constant converted to an integer: not folded
+                 * - fltprobe/p16_open2.1.golden's "(int) 2.5" -> FCON(3,
+                 * "2.5"), FTOI(0) (v7's c0 folds only an int constant). */
+                int line = p->cur.line;
+                ExprVal v = parse_primary(p, t1);
+                emit_materialize(t1, v);
                 emit_from_float(t1, target, line);
                 return ev_dynamic_typed(target);
             }
@@ -3094,6 +3155,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
              * both 'long' -> OP_TIMES(TY_LONG)); a mixed long/int
              * case is not exercised by any golden but follows the
              * same ordinary-C-promotion reasoning. */
+            (void)long_mix_refused(v, r, p->cur.line);
             int optype = arith_type(v, r);
             outcode(t1, "BN", OP_TIMES, optype);
             v = ev_dynamic_typed(optype);
@@ -3120,6 +3182,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             emit_materialize(t1, v);
             emit_materialize(t1, r);
             (void)unsigned_refused(v, r, line, "/");
+            (void)long_mix_refused(v, r, p->cur.line);
             int optype = arith_type(v, r);
             outcode(t1, "BN", OP_DIVIDE, optype);
             v = ev_dynamic_typed(optype);
@@ -3143,6 +3206,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
             emit_materialize(t1, v);
             emit_materialize(t1, r);
             (void)unsigned_refused(v, r, line, "%");
+            (void)long_mix_refused(v, r, p->cur.line);
             int optype = arith_type(v, r);
             outcode(t1, "BN", OP_MOD, optype);
             v = ev_dynamic_typed(optype);
@@ -3207,6 +3271,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
              * against 02_long/01_addsub.1.golden's "c = a + b;" (a, b
              * both 'long' -> OP_PLUS(TY_LONG)), same rule already
              * confirmed for '*'/'/' /'%' in parse_mul() above. */
+            (void)long_mix_refused(v, r, p->cur.line);
             int optype = arith_type(v, r);
             outcode(t1, "BN", OP_PLUS, optype);
             v = ev_dynamic_typed(optype);
@@ -3238,6 +3303,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
             }
             emit_materialize(t1, v);
             emit_materialize(t1, r);
+            (void)long_mix_refused(v, r, p->cur.line);
             int optype = arith_type(v, r);
             outcode(t1, "BN", OP_MINUS, optype);
             v = ev_dynamic_typed(optype);
@@ -3433,6 +3499,7 @@ static ExprVal parse_relational(Parser *p, FILE *t1)
             continue;
         }
         (void)unsigned_refused(v, r, p->cur.line, "an ordered comparison");
+        (void)long_mix_refused(v, r, p->cur.line);
         if (ty_is_ptr(v.type) || ty_is_ptr(r.type)) {
             /* v7 orders pointers UNSIGNED - build() turns the operator
              * into LESSP/LESSEQP/GREATP/GREATEQP ("op =+ LESSEQP-LESSEQ")
@@ -3476,6 +3543,7 @@ static ExprVal parse_equality(Parser *p, FILE *t1)
             v = ev_dynamic();
             continue;
         }
+        (void)long_mix_refused(v, r, p->cur.line);
         if (v.is_const && r.is_const) {
             long res = (op == OP_EQUAL) ? (v.value == r.value)
                                          : (v.value != r.value);
@@ -3506,6 +3574,9 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
+        if (v.type == TY_LONG || r.type == TY_LONG)
+            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
+                        "not yet supported - see src/mutos_cc/README.md");
         int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
         outcode(t1, "BN", OP_AND, btype);
         v = ev_dynamic_typed(btype);
@@ -3529,6 +3600,9 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
+        if (v.type == TY_LONG || r.type == TY_LONG)
+            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
+                        "not yet supported - see src/mutos_cc/README.md");
         int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
         outcode(t1, "BN", OP_EXOR, btype);
         v = ev_dynamic_typed(btype);
@@ -3552,6 +3626,9 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
+        if (v.type == TY_LONG || r.type == TY_LONG)
+            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
+                        "not yet supported - see src/mutos_cc/README.md");
         int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
         outcode(t1, "BN", OP_OR, btype);
         v = ev_dynamic_typed(btype);
@@ -3784,10 +3861,14 @@ static void parse_decl(Parser *p, FILE *t1)
     TypeSpec ts = parse_type_spec(p);
     int basetype = ts.type;
     StructDef *bsdef = ts.sdef;
-    if (basetype == TY_UNSIGN)
-        c0_error_at(tline, "an 'unsigned' variable is not yet supported (only "
-                           "an unsigned bit-field member) - see "
-                           "src/mutos_cc/README.md");
+    /* A plain 'unsigned' local is accepted (fltprobe/p16_open2.1.golden:
+     * NAME typed UNSIGN(7), "u = 5;" an ASSIGN(7) of CON 5) - its operators
+     * are those of a bit-field's unsigned value (arith_type(),
+     * unsigned_refused()); a pointer to one, an array of them or a
+     * 'register' one is refused below. */
+    if (basetype == TY_UNSIGN && is_register)
+        c0_error_at(tline, "a 'register unsigned' variable is not yet "
+                           "supported - see src/mutos_cc/README.md");
     if (p->cur.kind == T_SEMI) {
         /* A struct/union/enum declared inside a function, no variable -
          * nothing to allocate or write. */
@@ -3949,6 +4030,10 @@ static void parse_decl(Parser *p, FILE *t1)
         if (ty_is_float(basetype) && ptr_degree > 1)
             c0_error_at(line, "a pointer to a pointer to 'float'/'double' is "
                                "not yet supported - see src/mutos_cc/README.md");
+        if (basetype == TY_UNSIGN && (ptr_degree > 0 || is_array))
+            c0_error_at(line, "a pointer to 'unsigned' or an array of "
+                               "'unsigned' is not yet supported - see "
+                               "src/mutos_cc/README.md");
         int size = rlength((is_array ? arraylen * (dim2 ? dim2 : 1) : 1) *
                            (long)type_size(decltype, bsdef, 0));
 
@@ -4307,13 +4392,10 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
          * right-hand side to the target's own type, as for '=' (ITOF(FLOAT)
          * into a float), and types the operator DOUBLE - fltprobe/
          * p2_arith.1.golden's "d += 1" (CON, ITOF(DOUBLE), ASPLUS(DOUBLE)),
-         * "a -= 0.5" into a float (the FCON as it is). */
-        if (!rhs.is_const && rhs.type == TY_CHAR)
-            c0_error_at(line, "a 'char' right-hand side of a 'float'/'double' "
-                              "compound assignment is not yet supported - see "
-                              "src/mutos_cc/README.md");
-        else
-            emit_to_float(t1, assign_type, rhs, line);
+         * "a -= 0.5" into a float (the FCON as it is); a char widened first
+         * (p16_open2.1.golden's "d += c": NAME c, ITOC(INT), ITOF(DOUBLE),
+         * ASPLUS(DOUBLE)). */
+        emit_to_float(t1, assign_type, rhs, line);
     } else if (!ty_is_float(assign_type) &&
                (optag == OP_ASTIMES || optag == OP_ASDIV ||
                 optag == OP_ASPLUS || optag == OP_ASMINUS) &&
@@ -4337,6 +4419,12 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
+    } else if (rhs.type == TY_LONG && assign_type != TY_LONG) {
+        /* v7 converts the right operand to the target's type first (as
+         * for "i *= e") - an LTOI no golden shows here. */
+        c0_error_at(line, "a compound assignment of a 'long' value to a "
+                          "word is not yet supported - see "
+                          "src/mutos_cc/README.md");
     } else {
         (void)promote_char(t1, rhs);
     }

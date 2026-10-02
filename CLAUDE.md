@@ -139,9 +139,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   that walks the corpus sees it.
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
-  its `README.md`) - round 1's nine files and the four each of rounds 2
-  and 3 all byte-exact, round 4's three (`p14`..`p16`) waiting for their
-  goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  its `README.md`) - round 1's nine files, the four each of rounds 2 and
+  3 and round 4's three all byte-exact, round 5's three (`p17`..`p19`)
+  waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -561,8 +561,8 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, the seventeen floating probes of
-  `tests/mutos_cc/fltprobe/`'s first three rounds are byte-exact against
+  8086 emulator. Beyond the corpus, the twenty floating probes of
+  `tests/mutos_cc/fltprobe/`'s first four rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
@@ -611,7 +611,8 @@ scope and intent, not a snapshot of what's done.
     assembler applies per invocation. `mutos_as`'s own always-emit-`L`-labels
     behavior remains the pragmatic choice for golden parity either way.
   * **Floating point beyond the corpus: `tests/mutos_cc/fltprobe/`'s nine
-    round-1, four round-2 and four round-3 goldens are byte-exact**
+    round-1, four round-2, four round-3 and three round-4 goldens are
+    byte-exact**
     (2026-09-29, 2026-10-02). `libc.a`'s compiled C
     (`atof.o`, `ecvt.o`, `gcvt.o`, `fltpr.o` - optimized) gave the first
     shapes; the probes' real-hardware goldens corrected them (a floating
@@ -628,11 +629,17 @@ scope and intent, not a snapshot of what's done.
     does). Round 3 settled an element's degree (2 for a local array's: its
     `lea` counts as computed), an int `*` loading its left operand first, a
     dropped int `+ 0`, a value kept in AX plus a constant, `j /= e` and a
-    floating zero (kept). See `docs/DEVLOG.md`'s "The fltprobe goldens",
-    "The round-2 fltprobe goldens" and "The round-3 fltprobe goldens".
-    Round 4 (`p14`..`p16`) asks about the shapes `mutos_c1` compiles by
-    inference and those still refused; running it is the first "Next up"
-    in `STATUS.md`.
+    floating zero (kept). Round 4 settled the order of two int elements (a
+    right one at offset 0 computed first - its value pushed for `*`, its
+    address for `&`), the register context in a chain and after an
+    assignment or `*p`, a remainder, a negated zero, a constant converted
+    to an int, `d += c` (the right operand first) and an unsigned
+    converted (`mutos_c0` accepts `unsigned` locals now). See
+    `docs/DEVLOG.md`'s "The fltprobe goldens", "The round-2 fltprobe
+    goldens", "The round-3 fltprobe goldens" and "The round-4 fltprobe
+    goldens". Round 5 (`p17`..`p19`) asks about the shapes `mutos_c1`
+    compiles by inference and those still refused; running it is the
+    first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
