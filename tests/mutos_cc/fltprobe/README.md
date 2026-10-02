@@ -26,10 +26,17 @@ not compared), and skips the others.
   byte-exact** end-to-end. `p11` and `p12` matched at once; `p10` corrected
   two inferences, `p13` settled every refusal. See
   `../../../docs/DEVLOG.md`'s "The round-3 fltprobe goldens".
-- **Round 4** (`p14`..`p16`, goldens pending): two files for what
-  `mutos_c1` now compiles by inference only (`p14_axint` has no floating
-  point at all - the int shapes round 3's goldens raised), one for what is
-  still refused. Run them with `make -f Makefile.mutos round4`.
+- **Round 4** (goldens 2026-10-02, commit `27d0cea`): two files for what
+  `mutos_c1` compiled by inference, one for what it refused - now all
+  **3/3 byte-exact** end-to-end. `p14_axint` corrected two inferences (a
+  right element at offset 0 is computed first), `p15_fltinf` one (the
+  register context in a chain), `p16_open2` settled every refusal. See
+  `../../../docs/DEVLOG.md`'s "The round-4 fltprobe goldens".
+- **Round 5** (`p17`..`p19`, goldens pending): two files for what
+  `mutos_c1` now compiles by inference only (`p17_elem2` has no floating
+  point - which of offset or context decides the element order), one for
+  what is still refused (`long` combined with int-class variables among
+  it). Run them with `make -f Makefile.mutos round5`.
 
 ## Why these, and not goldens alone
 
@@ -64,9 +71,12 @@ open question the five other files asked.
 | `p11_itof2.c` | ints computed in DI (a shift, a difference, `0 - i`) or AX (a quotient, a product by a constant after a `/`) converted; `i += f()` / `i -= f()` | byte-exact | 109 |
 | `p12_init2.c` | an int constant into a float, a negated int, a negated inexact constant into a float, a `static float`, `0.3` into a float (truncated) | byte-exact | 7 (6 on MUTOS) |
 | `p13_open.c` | an int converted after a conversion and after an element (DI), a difference and a shift for AX, `x + 0` for AX (the `+ 0` dropped), `j /= e` (`mov cx,ax`), a floating zero added and subtracted (kept) | byte-exact | 41 (42 on MUTOS) |
-| `p14_axint.c` | no floating point: a value in AX plus a constant stored (`x / y + 3`, `f() + 1`, `x * y - 1`), an int `+ 0` / `- 0` in DI, `a[i] * b[j]` and `a[i] & b[j]` of int arrays, `x /= f()`, `y %= f()` | inferred | 129 |
-| `p15_fltinf.c` | `(d * d) + arr[i] + i` (the element first by its degree, then i through DI), a shift by 3 and a right shift converted in AX, a call's result then an element | inferred | 45 |
-| `p16_open2.c` | an int converted after `*p` and after an assignment, a remainder converted, `-0.0`, `(int) 2.5` and `i = 2.5`, `d += c` with a char, an `unsigned` converted | refused | 79 |
+| `p14_axint.c` | no floating point: a value in AX plus a constant stored (`x / y + 3`, `f() + 1`, `x * y - 1`), an int `+ 0` / `- 0` in DI, `a[i] * b[j]` (spilled: `push di` / `pop cx` / `imul cx`) and `a[i] & b[j]` (the address pushed: `pop bx` / `and di,(bx)`) of int arrays, `x /= f()`, `y %= f()` | byte-exact | 129 |
+| `p15_fltinf.c` | `(d * d) + arr[i] + i` (the element first by its degree, then i in AX - after d * d), a shift by 3 and a right shift converted in AX, a call's result then an element | byte-exact | 45 |
+| `p16_open2.c` | an int converted after `*p` (DI) and after an assignment (AX, its `*`), a remainder converted (`mov ax,dx`), `-0.0` (written as 0.0), `(int) 2.5` and `i = 2.5` (`flds` / `ftoi`), `d += c` with a char (the char first, `faddd d`), an `unsigned` converted (`sub di,di` / `ltof`) | byte-exact | 79 |
+| `p17_elem2.c` | no floating point: `return a[i] * b[j]` and `s = ps[i].c * qs[i].d` (offset or context?), `+`, `-`, `\|`, `^` of two elements, a `+` chain, two elements compared | inferred | 84 |
+| `p18_fltop3.c` | `d += e * 2` (computed first?), `f += i` into a float, a remainder converted after a `*`, `(long) 3.75`, a negated zero as an initializer | inferred | 27 |
+| `p19_open3.c` | `long` with int-class variables (`l + i`, `i + l`, `l > i`, `l == i`, `l += i`, `l = u`), `&` / `\|` of longs, `u = 40000`, an unsigned compared; `a[i] * b[j - 2]`, `x - b[j]`; `d -= c`, `d -= e * 2`, an unsigned converted after a `*` | refused | 111 |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
@@ -74,7 +84,7 @@ value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
 `p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
 MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
-golden returns 6, its floats truncated. Every golden of rounds 1 to 3 runs
+golden returns 6, its floats truncated. Every golden of rounds 1 to 4 runs
 under `../fuzz/x86sim.py` and returns these values; `mutos_c1`'s output is
 byte-identical to them. "inferred" means `mutos_c1` compiles the file - its
 output runs under `x86sim.py` and returns the value above - with no golden
@@ -86,10 +96,10 @@ diagnostic.
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round4
+make -f Makefile.mutos round5
 ```
 
-(or plain `make -f Makefile.mutos` for all four rounds), then bring the
+(or plain `make -f Makefile.mutos` for all five rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
 all four kinds - and run `make goldens` in `..` (it packages every
 category's, this directory's included).

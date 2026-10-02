@@ -58,6 +58,7 @@ typedef struct {
     long    ival;               /* T_ICON / T_LCON / T_CCON value */
     int     is_long;            /* T_ICON: had an 'l'/'L' suffix */
     int     is_unsigned;        /* T_ICON: had a 'u'/'U' suffix */
+    int     is_octhex;          /* T_ICON: written in octal or hex */
     char   *sval;                /* T_STRING: owned, malloc'd, escapes
                                    * already processed (v7/cc/c00.c's
                                    * mapch() rules - see c0_lex.c's

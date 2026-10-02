@@ -239,13 +239,26 @@ and
 functions are covered; a few shapes are inferred from the goldens'
 rules (see the source's
 .I README.md
-\(en a value in AX plus a constant kept there, a shift by more than one
-converted in AX), and the shapes no real-hardware golden has shown are
-refused. An integer
+\(en a computed right operand of a floating
+.B +=
+computed first, a remainder converted in AX context), and the shapes no
+real-hardware golden has shown are refused. An integer
 .B "+ 0"
 is dropped, as the original
 .B acommute
-does; a floating zero is an ordinary constant.
+does; a floating zero is an ordinary constant, a negated one written as
+the zero, and a floating constant converted to an integer is converted
+at run time. Of two
+.B int
+words read through computed addresses, a right one at offset 0 is
+computed first, as the original compiler does: its value pushed for
+.BR * ,
+its address pushed and popped into BX for
+.BR + ,
+.BR \- ,
+.B &
+and
+.BR | .
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered
