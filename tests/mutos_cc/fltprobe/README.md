@@ -17,16 +17,19 @@ not compared), and skips the others.
   fltprobe goldens". They stay here rather than moving into `../08_float/`
   (the plan when they were written): the corpus's "62" is restated across
   the documentation, and nothing is gained by renumbering it.
-- **Round 2** (goldens 2026-09-30, commit `4c668c2`): four files for what
-  `mutos_c1` refused or only inferred, now all **4/4 byte-exact** from
-  `mutos_c0` on. Their `.i` files were not brought back, so
-  `../run_goldens.sh` checks them from `mutos_c0` on (category 7); copy
-  `p6_dblcon.i` ... `p9_init.i` here and run `make goldens` in `..` to move
-  them into category 1. See `../../../docs/DEVLOG.md`'s "The round-2
-  fltprobe goldens".
-- **Round 3** (`p10`..`p13`, goldens pending): three files for what
-  `mutos_c1` now compiles by inference only, one for what it still refuses.
-  Run them with `make -f Makefile.mutos round3`.
+- **Round 2** (goldens 2026-09-30, commit `4c668c2`; their `.i` files
+  2026-10-02, commit `34c9195`): four files for what `mutos_c1` refused or
+  only inferred, all **4/4 byte-exact** end-to-end. See
+  `../../../docs/DEVLOG.md`'s "The round-2 fltprobe goldens".
+- **Round 3** (goldens 2026-10-02, commit `33ec944`): three files for what
+  `mutos_c1` compiled by inference, one for what it refused - now all **4/4
+  byte-exact** end-to-end. `p11` and `p12` matched at once; `p10` corrected
+  two inferences, `p13` settled every refusal. See
+  `../../../docs/DEVLOG.md`'s "The round-3 fltprobe goldens".
+- **Round 4** (`p14`..`p16`, goldens pending): two files for what
+  `mutos_c1` now compiles by inference only (`p14_axint` has no floating
+  point at all - the int shapes round 3's goldens raised), one for what is
+  still refused. Run them with `make -f Makefile.mutos round4`.
 
 ## Why these, and not goldens alone
 
@@ -57,33 +60,36 @@ open question the five other files asked.
 | `p7_itofreg.c` | the register an int converted to floating is loaded into after a `/`, a call (AX), a negation (DI); `x + 1`, `x - 1`, `i + j` in AX (`inc ax`, `dec ax`, `add ax,j`), `i + j` in DI, `i * 3` | byte-exact | 62 |
 | `p8_misc.c` | a `long` converted with DI free (`ltof`'s pushes through DI), `*p + 1.5` (degree 1 - as written), `i += d` and `i -= d` into an int (`add i,ax`), a double array subscripted by a variable (`mov cx,*3.` / `sal si,cl`) | byte-exact | 6 |
 | `p9_init.c` | file-scope initializers: an int constant into a double (`.double 2.0`), `0.1` into a double and into a float (truncated: `9.99999940395355225e-02`), `-1.5`, a `static` one, and a code constant after them (`L10005`) | byte-exact | 6 |
-| `p10_elem.c` | elements subscripted by a variable as a second operand, two in one expression, compared, a float array's; arrays of 8- and 16-byte structs by a variable | inferred | 21 |
-| `p11_itof2.c` | ints computed in DI (a shift, a difference, `0 - i`) or AX (a quotient, a product by a constant after a `/`) converted; `i += f()` / `i -= f()` | inferred | 109 |
-| `p12_init2.c` | an int constant into a float, a negated int, a negated inexact constant into a float, a `static float`, `0.3` into a float | inferred | 7 (6 on MUTOS?) |
-| `p13_open.c` | an int converted after a conversion and after an element, a difference and a shift for AX, `x + 0` for AX, `i /= d`, a floating zero added and subtracted | refused | 41 (42 on MUTOS?) |
+| `p10_elem.c` | elements subscripted by a variable as a second operand (`1.5 + arr[i]` loads the element first - degree 2), two in one expression, compared, a float array's; arrays of 8- and 16-byte structs by a variable, `ps[i].c * qs[i].g` (the left loaded first, not spilled) | byte-exact | 21 |
+| `p11_itof2.c` | ints computed in DI (a shift, a difference, `0 - i`) or AX (a quotient, a product by a constant after a `/`) converted; `i += f()` / `i -= f()` | byte-exact | 109 |
+| `p12_init2.c` | an int constant into a float, a negated int, a negated inexact constant into a float, a `static float`, `0.3` into a float (truncated) | byte-exact | 7 (6 on MUTOS) |
+| `p13_open.c` | an int converted after a conversion and after an element (DI), a difference and a shift for AX, `x + 0` for AX (the `+ 0` dropped), `j /= e` (`mov cx,ax`), a floating zero added and subtracted (kept) | byte-exact | 41 (42 on MUTOS) |
+| `p14_axint.c` | no floating point: a value in AX plus a constant stored (`x / y + 3`, `f() + 1`, `x * y - 1`), an int `+ 0` / `- 0` in DI, `a[i] * b[j]` and `a[i] & b[j]` of int arrays, `x /= f()`, `y %= f()` | inferred | 129 |
+| `p15_fltinf.c` | `(d * d) + arr[i] + i` (the element first by its degree, then i through DI), a shift by 3 and a right shift converted in AX, a call's result then an element | inferred | 45 |
+| `p16_open2.c` | an int converted after `*p` and after an assignment, a remainder converted, `-0.0`, `(int) 2.5` and `i = 2.5`, `d += c` with a char, an `unsigned` converted | refused | 79 |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 `build()` converts the right-hand side of a compound assignment to the
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
-`p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` should give 42 on
-MUTOS for the same reason; `p12_init2` 6 if its floats are truncated, as
-`mutos_c1` writes them. Every round-1 and round-2 golden runs under
-`../fuzz/x86sim.py` and returns these values (16 for `p2_arith`); `mutos_c1`'s
-output is byte-identical to them. "inferred" means `mutos_c1` compiles the
-file - its output runs under `x86sim.py` and returns the value above - with
-no golden behind the shapes yet.
+`p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
+MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
+golden returns 6, its floats truncated. Every golden of rounds 1 to 3 runs
+under `../fuzz/x86sim.py` and returns these values; `mutos_c1`'s output is
+byte-identical to them. "inferred" means `mutos_c1` compiles the file - its
+output runs under `x86sim.py` and returns the value above - with no golden
+behind the shapes yet; "refused" that `mutos_c0` or `mutos_c1` stops with a
+diagnostic.
 
 ## Generating the goldens
 
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round3
+make -f Makefile.mutos round4
 ```
 
-(or plain `make -f Makefile.mutos` for all three rounds), then bring the
+(or plain `make -f Makefile.mutos` for all four rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
-all four kinds: round 2's `.i` files were left behind - and run `make
-goldens` in `..` (it packages every category's, this directory's
-included).
+all four kinds - and run `make goldens` in `..` (it packages every
+category's, this directory's included).

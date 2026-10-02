@@ -3322,22 +3322,24 @@ static Consumer scan_consumer(FILE *t1)
 
 /* Whether a dereference consumed by `c` is loaded into its register
  * right away, before its sibling's code: it is the LEFT operand of a
- * comparison or of an int '+'/'-' whose right operand has code of its
- * own - v7's template computes the left operand into its register
- * first ("F"), the right one into the next ("S1"). 10_integ/02_bubsort.
- * s.golden's "a[j] > a[j + 1]" -> ... "add di,*4.(bp)" / "mov di,(di)"
- * / "mov si,*-8.(bp)" / ... / "cmp di,*2.(si)", and 06_struct/
+ * comparison or of an int '+', '-' or '*' whose right operand has code
+ * of its own - v7's template computes the left operand into its
+ * register first ("F"), the right one into the next ("S1"). 10_integ/
+ * 02_bubsort.s.golden's "a[j] > a[j + 1]" -> ... "add di,*4.(bp)" / "mov
+ * di,(di)" / "mov si,*-8.(bp)" / ... / "cmp di,*2.(si)", 06_struct/
  * 05_nestst.s.golden's "rp->botright.y - rp->topleft.y" -> "mov di,
- * *4.(bp)" / "mov di,*6.(di)" / "mov si,*4.(bp)" / "sub di,*2.(si)".
- * (With a lone variable or constant on the right, the load - if any -
- * happens in the operator's own handler, the same bytes.) */
+ * *4.(bp)" / "mov di,*6.(di)" / "mov si,*4.(bp)" / "sub di,*2.(si)", and
+ * fltprobe/p10_elem.s.golden's "ps[i].c * qs[i].g" -> ... "add di,si" /
+ * "mov di,*4.(di)" / "lea si,*-52.(bp)" / ... / "mov ax,di" / "imul
+ * *12.(si)". (With a lone variable or constant on the right, the load -
+ * if any - happens in the operator's own handler, the same bytes.) */
 static int load_now(const Consumer *c)
 {
     if (!c->as_left || c->nops <= 1)
         return 0;
     if (find_relop(c->op))
         return 1;
-    return (c->op == OP_PLUS || c->op == OP_MINUS) &&
+    return (c->op == OP_PLUS || c->op == OP_MINUS || c->op == OP_TIMES) &&
            (c->type == TY_INT || c->type == TY_UNSIGN);
 }
 
@@ -3414,13 +3416,17 @@ static int next_is_con_plus(FILE *t1)
  * streams exactly as before.
  *
  * Only the golden-confirmed decision is taken (order_right_first()):
- * int TIMES whose two operands are both complete 2-D element reads.
- * v7's degree() gives a 1-D element ("a[i]") the same degree, so the
- * real compiler very probably spills "a[i] * b[j]" the same way - but
- * no golden shows it, so it stays refused (by the register-occupancy
- * guard, as before). 02_bubsort's swapped relational and 03_linklist's
- * right-hand-side-first store are the same mechanism with other
- * decisions (see docs/DEVLOG.md); neither is taken here. */
+ * int TIMES whose two operands are both complete 2-D element reads. A
+ * product of two 1-D elements is NOT spilled: fltprobe/p10_elem.s.
+ * golden's "ps[i].c * qs[i].g" (arrays of 8- and 16-byte structs) loads
+ * the left one into DI ("mov di,*4.(di)" - load_now()), computes the
+ * right one's address into SI with DX as the index, then "mov ax,di" /
+ * "imul *12.(si)" - the right operand fits in the registers left over,
+ * so v7's "%n,n" template is never reached. An int array's "a[i] * b[j]"
+ * is compiled the same way (no golden of its own - fltprobe/p14_axint
+ * asks). 02_bubsort's swapped relational and 03_linklist's right-hand-
+ * side-first store are the same mechanism with other decisions (see
+ * docs/DEVLOG.md); neither is taken here. */
 
 /* How a node's operands are ordered, when not in temp1's own postfix
  * order - see eval_order(). */
@@ -4744,8 +4750,9 @@ static void gen_strings(GenState *g, FILE *t2)
  * ...), an assignment pops the top into its target ("fstsp"/"fstdp"),
  * and "ftoi"/"ftol" pop it into AX / DX:AX.
  *
- * Thirteen probe programs (tests/mutos_cc/fltprobe/, real-hardware
- * goldens in two rounds, 2026-09-29 and 2026-09-30) settled the rest,
+ * Seventeen probe programs (tests/mutos_cc/fltprobe/, real-hardware
+ * goldens in three rounds, 2026-09-29, 2026-09-30 and 2026-10-02)
+ * settled the rest,
  * after libc.a's own compiled C (atof.o,
  * ecvt.o, gcvt.o, fltpr.o - optimized, so only a first reading) had
  * shown most of it (docs/DEVLOG.md's "Floating shapes from libc.a's
@@ -4772,7 +4779,9 @@ static void gen_strings(GenState *g, FILE *t2)
  *   negation, a conversion, a value read through a pointer: max(1,
  *   degree(operand)) - "*p + 1.5" loads *p first (p8_misc); a '+'/'*'
  *   chain acommute()'s; '-' and '/' optim()'s (with '/' two more); a call
- *   10. See fdeg().
+ *   10. A local's address is computed ("lea") and counts 1, so an element
+ *   of a local array subscripted by a variable has degree 2: "1.5 +
+ *   arr[i]" loads the element first (p10_elem). See fdeg().
  * - A relational exchanges its operands (and mirrors itself) when
  *   degree(left) < degree(right), or when they are equal and only the
  *   left is a NAME (optim()). See plan_fvalue().
@@ -4806,6 +4815,9 @@ static void gen_strings(GenState *g, FILE *t2)
  *   digit the same for a value exactly representable as a float (see
  *   fcon_render()); a constant that is not one is 8 bytes, ".double"
  *   (p4_const), with the MUTOS ecvt()'s digits (c1_fltdec.c).
+ * - A floating zero is an ordinary constant (acommute() tosses only an
+ *   int "+0"): "d + 0.0" -> ".float 0.0..." / "flds" / "faddd d", "d -
+ *   0.0" -> "fldd d" / "fsubs" (p13_open).
  * - "a += b", "-=", "/=" load the target and combine the right operand
  *   ("fldd d / faddd e / fstdp d"; a computed one: "fldd d / fldd e /
  *   faddd e / fdiv / fstdp d"); "a *= b" loads the RIGHT operand and
@@ -4819,8 +4831,8 @@ static void gen_strings(GenState *g, FILE *t2)
  *   sum, "mov ax,c / add ax,*-48." for "c - '0'" (v7's optim() turns "x
  *   - 48" into "x + -48"), "mov ax,i / imul j" for a product, "movb ax,c
  *   / cbw" for a char - or straight in AX after a computed '*' or '/' or
- *   a call ("mov ax,i / inc ax", p7_itofreg - see FREG_DI). See
- *   gen_itof().
+ *   a call ("mov ax,i / inc ax", p7_itofreg; "mov ax,i / sub ax,j", "mov
+ *   ax,i / sal ax,*1", p13_open - see FREG_DI). See gen_itof().
  * - An element of a floating array subscripted by a variable is
  *   addressed in DI as an int element is ("lea di,arr / mov si,i / mov
  *   cx,*3. / sal si,cl / add di,si") and used as "(di)": "lea ax,(di) /
@@ -4837,10 +4849,10 @@ static void gen_strings(GenState *g, FILE *t2)
  *   fstdp" (push_fp_arg()).
  *
  * Refused explicitly: a constant whose value libc.a's atof() does not
- * give exactly, '%', '%=', a zero added or subtracted (v7's acommute()
- * may toss a "+0"), a constant converted to an integer, an int converted
- * after an operand whose register no golden shows (FREG_UNKNOWN), and
- * every node the planner has no degree for (fdeg()). */
+ * give exactly, a negated zero, '%', '%=', a constant converted to an
+ * integer, an int converted after an operand whose register no golden
+ * shows (FREG_UNKNOWN), and every node the planner has no degree for
+ * (fdeg()). */
 
 /* The text and size of floating literal `text` (negated when `negate`),
  * as the real compiler writes it - libc.a's ecvt() of libc.a's atof(),
@@ -5386,8 +5398,16 @@ static int fdeg(const ETree *t, int i)
     case OP_CON:
         return -3;
     case OP_AMPER:
+        /* A static or file-scope object's address is a link-time
+         * constant, -2 as in v7. A local's is computed ("lea di,*-28.
+         * (bp)") and counts as computed, 1: an element of a local array
+         * subscripted by a variable is "&arr + i*size" with two terms of
+         * degree 1, so the sum is 2 and the "lea" comes first (equal
+         * degrees, as written) - fltprobe/p10_elem.s.golden's "1.5 +
+         * arr[i]" loads the element first and adds the .float 1.5 (degree
+         * 1) from memory, "fldd (di)" / "lea ax,L10003" / "fadds". */
         if (t->v[n->kid[0]].op == OP_NAME)
-            return -2;
+            return t->v[n->kid[0]].aux == SC_AUTO ? 1 : -2;
         break;
     case OP_ITOF: case OP_LTOF: case OP_NEG: case OP_FTOI: case OP_FTOL:
     case OP_ITOC: case OP_ITOL: case OP_LTOI: case OP_STAR:
@@ -5503,26 +5523,34 @@ static void plan_call(Plan *p, const ETree *t, int i);
  * one's result was given, and the MUTOS compiler gives a product, a
  * quotient and a call's result the register x86's imul/idiv and a
  * function's return use. The operands of a '*' itself are still in DI
- * ("d * i": "mov di,i / mov ax,di / call itof", p2_arith). After any
- * other computed operand - a conversion, an element "arr[i]", an
- * assignment - the register is not known (FREG_UNKNOWN: a conversion
- * there is refused). */
+ * ("d * i": "mov di,i / mov ax,di / call itof", p2_arith). An int
+ * converted leaves the context as it was ("(double) i + (double) j": DI
+ * both times, p13_open), and so does an element whose address was
+ * computed in DI ("arr[i] + j", p13_open). After any other computed
+ * operand - an assignment, an element after a '*' - the register is not
+ * known (FREG_UNKNOWN: a conversion there is refused). */
 enum { FREG_DI = 0, FREG_AX = 1, FREG_UNKNOWN = 2 };
 
 /* The register context for the operand evaluated after `first`, when
- * `first` was evaluated in context `freg`: a leaf, a computed '+'/'-' or
- * a negation leaves it, a computed '*' or '/' or a call moves it to AX.
- * `first_op` is its operator when `first` is a rebuilt chain node rather
- * than a tree node (-1). */
+ * `first` was evaluated in context `freg`: a leaf, a computed '+'/'-', a
+ * negation or an int converted leaves it, a computed '*' or '/' or a call
+ * moves it to AX, and an element whose address was computed in DI leaves
+ * DI - fltprobe/p13_open.s.golden's "(double) i + (double) j" and "arr[i]
+ * + j" both convert the second int through DI. `first_op` is its operator
+ * when `first` is a rebuilt chain node rather than a tree node (-1). */
 static int fafter(const ETree *t, int first, int first_op, int freg)
 {
     int op = first_op >= 0 ? first_op : t->v[first].op;
     if (first_op < 0 && fleaf(t, first))
         return freg;
-    if (op == OP_PLUS || op == OP_MINUS || op == OP_NEG)
+    if (op == OP_PLUS || op == OP_MINUS || op == OP_NEG || op == OP_ITOF)
         return freg;
     if (op == OP_TIMES || op == OP_DIVIDE || op == OP_CALL)
         return FREG_AX;
+    /* An element after an operand that moved the context to AX has no
+     * golden: its address is computed in DI either way. */
+    if (first_op < 0 && fstar_computed(t, first) && freg == FREG_DI)
+        return FREG_DI;
     return FREG_UNKNOWN;
 }
 
@@ -5539,14 +5567,10 @@ static void plan_fchain(Plan *p, const ETree *t, int top, int freg)
     int n = fchain_terms(t, top, terms, links, &nlinks);
     if (n != nlinks + 1)
         gen_fatal("internal: a floating chain is not a binary tree");
+    /* A floating zero stays (acommute() tosses only an int or long
+     * "+0"): fltprobe/p13_open.s.golden's "d + 0.0" -> ".float 0.0..." /
+     * "flds" / "faddd d" - the constant, degree 1, first. */
     fchain_order(t, terms, n, order);
-    if (t->v[top].op == OP_PLUS)
-        for (int k = 0; k < n; k++)
-            if (fconst_node(t, order[k]) &&
-                strtod(p->fc[fc_index(p, t, order[k])].text, NULL) == 0.0)
-                gen_fatal("adding a floating zero is not yet supported (v7's "
-                          "acommute() may drop a \"+0\") - see "
-                          "src/mutos_cc/README.md");
     for (int k = n - 1; k >= 2; k--)
         plan_fdata(p, t, order[k]);
     plan_fdata(p, t, order[0]);
@@ -5622,10 +5646,8 @@ static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg)
         plan_fchain(p, t, i, freg);
         return;
     case OP_MINUS: case OP_DIVIDE:
-        if (n->op == OP_MINUS && fconst_node(t, r) &&
-            strtod(p->fc[fc_index(p, t, r)].text, NULL) == 0.0)
-            gen_fatal("subtracting a floating zero is not yet supported - "
-                      "see src/mutos_cc/README.md");
+        /* "d - 0.0" is an ordinary subtraction: "fldd d" / "lea ax,L" /
+         * "fsubs" (p13_open). */
         plan_fdata(p, t, l);
         plan_fdata(p, t, r);
         plan_fvalue_r(p, t, l, freg);
@@ -7036,6 +7058,16 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             if (op == OP_PLUS)
                 constant_to_right(&l, &r);
+            if (op == OP_PLUS && r.kind == VK_IMM && r.imm == 0 &&
+                (l.kind == VK_MEM || l.kind == VK_STATIC || l.kind == VK_REG ||
+                 l.kind == VK_IND)) {
+                /* "x + 0" is x: v7's acommute() tosses an int "+0" before
+                 * any code is chosen (as "x - 0", which optim() makes "x +
+                 * -0" first) - fltprobe/p13_open.s.golden's "(d * e) + (j +
+                 * 0)" converts j alone, "mov ax,*-40.(bp)" / "call itof". */
+                push_val(&g, l);
+                break;
+            }
             if (op == OP_PLUS && r.kind == VK_IMM &&
                 (l.kind == VK_MEM || l.kind == VK_STATIC)) {
                 /* "var + N" about to be scaled as a subscript: left
@@ -7057,11 +7089,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                      * ax,*-48." / "call itof" (see gen_itof()); "+ 1" and
                      * "- 1" are "inc ax" / "dec ax", as in DI
                      * (p7_itofreg.s.golden's "(d * e) + (i + 1)" and
-                     * "(d * e) - (j - 1)"). A "+ 0" has no golden. */
-                    if (r.imm == 0)
-                        gen_fatal("converting \"x + 0\" to 'float'/'double' "
-                                  "is not yet supported - see "
-                                  "src/mutos_cc/README.md");
+                     * "(d * e) - (j - 1)"). A "+ 0" never gets here (see
+                     * above). */
                     ins2(&g, "mov", o_reg("ax"), o_val(l));
                     if (r.imm == 1)
                         ins1(&g, "inc", o_reg("ax"));
@@ -7073,18 +7102,19 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     break;
                 }
             }
-            if (op == OP_PLUS && g.itof_reg == 1 /* FREG_AX */ &&
+            if (g.itof_reg == 1 /* FREG_AX */ &&
                 (l.kind == VK_MEM || l.kind == VK_STATIC) &&
                 (r.kind == VK_MEM || r.kind == VK_STATIC) &&
                 !l.bytev && !l.structv && !r.bytev && !r.structv &&
                 scan_consumer(temp1).op == OP_ITOF) {
-                /* The sum of two int variables converted to floating in
-                 * AX: "mov ax,i" / "add ax,j" / "call itof" - p7_itofreg.s.
-                 * golden's "(d * e) + (i + j)". (In DI it is the ordinary
-                 * "mov di,i" / "add di,j", then "mov ax,di" - gen_itof().)
-                 * A difference has no golden in AX. */
+                /* The sum or difference of two int variables converted to
+                 * floating in AX: "mov ax,i" / "add ax,j" / "call itof" -
+                 * p7_itofreg.s.golden's "(d * e) + (i + j)" - and "mov
+                 * ax,i" / "sub ax,j" - p13_open.s.golden's "(d * e) - (i -
+                 * j)". (In DI it is the ordinary "mov di,i" / "add di,j",
+                 * then "mov ax,di" - gen_itof().) */
                 ins2(&g, "mov", o_reg("ax"), o_val(l));
-                ins2(&g, "add", o_reg("ax"), o_val(r));
+                ins2(&g, aluop(op)->mnem, o_reg("ax"), o_val(r));
                 push_val(&g, val_reg("ax"));
                 break;
             }
@@ -7164,9 +7194,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * the RIGHT). The table-driven real code generator
                  * only sees where the value lives, so this covers a
                  * call result the same way. PLUS only - MINUS is not
-                 * commutative and no golden shows its AX shape; an
-                 * immediate or register other operand is left to the
-                 * paths below, unconfirmed either way. */
+                 * commutative and no golden shows its AX shape. A constant
+                 * is added there too: fltprobe/p13_open.s.golden's "r +
+                 * (int) d - 30" -> "call ftoi" / "add ax,*-42.(bp)" / "add
+                 * ax,*-30." (v7's optim() makes "- 30" "+ -30"), as the
+                 * kernel's amx.s adds "*22." to a product in AX; "+ 1" and
+                 * "- 1" are "inc ax" / "dec ax", as in DI and as for an
+                 * int converted in AX (p7_itofreg). A register other
+                 * operand is left to the paths below, unconfirmed. */
                 int l_ax = (l.kind == VK_REG && strcmp(l.reg, "ax") == 0);
                 int r_ax = (r.kind == VK_REG && strcmp(r.reg, "ax") == 0);
                 Val other = l_ax ? r : l;
@@ -7174,6 +7209,16 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     (other.kind == VK_MEM || other.kind == VK_MEM_CVT ||
                      other.kind == VK_STATIC)) {
                     ins2(&g, "add", o_reg("ax"), o_val(other));
+                    push_val(&g, val_reg("ax"));
+                    break;
+                }
+                if (l_ax && !l.regvar && r.kind == VK_IMM && !r.charcon) {
+                    if (r.imm == 1)
+                        ins1(&g, "inc", o_reg("ax"));
+                    else if (r.imm == -1)
+                        ins1(&g, "dec", o_reg("ax"));
+                    else
+                        ins2(&g, "add", o_reg("ax"), o_val(r));
                     push_val(&g, val_reg("ax"));
                     break;
                 }
@@ -7288,6 +7333,20 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 /* A char shifted by an int - see gen_charx_binop(). */
                 charx_left(op, &l, &r);
                 push_val(&g, gen_charx_binop(&g, op, l, r));
+                break;
+            }
+            if (g.itof_reg == 1 /* FREG_AX - see gen_itof() */ &&
+                r.kind == VK_IMM && (l.kind == VK_MEM || l.kind == VK_STATIC) &&
+                !l.bytev && !l.structv && scan_consumer(temp1).op == OP_ITOF) {
+                /* An int variable shifted by a constant, converted to
+                 * floating in AX: computed there - fltprobe/p13_open.s.
+                 * golden's "(d / e) + (i << 1)" -> "mov ax,*-38.(bp)" /
+                 * "sal ax,*1" / "call itof" (in DI: "mov di,i" / "sal
+                 * di,*1" / "mov ax,di", p11_itof2). The count's encoding
+                 * is DI's (emit_const_shift()); only "<< 1" is a golden. */
+                ins2(&g, "mov", o_reg("ax"), o_val(l));
+                emit_const_shift(&g, aluop(op)->mnem, "ax", r.imm);
+                push_val(&g, val_reg("ax"));
                 break;
             }
             if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0))
@@ -8762,6 +8821,23 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (lhs.kind != VK_MEM)
                 gen_fatal("compound assignment to a non-memory lvalue is "
                           "not yet supported");
+            if (rhs.kind == VK_REG && strcmp(rhs.reg, "ax") == 0 &&
+                !rhs.regvar) {
+                /* A right-hand side computed into AX - a floating value
+                 * converted ("i /= e", mutos_c0's FTOI): moved out of the
+                 * way into CX, the divisor, before the target is loaded -
+                 * fltprobe/p13_open.s.golden's "call ftoi" / "mov cx,ax" /
+                 * "mov ax,*-40.(bp)" / "cwd" / "idiv cx" / "mov
+                 * *-40.(bp),ax". A call's result ("i /= f()", "i %= f()")
+                 * is the same value in AX and is given the same shape - an
+                 * inference, as for "i += f()" (which p11_itof2 then
+                 * confirmed). */
+                ins2(&g, "mov", o_reg("cx"), o_reg("ax"));
+                emit_cwd_from(&g, o_val(lhs));
+                ins1(&g, "idiv", o_reg("cx"));
+                ins2(&g, "mov", o_val(lhs), o_reg(op == OP_ASDIV ? "ax" : "dx"));
+                break;
+            }
             if (rhs.kind != VK_IMM)
                 gen_fatal("compound division/modulo-assignment with a "
                           "non-constant right-hand side is not yet "

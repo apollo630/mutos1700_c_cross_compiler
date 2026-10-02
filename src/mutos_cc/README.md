@@ -31,8 +31,8 @@ typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
 "Floating point" under "Current scope") - and, beyond the corpus, all
-thirteen floating probes of `tests/mutos_cc/fltprobe/`'s first two rounds
-with their own real-hardware goldens (see "Floating point beyond the
+seventeen floating probes of `tests/mutos_cc/fltprobe/`'s first three
+rounds with their own real-hardware goldens (see "Floating point beyond the
 corpus"). See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
@@ -1206,10 +1206,11 @@ section. Full derivation in `docs/DEVLOG.md`'s `08_float` section and the
 are C compiled by the real compiler and gave the first shapes (see
 `docs/DEVLOG.md`'s "Floating shapes from libc.a's compiled C");
 `tests/mutos_cc/fltprobe/`'s real-hardware goldens corrected and
-completed them - round 1's nine and round 2's four are byte-exact (see
-`docs/DEVLOG.md`'s "The fltprobe goldens" and "The round-2 fltprobe
-goldens"). The real compiler is v7's `c1` with the PDP-11 floating
-code replaced by calls into the runtime, so its **operand order is v7's**,
+completed them - round 1's nine and the four each of rounds 2 and 3 are
+byte-exact (see `docs/DEVLOG.md`'s "The fltprobe goldens", "The round-2
+fltprobe goldens" and "The round-3 fltprobe goldens"). The real compiler is
+v7's `c1` with the PDP-11 floating code replaced by calls into the runtime,
+so its **operand order is v7's**,
 decided on the whole tree - and `mutos_c1` plans every expression with a
 floating node from the pre-scanned tree (`plan_fvalue()` in "Floating
 point", next to the integer "Evaluation order" planner):
@@ -1220,6 +1221,8 @@ point", next to the integer "Evaluation order" planner):
   exchanged, `0.1 * a` loads the float `a` first - `p6_dblcon`); a double
   variable 0, a float one 1, a converted int, a negation or a value read
   through a pointer `max(1, operand)` (`*p + 1.5` keeps its order), a
+  local's address (`lea`) 1, so an element of a local array subscripted by
+  a variable 2 (`1.5 + arr[i]` loads the element first - `p10_elem`), a
   `+`/`*` chain acommute()'s, `-`/`/`/a shift optim()'s, a call 10;
 - **`+`/`*` chains** in acommute()'s order (`plan_fchain()`), a
   **relational's exchange** by degree (mirrored by the handler), the
@@ -1240,17 +1243,23 @@ point", next to the integer "Evaluation order" planner):
   (`plan_cbranch()`), or as a 0/1 value;
 - **int conversions** (`gen_itof()`): through DI - `mov di,i` / `mov ax,di` /
   `call itof`; any int computed there the ordinary way, then `mov ax,di`
-  (`i + j`) - or, after a computed `*`, `/` or a call, straight into AX
-  (`mov ax,c`; `c - '0'` as `mov ax,c` / `add ax,*-48.`, `i + 1` as `mov
-  ax,i` / `inc ax`, `i + j` as `mov ax,i` / `add ax,j` - `p7_itofreg`) -
-  `SEG_FITOF`; a product or a quotient is in AX already, a char loads there
+  (`i + j`) - also after a conversion or an element (`(double) i +
+  (double) j`, `arr[i] + j` - `p13_open`) - or, after a computed `*`, `/`
+  or a call, straight into AX (`mov ax,c`; `c - '0'` as `mov ax,c` / `add
+  ax,*-48.`, `i + 1` as `mov ax,i` / `inc ax`, `i + j` as `mov ax,i` / `add
+  ax,j` - `p7_itofreg`; `i - j` as `mov ax,i` / `sub ax,j`, `i << 1` as `mov
+  ax,i` / `sal ax,*1`, `j + 0` as `mov ax,j` - `p13_open`) - `SEG_FITOF`; a
+  product or a quotient is in AX already, a char loads there
   (`movb ax,c` / `cbw`), a register variable in DI goes through SI; `ltof`
   for a long (pushed through DI, or SI while DI holds a register variable,
   `add sp,*4`), `ftoi`/`ftol` back, a char through `ftoi` / `movb`;
 - **compound assignments**: `+=`, `-=`, `/=` load the target first, `*=` the
   right operand; a used value is `fst<s|d>` (no pop); `i *= e` into an int is
   `call ftoi` / `mov ax,ax` / `imul i` / `mov i,ax`, `i += d` / `i -= d`
-  `call ftoi` / `add i,ax` / `sub i,ax` (`p8_misc`; v7's `i + (int)d`);
+  `call ftoi` / `add i,ax` / `sub i,ax` (`p8_misc`; v7's `i + (int)d`), `j
+  /= e` `call ftoi` / `mov cx,ax` / `mov ax,j` / `cwd` / `idiv cx` / `mov
+  j,ax` (`p13_open`); a floating zero is an ordinary constant (`d + 0.0`:
+  `.float 0.0...` / `flds` / `faddd d` - only an int `+ 0` is tossed);
 - **calls**: double arguments `sub sp,*8` / `mov ax,sp` / `call fstdp` (no
   decimal point), pushed right to left through the call planner; a double
   or float result from `fac` (`call fldd`), none when unused; float and
@@ -1273,26 +1282,48 @@ point", next to the integer "Evaluation order" planner):
   `c1_fltdec.c`'s `fdec_render_single()`); each takes a `c1` label
   (`p9_init`).
 
-Compiled by inference, with no golden yet (`tests/mutos_cc/fltprobe/`'s
-round 3 asks): an element subscripted by a variable as a second operand
-(after a leaf: the leaf loaded, then the address) or next to another one
-(the first loaded before the second's address is computed); any int
-computed in DI converted; a quotient converted; an element of any
-power-of-two size (`mov cx,*N.` / `sal si,cl` from 8 bytes up - a struct
-array's too); `i += f()` / `i -= f()` (`add i,ax`); `float`, negated-int
-and `static float` initializers.
+Round 3's goldens confirmed every shape round 2 left to inference (an
+element as a second operand or next to another, any int computed in DI
+converted, a quotient converted, elements of any power-of-two size, `i +=
+f()` / `i -= f()`, `float`, negated-int and `static float` initializers),
+correcting one: an element of a local array has degree 2, so `1.5 +
+arr[i]` loads the element first.
 
-Refused, each with its own diagnostic (round 3's `p13_open` asks about the
-first group): an int converted after a computed operand other than `+`,
-`-`, `*`, `/`, a negation or a call (a conversion, an element, an
-assignment), an int computed for AX other than a variable, `x + c` (`c` not
-0), a sum of two variables or a product/quotient (a difference, a shift),
-`i /= d` into an int, a floating zero added or subtracted; `%`/`%=`,
-`++`/`--`, a floating value tested for truth (the real `c1` itself reports
-"Floating point stack underflow" on one), `?:`/`,` with floating values, a
-long computed rather than a variable converted, a compound assignment
-through a pointer or subscript, an initializer other than a constant, and
-every operator `fdeg()` has no degree for (`&`, `|`, `^`, ...).
+Compiled by inference, with no golden yet (`tests/mutos_cc/fltprobe/`'s
+round 4 asks): a chain ordered by that degree (`(d * d) + arr[i] + i`), a
+shift by more than one and a right shift converted in AX (`mov cx,*3.` /
+`sal ax,cl`, `sar ax,*1`), a call's result then an element; and the int
+shapes round 3 raised (see "Integer shapes from the round-3 goldens"
+below).
+
+Refused, each with its own diagnostic (round 4's `p16_open2` asks about
+most): an int converted after a computed operand other than `+`, `-`, `*`,
+`/`, a negation, a call, a conversion or an element after a leaf (a value
+read through a pointer, an assignment), an int computed for AX other than a
+variable, `x + c`, a sum or difference of two variables, a shift by a
+constant or a product/quotient (a remainder), a negated zero, a constant
+converted to an int, a `char` added into a floating variable, an `unsigned`
+converted; `%`/`%=`, `++`/`--`, a floating value tested for truth (the real
+`c1` itself reports "Floating point stack underflow" on one), `?:`/`,` with
+floating values, a long computed rather than a variable converted, a
+compound assignment through a pointer or subscript, an initializer other
+than a constant, and every operator `fdeg()` has no degree for (`&`, `|`,
+`^`, ...).
+
+**Integer shapes from the round-3 goldens.** Three of round 3's findings
+are not about floating point: a dereferenced left operand of an int `*`
+whose right operand has code of its own is loaded into its register first,
+as for `+`/`-` (`p10_elem`'s `ps[i].c * qs[i].g`: `mov di,*4.(di)`, the
+right element's address into SI, `mov ax,di` / `imul *12.(si)` - not
+spilled; `load_now()`); an int `+ 0` (and `- 0`) is dropped, v7's
+acommute() toss (`p13_open`'s `(j + 0)` converted is `mov ax,j`); and a
+value in AX plus a constant stays in AX (`p13_open`'s `return r + (int) d
+- 30`: `call ftoi` / `add ax,*-42.(bp)` / `add ax,*-30.`, as the kernel's
+`amx.s` adds `*22.` to a product there), `+ 1` / `- 1` as `inc ax` / `dec
+ax`. Compiled by inference (`fltprobe/p14_axint` asks): that last shape
+stored to memory or a register variable (`s = x / y + 3`), `a[i] * b[j]`
+and `a[i] & b[j]` of int arrays, `x /= f()` / `y %= f()` (`mov cx,ax`, as
+`j /= e`).
 
 ## `SETSTK` / local-frame handling
 
@@ -1340,7 +1371,11 @@ complete 2-D element reads with plain-variable subscripts
 (`10_integ/05_matmul.s.golden`'s `... / push di` ... `mov ax,di` / `pop
 cx` / `imul cx`). Every other expression gets no plan and streams exactly
 as before; shapes that would need a different order and have no golden -
-`a[i] * b[j]`, `f(a) + a * b`, ... - are still refused by the guard above.
+`f(a) + a * b`, ... - are still refused by the guard above. A product of
+two 1-D elements is not one of them: `fltprobe/p10_elem.s.golden`'s
+`ps[i].c * qs[i].g` loads the left element into DI and computes the right
+one's address into SI - no spill (the right operand fits in the registers
+left over).
 Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
 section.
 
@@ -1431,9 +1466,10 @@ pts[i].y` adds `sum` last) - only where that changes the order, for
 three or more side-effect-free terms without constants. Registers are
 handed out in order: an address or pointer takes DI, or SI while DI holds
 a pending value (`pick_addr_reg()`), a subscript index DI, SI, then DX; a
-dereference on the left of an int `+`/`-` whose right operand has code is
-loaded first (`load_now()` - `mov di,*6.(di)` / `mov si,*4.(bp)` / `sub
-di,*2.(si)`).
+dereference on the left of an int `+`/`-`/`*` whose right operand has code
+is loaded first (`load_now()` - `mov di,*6.(di)` / `mov si,*4.(bp)` / `sub
+di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
+*12.(si)`).
 
 ## Next steps (roughly in dependency order)
 
@@ -1518,12 +1554,12 @@ di,*2.(si)`).
    `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
    "Floating point" under "Current scope") - all 62 of 62; `mutos_as`
    assembles the floating output too. `tests/mutos_cc/fltprobe/`'s nine
-   round-1 and four round-2 goldens are byte-exact too (v7's operand
-   order, constants of any value and their degree, globals and their
-   initializers, pointers, elements, calls, conversions and the register
-   an int is converted in - see "Floating point beyond the corpus"). Left:
-   `fltprobe`'s round 3 (`p10`..`p13`) - the shapes compiled by inference,
-   and those still refused. On
+   round-1, four round-2 and four round-3 goldens are byte-exact too (v7's
+   operand order, constants of any value and their degree, globals and
+   their initializers, pointers, elements, calls, conversions, the
+   register an int is converted in, a floating zero - see "Floating point
+   beyond the corpus"). Left: `fltprobe`'s round 4 (`p14`..`p16`) - the
+   shapes compiled by inference, and those still refused. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in
