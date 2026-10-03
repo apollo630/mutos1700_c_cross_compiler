@@ -30,6 +30,11 @@
 # of files verified at all four stages. A file with no .1 golden either
 # is skipped.
 #
+# A file listed in invalid_goldens.txt has a .s golden whose tail is the
+# real compiler's own invalid output: mutos_c1 must refuse it, and what it
+# wrote before refusing must be exactly the golden's first lines (as many
+# as the list gives) - listed apart (category 8), not a failure.
+#
 # Exit status: 0 if every file with goldens produced a byte-exact
 # match at every stage, 1 otherwise (this is expected/normal until
 # grammar coverage grows well beyond 00_smoke - see README.md).
@@ -52,7 +57,18 @@ cd "$(dirname "$0")" || exit 1
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# "<category>/<name>" -> the number of leading .s golden lines that are
+# valid code (see invalid_goldens.txt)
+declare -A invalid_lines=()
+if [ -f invalid_goldens.txt ]; then
+    while read -r key nlines _; do
+        case "$key" in ''|'#'*) continue ;; esac
+        invalid_lines["$key"]="$nlines"
+    done < invalid_goldens.txt
+fi
+
 pass=()
+pass_invalid=()
 pass_no_i=()
 cpp_mismatch=()
 c0_unsupported=()
@@ -104,11 +120,22 @@ for cat in */; do
             continue
         fi
 
+        golden_s="$cat/$name.s.golden"
+        if [ -n "${invalid_lines[$cat/$name]:-}" ]; then
+            nl="${invalid_lines[$cat/$name]}"
+            if "$MUTOS_C1" "$out_1" "$out_2" "$out_s" 2>"$WORK/err"; then
+                c1_mismatch+=("$cat/$name (compiled, but its golden's tail is the real compiler's invalid output - see invalid_goldens.txt)")
+            elif ! head -n "$nl" "$golden_s" | cmp -s - "$out_s"; then
+                c1_mismatch+=("$cat/$name (.s before the refusal differs from the golden's first $nl lines)")
+            else
+                pass_invalid+=("$cat/$name (first $nl lines; refused: $(tail -1 "$WORK/err" | cut -c1-90)...)")
+            fi
+            continue
+        fi
         if ! "$MUTOS_C1" "$out_1" "$out_2" "$out_s" 2>"$WORK/err"; then
             c1_unsupported+=("$cat/$name: $(tail -1 "$WORK/err")")
             continue
         fi
-        golden_s="$cat/$name.s.golden"
         if [ -f "$golden_s" ] && ! diff -q "$out_s" "$golden_s" >/dev/null 2>&1; then
             c1_mismatch+=("$cat/$name (.s differs from golden)")
             continue
@@ -153,6 +180,11 @@ echo
 echo "7. Byte-exact from mutos_c0 on - no .i golden, so mutos_cpp's own output"
 echo "   was used unchecked (${#pass_no_i[@]})"
 for f in "${pass_no_i[@]}"; do echo "  $f"; done
+
+echo
+echo "8. Byte-exact up to the real compiler's own invalid output, refused there"
+echo "   on purpose - see invalid_goldens.txt (${#pass_invalid[@]})"
+for f in "${pass_invalid[@]}"; do echo "  $f"; done
 echo "=================================================================="
 
 # Success means: nothing in the "genuine mismatch" categories (2, 4, 6).

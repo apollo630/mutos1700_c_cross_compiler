@@ -1,0 +1,24 @@
+# invalid_goldens.txt - real-hardware .s goldens whose tail is NOT valid
+# assembly: the real MUTOS 1700 compiler's own broken output, kept as it
+# came back (never edited - see CLAUDE.md's Golden Master Integrity rule).
+#
+# One line per file: <category>/<name> <lines>, then the reason. The first
+# <lines> lines of <name>.s.golden are ordinary code; what follows them is
+# the real compiler's invalid output for one statement, which mutos_c1
+# refuses on purpose (there is nothing meaningful to reproduce).
+#
+# run_goldens.sh checks such a file at every stage as usual - .i, .1, .2
+# byte-exact - then requires mutos_c1 to REFUSE it and its partial output
+# (everything written before the refusal) to be exactly the golden's first
+# <lines> lines: reported as category 8, not a failure.
+# tests/mutos_as/assemble_cc_goldens.sh does not count these files among
+# those that must assemble; it requires mutos_as to refuse them.
+#
+# fltprobe/p19_open3: "d = (d * e) + u" (an unsigned converted to double
+# after a computed '*'): the real c1 writes 118 bytes of libc's _ctype_
+# table as the name of the register after AX ("mov <garbage>,ax" / "sub
+# ax,ax" / "push <garbage>" / "push ax" / "call ltof") - its code table asks
+# for a register pair starting at AX. Golden lines 224 on are that
+# statement and the rest of the function. See docs/DEVLOG.md's "The
+# round-5 fltprobe goldens".
+fltprobe/p19_open3 223

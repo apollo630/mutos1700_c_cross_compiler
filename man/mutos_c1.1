@@ -236,13 +236,22 @@ conversions
 .RB ( ltof )
 and
 .BR float -returning
-functions are covered; a few shapes are inferred from the goldens'
-rules (see the source's
-.I README.md
-\(en a computed right operand of a floating
+functions are covered; a computed right operand of a floating
 .B +=
-computed first, a remainder converted in AX context), and the shapes no
-real-hardware golden has shown are refused. An integer
+is computed first, while
+.B \-=
+and
+.B /=
+load their target first. A few shapes are inferred from the goldens'
+rules (see the source's
+.IR README.md ),
+and the shapes no real-hardware golden has shown are refused. An
+.B unsigned
+value converted to floating after a computed
+.BR * ,
+.B /
+or call is refused for good: the original compiler's own output there
+names a register that does not exist. An integer
 .B "+ 0"
 is dropped, as the original
 .B acommute
@@ -256,9 +265,31 @@ computed first, as the original compiler does: its value pushed for
 its address pushed and popped into BX for
 .BR + ,
 .BR \- ,
-.B &
+.BR & ,
+.B |
 and
-.BR | .
+.B ^
+(and for
+.B \-
+with a variable on the left); of two compared, the left one's address
+is pushed and the comparison made through BX.
+A
+.B long
+combined with an
+.B int
+is computed with the
+.B int
+widened by
+.B cwd
+(an
+.B unsigned
+one by clearing the high word): added to the
+.B long
+from memory, compared in DX:AX \(en the high words signed, then the low
+words unsigned, as the original compiler's long comparisons are \(en
+or, as a constant, pushed and popped into BX and CX like a
+.B long
+constant.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered
@@ -297,8 +328,9 @@ truncated stream, or an opcode this pass does not yet implement) is
 reported to standard error and causes a non-zero exit status
 immediately \(en
 .B mutos_c1
-does not attempt to produce partial or best-effort assembly output
-for input it cannot fully handle.
+does not attempt to produce best-effort assembly output for input it
+cannot fully handle (what it wrote before the refusal is left in the
+output file, unfinished).
 .SH BUGS
 .B mutos_cc,
 the driver that would normally chain

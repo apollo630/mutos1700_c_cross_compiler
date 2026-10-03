@@ -164,6 +164,39 @@ or hexadecimal constants up to 0177777 as
 constants (larger ones, and decimal ones above 32767, are
 .BR long );
 .IP \(bu 2
+a
+.B long
+combined with an
+.B int
+or
+.B unsigned
+operand, which is converted with
+.B ITOL
+right after its own code, a variable and a constant alike, as the real
+front end does
+.RB ( "l + i" ,
+.BR "i + l" ,
+.BR "l > i" ,
+.BR "m & 255" ,
+.BR "l += i" ,
+.BR "l = u" );
+a
+.B long
+value or constant assigned to an
+.B int
+or
+.B unsigned
+.RB ( LTOI ),
+a parenthesized
+.B long
+expression cast to
+.BR int ,
+and a negated
+.B long
+constant
+.RB ( LCON ,
+.BR NEG );
+.IP \(bu 2
 floating point:
 .B float
 and
@@ -236,28 +269,17 @@ variables and
 .B unsigned
 parameters, a
 .B long
-combined with an
-.BR int ,
-.B char
-or
-.B unsigned
-variable (the conversion the real front end writes for it is not
-written yet), a
-.B long
-constant assigned to an
-.B int
-or
-.BR unsigned ,
-an
-.B unsigned
-value assigned to a
+combined with a
+.BR char ,
+a shift of a
 .BR long ,
-.BR & ,
-.B |
-and
-.B ^
+.B ~
 on a
-.BR long ,
+.B long
+variable, a
+.B long
+result of
+.BR ?: ,
 a floating value tested for truth (which the real compiler
 cannot compile either), other operators on a floating value
 .RB ( % ,

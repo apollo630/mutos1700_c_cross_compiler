@@ -64,7 +64,8 @@ STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 # tested).
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
                 "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb"}
-BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi"}
+BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi", "blo",
+            "bhis"}
 
 
 class SimError(Exception):
@@ -182,6 +183,8 @@ class Sim:
         self.regs["sp"] = SP0
         self.mem = {}
         self.cmp = None            # (a, b) of the last cmp, or None
+        self.carry = None          # CF of the instruction just executed,
+        self.carry_next = None     # when an add/sub (see "adc"/"sbb")
         self.prog = []             # (mnemonic, [operands])
         self.labels = {}
         self.locals = {}
@@ -440,6 +443,9 @@ class Sim:
             pc += 1
             if mnem in FLAG_WRITERS:
                 self.cmp = None
+            # CF of an "add"/"sub", for the "adc"/"sbb" right after it only
+            self.carry = self.carry_next
+            self.carry_next = None
             if mnem != "sahf" and not (mnem == "call" and ops[0] == "fcmp"):
                 self.fflags = None
             if mnem == "jmp":
@@ -470,7 +476,8 @@ class Sim:
                 take = {"blt": s16(a) < s16(b), "ble": s16(a) <= s16(b),
                         "bgt": s16(a) > s16(b), "bge": s16(a) >= s16(b),
                         "beq": a == b, "bne": a != b,
-                        "blos": a <= b, "bhi": a > b}[mnem]
+                        "blos": a <= b, "bhi": a > b,
+                        "blo": a < b, "bhis": a >= b}[mnem]
                 if take:
                     pc = self.labels[ops[0]]
             elif mnem == "sahf":
@@ -502,10 +509,24 @@ class Sim:
                 if a is None:
                     raise SimError(f"lea operand '{ops[1]}' not supported")
                 self.put(ops[0], a)
+            elif mnem in ("adc", "sbb"):
+                # The high word of a 'long' '+'/'-': the carry or borrow
+                # of the "add"/"sub" right before it (nothing else may
+                # come between - a long's two halves are always adjacent
+                # in mutos_c1's output and the real compiler's)
+                if self.carry is None:
+                    raise SimError(f"'{mnem}' not right after an add/sub")
+                a, b = self.get(ops[0]), self.get(ops[1])
+                res = a + b + self.carry if mnem == "adc" else a - b - self.carry
+                self.put(ops[0], res & M16)
+                self.carry = None
             elif mnem in ("add", "sub", "and", "or", "xor"):
                 a, b = self.get(ops[0]), self.get(ops[1])
                 res = {"add": a + b, "sub": a - b, "and": a & b,
-                       "or": a | b, "xor": a ^ b}[mnem] & M16
+                       "or": a | b, "xor": a ^ b}[mnem]
+                if mnem in ("add", "sub"):
+                    self.carry_next = 1 if res & ~M16 else 0
+                res &= M16
                 self.put(ops[0], res)
                 if mnem in ("and", "or", "xor"):
                     # OF/CF cleared, SF/ZF from the result: exactly the

@@ -698,22 +698,19 @@ static int arith_type(ExprVal a, ExprVal b)
     return TY_INT;
 }
 
-/* A 'long' combined with an int-class VARIABLE operand: v7's build()
- * converts that operand (ITOL - zero-extending an unsigned one), which
- * this front end does not write yet - so mutos_c1 read the int as the
- * first word of a long (found 2026-10-02: "l + i" added the two words at
- * i's address). A constant operand is fine (mutos_c1 widens it). */
+/* A 'long' combined with an int-class operand that mix_rhs_end() (see
+ * "Keeping a pending constant LEFT operand on the left" below) did not
+ * convert - a safety net: until 2026-10-02 no ITOL was written at all,
+ * and mutos_c1 read the int as the first word of a long ("l + i" added
+ * the two words at i's address). Every operator that can meet one now
+ * converts it first, so this reports only an internal slip. */
 static int long_mix_refused(ExprVal a, ExprVal b, int line)
 {
     int al = (a.type == TY_LONG), bl = (b.type == TY_LONG);
     if (al == bl)
         return 0;
-    ExprVal o = al ? b : a;
-    if (o.is_const)
-        return 0;
-    c0_error_at(line, "a 'long' combined with an int, char or unsigned "
-                      "variable is not yet supported - see "
-                      "src/mutos_cc/README.md");
+    c0_error_at(line, "internal: a 'long' combined with an unconverted int, "
+                      "char or unsigned operand");
     return 1;
 }
 
@@ -898,13 +895,9 @@ static void convert_assign(FILE *t1, int lhs_type, ExprVal rhs, int line)
          * MUTOS-specific CTOL, as "(long) c" does (08_castsize). */
         if (rhs.type == TY_LONG)
             return;
-        if (rhs.type == TY_UNSIGN && !rhs.is_const) {
-            /* v7's ITOL of an unsigned clears the high word (p16_open2's
-             * "mov si,u" / "sub di,di"); mutos_c1's ITOL sign-extends. */
-            c0_error_at(line, "assigning an 'unsigned' value to a 'long' is "
-                              "not yet supported - see src/mutos_cc/README.md");
-            return;
-        }
+        /* An unsigned value: ITOL too, which mutos_c1 zero-extends -
+         * fltprobe/p19_open3.1.golden's "l = u" (NAME u typed UNSIGN,
+         * ITOL(LONG)) -> "mov si,*-36.(bp)" / "sub di,di". */
         if (rhs.type == TY_CHAR && !rhs.is_const)
             outcode(t1, "BN", OP_CTOL, TY_LONG);
         else
@@ -918,16 +911,12 @@ static void convert_assign(FILE *t1, int lhs_type, ExprVal rhs, int line)
     if (rhs.type == TY_LONG) {
         /* An int or unsigned target of a long value: v7's build() converts
          * it, LTOI - the conversion "(int) l" writes (08_castsize.1.golden:
-         * NAME l, LTOI(0)). A long constant ("x = 40000;") has no golden:
-         * refused (mutos_c1 cannot store one into a word). Until
-         * 2026-10-02 neither was converted at all - "x = l" stored l's
-         * high word. */
-        if (rhs.is_const) {
-            c0_error_at(line, "assigning a 'long' constant to an int or "
-                              "unsigned variable is not yet supported - see "
-                              "src/mutos_cc/README.md");
-            return;
-        }
+         * NAME l, LTOI(0)). Until 2026-10-02 it was not converted at all -
+         * "x = l" stored l's high word. A long constant the same way:
+         * fltprobe/p19_open3.1.golden's "u = 40000" - LCON(0, -25536),
+         * LTOI(UNSIGN), which mutos_c1 folds ("mov *-36.(bp),#-25536.");
+         * an int target by the same build() code (no golden). The caller
+         * has written the LCON. */
         outcode(t1, "BN", OP_LTOI, lhs_type == TY_UNSIGN ? TY_UNSIGN : TY_INT);
         return;
     }
@@ -1034,6 +1023,81 @@ static FILE *capture_begin(RhsCapture *c, Parser *p, FILE *t1)
     return c->mem;
 }
 
+/* The conversion of an int-class operand `v` of a binary operator whose
+ * other operand is a 'long' - v7's build() (cvtab[int][long]: ITL), for a
+ * variable and a constant alike: fltprobe/p19_open3.1.golden's "l + i"
+ * (NAME l, NAME i, ITOL(LONG), PLUS(LONG)), "i + l" (NAME i, ITOL, NAME l,
+ * PLUS), "l > i" (NAME l, NAME i, ITOL, GREAT(INT)), "m & 255" (NAME m,
+ * CON 255, ITOL, AND(LONG)) and "u > 39999" (NAME u typed UNSIGN, ITOL,
+ * LCON, GREAT) - an unsigned one is ITOL too (mutos_c1 clears the high
+ * word for it, as v7's c1 does). A char operand has no golden (CTOL, as
+ * "(long) c" writes, or ITOC then ITOL?): refused. `was_char`: `v` was a
+ * char before promote_char() widened it. */
+static void emit_itol(FILE *t1, ExprVal v, int was_char, int line)
+{
+    if (was_char || (!v.is_const && v.type == TY_CHAR)) {
+        c0_error_at(line, "a 'char' operand combined with a 'long' one is not "
+                          "yet supported - see src/mutos_cc/README.md");
+        return;
+    }
+    if (!v.is_const && ty_is_ptr(v.type)) {
+        c0_error_at(line, "a pointer combined with a 'long' is not yet "
+                          "supported - see src/mutos_cc/README.md");
+        return;
+    }
+    outcode(t1, "BN", OP_ITOL, TY_LONG);
+}
+
+/* Ends a capture of a binary operator's right operand (rhs_begin(),
+ * capture_begin() or arith_rhs_begin() - the right operand must have been
+ * buffered unless the left one is a 'long' or a pending constant) as
+ * rhs_end() does, but when exactly one operand is a 'long' writes the
+ * other one's conversion where v7 puts it: right after that operand's own
+ * bytes (emit_itol()) - the left operand's pending constant, its ITOL,
+ * the buffered right operand, its ITOL. Both operands are then emitted,
+ * typed long; `*rhs` is updated. `lchar`/`rchar`: the operand was a char
+ * before promote_char(). */
+static ExprVal mix_rhs_end(RhsCapture *c, Parser *p, FILE *t1, ExprVal lhs,
+                           ExprVal *rhs, int lchar, int rchar, int line)
+{
+    int ll = (lhs.type == TY_LONG), rl = (rhs->type == TY_LONG);
+    if (ll == rl || (lhs.is_const && rhs->is_const) ||
+        (!lhs.is_const && ty_is_float(lhs.type)) ||
+        (!rhs->is_const && ty_is_float(rhs->type)))
+        return rhs_end(c, p, t1, lhs, *rhs);
+    if (!ll && !lhs.is_const && !c->mem) {
+        /* The right operand went straight to t1 behind an int-class
+         * left one: its ITOL can no longer go in between. */
+        c0_error_at(line, "internal: an operand combined with a 'long' was "
+                          "not buffered");
+        return rhs_end(c, p, t1, lhs, *rhs);
+    }
+    if (c->mem) {
+        fclose(c->mem);
+        c->mem = NULL;
+    }
+    emit_materialize(t1, lhs);
+    if (!ll)
+        emit_itol(t1, lhs, lchar, line);
+    if (c->buf) {
+        fwrite(c->buf, 1, c->len, t1);
+        free(c->buf);
+        c->buf = NULL;
+    }
+    emit_materialize(t1, *rhs);
+    if (!rl)
+        emit_itol(t1, *rhs, rchar, line);
+    rhs->is_const = 0;
+    rhs->is_long = 0;
+    rhs->type = TY_LONG;
+    rhs->char_obj = 0;
+    lhs.is_const = 0;
+    lhs.is_long = 0;
+    lhs.type = TY_LONG;
+    lhs.char_obj = 0;
+    return lhs;
+}
+
 /* rhs_begin() for '+', '-', '*' and '/', whose right operand may turn out
  * floating: then an integer left operand needs its conversion (ITOF/
  * LTOF) written right after its own bytes, ahead of the right operand's
@@ -1058,12 +1122,15 @@ static FILE *arith_rhs_begin(RhsCapture *c, Parser *p, FILE *t1, ExprVal lhs)
  * the same way, and returns 0: the caller carries on with its integer
  * code. `lchar`: the left operand was a char before promote_char(). */
 static int float_arith(Parser *p, FILE *t1, RhsCapture *cap, ExprVal *v,
-                       ExprVal r, int lchar, int op, int line)
+                       ExprVal *rp, int lchar, int op, int line)
 {
+    ExprVal r = *rp;
     int lf = ty_is_float(v->type) && !v->is_const;
     int rf = ty_is_float(r.type) && !r.is_const;
     if (!lf && !rf) {
-        *v = rhs_end(cap, p, t1, *v, r);
+        /* A 'long' with an int-class operand: converted (mix_rhs_end()). */
+        *v = mix_rhs_end(cap, p, t1, *v, rp, lchar,
+                         r.type == TY_CHAR && !r.is_const, line);
         return 0;
     }
     if ((rf && lchar) || (lf && r.type == TY_CHAR && !r.is_const))
@@ -2714,10 +2781,19 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
                 int line = p->cur.line;
                 ExprVal v = parse_primary(p, t1);
                 emit_materialize(t1, v);
+                if (!v.is_const && v.type == TY_LONG && target == TY_INT) {
+                    /* A parenthesized long expression to an int: its tree,
+                     * then LTOI - fltprobe/p19_open3.1.golden's "(int) (l -
+                     * 100000)" (NAME l, LCON, MINUS(LONG), LTOI(INT)), as
+                     * "(int) l" writes it. */
+                    outcode(t1, "BN", OP_LTOI, TY_INT);
+                    return ev_dynamic_typed(TY_INT);
+                }
                 if (v.is_const || !ty_is_float(v.type)) {
                     c0_error_at(line, "a cast of a parenthesized expression is "
                                       "only supported for a 'float'/'double' "
-                                      "one so far - see src/mutos_cc/README.md");
+                                      "or (to 'int') a 'long' one so far - "
+                                      "see src/mutos_cc/README.md");
                     return ev_dynamic();
                 }
                 emit_from_float(t1, target, line);
@@ -3081,6 +3157,17 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         int line = p->cur.line;
         advance(p);
         ExprVal v = parse_unary(p, t1);
+        if (v.is_const && v.is_long) {
+            /* A long constant negated: v7's fold() folds int CONs only,
+             * so its c0 writes the LCON and a NEG typed LONG, which c1's
+             * unoptim() folds - "-100000" is LCON(1, -31072), NEG(6) (no
+             * golden; mutos_c1 folds it the same way). Until 2026-10-02
+             * this returned the negated value TRUNCATED to an int - "l =
+             * -65536;" stored 0. */
+            emit_materialize(t1, v);
+            outcode(t1, "BN", OP_NEG, TY_LONG);
+            return ev_dynamic_typed(TY_LONG);
+        }
         if (v.is_const)
             return ev_const(trunc16(-v.value));
         if (ty_is_float(v.type)) {
@@ -3104,11 +3191,23 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         int line = p->cur.line;
         advance(p);
         ExprVal v = parse_unary(p, t1);
+        if (v.is_const && v.is_long) {
+            /* As for '-': LCON, COMPL(LONG), folded by mutos_c1 (v7's
+             * unoptim() - no golden). Until 2026-10-02 truncated. */
+            emit_materialize(t1, v);
+            outcode(t1, "BN", OP_COMPL, TY_LONG);
+            return ev_dynamic_typed(TY_LONG);
+        }
         if (v.is_const)
             return ev_const(trunc16(~v.value));
         /* v7 converts no unary operand (build()'s non-BINARY path) - a
-         * char here would be a char-typed COMPL, which has no golden. */
+         * char here would be a char-typed COMPL, which has no golden; a
+         * long one a COMPL typed LONG (no golden) - typed int here it
+         * complemented one word, "~l" silently wrong until 2026-10-02. */
         (void)char_value_refused(v, line, "the operand of '~'");
+        if (v.type == TY_LONG)
+            c0_error_at(line, "'~' on a 'long' variable or value is not yet "
+                              "supported - see src/mutos_cc/README.md");
         emit_materialize(t1, v); /* no-op: a non-constant operand has
                                    * already been emitted (e.g. as a
                                    * NAME) by the time we get here. */
@@ -3141,7 +3240,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
                 v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_unary(p, arith_rhs_begin(&cap, p, t1, v));
-            if (float_arith(p, t1, &cap, &v, r, lchar, OP_TIMES, line))
+            if (float_arith(p, t1, &cap, &v, &r, lchar, OP_TIMES, line))
                 continue;
             r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
@@ -3167,7 +3266,7 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
                 v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_unary(p, arith_rhs_begin(&cap, p, t1, v));
-            if (float_arith(p, t1, &cap, &v, r, lchar, OP_DIVIDE, line))
+            if (float_arith(p, t1, &cap, &v, &r, lchar, OP_DIVIDE, line))
                 continue;
             r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
@@ -3189,10 +3288,12 @@ static ExprVal parse_mul(Parser *p, FILE *t1)
         } else if (p->cur.kind == T_PERCENT) {
             int line = p->cur.line;
             advance(p);
+            int lchar = (v.type == TY_CHAR && !v.is_const);
             v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
-            ExprVal r = parse_unary(p, rhs_begin(&cap, p, t1, v));
-            v = rhs_end(&cap, p, t1, v, r);
+            ExprVal r = parse_unary(p, arith_rhs_begin(&cap, p, t1, v));
+            v = mix_rhs_end(&cap, p, t1, v, &r, lchar,
+                            r.type == TY_CHAR && !r.is_const, line);
             r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
                 if (r.value == 0) {
@@ -3229,7 +3330,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
                 v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_mul(p, arith_rhs_begin(&cap, p, t1, v));
-            if (float_arith(p, t1, &cap, &v, r, lchar, OP_PLUS, line))
+            if (float_arith(p, t1, &cap, &v, &r, lchar, OP_PLUS, line))
                 continue;
             r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
@@ -3283,7 +3384,7 @@ static ExprVal parse_add(Parser *p, FILE *t1)
                 v = promote_char(t1, v); /* before the right operand's bytes */
             RhsCapture cap;
             ExprVal r = parse_mul(p, arith_rhs_begin(&cap, p, t1, v));
-            if (float_arith(p, t1, &cap, &v, r, lchar, OP_MINUS, line))
+            if (float_arith(p, t1, &cap, &v, &r, lchar, OP_MINUS, line))
                 continue;
             r = promote_char(t1, r);
             if (v.is_const && r.is_const) {
@@ -3359,6 +3460,12 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         emit_materialize(t1, r);
         if (op == OP_RSHIFT)
             (void)unsigned_refused(v, r, p->cur.line, ">>");
+        /* A long shifted: v7 types the node LONG and keeps an int count
+         * (no golden); typed int here it shifted one word - "l << 2" was
+         * silently wrong until 2026-10-02. A long count is refused too. */
+        if (v.type == TY_LONG || r.type == TY_LONG)
+            c0_error_at(p->cur.line, "a shift of or by a 'long' is not yet "
+                                     "supported - see src/mutos_cc/README.md");
         int stype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
         outcode(t1, "BN", op, stype);
         v = ev_dynamic_typed(stype);
@@ -3436,11 +3543,15 @@ static int char_compare_rhs(Parser *p, FILE *t1, int op, ExprVal *l,
             outcode(t1, "BN", op, TY_INT);
             return 1;
         }
+        if (rv.type == TY_LONG)
+            c0_error_at(line, "a 'char' operand combined with a 'long' one is "
+                              "not yet supported - see src/mutos_cc/README.md");
         *l = promote_char(t1, *l);          /* after the left operand */
         capture_flush(&cap, t1);            /* then the right one */
         *r = promote_char(t1, rv);
         return 0;
     }
+    int lchar = (!l->is_const && l->type == TY_CHAR);
     ExprVal v = promote_char(t1, *l);       /* before the right operand's bytes */
     /* The right operand is buffered - it may turn out floating, and then
      * an integer left operand's conversion must come between the two
@@ -3464,6 +3575,32 @@ static int char_compare_rhs(Parser *p, FILE *t1, int op, ExprVal *l,
         free(cap.buf);
         outcode(t1, "BN", op, TY_INT);
         return 1;
+    }
+    if ((v.type == TY_LONG) != (rv.type == TY_LONG) &&
+        !(v.is_const && rv.is_const)) {
+        /* A 'long' compared with an int-class operand: that one converted
+         * (mix_rhs_end() - "l > i", "u > 39999" in fltprobe/p19_open3.1.
+         * golden). The capture is already closed. */
+        int rchar = (!rv.is_const && rv.type == TY_CHAR);
+        emit_materialize(t1, v);
+        if (v.type != TY_LONG)
+            emit_itol(t1, v, lchar, line);
+        if (cap.buf)
+            fwrite(cap.buf, 1, cap.len, t1);
+        free(cap.buf);
+        emit_materialize(t1, rv);
+        if (rv.type != TY_LONG)
+            emit_itol(t1, rv, rchar, line);
+        v.is_const = 0;
+        v.is_long = 0;
+        v.type = TY_LONG;
+        rv.is_const = 0;
+        rv.is_long = 0;
+        rv.type = TY_LONG;
+        rv.char_obj = 0;
+        *l = v;
+        *r = rv;
+        return 0;
     }
     if (v.is_const && rv.is_const) {
         /* A constant writes nothing (see ExprVal) - the caller folds. */
@@ -3563,10 +3700,13 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
     ExprVal v = parse_equality(p, t1);
     while (p->cur.kind == T_AMP) {
         advance(p);
+        int line = p->cur.line;
+        int lchar = (v.type == TY_CHAR && !v.is_const);
         v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
-        ExprVal r = parse_equality(p, rhs_begin(&cap, p, t1, v));
-        v = rhs_end(&cap, p, t1, v, r);
+        ExprVal r = parse_equality(p, arith_rhs_begin(&cap, p, t1, v));
+        v = mix_rhs_end(&cap, p, t1, v, &r, lchar,
+                        r.type == TY_CHAR && !r.is_const, line);
         r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value & r.value));
@@ -3574,10 +3714,9 @@ static ExprVal parse_bitand(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        if (v.type == TY_LONG || r.type == TY_LONG)
-            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
-                        "not yet supported - see src/mutos_cc/README.md");
-        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        /* A 'long' operand: both long by now (mix_rhs_end()), the node
+         * typed LONG - fltprobe/p19_open3.1.golden's "m & 255", "m | 6". */
+        int btype = arith_type(v, r);
         outcode(t1, "BN", OP_AND, btype);
         v = ev_dynamic_typed(btype);
     }
@@ -3589,10 +3728,13 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
     ExprVal v = parse_bitand(p, t1);
     while (p->cur.kind == T_CARET) {
         advance(p);
+        int line = p->cur.line;
+        int lchar = (v.type == TY_CHAR && !v.is_const);
         v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
-        ExprVal r = parse_bitand(p, rhs_begin(&cap, p, t1, v));
-        v = rhs_end(&cap, p, t1, v, r);
+        ExprVal r = parse_bitand(p, arith_rhs_begin(&cap, p, t1, v));
+        v = mix_rhs_end(&cap, p, t1, v, &r, lchar,
+                        r.type == TY_CHAR && !r.is_const, line);
         r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value ^ r.value));
@@ -3600,10 +3742,9 @@ static ExprVal parse_bitxor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        if (v.type == TY_LONG || r.type == TY_LONG)
-            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
-                        "not yet supported - see src/mutos_cc/README.md");
-        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        /* A 'long' operand: both long by now (mix_rhs_end()), the node
+         * typed LONG - fltprobe/p19_open3.1.golden's "m & 255", "m | 6". */
+        int btype = arith_type(v, r);
         outcode(t1, "BN", OP_EXOR, btype);
         v = ev_dynamic_typed(btype);
     }
@@ -3615,10 +3756,13 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
     ExprVal v = parse_bitxor(p, t1);
     while (p->cur.kind == T_PIPE) {
         advance(p);
+        int line = p->cur.line;
+        int lchar = (v.type == TY_CHAR && !v.is_const);
         v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
-        ExprVal r = parse_bitxor(p, rhs_begin(&cap, p, t1, v));
-        v = rhs_end(&cap, p, t1, v, r);
+        ExprVal r = parse_bitxor(p, arith_rhs_begin(&cap, p, t1, v));
+        v = mix_rhs_end(&cap, p, t1, v, &r, lchar,
+                        r.type == TY_CHAR && !r.is_const, line);
         r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             v = ev_const(trunc16(v.value | r.value));
@@ -3626,10 +3770,9 @@ static ExprVal parse_bitor(Parser *p, FILE *t1)
         }
         emit_materialize(t1, v);
         emit_materialize(t1, r);
-        if (v.type == TY_LONG || r.type == TY_LONG)
-            c0_error_at(p->cur.line, "'&', '|' or '^' with a 'long' operand is "
-                        "not yet supported - see src/mutos_cc/README.md");
-        int btype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
+        /* A 'long' operand: both long by now (mix_rhs_end()), the node
+         * typed LONG - fltprobe/p19_open3.1.golden's "m & 255", "m | 6". */
+        int btype = arith_type(v, r);
         outcode(t1, "BN", OP_OR, btype);
         v = ev_dynamic_typed(btype);
     }
@@ -3724,10 +3867,16 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
     ExprVal pending = cond.is_const ? cond : t;
     ExprVal f = parse_logor(p, rhs_begin(&fcap, p, t1, pending));
     /* v7's QUEST/COLON convert nothing (COLON only balances int/pointer
-     * types); a char condition or arm has no golden - refused. */
+     * types); a char condition or arm has no golden - refused. So is a
+     * long arm: the node is typed int here, and "x ? l : m" selected one
+     * word (silently wrong until 2026-10-02 - v7 types COLON/QUEST
+     * LONG). */
     (void)(char_nonobj_refused(cond, p->cur.line, "a '?:' condition") ||
            char_value_refused(t, p->cur.line, "a '?:' result") ||
            char_value_refused(f, p->cur.line, "a '?:' result"));
+    if (t.type == TY_LONG || f.type == TY_LONG)
+        c0_error_at(p->cur.line, "a 'long' result of '?:' is not yet "
+                                 "supported - see src/mutos_cc/README.md");
 
     if (cond.is_const && t.is_const && f.is_const) {
         /* v7/cc/c01.c's fold(QUEST): folded only when the condition
@@ -4419,6 +4568,13 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
+    } else if (assign_type == TY_LONG && rhs.type != TY_LONG &&
+               optag != OP_ASLSH && optag != OP_ASRSH) {
+        /* An int-class right-hand side of a compound assignment to a
+         * 'long': converted to the target's type, as for '=' -
+         * fltprobe/p19_open3.1.golden's "l += i" (NAME l, NAME i, ITOL,
+         * ASPLUS(LONG)); a shift count stays an int. */
+        emit_itol(t1, rhs, 0, line);
     } else if (rhs.type == TY_LONG && assign_type != TY_LONG) {
         /* v7 converts the right operand to the target's type first (as
          * for "i *= e") - an LTOI no golden shows here. */

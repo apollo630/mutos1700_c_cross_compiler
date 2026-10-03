@@ -27,12 +27,17 @@ directly, on random programs:
   flags not set by a `cmp`, a `cmpb`, an `and`/`or`/`xor` (flags from the
   result, as `cmp <result>,0` - `or r,r` is `mutos_c1`'s truth test of a
   register, `and dx,*12.` / `beq` an AND tested directly) or an `orb
-  r,r` - stops it with an error, never a guess.
+  r,r`, an `adc`/`sbb` not right after the `add`/`sub` whose carry it
+  takes - stops it with an error, never a guess. The unsigned branches
+  `blo`, `blos`, `bhi`, `bhis` read the last `cmp` as unsigned (a `long`
+  comparison's low words).
 
 `x86sim.py` is validated on real hardware-compiled code: every
-`tests/mutos_cc` `.s.golden` it can execute (53 of the 62; the others
-call libc or runtime helpers, or use `long` carries, a jump table or a
-function's address) returns the value its C source computes, including
+`tests/mutos_cc` `.s.golden` it can execute (55 of the 62; the others
+call libc or runtime helpers - `lmul` among them -, or use a jump table
+or a function's address) returns the value its C source computes,
+including `02_long/01_addsub` (11009) and `03_retval` (-31067) since
+`adc`/`sbb` (2026-10-03),
 both `08_float` files (7 and 3 - floating code runs against a model of
 `libc.a`'s software floating-point runtime, see `x86sim.py`'s
 `FP_RUNTIME`), and

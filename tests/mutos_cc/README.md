@@ -104,13 +104,25 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 `fltprobe/` is not part of the corpus either: floating-point probe programs
 with their own `Makefile.mutos` and real-hardware goldens (see
 `fltprobe/README.md`) - a first round of nine, a second and a third of
-four and a fourth of three, all byte-exact (they stay here rather than
-joining `08_float`), and a fifth round of three (`p17`..`p19`) whose
-goldens are still to be generated. Unlike `fuzz/`, it does hold `.c` files: `gen_mutos.sh` and the
-Makefiles walk it like a category, and `run_goldens.sh` skips each file
-until it has goldens - one with a `.1.golden` but no `.i.golden` (a set
-brought back without its `.i` files, as round 2's first was) it checks from
-`mutos_c0` on and lists apart.
+four, a fourth and a fifth of three, all byte-exact (they stay here rather
+than joining `08_float`) but `p19_open3`, whose `.s.golden` ends in the
+real compiler's own invalid output (see below), and a sixth round of four
+(`p20`..`p23`) whose goldens are still to be generated. Unlike `fuzz/`, it
+does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
+category, and `run_goldens.sh` skips each file until it has goldens - one
+with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
+files, as round 2's first was) it checks from `mutos_c0` on and lists
+apart (category 7).
+
+`invalid_goldens.txt` lists the goldens whose `.s` is not valid assembly
+from some line on - the real compiler's own broken output, kept as it
+came back. At present one: `fltprobe/p19_open3`, whose `d = (d * e) + u`
+has 118 bytes of libc's `_ctype_` table where a register name belongs
+(the real `c1` asks for the register pair starting at AX). For a listed
+file `run_goldens.sh` requires `mutos_c1` to refuse it and its output up
+to the refusal to be exactly the golden's leading valid lines (category
+8, not a failure); `../mutos_as/assemble_cc_goldens.sh` requires
+`mutos_as` to refuse it.
 
 ## `11_kernel` — real MUTOS kernel driver golden corpus
 

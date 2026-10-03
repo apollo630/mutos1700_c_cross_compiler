@@ -30,10 +30,11 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope") - and, beyond the corpus, all
-twenty floating probes of `tests/mutos_cc/fltprobe/`'s first four
-rounds with their own real-hardware goldens (see "Floating point beyond the
-corpus"). See
+"Floating point" under "Current scope") - and, beyond the corpus, 22 of the
+23 probes of `tests/mutos_cc/fltprobe/`'s first five rounds with their own
+real-hardware goldens, the 23rd (`p19_open3`) up to the real compiler's
+own invalid output, which `mutos_c1` refuses on purpose (see "Floating
+point beyond the corpus" and `tests/mutos_cc/invalid_goldens.txt`). See
 STATUS.md
 for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
@@ -1207,9 +1208,10 @@ section. Full derivation in `docs/DEVLOG.md`'s `08_float` section and the
 are C compiled by the real compiler and gave the first shapes (see
 `docs/DEVLOG.md`'s "Floating shapes from libc.a's compiled C");
 `tests/mutos_cc/fltprobe/`'s real-hardware goldens corrected and
-completed them - round 1's nine, the four each of rounds 2 and 3 and
-round 4's three are byte-exact (see `docs/DEVLOG.md`'s "The fltprobe
-goldens" and the round-2, round-3 and round-4 sections after it). The real
+completed them - round 1's nine, the four each of rounds 2 and 3, round
+4's three and round 5's `p17`/`p18` are byte-exact, `p19` up to the real
+compiler's own invalid output (see `docs/DEVLOG.md`'s "The fltprobe
+goldens" and the round-2 to round-5 sections after it). The real
 compiler is
 v7's `c1` with the PDP-11 floating code replaced by calls into the runtime,
 so its **operand order is v7's**,
@@ -1296,31 +1298,45 @@ point", next to the integer "Evaluation order" planner):
   `c1_fltdec.c`'s `fdec_render_single()`); each takes a `c1` label
   (`p9_init`).
 
-Rounds 3 and 4 confirmed every shape the round before left to inference
+Rounds 3 to 5 confirmed every shape the round before left to inference
 but three: an element of a local array has degree 2 (`1.5 + arr[i]` loads
 the element first - round 3), the context in a chain is the previous
 term's (round 4), and a right element at offset 0 is computed first (see
-"Integer shapes from the round-3 and round-4 goldens").
+"Integer shapes from the round-3 to round-5 goldens"). Round 5's
+`p18_fltop3` matched at once: `d += e * 2` computes `e * 2` first and adds
+`d` from memory, `f += i` into a float, `(d * e) + (i % j)` (the
+remainder first, `mov ax,dx`), `(long) 3.75` (`flds` / `ftol`), a negated
+zero as an initializer (`.double 0.0...`).
 
-Compiled by inference, with no golden yet (`tests/mutos_cc/fltprobe/`'s
-round 5 asks): `+=` with a computed floating right operand (`d += e * 2`),
-`f += i` into a float, a remainder converted in AX context, `(long) 3.75`,
-a negated zero as an initializer.
+**`-=` with a computed right operand** (round 5, `p19_open3`): the target
+is loaded FIRST, as for `/=` - `d -= c` -> `lea ax,d` / `call fldd` / `movb
+ax,c` / `cbw` / `call itof` / `call fsub` / `lea ax,d` / `call fstdp`, `d
+-= e * 2` the same around `flds 2.0` / `fmuld e`; no reversed subtraction
+(`SEG_FLOADT`). Only `+=` computes its right operand first.
 
-Refused, each with its own diagnostic (round 5's `p19_open3` asks about
-some): an int converted after an element or `*p` in AX context, or after a
-computed operand other than those above; an int computed for AX other than
-a variable, `x + c`, a sum or difference of two variables, a shift by a
-constant or a product/quotient/remainder; an `unsigned` converted after a
-`*`, `/` or call; `-=` with a computed right operand (`+=` computes it
-first, so `-=` would need a reversed subtraction no golden shows); `%`/`%=`,
-`++`/`--`, a floating value tested for truth (the real `c1` itself reports
-"Floating point stack underflow" on one), `?:`/`,` with floating values, a
-long computed rather than a variable converted, a compound assignment
-through a pointer or subscript, an initializer other than a constant, and
-every operator `fdeg()` has no degree for (`&`, `|`, `^`, ...).
+**An `unsigned` converted after a computed `*`, `/` or call is refused for
+good**: the real compiler's own output there is not valid assembly
+(`p19_open3.s.golden`'s `d = (d * e) + u` -> `mov ax,u` / `mov <118 bytes
+of libc's _ctype_ table>,ax` / `sub ax,ax` / `push <the same>` / `push ax`
+/ `call ltof` - its code table asks for the register pair starting at AX,
+and the register-name table ends there). `run_goldens.sh` checks that
+golden up to the line before (`../../tests/mutos_cc/invalid_goldens.txt`).
 
-**Integer shapes from the round-3 and round-4 goldens.** Round 3: a
+Refused, each with its own diagnostic (round 6's `p20_fltlv` and
+`p21_fltexp` ask about most): an int converted after an element or `*p` in
+AX context, or after a computed operand other than those above; an int
+computed for AX other than a variable, `x + c`, a sum or difference of two
+variables, a shift by a constant or a product/quotient/remainder; `%`/`%=`,
+`++`/`--`, a char operand of a floating operator, a cast of a computed int,
+a negated int, a floating value tested for truth (the real `c1` itself
+reports "Floating point stack underflow" on one), `?:`/`,` with floating
+values, a long computed rather than a variable converted, a conversion to
+`unsigned`, a struct member, a pointer to double subscripted or
+incremented, a compound assignment through a pointer or subscript, a
+chained assignment, an initializer other than a constant, and every
+operator `fdeg()` has no degree for (`&`, `|`, `^`, ...).
+
+**Integer shapes from the round-3 to round-5 goldens.** Round 3: a
 dereferenced left operand of an int `*` whose right operand has code of
 its own is loaded into its register first, as for `+`/`-` (`p10_elem`'s
 `ps[i].c * qs[i].g`: `mov di,*4.(di)`, the right element's address into
@@ -1336,10 +1352,27 @@ pushed (`... / mov di,(di)` / `push di` / the left / `mov ax,di` / `pop
 cx` / `imul cx` - `order_right_first()`, as `05_matmul`'s 2-D elements),
 for `&` its address (`push di` / the left, loaded / `pop bx` / `and
 di,(bx)` - `is_pushaddr()`, `ORD_PUSHADDR`; `+`, `-` and `|`, which share
-v7's table entry, by inference, a `+` chain's first link too). Why the
-offset decides is not understood (both kinds have the same v7 degree);
-`fltprobe/p17_elem2` asks whether it is the offset or the context
-(`return` in `p10`, an assignment in `p14`).
+v7's table entry, by inference, a `+` chain's first link too). Round 5
+(`p17_elem2`) settled that it is the offset, not the context: `return a[i]
+* b[j]` pushes `b[j]` as `p14`'s assignment does, `s = ps[i].c * qs[i].d`
+does not, as `p10`'s `return` does not. Why the offset decides is still
+not understood (both kinds have the same v7 degree). It confirmed `+`, `-`,
+`|` and a `+` chain's first link, and corrected two inferences: `^` pushes
+the address too (`pop bx` / `xor di,(bx)` - not v7's PDP-11 rule that
+`^`'s right operand be in a register), and a COMPARISON of two elements
+at offset 0 pushes the LEFT one's address, loads the right one and
+compares in place - `if (a[i] > b[j])` -> `lea di,a` / ... / `push di` /
+`lea di,b` / ... / `mov di,(di)` / `pop bx` / `cmp (bx),di` / `ble`
+(`is_pushleft()`, `ORD_PUSHLEFT`, `SEG_KEEPIND`/`SEG_DEFPOPL`; cctab's
+`%nw*,nw*` after `%n,ew*`, which `02_bubsort`'s `a[j] > a[j + 1]`
+matches). `p19_open3` added `x - b[j]` with a variable on the left (`b[j]`'s
+address pushed, `mov di,x` / `pop bx` / `sub di,(bx)`) and `a[i] * b[j -
+2]` with DI and SI taken (the index through DX, added to the array's
+address in SI: `lea si,b` / `mov dx,j` / `sal dx,*1` / `add si,dx` / `mov
+ax,di` / `imul *-4.(si)` - the constant term the displacement, not folded
+into the `lea`). Round 6's `p23_elem3` asks about the mixed cases (one
+element with an offset), `x * b[j]`, a constant or a file-scope variable
+minus an element, and `b[j + 1]` of a local array with DI free.
 
 **`unsigned` locals, `long` mixing and octal constants (round 4).** A
 plain `unsigned` local is accepted (`p16_open2`: NAME typed `UNSIGN`, `u =
@@ -1348,12 +1381,54 @@ had. Testing it showed `mutos_c0` silently miscompiling a `long` combined
 with an int-class VARIABLE (`l + i` added the two words at `i`'s address,
 `l > i`, `l & m`, an int assigned a long - `x = l` stored the high word):
 v7's `build()` converts with `ITOL`/`LTOI`, which `mutos_c0` did not write.
-Now an int or unsigned target of a long gets `LTOI` (as `(int) l` has), and
-a long constant into one, a long with an int-class variable in `+ - * / %`
-or a comparison, `&`/`|`/`^` with a long, and an unsigned into a long are
-refused (`fltprobe/p19_open3` asks). And an octal or hex constant from
-0100000 to 0177777 is an int, not a long (v7's `getnum()`; the
-`11_kernel` goldens' `CON -32768` for `0100000`).
+Now an int or unsigned target of a long gets `LTOI` (as `(int) l` has). And
+an octal or hex constant from 0100000 to 0177777 is an int, not a long
+(v7's `getnum()`; the `11_kernel` goldens' `CON -32768` for `0100000`).
+
+**`long` mixed with int-class values (round 5, `p19_open3`).**
+`mutos_c0` now writes v7's conversions (`mix_rhs_end()`, `emit_itol()`):
+an int-class operand of a binary operator whose other operand is a long
+gets `ITOL` right after its own bytes, a variable and a constant alike
+(`l + i`: NAME l, NAME i, ITOL, PLUS(LONG); `i + l`: NAME i, ITOL, NAME l;
+`m & 255`: NAME m, CON 255, ITOL, AND(LONG)), an unsigned one too (`u >
+39999`: NAME u, ITOL, LCON, GREAT); `l += i` converts the right-hand side
+(ITOL, ASPLUS(LONG)); `l = u` is ITOL of the unsigned; `u = 40000` is
+LCON, LTOI(UNSIGN); `(int) (l - 100000)` is the tree, LTOI(INT). A char
+with a long is refused (CTOL or ITOC then ITOL - no golden). `mutos_c1`
+(`OP_ITOL`, `gen_long_constop()`, `gen_long_relop()`, `gen_long_cmp()`):
+
+- `l + i`, `i + l`: the int widened first (`mov ax,i` / `cwd` / `mov
+  di,dx` / `mov si,ax`), the variable added from memory (`add si,l+2` /
+  `adc di,l`) - acommute() puts the ITOL (degree 2) ahead of the NAME;
+  `l += i` the same, added into memory (`add l+2,si` / `adc l,di`);
+- an unsigned widened: `mov si,u` / `sub di,di`;
+- a long variable `&`, `|` (and by inference `^`, `+`, `-`) a widened int
+  constant: `c + 1L`'s shape - `mov ax,#255.` / `cwd` / `push ax` / `push
+  dx` / `mov si,m+2` / `mov di,m` / `pop bx` / `pop cx` / `and si,cx` / `and
+  di,bx`;
+- `r + (int) (l - 100000)`: the low words only (v7's `unoptim()`
+  distributes the LTOI - `VK_LOWADD`): `mov di,l+2` / `add di,r` / `add
+  di,#31072.`;
+- comparisons (v7's `longrel()`, `lrtab[0]`): `l > i` and `l == i` swapped
+  to the widened int on the left, in DX:AX (`mov ax,i` / `cwd` / `cmp dx,l`
+  / `bgt` / `blt` / `cmp ax,l+2` / `bhis` - the low words unsigned); `u >
+  39999` as `39999 < u` with the widened unsigned pushed and popped into
+  CX:BX after the constant is loaded (`push si` / `push di` / `mov
+  si,#-25537.` / `mov di,*0.` / `pop cx` / `pop bx` / `cmp di,cx` / `blt` /
+  `bgt` / `cmp si,bx` / `blo`), as a value too.
+
+Still refused (round 6's `p22_long2` asks): `l - i`, `i - l`, `l * i`,
+`l / i`, `l % i`, `l *= i`, two long variables compared, a long compared
+with a non-zero constant or a widened int constant, a long tested for
+truth (`if (l)`, `!l`, `l && ...`, `l ? ...` - each tested only the high
+word until now), `~l`, a shift of a long, a long `?:`, `(int) (l - c)`
+other than added to a variable, `(long) u`, `l & m`. Silent miscompiles
+found while testing this, each a refusal or fixed now: two long variables
+compared (`l > m` compared the high words only), a long tested for truth
+(the high word only), `~l`, `l << 2` and `x ? l : m` (one word each), and
+a negated long constant (`l = -65536;` stored 0 - `mutos_c0` truncated
+`-` of a long constant to an int; now LCON, NEG(LONG), which `mutos_c1`
+folds, as v7's `unoptim()` does).
 
 ## `SETSTK` / local-frame handling
 
@@ -1405,9 +1480,10 @@ as before; shapes that would need a different order and have no golden -
 two elements whose right one is at offset 0 is spilled the same way
 (`fltprobe/p14_axint`'s `a[i] * b[j]`), with an offset it is not
 (`p10_elem`'s `ps[i].c * qs[i].g`: the left loaded into DI, the right
-one's address into SI); for `+`, `-`, `&`, `|` such a right element's
-ADDRESS is pushed (`ORD_PUSHADDR`) - see "Integer shapes from the round-3
-and round-4 goldens".
+one's address into SI); for `+`, `-`, `&`, `|`, `^` such a right
+element's ADDRESS is pushed (`ORD_PUSHADDR`), for a comparison of two the
+LEFT one's (`ORD_PUSHLEFT`) - see "Integer shapes from the round-3 to
+round-5 goldens".
 Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
 section.
 
@@ -1590,9 +1666,11 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    byte-exact too (v7's operand order, constants of any value and their
    degree, globals and their initializers, pointers, elements, calls,
    conversions, the register an int is converted in, a floating zero - see
-   "Floating point beyond the corpus"). Left: `fltprobe`'s round 5
-   (`p17`..`p19`) - the shapes compiled by inference, and those still
-   refused. On
+   "Floating point beyond the corpus"), and so are round 5's `p17` and
+   `p18` (`p19` up to the real compiler's own invalid output). Left:
+   `fltprobe`'s round 6 (`p20`..`p23`) - floating lvalues beyond
+   variables, floating expression forms, and the `long` and element
+   shapes still refused. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in
