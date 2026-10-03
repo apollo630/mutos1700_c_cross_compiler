@@ -71,7 +71,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   sources **reconstructed** from their disassembly (`ldexp.s` → the real `ldexp.o`,
   byte for byte), plus `check_floatdat.sh`, which compares `.float` output with real
   `libc.a` constants. `tests/mutos_as/assemble_cc_goldens.sh` checks that every real
-  compiler `.s` in `/tests/mutos_cc/` assembles. See that directory's `README.md`.
+  compiler `.s` in `/tests/mutos_cc/` assembles - but those listed in
+  `tests/mutos_cc/invalid_goldens.txt` (the real compiler's own invalid output),
+  which `mutos_as` must refuse. See that directory's `README.md`.
 * `/tests/mutos_as/v30_speculative/`: Speculative 80186/V30 opcode test cases (PUSHA/POPA,
   PUSH imm, INSB/OUTSB, ENTER/LEAVE, BOUND, IMUL-immediate, shift/rotate-with-immediate-
   count) covering every opcode `STATUS.md` lists as "implemented, no real corpus sample".
@@ -140,12 +142,19 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
   its `README.md`) - round 1's nine files, the four each of rounds 2 and
-  3 and round 4's three all byte-exact, round 5's three (`p17`..`p19`)
-  waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  3 and the three each of rounds 4 and 5 all byte-exact (`p19_open3` up to
+  the real compiler's own invalid output, see below), round 6's four
+  (`p20`..`p23`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
   counted in the N/62 figure.
+  `invalid_goldens.txt` lists every golden whose `.s` stops being valid
+  assembly at some line - the real compiler's own broken output, never
+  edited (at present `fltprobe/p19_open3`: 118 bytes of libc's `_ctype_`
+  where a register name belongs). `run_goldens.sh` requires `mutos_c1` to
+  refuse such a file and to have written exactly the golden's lines
+  before that point (its category 8).
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
   construct table above — nine real, unmodified MUTOS 1700 kernel driver
   source files (`01_delay.c` … `09_amx.c`, ordered easy to hard) plus the
@@ -561,12 +570,13 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, the twenty floating probes of
-  `tests/mutos_cc/fltprobe/`'s first four rounds are byte-exact against
+  8086 emulator. Beyond the corpus, 22 of the 23 probes of
+  `tests/mutos_cc/fltprobe/`'s first five rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
-  the register an int is converted in).**
+  the register an int is converted in, `long` mixed with int-class
+  values), the 23rd up to the real compiler's own invalid output.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -637,9 +647,16 @@ scope and intent, not a snapshot of what's done.
     converted (`mutos_c0` accepts `unsigned` locals now). See
     `docs/DEVLOG.md`'s "The fltprobe goldens", "The round-2 fltprobe
     goldens", "The round-3 fltprobe goldens" and "The round-4 fltprobe
-    goldens". Round 5 (`p17`..`p19`) asks about the shapes `mutos_c1`
-    compiles by inference and those still refused; running it is the
-    first "Next up" in `STATUS.md`.
+    goldens". Round 5 settled that the offset (not the context) decides
+    the order of two int elements, `^` and a comparison of two elements
+    (the left one's address pushed), `-=` with a computed right operand
+    (the target loaded first), and `long` mixed with int-class values
+    (`mutos_c0` writes v7's `ITOL`; v7's long comparisons) - and showed
+    the real compiler emitting invalid assembly for an unsigned converted
+    after a computed `*` (see "The round-5 fltprobe goldens"). Round 6
+    (`p20`..`p23`) asks about floating lvalues beyond variables, floating
+    expression forms and the `long` and element shapes still refused;
+    running it is the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete

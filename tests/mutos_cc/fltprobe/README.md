@@ -32,11 +32,24 @@ not compared), and skips the others.
   right element at offset 0 is computed first), `p15_fltinf` one (the
   register context in a chain), `p16_open2` settled every refusal. See
   `../../../docs/DEVLOG.md`'s "The round-4 fltprobe goldens".
-- **Round 5** (`p17`..`p19`, goldens pending): two files for what
-  `mutos_c1` now compiles by inference only (`p17_elem2` has no floating
-  point - which of offset or context decides the element order), one for
-  what is still refused (`long` combined with int-class variables among
-  it). Run them with `make -f Makefile.mutos round5`.
+- **Round 5** (goldens 2026-10-02, commit `434c320`): two files for what
+  `mutos_c1` compiled by inference only, one for what was still refused -
+  `p17_elem2` and `p18_fltop3` now **byte-exact** end-to-end (`p18` at
+  once; `p17` corrected two inferences: '^' pushes the right element's
+  address too, and a comparison of two elements pushes the LEFT one's),
+  `p19_open3` byte-exact at every stage but the last, and there up to the
+  real compiler's own invalid output: its `d = (d * e) + u` (an unsigned
+  converted after a computed `*`) has 118 bytes of libc's `_ctype_` table
+  where a register name should be, which `mutos_c1` refuses on purpose -
+  see `../invalid_goldens.txt` and `../../../docs/DEVLOG.md`'s "The
+  round-5 fltprobe goldens".
+- **Round 6** (`p20`..`p23`, goldens pending): floating lvalues beyond
+  variables (`p20_fltlv` - struct members, pointers to double, elements as
+  compound-assignment targets, `&d`), floating expression forms
+  (`p21_fltexp` - chained assignments, `++`/`--`, char operands, casts of
+  computed ints, `?:`, comma), and the `long` (`p22_long2`) and element
+  (`p23_elem3`) shapes round 5 left open. Run them with `make -f
+  Makefile.mutos round6`.
 
 ## Why these, and not goldens alone
 
@@ -74,9 +87,13 @@ open question the five other files asked.
 | `p14_axint.c` | no floating point: a value in AX plus a constant stored (`x / y + 3`, `f() + 1`, `x * y - 1`), an int `+ 0` / `- 0` in DI, `a[i] * b[j]` (spilled: `push di` / `pop cx` / `imul cx`) and `a[i] & b[j]` (the address pushed: `pop bx` / `and di,(bx)`) of int arrays, `x /= f()`, `y %= f()` | byte-exact | 129 |
 | `p15_fltinf.c` | `(d * d) + arr[i] + i` (the element first by its degree, then i in AX - after d * d), a shift by 3 and a right shift converted in AX, a call's result then an element | byte-exact | 45 |
 | `p16_open2.c` | an int converted after `*p` (DI) and after an assignment (AX, its `*`), a remainder converted (`mov ax,dx`), `-0.0` (written as 0.0), `(int) 2.5` and `i = 2.5` (`flds` / `ftoi`), `d += c` with a char (the char first, `faddd d`), an `unsigned` converted (`sub di,di` / `ltof`) | byte-exact | 79 |
-| `p17_elem2.c` | no floating point: `return a[i] * b[j]` and `s = ps[i].c * qs[i].d` (offset or context?), `+`, `-`, `\|`, `^` of two elements, a `+` chain, two elements compared | inferred | 84 |
-| `p18_fltop3.c` | `d += e * 2` (computed first?), `f += i` into a float, a remainder converted after a `*`, `(long) 3.75`, a negated zero as an initializer | inferred | 27 |
-| `p19_open3.c` | `long` with int-class variables (`l + i`, `i + l`, `l > i`, `l == i`, `l += i`, `l = u`), `&` / `\|` of longs, `u = 40000`, an unsigned compared; `a[i] * b[j - 2]`, `x - b[j]`; `d -= c`, `d -= e * 2`, an unsigned converted after a `*` | refused | 111 |
+| `p17_elem2.c` | no floating point: `return a[i] * b[j]` and `s = ps[i].c * qs[i].d` (the offset decides, not the context), `+`, `-`, `\|`, `^` of two elements (the right one's address pushed - `^` too), a `+` chain, two elements compared (the LEFT one's address pushed: `pop bx` / `cmp (bx),di`) | byte-exact | 84 |
+| `p18_fltop3.c` | `d += e * 2` (computed first), `f += i` into a float, `(d * e) + (i % j)` (the remainder first, `mov ax,dx`), `(long) 3.75`, a negated zero as an initializer | byte-exact | 27 |
+| `p19_open3.c` | `long` with int-class variables (`l + i` and `i + l` - the int widened first, `l > i` and `l == i` - swapped, in DX:AX, `l += i`, `l = u` - `sub di,di`), `&` / `\|` of longs (an int constant widened at run time), `u = 40000`, an unsigned compared with a long constant; `a[i] * b[j - 2]` (`imul *-4.(si)`), `x - b[j]` (pushed); `d -= c`, `d -= e * 2` (the target loaded first, `fsub`); an unsigned converted after a `*` - the real compiler's output invalid there | byte-exact to line 223, then refused on purpose | 111 |
+| `p20_fltlv.c` | a double struct member (target, operand, through a pointer, `+=`), `+=` / `*=` into a double element by a variable, a pointer to double subscripted, with an offset and incremented, `&d` passed, a function returning `double *` | refused | 128 |
+| `p21_fltexp.c` | `d = e = 2.5`, `d++`, `++d`, `e = d--`, `d + c`, `c * 2.5`, `(double) (i + j)`, `(double) (i * j) + 0.5`, `d = -i`, `e = l + 1`, `(unsigned) d`, `x ? d : e`, `(i = 2, d - 40000.0)`, `half(d = 3.0)` | refused | 60 |
+| `p22_long2.c` | no floating point: `l - i`, `i - l`, `l + 1`, `l - 2`, `l ^ 7`, `l -= i`, `l *= i`, `l / i`, `l % i`, `x = 40000`, `l < 0L`, `l >= 0L`, `x = l > 0L`, `i < l`, `l > 2`, `l > 0`, `if (l)`, `!l`, `u < l`, `l > m`, `l == m`, `-100000`, `~l`, `l << 2`, `l >> 1`, `x ? l : m`, `x = (int) (l - 5)`, `(long) u`, `l & m` | refused | 83 |
+| `p23_elem3.c` | no floating point: `ps[i].c > b[j]`, `a[i] > ps[i].c`, `x * b[j]`, `x - *p`, `5 - b[j]`, `g - b[j]` (a file-scope `g`), `b[j + 1]` of a local array, `a[i] + b[j + 1]`, two elements compared as values and under `&&` | refused | 136 |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
@@ -84,22 +101,31 @@ value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
 `p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
 MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
-golden returns 6, its floats truncated. Every golden of rounds 1 to 4 runs
-under `../fuzz/x86sim.py` and returns these values; `mutos_c1`'s output is
-byte-identical to them. "inferred" means `mutos_c1` compiles the file - its
-output runs under `x86sim.py` and returns the value above - with no golden
-behind the shapes yet; "refused" that `mutos_c0` or `mutos_c1` stops with a
-diagnostic.
+golden returns 6, its floats truncated. Every golden of rounds 1 to 5 runs
+under `../fuzz/x86sim.py` and returns these values - `p19_open3`'s up to
+its invalid statement (the first 223 lines, completed with `r = r + (int)
+d`, return 104); `mutos_c1`'s output is byte-identical to them. "inferred"
+means `mutos_c1` compiles the file - its output runs under `x86sim.py` and
+returns the value above - with no golden behind the shapes yet; "refused"
+that `mutos_c0` or `mutos_c1` stops with a diagnostic.
 
 ## Generating the goldens
 
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round5
+make -f Makefile.mutos round6
 ```
 
-(or plain `make -f Makefile.mutos` for all five rounds), then bring the
+(or plain `make -f Makefile.mutos` for all six rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
 all four kinds - and run `make goldens` in `..` (it packages every
-category's, this directory's included).
+category's, this directory's included). Should a round-6 file not compile
+on MUTOS, make the others by name (`make -f Makefile.mutos p22_long2.s
+p22_long2.1`) and bring back the failing one's messages instead.
+
+One more question for the real toolchain, if convenient: `as p19_open3.s`
+- what the real assembler makes of the real compiler's invalid lines 229
+and 231 (`mutos_as` stops with "could not classify operands"). An error
+there settles that no MUTOS 1700 binary could ever have contained this
+code.

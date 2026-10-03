@@ -11,6 +11,11 @@
 # checked elsewhere: tests/mutos_as/kernel_*/ and libc_recon/ against
 # real objects.
 #
+# A golden listed in tests/mutos_cc/invalid_goldens.txt ends in the real
+# compiler's own invalid output (a register name that is not one): it is
+# expected NOT to assemble, and counted apart - a listed file that does
+# assemble is reported as a failure, the list being out of date.
+#
 # Usage (from anywhere):
 #   ./assemble_cc_goldens.sh                     # "mutos_as" from $PATH
 #   MUTOS_AS=../../src/mutos_as/mutos_as ./assemble_cc_goldens.sh
@@ -32,15 +37,35 @@ obj="$(mktemp)"
 log="$(mktemp)"
 trap 'rm -f "$obj" "$log"' EXIT
 
+declare -A invalid=()
+if [ -f "$CORPUS/invalid_goldens.txt" ]; then
+    while read -r key _; do
+        case "$key" in ''|'#'*) continue ;; esac
+        invalid["$key.s.golden"]=1
+    done < "$CORPUS/invalid_goldens.txt"
+fi
+
 n=0
 fail=0
+ninv=0
 while IFS= read -r src; do
+    rel="${src#"$CORPUS"/}"
+    if [ -n "${invalid[$rel]:-}" ]; then
+        ninv=$((ninv + 1))
+        if "$MUTOS_AS" -o "$obj" "$src" >"$log" 2>&1; then
+            fail=$((fail + 1))
+            printf '  FAIL  %s\n        -> listed in invalid_goldens.txt, but assembles\n' "$rel"
+        else
+            printf '  invalid (as listed)  %s\n        -> %s\n' "$rel" "$(grep -m1 error "$log")"
+        fi
+        continue
+    fi
     n=$((n + 1))
     if ! "$MUTOS_AS" -o "$obj" "$src" >"$log" 2>&1; then
         fail=$((fail + 1))
-        printf '  FAIL  %s\n        -> %s\n' "${src#"$CORPUS"/}" "$(grep -m1 error "$log")"
+        printf '  FAIL  %s\n        -> %s\n' "$rel" "$(grep -m1 error "$log")"
     fi
 done < <(find "$CORPUS" -name '*.s.golden' | LC_ALL=C sort)
 
-echo "mutos_cc .s goldens: $((n - fail))/$n assemble"
+echo "mutos_cc .s goldens: $((n - fail))/$n assemble ($ninv more, the real compiler's own invalid output, refused as expected)"
 [ "$fail" -eq 0 ]

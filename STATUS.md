@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-10-02.
+Last updated: 2026-10-03.
 
 ---
 
@@ -589,9 +589,10 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. Beyond the corpus, all twenty floating-point probes of
-`tests/mutos_cc/fltprobe/`'s first four rounds (real-hardware goldens, not
-counted in the 62) are byte-exact too, end-to-end: comparisons (a zero
+below. Beyond the corpus, 22 of the 23 floating-point probes of
+`tests/mutos_cc/fltprobe/`'s first five rounds (real-hardware goldens, not
+counted in the 62) are byte-exact too, end-to-end, the 23rd (`p19_open3`)
+at every stage up to the real compiler's own invalid output: comparisons (a zero
 included), comparisons as values and under `&&`, v7's operand order for
 every floating operator (an element of a local array at degree 2),
 constants of any value (`.double` with the MUTOS `ecvt()`'s own digits,
@@ -599,9 +600,9 @@ degree 0 where it decides an order; a zero kept), compound assignments
 (`i += d` and `j /= e` into an int too), calls, float functions, the
 register an int is converted in, file-scope and static floats with any
 constant initializer, arrays (subscripted by a variable too), pointers and
-members, `long`/`char`/`unsigned` conversions, and the order of two int
-elements; a fifth round of three probes (`p17`..`p19`) waits for real
-hardware. ABI/
+members, `long`/`char`/`unsigned` conversions, `long` mixed with
+int-class values, and the order of two int elements; a sixth round of four
+probes (`p20`..`p23`) waits for real hardware. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -613,6 +614,88 @@ coverage against it is 0/9 so far (each refusal diagnosed, none silent),
 tracked apart from the 62/62 figure above - see "Next up" below and
 `docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (the round-5 `fltprobe` goldens - `p17`/`p18` byte-exact, `p19` up to the real compiler's invalid output; the offset decides an element's order, a comparison of two elements, `-=` computed, `long` mixed with int-class values; five silent `long` miscompiles refused or fixed)
+
+**62/62 corpus files and 22/23 `fltprobe` files byte-exact, all at every
+stage; `p19_open3` byte-exact at `.i`/`.1`/`.2` and in its `.s` up to line
+223 of 251.** Round 5 came back in commit `434c320`. `p18_fltop3` matched
+at once; `mutos_c1` differed from `p17_elem2` in two places; `mutos_c0`
+refused `p19_open3`. Full derivation in `docs/DEVLOG.md`'s "The round-5
+fltprobe goldens".
+
+- **The offset decides, not the context** (`p17_elem2`): `return a[i] *
+  b[j]` pushes `b[j]` as `p14`'s assignment did, `s = ps[i].c * qs[i].d`
+  does not, as `p10`'s `return` did not. `+`, `-`, `|` and a `+` chain's
+  first link confirmed as inferred.
+- **`^` pushes the right element's address too** (`pop bx` / `xor
+  di,(bx)`), and **a comparison of two elements at offset 0 pushes the
+  LEFT one's** - `lea di,a` / ... / `push di` / `lea di,b` / ... / `mov
+  di,(di)` / `pop bx` / `cmp (bx),di` (`is_pushleft()`, `ORD_PUSHLEFT`,
+  `SEG_KEEPIND`, `SEG_DEFPOPL`).
+- **`p18_fltop3`, all as inferred**: `d += e * 2` computed first, `f += i`
+  into a float, `(d * e) + (i % j)` (the remainder first, `mov ax,dx`),
+  `(long) 3.75`, a negated zero as an initializer.
+- **`p19_open3`**: `x - b[j]` pushes `b[j]`'s address (a variable on the
+  left loaded after it); `a[i] * b[j - 2]` with DI and SI taken indexes
+  through DX into the array's address in SI (`imul *-4.(si)`); `d -= c`
+  and `d -= e * 2` load the target FIRST (`fldd d` / ... / `call fsub`) -
+  no reversed subtraction; `long` with int-class values (`l + i`, `i + l`,
+  `l > i`, `l == i`, `l += i`, `l = u`, `m & 255`, `m | 6`, `u = 40000`,
+  `u > 39999`, `(int) (l - 100000)`) - `mutos_c0` writes v7's `ITOL`/`LTOI`
+  (`mix_rhs_end()`), `mutos_c1` the widened int in DI:SI or (compared) in
+  DX:AX, an unsigned's high word cleared, a widened constant pushed as
+  `c + 1L`'s, the low words of `(int) (l - c)` only, and v7's long
+  comparisons (`longrel()`'s `lrtab[0]`: high words signed, low words
+  unsigned - `bhis`, `blo`).
+- **The real compiler's own output is invalid** for `p19`'s `d = (d * e) +
+  u` (an unsigned converted after a computed `*`): `mov <118 bytes of libc's
+  _ctype_ table>,ax` / `sub ax,ax` / `push <the same>` / `push ax` / `call
+  ltof` - its code table asks for the register pair starting at AX.
+  `mutos_c1` refuses that shape for good; `tests/mutos_cc/
+  invalid_goldens.txt` lists the golden, `run_goldens.sh` checks it up to
+  the line before (category 8) and `assemble_cc_goldens.sh` expects
+  `mutos_as` to refuse it.
+- **Silent miscompiles found testing `long`, each refused or fixed** (no
+  golden involved): two long variables compared (`l > m` compared the high
+  words only), a long tested for truth (`if (l)`, `!l`, `l && ...`, `l ?
+  ...` - the high word only), `~l`, `l << n` / `l >> n` and a long `?:` (one
+  word each - all refused now), and a negated long constant (`l = -65536;`
+  stored 0: `mutos_c0` truncated it; now LCON, NEG(LONG), folded by
+  `mutos_c1` as v7's `unoptim()` does).
+- **Compiled by inference** (round 6 asks): a widened int constant `+`/`-`
+  /`^` a long, `l -= i`, a long constant into an int, `l < 0L` and the
+  other relations with `0L`, `x = l > 0L` as a value, `i < l` as written.
+- **`tests/mutos_cc/fltprobe/` round 6**: `p20_fltlv.c`, `p21_fltexp.c`,
+  `p22_long2.c`, `p23_elem3.c` (`make -f Makefile.mutos round6`) - all
+  four refused today.
+
+**Verification (this session):**
+
+- `make test`: 84 files byte-exact at all four stages (62/62 corpus, 22
+  `fltprobe`), `p19_open3` in category 8, 0 mismatches, zero warnings;
+  `mutos_as` 76/76, `check_floatdat.sh` 13/13, 93/93 compiler goldens
+  assemble (and `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
+- Against the previous build (`434c320`), all 98 inputs (the 84, `p19`,
+  the nine `11_kernel` refusals and round 6): identical but for `p17`,
+  `p19`, `p21`/`p22`'s diagnostics, and in three kernel files reworded or
+  dropped diagnostics and partial `.1` output (`03_mem`'s two long `&`
+  are converted now) - all nine still refuse.
+- `fuzz_c.py` against `434c320`: 14,000 programs (seeds 1, 7 `--scope`, 3
+  scalars only, 21): 0 WRONG, 0 BAD, 69 changed and still correct, 632 now
+  correct that were refused; 1,000 more
+  (seed 31) through ASan/UBSan builds: 0 WRONG, 0 BAD.
+- ASan/UBSan builds over the 98 inputs: no reports, the 84 byte-exact.
+- `x86sim.py` now executes `adc`/`sbb` (the carry of the `add`/`sub` right
+  before) and `blo`/`bhis`: 55 of the 62 corpus goldens run (`02_long/
+  01_addsub` 11009 and `03_retval` -31067 newly), 22 of the 23 `fltprobe`
+  goldens (`p17` 84, `p18` 27), and `p19`'s first 223 lines completed with
+  `r = r + (int) d` return 104, the host's value for that program.
+- 79 hand-written programs (long mixing, element comparisons, negated long
+  constants, floating shapes) through the whole chain and `x86sim.py`:
+  every one compiled gives the host C compiler's value; the rest refuse.
+- `make check-libcatof` not run (the module `unicorn` is not installed in
+  this sandbox); `c1_fltdec.c` is unchanged.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (the round-4 `fltprobe` goldens - 3/3 byte-exact; a right element at offset 0 computed first, the context in a chain, `unsigned` locals; silent `long`-mixing miscompiles refused)
 
@@ -3028,16 +3111,18 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/`'s round 5 on real hardware** (`make
-   -f Makefile.mutos round5` there, then `make goldens` in
+1. **Run `tests/mutos_cc/fltprobe/`'s round 6 on real hardware** (`make
+   -f Makefile.mutos round6` there, then `make goldens` in
    `tests/mutos_cc` on the modern host - all four kinds of file):
-   `p17_elem2.c` (does a right element's offset or the context decide
-   whether it is computed first? `+`, `-`, `|`, `^` of two elements),
-   `p18_fltop3.c` (`+=` with a computed right operand, `f += i`, a
-   remainder after a `*`, `(long) 3.75`, a negated zero initializer),
-   `p19_open3.c` (refused: `long` with int-class variables, `u = 40000`,
-   `-=` with a computed right operand, ...). Rounds 1 to 4 are
-   byte-exact - see the sections above and
+   `p20_fltlv.c` (floating struct members, pointers to double subscripted
+   and incremented, compound assignments into elements, `&d`),
+   `p21_fltexp.c` (`d = e = 2.5`, `++`/`--`, char operands, casts of
+   computed ints, `-i`, `?:`, comma, `(unsigned) d`), `p22_long2.c` (the
+   `long` shapes still refused or inferred) and `p23_elem3.c` (element
+   orders with one offset, a leaf minus an element). All four are refused
+   today. If convenient, also `as p19_open3.s` on MUTOS: what the real
+   assembler makes of its compiler's invalid lines 229/231. Rounds 1 to 5
+   are byte-exact (`p19` to line 223) - see the sections above and
    `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound

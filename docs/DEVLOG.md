@@ -6892,6 +6892,178 @@ compiler's values; `p19_open3` stops with its diagnostics. Hand-written
 `unsigned` programs (assignment, `+`, `*`, `&`, `==`, a call argument, to
 char, to double, from int) give the host's values; the rest refuse.
 
+### The round-5 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-03)
+
+The three round-5 programs (`p17_elem2`, `p18_fltop3`, `p19_open3`) came
+back from real hardware in commit `434c320`, all four kinds of file.
+`p18` matched at every stage at once; `p17`'s `.1`/`.2` matched and its
+`.s` differed in two places; `mutos_c0` refused `p19`. Now `p17` and `p18`
+are byte-exact, and `p19` at `.i`/`.1`/`.2` and in its `.s` up to line
+223 - after which the golden is not valid assembly (item 5). The 82 others
+are unchanged.
+
+**1. The offset decides, not the context** (`p17_elem2`). Round 4 left
+open whether a right element at offset 0 is computed first because of its
+offset or because of the context (`p10`'s product was returned, `p14`'s
+assigned). `return a[i] * b[j]` (`f1`) pushes `b[j]` (`mov di,j` / `sal
+di,*1` / `add di,b` / `mov di,(di)` / `push di` / ... / `mov ax,di` / `pop
+cx` / `imul cx`), and `s = ps[i].c * qs[i].d` (`f2`) does not (`mov
+di,*4.(di)` / `lea si,qs` / `mov dx,i` / ... / `mov ax,di` / `imul *6.(si)`):
+the offset. Why v7's `c1` treats the two differently is still not
+understood - both have the same `degree()`; in cr40/cctab order a right
+operand matching `%n,ew*` is taken first, and one at offset 0 evidently is
+not `ew*` on this port. `+`, `-`, `|` and a `+` chain's first link pushed
+`b[j]`'s address exactly as inferred.
+
+**2. `^` and a comparison** (`p17_elem2`): `a[i] ^ b[j]` pushes the
+address as `&` does (`pop bx` / `xor di,(bx)`) - the PDP-11 rule that
+`^`'s right operand be in a register (`acommute()`'s "rt. op of ^ must be
+in a register", which inserts a LOAD) has no effect here. `if (a[i] >
+b[j])` pushes the LEFT element's address, computes and loads the right
+one, and compares through BX in the order written:
+
+    lea di,*-10.(bp) / mov si,i / sal si,*1 / add di,si / push di
+    lea di,*-16.(bp) / mov si,j / sal si,*1 / add di,si / mov di,(di)
+    pop bx / cmp (bx),di / ble L10
+
+This is cctab's `%nw*,nw*` ([move11]: FS*, S*, compare through both) -
+`02_bubsort`'s `a[j] > a[j + 1]` (right one with an offset) matches the
+earlier `%n,ew*` instead (`cmp di,*2.(si)`). `mutos_c1`: `is_pushleft()`
+(a relational of two element reads at offset 0), `ORD_PUSHLEFT` -
+`SEG_KEEPIND` (the left element stays "(di)" although `load_now()` would
+load a comparison's left operand), `SEG_ADDRPUSH`, the right operand,
+`SEG_DEFPOPL` (it loaded, `pop bx`, the left "(bx)" marked `memleft`), and
+`emit_cmp_and_branch()` comparing `(bx)` with the register as is. A
+comparison with one element at an offset keeps the old shape (no
+golden - `p23_elem3` asks).
+
+**3. `p18_fltop3`, all as inferred**: `d += e * 2` (`flds 2.0` / `fmuld
+e` / `lea ax,d` / `faddd` / `fstdp d` - the right operand first), `f += i`
+into a float (`mov di,i` / `mov ax,di` / `itof` / `fadds f` / `fstsp f`),
+`d = (d * e) + (i % j)` (the remainder first, by its degree: `mov ax,i` /
+`cwd` / `idiv j` / `mov ax,dx` / `itof`, then `fldd d` / `fmuld e` /
+`fadd`), `(long) 3.75` (`flds` / `ftol` / `mov di,dx` / `mov si,ax`),
+`double gz = -0.0` (`_gz: .double 0.0...`).
+
+**4. `p19_open3`** - every refusal settled but one:
+
+| Source | Golden | Now in `mutos_c0`/`mutos_c1` |
+|---|---|---|
+| `l + i`, `i + l` | `mov ax,i` / `cwd` / `mov di,dx` / `mov si,ax` / `add si,l+2` / `adc di,l` (both) | `.1`: NAME l, NAME i, ITOL, PLUS(6) - and NAME i, ITOL, NAME l, PLUS; `c1`: the widened int first (acommute(): ITOL of a variable has degree 2, a NAME 0) |
+| `r + (int) (l - 100000)` | `mov di,l+2` / `add di,r` / `add di,#31072.` | `.1`: NAME l, LCON, MINUS(6), LTOI(0); `c1`: `VK_LOWADD` - v7's `unoptim()` distributes the LTOI (low word of l, low word of the LCON); the low word first, the variable, the constant last |
+| `if (l > i)` | `mov ax,i` / `cwd` / `cmp dx,l` / `bgt L4` / `blt L10000` / `cmp ax,l+2` / `bhis L4` / `L10000:` | v7's optim() swaps (ITOL degree 2 > NAME 0): `i < l`, branch when false: `longrel()`'s `lrtab[0]` for GREATEQ |
+| `if (l == i)` | ... `cmp dx,l` / `bne L5` / `cmp ax,l+2` / `bne L5` | NEQUAL: `bne` both |
+| `l += i` | `mov ax,i` / `cwd` / `mov di,dx` / `mov si,ax` / `add l+2,si` / `adc l,di` | `.1`: NAME l, NAME i, ITOL, ASPLUS(6) |
+| `l = u` | `mov si,u` / `sub di,di` | ITOL of an unsigned: the high word cleared (`itolu[]` - which ITOLs take an unsigned, from the pre-scan) |
+| `l = m & 255`, `m \| 6` | `mov ax,#255.` / `cwd` / `push ax` / `push dx` / `mov si,m+2` / `mov di,m` / `pop bx` / `pop cx` / `and si,cx` / `and di,bx` | `.1`: CON 255, ITOL, AND(6) - the constant widened at run time, `c + 1L`'s shape (`gen_long_constop()`, "pop cx" with its space) |
+| `u = 40000` | `mov u,#-25536.` | `.1`: LCON(0, -25536), LTOI(7) |
+| `r + (u > 39999)` | `mov si,u` / `sub di,di` / `push si` / `push di` / `mov si,#-25537.` / `mov di,*0.` / `pop cx` / `pop bx` / `cmp di,cx` / `blt` / `bgt` / `cmp si,bx` / `blo` / ... 0/1 | `.1`: NAME u, ITOL, LCON, GREAT; swapped (ITOL of an unsigned variable: degree -1 < 0) to `39999 < u`, the widened u pushed, the constant loaded, u popped into CX:BX (cctab's `%nl,nl`: SS, F); a value, branching when true |
+| `a[i] * b[j - 2]` | `mov di,(di)` / `lea si,b` / `mov dx,j` / `sal dx,*1` / `add si,dx` / `mov ax,di` / `imul *-4.(si)` | the index through DX, added to the array's address, the constant term the displacement (not folded into the `lea`, as v7's acommute() would) |
+| `x - b[j]` | `lea di,b` / ... / `push di` / `mov di,x` / `pop bx` / `sub di,(bx)` | `is_pushaddr()` for `-` with a variable on the left; `SEG_DEFPOP` loads it |
+| `d -= c` | `lea ax,d` / `call fldd` / `movb ax,c` / `cbw` / `call itof` / `call fsub` / `lea ax,d` / `call fstdp` | the target loaded FIRST (as for `/=`), no reversed subtraction - `+=` alone computes its right operand first |
+| `d -= e * 2` | `fldd d` / `flds 2.0` / `fmuld e` / `fsub` / `fstdp d` | the same |
+
+`mutos_c0` writes the conversions where v7's `build()` does - right after
+the int-class operand's own bytes (`mix_rhs_end()`/`emit_itol()`), a
+constant too (`m & 255`'s CON, ITOL - v7's `c0` folds nothing for a long;
+`c1`'s `lconst()` folds later); a char with a long is refused (no
+golden). A parenthesized long cast to int (`(int) (l - 100000)`) is the
+tree and LTOI. `mutos_c1`'s long comparison (`gen_long_relop()`/
+`gen_long_cmp()`) is v7's `longrel()`/`xlongrel()` table for a comparison
+not with an ITOL of 0 (`lrtab[0]`), which also reproduces `01_addsub`'s
+`c > 0L`; the operand shapes are the three goldens' only.
+
+**5. The real compiler's output is invalid for `d = (d * e) + u`.** After
+`fldd d` / `fmuld e` the golden has
+
+    mov  ax,*-36.(bp)
+    mov  <118 bytes>,ax
+    sub  ax,ax
+    push <the same 118 bytes>
+    push ax
+    call ltof
+
+where the 118 bytes are `08 08 08 08`, eighteen spaces, `08`, `10` x15,
+`04` x10, `10` x7, `AAAAAA`, `01` x20, `10` x6, `BBBBBB`, `02` x20, `10`
+x4, a space - libc's `_ctype_` character-class table (the entries from
+`'\n'` up), read as a string where a register name should be. The intended
+code is `p16_open2`'s `mov si,u` / `sub di,di` / `push si` / `push di` for
+an unsigned made a long (v7's `unoptim()`: ITOF of an unsigned is
+LTOF(ITOL)); in AX context (after a computed `*`, `/` or call) the code
+table asks for the register pair starting at AX, and the register-name
+table has no entry after AX. `mutos_as` stops at line 229 ("could not
+classify operands"); whether the real `as` assembles it is not known
+(asked in `STATUS.md`'s "Next up"). There is nothing meaningful to
+reproduce: `mutos_c1` refuses an unsigned converted after a computed
+operand, with a diagnostic that says why, for good.
+
+The golden itself stays as it came back (CLAUDE.md's Golden Master
+Integrity). `tests/mutos_cc/invalid_goldens.txt` lists it with the
+number of valid leading lines (223); `run_goldens.sh` checks a listed file
+at `.i`/`.1`/`.2` as usual, then requires `mutos_c1` to refuse it and its
+output up to the refusal to be exactly those lines - category 8 -, and
+`tests/mutos_as/assemble_cc_goldens.sh` requires `mutos_as` to refuse it
+(a listed file that assembles is a failure: the list is out of date).
+
+**6. Silent miscompiles found while testing `long`** (no golden involved;
+found by hand-written programs run through `x86sim.py` against the host
+C compiler):
+
+- two long variables compared (`l > m`, `l == m`) - `c0`'s
+  `long_mix_refused()` only looked at mixed pairs, and `c1` compared the
+  high words only (`mov di,m` / `cmp l,di`). `mutos_c1` now notes every
+  comparison with a long operand in the pre-scan (`lrel[]` - a Val keeps
+  no type) and sends it to `gen_long_relop()`, which refuses the shapes
+  no golden shows;
+- a long tested for truth (`if (l)`, `!l`, `l && i`, `l ? a : b`): the
+  high word only (`cmp l,*0`); refused in the pre-scan (v7's `longrel()`
+  would test both words with `tst`);
+- `~l`, `l << n`, `l >> n` and `x ? l : m`: typed int by `mutos_c0`, one
+  word each; refused in `mutos_c0`;
+- `l = -65536;` stored 0: `mutos_c0` folded `-` of a long constant to a
+  truncated int. v7's `fold()` folds CONs only, so its `c0` writes LCON,
+  NEG(LONG); `mutos_c0` does the same now, and `mutos_c1` folds NEG and
+  COMPL of an LCON (v7's `unoptim()`).
+
+A safety net came with it: `put_insn_ex()` refuses any operand
+`render_operand()` writes as a `<...>` placeholder (an unsupported value
+reaching an instruction) - such a slip once reached the output unnoticed
+(`cmp *-8.(bp),<unmaterialized-long-const>`, 2026-09-26).
+
+**Round 6** (`make -f Makefile.mutos round6`): `p20_fltlv` (floating
+lvalues beyond variables: struct members, pointers to double subscripted,
+with an offset and incremented, compound assignments into elements,
+`&d`, a function returning `double *`), `p21_fltexp` (chained assignment,
+`++`/`--`, char operands, casts of computed ints, `-i`, a long sum
+converted, `(unsigned) d`, `?:` and comma with doubles, an assignment as
+an argument), `p22_long2` (the `long` shapes still refused or inferred)
+and `p23_elem3` (one element with an offset compared, `x * b[j]`, a leaf
+minus an element, `b[j + 1]` of a local array). All four refused today;
+their results (128, 60, 83, 136) are the host's.
+
+**Tooling.** `x86sim.py` executes `adc`/`sbb` (the carry of the `add`/
+`sub` immediately before - anything else between is an error) and the
+unsigned branches `blo`/`bhis`: 55 of the 62 corpus goldens run (`02_long/
+01_addsub` 11009 and `03_retval` -31067 newly), 22 of the 23 `fltprobe`
+goldens (`p17` 84, `p18` 27); `p19`'s first 223 lines completed with `r =
+r + (int) d` return 104, the host's value for that program.
+
+**Verification.** `make test`: 84 files byte-exact at all four stages
+(62/62 corpus, 22 `fltprobe`), `p19_open3` in category 8, 0 mismatches,
+zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 93/93
+compiler goldens assemble and `p19_open3`'s is refused as listed,
+`mutos_cpp` 5/5. Against the previous build (`434c320`) over all 98
+inputs: identical output but for `p17`, `p19`, the round-6 files'
+diagnostics and three kernel files (`03_mem`'s two long `&` converted now
+- its partial `.1` changes -, the cast diagnostic reworded in `07_v24` and
+`09_amx`); every kernel file still refuses. `fuzz_c.py` against `434c320`:
+14,000 programs (seeds 1, 7 `--scope`, 3 scalars only, 21), 0 WRONG, 0
+BAD, 69 changed and still correct, 632 now correct that the old build
+refused; 1,000 more (seed 31) through ASan/UBSan builds: 0 WRONG, 0 BAD.
+ASan/UBSan builds over the 98 inputs: no reports. 79 hand-written
+programs (long mixing, element comparisons, negated long constants,
+floating shapes): every one compiled gives the host's value.
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
