@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-10-03.
+Last updated: 2026-10-04.
 
 ---
 
@@ -589,10 +589,12 @@ degree, a store's right-hand side computed first), plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (`float`/`double`
 locals, floating constants, `+ - * /`, int/long conversions - through
 libc's software floating-point runtime) - see the sections
-below. Beyond the corpus, 22 of the 23 floating-point probes of
-`tests/mutos_cc/fltprobe/`'s first five rounds (real-hardware goldens, not
-counted in the 62) are byte-exact too, end-to-end, the 23rd (`p19_open3`)
-at every stage up to the real compiler's own invalid output: comparisons (a zero
+below. Beyond the corpus, 26 of the 27 floating-point probes of
+`tests/mutos_cc/fltprobe/`'s first six rounds (real-hardware goldens, not
+counted in the 62) are byte-exact too, end-to-end - `p21_fltexp` with the
+real compiler's own two `c1` error messages and exit status reproduced -,
+the 27th (`p19_open3`) at every stage up to the real compiler's own
+invalid output: comparisons (a zero
 included), comparisons as values and under `&&`, v7's operand order for
 every floating operator (an element of a local array at degree 2),
 constants of any value (`.double` with the MUTOS `ecvt()`'s own digits,
@@ -600,20 +602,100 @@ degree 0 where it decides an order; a zero kept), compound assignments
 (`i += d` and `j /= e` into an int too), calls, float functions, the
 register an int is converted in, file-scope and static floats with any
 constant initializer, arrays (subscripted by a variable too), pointers and
-members, `long`/`char`/`unsigned` conversions, `long` mixed with
-int-class values, and the order of two int elements; a sixth round of four
-probes (`p20`..`p23`) waits for real hardware. ABI/
+members (through pointers too), `long`/`char`/`unsigned` conversions,
+`long` mixed with int-class values and nearly every `long` operator, `++`/
+`--` and chained assignments, and the order of two int elements; a seventh
+round of five probes (`p24`..`p28`) waits for real hardware. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end. A further, separate golden corpus - `11_kernel/`, nine
 real MUTOS kernel driver source files with their own real-hardware-verified
-goldens already present - was added this session; `mutos_c0`/`mutos_c1`
-coverage against it is 0/9 so far (each refusal diagnosed, none silent),
-tracked apart from the 62/62 figure above - see "Next up" below and
-`docs/DEVLOG.md`'s Milestone 4 section for the initial assessment.**
+goldens already present - was added in an earlier session; `mutos_c0`/
+`mutos_c1` coverage against it is 1/9 (`01_delay` byte-exact; each
+refusal of the other eight diagnosed, none silent), tracked apart from
+the 62/62 figure above - see "Next up" below and `docs/DEVLOG.md`'s
+Milestone 4 section.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0`/`mutos_c1`: verified this session (the round-6 `fltprobe` goldens - 4/4 byte-exact, `p21` with the real compiler's own `c1` errors; floating lvalues through pointers, `++`/`--`, chained assignments, every `long` shape asked; `11_kernel/01_delay` byte-exact)
+
+**62/62 corpus files, 26/27 `fltprobe` files and `11_kernel/01_delay`
+byte-exact at every stage; `p19_open3` as before (to line 223).** Round 6
+came back in commit `2540271`; all four files had been refused (`mutos_c0`
+`p20`/`p21`/`p22`, `mutos_c1` `p23`). Full derivation in
+`docs/DEVLOG.md`'s "The round-6 fltprobe goldens".
+
+- **`p21_fltexp`'s two messages** ("56: floating point stack underflow",
+  "57: Floating point stack underflow", `*** Error code 1`, the `.s`
+  written all the same): the real compiler's code for `f = half(d =
+  3.0)` stores `d` with a pop (`fstdp`) and then pushes the argument with
+  a second `fstdp` - its stack underflows at run time - and its `c1`
+  keeps a compile-time model of the floating-point stack that reports a
+  pop below the bottom (lower case for a store, upper case for `ftoi`),
+  counts the error, writes the rest and exits with 1; `cc -S` keeps the
+  `.s`. `mutos_c1` reproduces it (`fp_track()`, `c1_error()`): the same
+  code, the same two lines, exit status 1, the `.s` byte-exact -
+  `tests/mutos_cc/c1_errors.txt`, `run_goldens.sh`'s new category 9. With
+  the call's result unused (`half(d = 3.0);`) it refuses instead - what
+  the real `c1` reports then is a round-7 question.
+- **`p20_fltlv`**: a double member as target and operand (through a
+  pointer too), `+=`/`*=` into members and elements (the address in AX,
+  `|`, `push ax` ... `pop ax` / `fstdp`), a store through a pointer after
+  a `*` (`mov ax,p` / `mov bx,ax` / `lea ax,(bx)`), `double *` parameters,
+  locals and functions (`*pick(a, 2)`: `mov bx,ax` / `lea ax,(bx)`), `p++`
+  in place (`add p,*8.`).
+- **`p21_fltexp`**: `d = e = 2.5` (`fstd` / `fstdp`), `d++`/`++d`
+  statements, `e = d--` (`fdup`), char operands, `(double) (i + j)`, `d =
+  -i` (`neg di`), `e = l + 1`, `(unsigned) d` (`ftol`), `?:` with double
+  arms, a comma typed DOUBLE.
+- **`p22_long2`**: `l - i`, `i - l`, a widened constant `+`/`^`, a
+  negative one folded (`add si,*-2.` / `adc di,*-1.`), `l -= i`, `l *= i`
+  (`almul`), `l / i`, `l % i`, every relation with `0L` and with a
+  widened int constant (no `tst`), `if (l)`/`!l`, `u < l`, `l > m`, `~l`,
+  `l << 2`/`l >> 1` (`sal`/`rcl`, `sar`/`rcr`), `x ? l : m`, `x = (int) (l
+  - 5)`, `(long) u`, `l & m`.
+- **`p23_elem3`**: a left element with an offset compared (`cmp
+  *4.(bx),di`), `x * b[j]` (`imul x`), a leaf minus an element or `*p`
+  (pushed), `b[j + 1]`, `a[i] + b[j + 1]` (through DX), two comparisons
+  summed (the right one first, pushed), `b[j] > 0` (`or di,di`).
+- **`11_kernel/01_delay`**: a bare `i++;` (`inc *-6.(bp)` - `mutos_c0`
+  had no production for it) - the first kernel file byte-exact.
+- **`tests/mutos_cc/fltprobe/` round 7** (`make -f Makefile.mutos
+  round7`): `p24_fltinf2`, `p25_long3`, `p26_elem4` (what `mutos_c1`
+  compiles by inference only, and the refusals left), `p27_frame` (frames
+  of 82..127 bytes) and `p28_fltstk` (more of the real `c1`'s
+  floating-stack messages, on purpose).
+
+**Verification (this session):**
+
+- `make test`: 88 files byte-exact at all four stages (62/62 corpus, 25
+  `fltprobe`, `11_kernel/01_delay`), `p19_open3` in category 8,
+  `p21_fltexp` in category 9, 0 mismatches, zero warnings; `mutos_as`
+  76/76, `check_floatdat.sh` 13/13, 97/97 compiler goldens assemble (and
+  `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
+- Against the previous build (`2540271`), all 98 golden inputs: identical
+  but for the four round-6 files, `01_delay`, and later diagnostics and
+  partial `.1` output in six other kernel files (each still refuses at
+  the same first error).
+- `fuzz_c.py` against `2540271`: 22,000 programs (seeds 1, 7 `--scope`,
+  3 scalars only, 21): 0 WRONG, 0 BAD, 172 changed and still correct, 104
+  now correct that were refused; 1,500 more (seed 31) through ASan/UBSan
+  builds: 0 WRONG, 0 BAD.
+- ASan/UBSan builds over the 98 golden inputs, the five round-7 probes
+  and the hand-written programs: no reports, output identical.
+- `x86sim.py` now runs `libc.a`'s `lmul`/`ldiv`/`lrem`/`almul`, `fdup`,
+  `neg` and `rcl`/`rcr`: 56 of the 62 corpus goldens (`02_long/02_muldiv`
+  24 newly), 25 of the 27 `fltprobe` goldens (`p20` 128, `p22` 83, `p23`
+  136; `p21` stops at its runtime underflow, 60 with that store made
+  `fstd`).
+- 158 hand-written programs (members and pointers to double, element
+  compound assignments, `++`/`--`, conversions, `?:`, comma, every `long`
+  shape of `p22` and its neighbours, element orders): the 133 compiled
+  give the host C compiler's value; the rest refuse with a diagnostic.
+- `make check-libcatof` not run (the module `unicorn` is not installed in
+  this sandbox); `c1_fltdec.c` is unchanged.
 
 ### `mutos_c0`/`mutos_c1`: verified this session (the round-5 `fltprobe` goldens - `p17`/`p18` byte-exact, `p19` up to the real compiler's invalid output; the offset decides an element's order, a comparison of two elements, `-=` computed, `long` mixed with int-class values; five silent `long` miscompiles refused or fixed)
 
@@ -3111,19 +3193,24 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/`'s round 6 on real hardware** (`make
-   -f Makefile.mutos round6` there, then `make goldens` in
-   `tests/mutos_cc` on the modern host - all four kinds of file):
-   `p20_fltlv.c` (floating struct members, pointers to double subscripted
-   and incremented, compound assignments into elements, `&d`),
-   `p21_fltexp.c` (`d = e = 2.5`, `++`/`--`, char operands, casts of
-   computed ints, `-i`, `?:`, comma, `(unsigned) d`), `p22_long2.c` (the
-   `long` shapes still refused or inferred) and `p23_elem3.c` (element
-   orders with one offset, a leaf minus an element). All four are refused
-   today. If convenient, also `as p19_open3.s` on MUTOS: what the real
-   assembler makes of its compiler's invalid lines 229/231. Rounds 1 to 5
-   are byte-exact (`p19` to line 223) - see the sections above and
-   `tests/mutos_cc/fltprobe/README.md`.
+1. **Run `tests/mutos_cc/fltprobe/`'s round 7 on real hardware** (`make
+   -f Makefile.mutos round7 2>&1 | tee round7.log` there, then `make
+   goldens` in `tests/mutos_cc` on the modern host - all four kinds of
+   file, and the log): `p24_fltinf2.c` (`e = ++d`, `?:` with constant
+   arms, `-=`/`/=` through a pointer, a member through a pointer compared
+   - inferred; `(x ? d : e) * 2.0`, `q->x += d * e`, a double element by
+   `i + 1`, `f++` - refused), `p25_long3.c` (`l | m`, `l += 1`, `l = c`,
+   `l / 7` - inferred; `l << 3`, `-l`, a long under `&&`/`||`/`?:`, `l++`,
+   `m = l = 5`, `l * 3` - refused), `p26_elem4.c` (`x * *ip`, an element
+   tested for truth - inferred; `b[i] += b[j]` and other int compound
+   assignments into elements or through pointers - refused), `p27_frame.c`
+   (frames of 82 to 127 bytes: where `call chkstk` starts) and
+   `p28_fltstk.c` (on purpose: the real `c1`'s floating-stack messages
+   after `half(d = 3.0)` - its `cc -S` is expected to fail, `make` goes
+   on). If convenient, also `as p19_open3.s` on MUTOS: what the real
+   assembler makes of its compiler's invalid lines 229/231. Rounds 1 to 6
+   are byte-exact (`p19` to line 223, `p21` with its two messages) - see
+   the sections above and `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see
    `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
    assignment on a global or local static (`inc _amxslee`, `orb
@@ -3150,12 +3237,14 @@ is now fully covered (62/62). In order:
    not a power of two in a subscript - each needs evidence of the real
    compiler's shape first. Then the remaining 81..127-byte `chkstk` gap.
 5. **`tests/mutos_cc/11_kernel`** (9 real kernel driver files, currently
-   0/9): grow coverage into it once the categories above are done. One
-   concrete, confirmed gap to start from - a bare expression-statement
-   (`i++;` on its own, `01_delay.c`) has no grammar production yet; the
-   six files refusing with "external definition syntax" still need their
-   specific construct isolated first. See `docs/DEVLOG.md`'s Milestone 4
-   section for the full per-file breakdown.
+   1/9 - `01_delay.c` byte-exact since its bare `i++;` statement is
+   accepted): grow coverage into it once the categories above are done.
+   The first error in seven of the other eight is the same header line,
+   `typedef struct { unsigned short off; ... } segadr;` (`unsigned short`
+   - `mutos_c0` misreports it as "an unnamed filler field"), in `09_amx` a
+   `long` struct member; `mutos_c0` reports more after each. See
+   `docs/DEVLOG.md`'s Milestone 4 section for the initial per-file
+   breakdown.
 6. **The `mutos_cc` driver itself.**
 
 The register-occupancy guard's refusals (see the `c1_gen.c` review section
@@ -3352,9 +3441,9 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
-   byte-exact): the remaining `chkstk` gap, growing coverage
-   into the new `tests/mutos_cc/11_kernel` real-kernel corpus (0/9 so
-   far), and the `mutos_cc` driver - see its "Next up".
+   byte-exact): the remaining `chkstk` gap (`fltprobe/p27_frame` asks),
+   growing coverage into the `tests/mutos_cc/11_kernel` real-kernel corpus
+   (1/9 so far), and the `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string

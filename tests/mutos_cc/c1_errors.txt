@@ -1,0 +1,25 @@
+# c1_errors.txt - real-hardware goldens for which the real MUTOS 1700 c1
+# reported errors: its "cc -S" printed them, exited with status 1 - and
+# still wrote the whole .s file (v7/cc/c11.c's error() only counts an
+# error, c1 exits with "nerror != 0" at the end, and cc's dexit() keeps
+# the .s of "cc -S"). The .s golden is that complete file, never edited
+# (see CLAUDE.md's Golden Master Integrity rule).
+#
+# One line per message: <category>/<name>, a space, then the message
+# exactly as the real compiler printed it - "<line>: <text>" - in order.
+#
+# run_goldens.sh checks such a file at every stage as usual - .i, .1, .2
+# byte-exact - then requires mutos_c1 to exit with a nonzero status, to
+# print exactly these messages on stderr, and to have written exactly the
+# golden's .s: reported as category 9, not a failure.
+# tests/mutos_as/assemble_cc_goldens.sh treats the .s like any other
+# (it is valid assembly).
+#
+# fltprobe/p21_fltexp: "f = half(d = 3.0);" - an assignment's value as a
+# floating call argument, stored with a pop ("fstdp") and then pushed as
+# the argument by a second "fstdp": the real c1's own model of the
+# floating-point stack goes below 0 there (line 56) and stays one short,
+# so line 57's "ftoi" reports again. See mutos_c1's fp_track() and
+# docs/DEVLOG.md's "The round-6 fltprobe goldens".
+fltprobe/p21_fltexp 56: floating point stack underflow
+fltprobe/p21_fltexp 57: Floating point stack underflow

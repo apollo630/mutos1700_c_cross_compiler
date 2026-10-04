@@ -103,11 +103,13 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 
 `fltprobe/` is not part of the corpus either: floating-point probe programs
 with their own `Makefile.mutos` and real-hardware goldens (see
-`fltprobe/README.md`) - a first round of nine, a second and a third of
-four, a fourth and a fifth of three, all byte-exact (they stay here rather
-than joining `08_float`) but `p19_open3`, whose `.s.golden` ends in the
-real compiler's own invalid output (see below), and a sixth round of four
-(`p20`..`p23`) whose goldens are still to be generated. Unlike `fuzz/`, it
+`fltprobe/README.md`) - a first round of nine, a second, a third and a
+sixth of four, a fourth and a fifth of three, all byte-exact (they stay
+here rather than joining `08_float`; `p21_fltexp` together with the real
+compiler's own error messages, see below) but `p19_open3`, whose
+`.s.golden` ends in the real compiler's own invalid output (see below),
+and a seventh round of five (`p24`..`p28`) whose goldens are still to be
+generated. Unlike `fuzz/`, it
 does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
 category, and `run_goldens.sh` skips each file until it has goldens - one
 with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
@@ -123,6 +125,16 @@ file `run_goldens.sh` requires `mutos_c1` to refuse it and its output up
 to the refusal to be exactly the golden's leading valid lines (category
 8, not a failure); `../mutos_as/assemble_cc_goldens.sh` requires
 `mutos_as` to refuse it.
+
+`c1_errors.txt` lists the goldens for which the real compiler's `c1`
+reported errors - and wrote the whole `.s` all the same (`cc -S` keeps
+it; `c1` exits with status 1). At present one: `fltprobe/p21_fltexp`,
+whose `f = half(d = 3.0)` the real compiler compiles into code that pops
+the floating-point stack twice, and whose `c1` says so - "56: floating
+point stack underflow", "57: Floating point stack underflow". For a
+listed file `run_goldens.sh` requires `mutos_c1` to exit with a nonzero
+status, to print exactly the listed messages and to write exactly the
+golden `.s` (category 9, not a failure).
 
 ## `11_kernel` — real MUTOS kernel driver golden corpus
 
@@ -151,21 +163,18 @@ this checkout - the golden-capture pipeline (same one described under
 all nine files, and `run_goldens.sh`'s per-category wildcard loop already
 discovers them with no script change needed.
 
-**Verifying `mutos_c0`/`mutos_c1` against them is separate, not-yet-started
-work**, tracked apart from the 62-file corpus's own N/62 pass fraction used
-throughout this project's docs: as of this writing `mutos_c0` refuses all
-nine at the front-end stage, each with a diagnosed error, never a silent
-wrong compile. One gap is a genuinely new, confirmed find: a bare
-expression-statement (e.g. `i++;` used as a whole statement - `01_delay.c`)
-has no production in `mutos_c0`'s current grammar at all, since every
-`++`/`--` use in the 62-file corpus is inside an assignment's right-hand
-side. Two more hit gaps already documented in `src/mutos_cc/README.md`'s
-"Current scope" (an untyped `register c;` local in `05_nami.c`; a
-file-scope struct/`unsigned` variable in `06_fio.c`). The remaining six
-(`02_prim.c`, `03_mem.c`, `04_pipe.c`, `07_v24.c`, `08_tty.c`, `09_amx.c`)
-refuse with the generic "external definition syntax" diagnostic; which
-specific file-scope construct each hits has not been isolated yet. See
-`docs/DEVLOG.md`'s Milestone 4 section for the full per-file breakdown and
+**`mutos_c0`/`mutos_c1` coverage of them is tracked apart** from the
+62-file corpus's own N/62 pass fraction used throughout this project's
+docs: 1/9. `01_delay.c` is byte-exact at every stage since 2026-10-04 (its
+bare `i++;` statement - first found here - is accepted and done in place,
+`inc *-6.(bp)`). The other eight are refused at the front-end stage, each
+with a diagnosed error, never a silent wrong compile: seven stop first at
+the same header line, `typedef struct { unsigned short off; ... }
+segadr;` (an `unsigned short` member, which `mutos_c0` misreports as "an
+unnamed filler field"), `09_amx.c` at a `long` struct member, and each
+reports more after that (the last error `run_goldens.sh` shows is often
+the generic "external definition syntax"). See `docs/DEVLOG.md`'s
+Milestone 4 section for the initial per-file breakdown and
 `src/mutos_cc/README.md`'s "Next steps" for where this sits in the
 project's roadmap.
 

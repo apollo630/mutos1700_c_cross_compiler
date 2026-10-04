@@ -1133,10 +1133,10 @@ static int float_arith(Parser *p, FILE *t1, RhsCapture *cap, ExprVal *v,
                          r.type == TY_CHAR && !r.is_const, line);
         return 0;
     }
-    if ((rf && lchar) || (lf && r.type == TY_CHAR && !r.is_const))
-        c0_error_at(line, "a 'char' operand combined with a 'float'/'double' "
-                          "one is not yet supported - see "
-                          "src/mutos_cc/README.md");
+    /* A char operand is widened, then converted: fltprobe/p21_fltexp.1.
+     * golden's "d + c" -> NAME d, NAME c, ITOC(INT), ITOF(DOUBLE), PLUS(3),
+     * and "c * 2.5" -> NAME c, ITOC(INT), ITOF(DOUBLE), FCON, TIMES(3) (the
+     * left char's ITOC is promote_char()'s, already written). */
     if (rf && !lf) {
         /* The left operand is an integer: its CON (if still pending),
          * its conversion, then the buffered right operand. */
@@ -1176,6 +1176,15 @@ static int float_arith(Parser *p, FILE *t1, RhsCapture *cap, ExprVal *v,
 static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
 {
     outcode(t1, "BNN", OP_CON, TY_INT, 1);
+    if (type == TY_DOUBLE) {
+        /* A double: the 1 converted (v7's build() converts the increment
+         * to the operand's type) and the node typed DOUBLE - fltprobe/
+         * p21_fltexp.1.golden's "d++" -> NAME d, CON 1, ITOF(3), INCAFT(3);
+         * "++d" INCBEF(3), "e = d--" DECAFT(3). */
+        outcode(t1, "BN", OP_ITOF, TY_DOUBLE);
+        outcode(t1, "BN", optag, TY_DOUBLE);
+        return;
+    }
     if (is_ptr) {
         /* The scale is the pointed-to object's size (v7/cc/c01.c's
          * build(): convert(..., ITP, plength(p1))) - MCC_SZINT for
@@ -1427,7 +1436,10 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
             emit_name(t1, sym, sym->type);
         }
 
-        ExprVal rhs = parse_expr(p, t1);
+        /* "d = e = 2.5": the right-hand side an assignment too (v7's '='
+         * is right-associative) - fltprobe/p21_fltexp.1.golden: NAME d,
+         * NAME e, FCON, ASSIGN(3), ASSIGN(3). */
+        ExprVal rhs = parse_comma_item(p, t1);
         emit_materialize(t1, rhs);
         if (sym)
             convert_assign(t1, sym->type, rhs, line);
@@ -1565,15 +1577,18 @@ static void parse_call_args_and_emit(Parser *p, FILE *t1, int ret_type)
         /* A floating argument is written as it is too - v7 converts
          * none, and mutos_c1 pushes it as a double (see "Floating
          * point"). */
+        /* An argument may be an assignment - fltprobe/p21_fltexp.1.
+         * golden's "half(d = 3.0)": NAME _half, NAME d, FCON, ASSIGN(3),
+         * CALL(3) (see parse_comma_item()). */
         int line = p->cur.line;
-        ExprVal v = parse_expr(p, t1);
+        ExprVal v = parse_comma_item(p, t1);
         emit_materialize(t1, v);
         if (!ty_is_float(v.type))
             (void)char_nonobj_refused(v, line, "a call argument");
         while (p->cur.kind == T_COMMA) {
             advance(p);
             line = p->cur.line;
-            ExprVal rhs = parse_expr(p, t1);
+            ExprVal rhs = parse_comma_item(p, t1);
             emit_materialize(t1, rhs);
             if (!ty_is_float(rhs.type))
                 (void)char_nonobj_refused(rhs, line, "a call argument");
@@ -2488,6 +2503,22 @@ static ExprVal parse_pointer_cast(Parser *p, FILE *t1)
     if (!expect(p, T_RPAREN, "')'"))
         return ev_dynamic();
     ExprVal v;
+    if (t == TY_UNSIGN && p->cur.kind == T_IDENT && lookup_var(p, p->cur.ident) &&
+        ty_is_float(lookup_var(p, p->cur.ident)->type) &&
+        !lookup_var(p, p->cur.ident)->is_array &&
+        peek2_kind(p) != T_LBRACK && peek2_kind(p) != T_DOT &&
+        peek2_kind(p) != T_ARROW && peek2_kind(p) != T_INCR &&
+        peek2_kind(p) != T_DECR) {
+        /* A floating variable to an unsigned: FTOI typed UNSIGN -
+         * fltprobe/p21_fltexp.1.golden's "u = (unsigned) d" -> NAME d,
+         * FTOI(7), ASSIGN(7) (mutos_c1 converts it as a long - v7's
+         * unoptim()). */
+        SymEntry *sym = lookup_var(p, p->cur.ident);
+        emit_name(t1, sym, sym->type);
+        advance(p);
+        outcode(t1, "BN", OP_FTOI, TY_UNSIGN);
+        return ev_dynamic_typed(TY_UNSIGN);
+    }
     if (!ty_is_ptr(t)) {
         c0_error_at(line, "a cast to this type is not yet supported - see "
                           "src/mutos_cc/README.md");
@@ -2722,9 +2753,9 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * against 05_incdec.1.golden's "j = i++;" (plain int) and
              * "*p++ = 1;" (pointer) trees. */
             int optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
-            if (ty_is_float(sym->type))
-                c0_error_at(p->cur.line, "'++'/'--' on a 'float'/'double' "
-                                          "variable is not yet supported - see "
+            if (sym->type == TY_FLOAT)
+                c0_error_at(p->cur.line, "'++'/'--' on a 'float' variable is "
+                                          "not yet supported - see "
                                           "src/mutos_cc/README.md");
             advance(p);
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
@@ -2773,6 +2804,27 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             int target = cts.type;
             if (!expect(p, T_RPAREN, "')'"))
                 return ev_dynamic();
+            if (p->cur.kind == T_LPAREN && ty_is_float(target)) {
+                /* A parenthesized int or long expression converted to
+                 * floating: its tree, then ITOF / LTOF typed with the cast's
+                 * type - fltprobe/p21_fltexp.1.golden's "(double) (i + j)"
+                 * -> NAME i, NAME j, PLUS(0), ITOF(3), "(double) (i * j) +
+                 * 0.5" -> ... TIMES(0), ITOF(3), FCON, PLUS(3). A floating
+                 * one is not converted. */
+                int line = p->cur.line;
+                ExprVal v = parse_primary(p, t1);
+                emit_materialize(t1, v);
+                if (!v.is_const && ty_is_float(v.type))
+                    return ev_dynamic_typed(v.type);
+                if (v.is_const || (v.type != TY_INT && v.type != TY_LONG)) {
+                    c0_error_at(line, "a cast of this parenthesized expression "
+                                      "to 'float'/'double' is not yet supported "
+                                      "- see src/mutos_cc/README.md");
+                    return ev_dynamic_typed(target);
+                }
+                emit_to_float(t1, target, v, line);
+                return ev_dynamic_typed(target);
+            }
             if (p->cur.kind == T_LPAREN &&
                 (target == TY_INT || target == TY_LONG)) {
                 /* A parenthesized floating expression converted to an
@@ -2859,6 +2911,12 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
             int optag;
             if (sym->type == TY_LONG && target == TY_INT)
                 optag = OP_LTOI;
+            else if ((sym->type == TY_UNSIGN || sym->type == TY_INT) &&
+                     target == TY_LONG)
+                optag = OP_ITOL; /* fltprobe/p22_long2.1.golden's "(long)
+                                  * u": NAME u (UNSIGN), ITOL(6) - v7's
+                                  * cvtab int/unsigned -> long, which
+                                  * mutos_c1 zero-extends for an unsigned */
             else if (sym->type == TY_INT && target == TY_CHAR)
                 optag = OP_ITOC;
             else if (sym->type == TY_CHAR && target == TY_LONG)
@@ -2898,9 +2956,15 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * which paired SEQNC with the wrong operands
              * ("y + (x = 1, 5)" added y's slot to 1). */
             emit_materialize(t1, rhs);
-            /* v7 types SEQNC like its right operand ("t = t2"), so a
-             * char last item would make it a char SEQNC - unconfirmed,
-             * and this file writes SEQNC(TY_INT) - refused. */
+            /* v7 types SEQNC like its right operand ("t = t2"): a
+             * floating one DOUBLE - fltprobe/p21_fltexp.1.golden's "(i =
+             * 2, d - 40000.0)" -> ... MINUS(3), SEQNC(3). A char last item
+             * would make it a char SEQNC - unconfirmed - refused. */
+            if (!rhs.is_const && ty_is_float(rhs.type)) {
+                outcode(t1, "BN", OP_SEQNC, TY_DOUBLE);
+                v = ev_dynamic_typed(TY_DOUBLE);
+                continue;
+            }
             (void)char_value_refused(rhs, p->cur.line,
                                      "the last operand of a comma operator");
             outcode(t1, "BN", OP_SEQNC, TY_INT);
@@ -3145,13 +3209,13 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             advance(p);
             return ev_dynamic();
         }
-        if (ty_is_float(sym->type))
-            c0_error_at(line, "'++'/'--' on a 'float'/'double' variable is not "
-                               "yet supported - see src/mutos_cc/README.md");
+        if (sym->type == TY_FLOAT)
+            c0_error_at(line, "'++'/'--' on a 'float' variable is not yet "
+                               "supported - see src/mutos_cc/README.md");
         advance(p);
         emit_name(t1, sym, sym->type);
         emit_incdec(t1, optag, sym->type, sym->is_ptr);
-        return ev_dynamic();
+        return ev_dynamic_typed(sym->type);
     }
     if (p->cur.kind == T_MINUS) {
         int line = p->cur.line;
@@ -3179,8 +3243,15 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             outcode(t1, "BN", OP_NEG, v.type);
             return ev_dynamic_typed(v.type);
         }
-        c0_error_at(line, "unary '-' on a non-constant operand is not "
-                           "yet supported - see src/mutos_cc/README.md");
+        if (v.type == TY_INT && !v.char_obj) {
+            /* An int negated: NEG typed INT - fltprobe/p21_fltexp.1.golden's
+             * "d = -i" -> NAME i, NEG(0), ITOF(3). */
+            outcode(t1, "BN", OP_NEG, TY_INT);
+            return ev_dynamic();
+        }
+        c0_error_at(line, "unary '-' on this operand is not yet supported "
+                          "(only an int, a constant or a 'float'/'double' "
+                          "one) - see src/mutos_cc/README.md");
         return ev_dynamic();
     }
     if (p->cur.kind == T_PLUS) {
@@ -3201,16 +3272,18 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         if (v.is_const)
             return ev_const(trunc16(~v.value));
         /* v7 converts no unary operand (build()'s non-BINARY path) - a
-         * char here would be a char-typed COMPL, which has no golden; a
-         * long one a COMPL typed LONG (no golden) - typed int here it
-         * complemented one word, "~l" silently wrong until 2026-10-02. */
+         * char here would be a char-typed COMPL, which has no golden. A
+         * long one is a COMPL typed LONG: fltprobe/p22_long2.1.golden's "l
+         * = ~l" -> NAME l, COMPL(6). (Typed int it complemented one word,
+         * "~l" silently wrong until 2026-10-02.) */
         (void)char_value_refused(v, line, "the operand of '~'");
-        if (v.type == TY_LONG)
-            c0_error_at(line, "'~' on a 'long' variable or value is not yet "
-                              "supported - see src/mutos_cc/README.md");
         emit_materialize(t1, v); /* no-op: a non-constant operand has
                                    * already been emitted (e.g. as a
                                    * NAME) by the time we get here. */
+        if (v.type == TY_LONG) {
+            outcode(t1, "BN", OP_COMPL, TY_LONG);
+            return ev_dynamic_typed(TY_LONG);
+        }
         outcode(t1, "BN", OP_COMPL, TY_INT);
         return ev_dynamic();
     }
@@ -3430,10 +3503,23 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         else if (p->cur.kind == T_SHR) op = OP_RSHIFT;
         else break;
         advance(p);
+        int line = p->cur.line;
         v = promote_char(t1, v); /* before the right operand's bytes */
         RhsCapture cap;
         ExprVal r = parse_add(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
+        if (!v.is_const && v.type == TY_LONG && r.type != TY_LONG &&
+            !(!r.is_const && (r.type == TY_CHAR || ty_is_float(r.type)))) {
+            /* A long shifted by an int count: the count converted to long
+             * (ITOL), the node typed LONG - fltprobe/p22_long2.1.golden's
+             * "l << 2" -> NAME l, CON 2, ITOL(6), LSHIFT(6), "l >> 1" the
+             * same with RSHIFT (v7's c1 takes the ITOL off again). */
+            emit_materialize(t1, r);
+            emit_itol(t1, r, 0, line);
+            outcode(t1, "BN", op, TY_LONG);
+            v = ev_dynamic_typed(TY_LONG);
+            continue;
+        }
         r = promote_char(t1, r);
         if (v.is_const && r.is_const) {
             /* Folded on the host: the left shift goes through an
@@ -3460,12 +3546,14 @@ static ExprVal parse_shift(Parser *p, FILE *t1)
         emit_materialize(t1, r);
         if (op == OP_RSHIFT)
             (void)unsigned_refused(v, r, p->cur.line, ">>");
-        /* A long shifted: v7 types the node LONG and keeps an int count
-         * (no golden); typed int here it shifted one word - "l << 2" was
-         * silently wrong until 2026-10-02. A long count is refused too. */
+        /* A long shifted by anything but an int count, or an int shifted
+         * by a long count, has no golden (typed int, "l << 2" shifted one
+         * word - silently wrong until 2026-10-02). */
         if (v.type == TY_LONG || r.type == TY_LONG)
-            c0_error_at(p->cur.line, "a shift of or by a 'long' is not yet "
-                                     "supported - see src/mutos_cc/README.md");
+            c0_error_at(p->cur.line, "a shift of a 'long' by a 'char' or by a "
+                                     "'long' count, or of an int by a 'long' "
+                                     "one, is not yet supported - see "
+                                     "src/mutos_cc/README.md");
         int stype = (arith_type(v, r) == TY_UNSIGN) ? TY_UNSIGN : TY_INT;
         outcode(t1, "BN", op, stype);
         v = ev_dynamic_typed(stype);
@@ -3871,12 +3959,32 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
      * long arm: the node is typed int here, and "x ? l : m" selected one
      * word (silently wrong until 2026-10-02 - v7 types COLON/QUEST
      * LONG). */
-    (void)(char_nonobj_refused(cond, p->cur.line, "a '?:' condition") ||
-           char_value_refused(t, p->cur.line, "a '?:' result") ||
-           char_value_refused(f, p->cur.line, "a '?:' result"));
-    if (t.type == TY_LONG || f.type == TY_LONG)
-        c0_error_at(p->cur.line, "a 'long' result of '?:' is not yet "
-                                 "supported - see src/mutos_cc/README.md");
+    /* Two long arms: COLON and QUEST typed LONG - fltprobe/p22_long2.1.
+     * golden's "l = x ? l : m" -> NAME x, NAME l, NAME m, COLON(6),
+     * QUEST(6). Two floating ones: typed DOUBLE - p21_fltexp.1.golden's "d
+     * = x ? d : e" -> COLON(3), QUEST(3). A long or floating arm with an
+     * arm of another type (v7's COLON converts them to one type) has no
+     * golden. */
+    int qtype = TY_INT;
+    int tf = !t.is_const && ty_is_float(t.type);
+    int ff = !f.is_const && ty_is_float(f.type);
+    if (tf && ff) {
+        qtype = TY_DOUBLE;
+        (void)char_nonobj_refused(cond, p->cur.line, "a '?:' condition");
+    } else if (t.type == TY_LONG && f.type == TY_LONG &&
+               !t.is_const && !f.is_const) {
+        qtype = TY_LONG;
+        (void)char_nonobj_refused(cond, p->cur.line, "a '?:' condition");
+    } else {
+        (void)(char_nonobj_refused(cond, p->cur.line, "a '?:' condition") ||
+               char_value_refused(t, p->cur.line, "a '?:' result") ||
+               char_value_refused(f, p->cur.line, "a '?:' result"));
+        if (t.type == TY_LONG || f.type == TY_LONG)
+            c0_error_at(p->cur.line, "a '?:' with a 'long' arm and an arm of "
+                                     "another type, or a constant 'long' arm, "
+                                     "is not yet supported - see "
+                                     "src/mutos_cc/README.md");
+    }
 
     if (cond.is_const && t.is_const && f.is_const) {
         /* v7/cc/c01.c's fold(QUEST): folded only when the condition
@@ -3891,9 +3999,9 @@ static ExprVal parse_expr(Parser *p, FILE *t1)
     emit_materialize(t1, t);
     capture_flush(&fcap, t1);
     emit_materialize(t1, f);
-    outcode(t1, "BN", OP_COLON, TY_INT);
-    outcode(t1, "BN", OP_QUEST, TY_INT);
-    return ev_dynamic();
+    outcode(t1, "BN", OP_COLON, qtype);
+    outcode(t1, "BN", OP_QUEST, qtype);
+    return ev_dynamic_typed(qtype);
 }
 
 /* ------------------------------------------------------------------ */
@@ -4504,7 +4612,9 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     /* else: the "IDENT[expr]" subscript above already emitted the
      * full lvalue tree - nothing more to emit here. */
 
-    ExprVal rhs = parse_expr(p, t1);
+    /* A chained "d = e = 2.5;" - see parse_comma_item(). */
+    ExprVal rhs = (optag == OP_ASSIGN) ? parse_comma_item(p, t1)
+                                       : parse_expr(p, t1);
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, rhs);
 
@@ -4533,9 +4643,9 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     if (optag == OP_ASSIGN) {
         if (sym)
             convert_assign(t1, assign_type, rhs, line);
-    } else if (ty_is_float(assign_type) &&
+    } else if (ty_is_float(assign_type) && !is_field &&
                (optag == OP_ASTIMES || optag == OP_ASDIV ||
-                optag == OP_ASPLUS || optag == OP_ASMINUS) && subtype < 0) {
+                optag == OP_ASPLUS || optag == OP_ASMINUS)) {
         /* "a *= b", "a /= b", "a += b", "a -= b" into a float/double
          * variable (see "Floating point"): v7's build() converts the
          * right-hand side to the target's own type, as for '=' (ITOF(FLOAT)
@@ -4543,7 +4653,9 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
          * p2_arith.1.golden's "d += 1" (CON, ITOF(DOUBLE), ASPLUS(DOUBLE)),
          * "a -= 0.5" into a float (the FCON as it is); a char widened first
          * (p16_open2.1.golden's "d += c": NAME c, ITOC(INT), ITOF(DOUBLE),
-         * ASPLUS(DOUBLE)). */
+         * ASPLUS(DOUBLE)). A member or an element as the target the same
+         * way: p20_fltlv.1.golden's "q->x += 0.5" (NAME q, CON 0, PLUS,
+         * STAR(3), FCON, ASPLUS(3)), "a[i] += 1.5", "a[i] *= s.y". */
         emit_to_float(t1, assign_type, rhs, line);
     } else if (!ty_is_float(assign_type) &&
                (optag == OP_ASTIMES || optag == OP_ASDIV ||
@@ -4688,7 +4800,10 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
                                                   * two char pointers:
                                                   * none (04_strrev) */
 
-    outcode(t1, "BN", OP_ASSIGN, curtype);
+    /* A double through a pointer: "*p = *p * 2.0" - fltprobe/p20_fltlv.
+     * 1.golden's NAME p, STAR(3), ..., ASSIGN(3); a float target is
+     * written DOUBLE, as for a variable (assign_wire_type()). */
+    outcode(t1, "BN", OP_ASSIGN, assign_wire_type(curtype));
     outcode(t1, "BN", OP_EXPR, line);
 }
 
@@ -5298,7 +5413,13 @@ static void parse_statement(Parser *p, FILE *t1, int retlab)
         parse_goto_stmt(p, t1);
     } else if (p->cur.kind == T_IDENT && peek2_kind(p) == T_COLON) {
         parse_label_stmt(p, t1, retlab);
-    } else if (p->cur.kind == T_IDENT && peek2_kind(p) == T_LPAREN) {
+    } else if ((p->cur.kind == T_IDENT && (peek2_kind(p) == T_LPAREN ||
+                                            peek2_kind(p) == T_INCR ||
+                                            peek2_kind(p) == T_DECR)) ||
+               p->cur.kind == T_INCR || p->cur.kind == T_DECR) {
+        /* An expression statement: a call, or "d++;" / "++d;" (v7's
+         * statement(): the tree, then EXPR - fltprobe/p21_fltexp.1.golden's
+         * "d++;" -> NAME d, CON 1, ITOF(3), INCAFT(3), EXPR). */
         parse_call_stmt(p, t1);
     } else if (p->cur.kind == T_IDENT) {
         parse_assign_stmt(p, t1);
@@ -5511,9 +5632,12 @@ static void parse_param_decls(Parser *p, FILE *t1,
             int ptype_full = symtype;
             for (int k = 0; k < ptr_degree; k++)
                 ptype_full = ty_ptr_of(ptype_full);
-            if (float_param && ptr_degree > 0)
-                c0_error_at(p->cur.line, "a pointer to 'float'/'double' is not "
-                                          "yet supported - see "
+            /* A pointer to a double is a word like any pointer -
+             * fltprobe/p20_fltlv.1.golden's "double *a;" (NAME typed 11);
+             * one more degree has no evidence. */
+            if (float_param && ptr_degree > 1)
+                c0_error_at(p->cur.line, "a pointer to a pointer to 'float'/"
+                                          "'double' is not yet supported - see "
                                           "src/mutos_cc/README.md");
             if (p->cur.kind != T_IDENT) {
                 c0_error_at(p->cur.line,
@@ -6157,13 +6281,17 @@ static void parse_extdef(Parser *p, FILE *t1)
         /* Floating point at file scope (see "Floating point"): a
          * function returning a double - "double atof();", "double f(x)
          * ..." (libc.a's atof.o) - or a float (fltprobe/p5_call.1.golden:
-         * RETRN(FLOAT), its calls CALL(FLOAT)); a floating variable or a
-         * function returning a pointer to one has no evidence yet. */
+         * RETRN(FLOAT), its calls CALL(FLOAT)); one returning a pointer to
+         * a double is an ordinary pointer-returning function -
+         * fltprobe/p20_fltlv.1.golden's "double *pick(a, i)": RFORCE(11),
+         * RETRN(11), its callee NAME typed FUNC.PTR.DOUBLE (51), CALL(11).
+         * A pointer to a pointer to one has no evidence. */
         if (ty_is_float(base_type) && p->cur.kind == T_LPAREN &&
-            ptr_degree > 0) {
+            ptr_degree > 1) {
             c0_error_at(name_tok.line, "a function returning a pointer to a "
-                                        "'float'/'double' is not yet "
-                                        "supported - see src/mutos_cc/README.md");
+                                        "pointer to a 'float'/'double' is not "
+                                        "yet supported - see "
+                                        "src/mutos_cc/README.md");
             skip_refused_extdef(p);
             return;
         }

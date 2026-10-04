@@ -141,10 +141,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   that walks the corpus sees it.
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
-  its `README.md`) - round 1's nine files, the four each of rounds 2 and
-  3 and the three each of rounds 4 and 5 all byte-exact (`p19_open3` up to
-  the real compiler's own invalid output, see below), round 6's four
-  (`p20`..`p23`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  its `README.md`) - round 1's nine files, the four each of rounds 2, 3
+  and 6 and the three each of rounds 4 and 5 all byte-exact (`p19_open3`
+  up to the real compiler's own invalid output, `p21_fltexp` together with
+  the real compiler's own `c1` error messages, see below), round 7's five
+  (`p24`..`p28`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -155,18 +156,25 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   where a register name belongs). `run_goldens.sh` requires `mutos_c1` to
   refuse such a file and to have written exactly the golden's lines
   before that point (its category 8).
+  `c1_errors.txt` lists every golden for which the real compiler's `c1`
+  reported errors - and still wrote the whole `.s`, which is the golden,
+  never edited (at present `fltprobe/p21_fltexp`: "56: floating point
+  stack underflow", "57: Floating point stack underflow" - its own code
+  pops the floating-point stack twice). `run_goldens.sh` requires
+  `mutos_c1` to print exactly those messages, exit with a nonzero status
+  and write exactly the golden `.s` (its category 9).
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
   construct table above — nine real, unmodified MUTOS 1700 kernel driver
   source files (`01_delay.c` … `09_amx.c`, ordered easy to hard) plus the
   local header tree they `#include`, mirroring what `/tests/mutos_cpp/c/`
   below already does for `mutos_cpp`. Its own real-hardware-verified
   goldens (`.s`/`.i`/`.1`/`.2` plus base64 companions) and `Makefile.mutos`
-  are already present in this checkout; `mutos_c0`/`mutos_c1` verification
-  against it is separate, not-yet-started work, tracked apart from the
-  62-file corpus's own N/62 pass fraction — see `STATUS.md`'s "Next up"
-  and `docs/DEVLOG.md`'s Milestone 4 section for the initial coverage
-  assessment (all nine currently refuse at the front end, each with a
-  diagnosed reason, never silent wrong output).
+  are already present in this checkout; `mutos_c0`/`mutos_c1` coverage
+  against it is tracked apart from the 62-file corpus's own N/62 pass
+  fraction: 1/9 (`01_delay` byte-exact since 2026-10-04; the other eight
+  refuse at the front end, each with a diagnosed reason, never silent
+  wrong output) — see `STATUS.md`'s "Next up" and `docs/DEVLOG.md`'s
+  Milestone 4 section.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
@@ -570,13 +578,16 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, 22 of the 23 probes of
-  `tests/mutos_cc/fltprobe/`'s first five rounds are byte-exact against
+  8086 emulator. Beyond the corpus, 26 of the 27 probes of
+  `tests/mutos_cc/fltprobe/`'s first six rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
   the register an int is converted in, `long` mixed with int-class
-  values), the 23rd up to the real compiler's own invalid output.**
+  values and nearly every `long` operator - `p21_fltexp` with the real
+  compiler's own two `c1` error messages), the 27th up to the real
+  compiler's own invalid output; and `11_kernel/01_delay`, the first of
+  the nine real kernel files.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -654,8 +665,15 @@ scope and intent, not a snapshot of what's done.
     (`mutos_c0` writes v7's `ITOL`; v7's long comparisons) - and showed
     the real compiler emitting invalid assembly for an unsigned converted
     after a computed `*` (see "The round-5 fltprobe goldens"). Round 6
-    (`p20`..`p23`) asks about floating lvalues beyond variables, floating
-    expression forms and the `long` and element shapes still refused;
+    settled floating lvalues beyond variables (members and pointers,
+    compound assignments into them), floating expression forms (`++`/`--`,
+    chained assignments, `?:`, comma), nearly every `long` operator and
+    the element orders left - and showed the real compiler's `c1`
+    reporting its own wrong code: `half(d = 3.0)` pops the floating-point
+    stack twice, and its compile-time model of that stack said so in two
+    messages, which `mutos_c1` reproduces (see "The round-6 fltprobe
+    goldens"). Round 7 (`p24`..`p28`) asks about what `mutos_c1` still
+    infers or refuses, the 82..127-byte frames and that stack model;
     running it is the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
@@ -665,7 +683,7 @@ scope and intent, not a snapshot of what's done.
     remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
     goldens narrowed the threshold to `(80,128]`), then growing coverage
     into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
-    0/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
+    1/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
     Milestone 4 section for the initial assessment), then the `mutos_cc`
     driver itself; the shapes still refused (see `src/mutos_cc/README.md`'s
     "Current scope") each wait for evidence of the real compiler's output.
