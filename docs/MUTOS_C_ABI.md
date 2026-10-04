@@ -357,10 +357,22 @@ easy-to-justify choice for `mutos_c1` would be a round threshold inside that gap
 `tests/mutos_cc/09_abiprobe/` goldens (six functions differing only in local
 frame size, compiled by the real MUTOS 1700 `cc`) show a frame of 80 bytes
 allocated with `sub sp,*80.` and frames of 128, 176, 224, 256 and 300 bytes
-with `mov ax,#N.` / `call chkstk`. The real threshold is therefore in
-`(80,128]` bytes; sizes 81–127 remain unobserved. `framesize` is written as an
+with `mov ax,#N.` / `call chkstk`. That put the real threshold somewhere in
+`(80,128]` bytes, with sizes 81–127 unobserved. `framesize` is written as an
 ordinary immediate (`#` marker for values above 127 — see `man/mutos_as.1`),
 exactly like the `*N.` of the `sub sp,N` form.
+
+**Update (2026-10-04) — narrowed again** (`tests/mutos_cc/fltprobe/p27_frame`,
+eight functions with frames of 82, 90, 100, 110, 120, 124, 126 and 127 bytes).
+Frames of 82 and 90 bytes are still allocated inline (`sub sp,*82.`,
+`sub sp,*90.`); from 100 bytes up the real compiler calls the guard, with the
+size as a short immediate while it fits (`mov ax,*100.` … `mov ax,*126.`).
+A frame of 127 bytes is rounded up to an even 128 (`mov ax,#128.`), like every
+other odd frame size. So the switch lies in `(90,100]`; `mutos_c1` emits
+`sub sp,N` up to 90 bytes (`MCC_SUBSP_MAX`) and `call chkstk` from 100 bytes
+(`MCC_CHKSTK_MIN`), and refuses 92..98 ("not yet supported" rather than a
+guess) until `fltprobe/p29_frame2` (frames of 92, 94, 96 and 98 bytes) has run
+on the real system.
 
 ### 1.10 What is *not* part of this convention
 
@@ -635,11 +647,12 @@ it; the note says so where that's the case.
       pop bp / ret`) (§1.2). Implemented and verified (`c1_gen.c`'s
       `RETRN` handler).
 - [~] Large frames: `mov ax,framesize / call chkstk` instead of inline `sub sp,N`
-      above a threshold in `(80,128]` bytes (§1.9) — **implemented and verified
-      for every confirmed size**: plain `sub sp,N` up to 80 bytes (`01_intarith`'s
-      `extra=6`, `09_abiprobe/02_frame080`'s 80), `mov ax,#N. / call chkstk` from
-      128 bytes up (`09_abiprobe/03_frame128` … `07_frame300`); the unconfirmed
-      81..127-byte gap is an explicit "not yet supported" rather than a guess.
+      above a threshold in `(90,100]` bytes (§1.9) — **implemented and verified
+      for every confirmed size**: plain `sub sp,N` up to 90 bytes (`01_intarith`'s
+      `extra=6`, `09_abiprobe/02_frame080`'s 80, `fltprobe/p27_frame`'s 82 and
+      90), `mov ax,N / call chkstk` from 100 bytes up (`p27_frame`'s 100..128,
+      `09_abiprobe/03_frame128` … `07_frame300`); the unconfirmed 92..98-byte
+      gap is an explicit "not yet supported" rather than a guess.
 - [x] Long multiply/divide/modulo: calls to runtime helpers (§1.8). Implemented
       and verified as the real compiler's output shows it (`02_long/02_muldiv`):
       `call lmul` / `ldiv` / `lrem` with both operands pushed flat, low word then

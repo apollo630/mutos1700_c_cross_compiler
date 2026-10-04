@@ -23,3 +23,23 @@
 # docs/DEVLOG.md's "The round-6 fltprobe goldens".
 fltprobe/p21_fltexp 56: floating point stack underflow
 fltprobe/p21_fltexp 57: Floating point stack underflow
+#
+# fltprobe/p28_fltstk: the same wrong code on purpose, to see the model go
+# on (round 7, 2026-10-04): it is never reset - not between functions -
+# and only the double pop's store, never the argument push nor a double
+# function's returned value, reports; "half(d = 3.0);" with its result
+# unused is silent at line 48 (one below the bottom), line 49's store
+# reports. Line 65 is the 'if' on line 64: its CBRANCH carries the line
+# the lexer reached after the ')'. Twelve messages, every one reproduced.
+fltprobe/p28_fltstk 49: floating point stack underflow
+fltprobe/p28_fltstk 50: Floating point stack underflow
+fltprobe/p28_fltstk 50: Floating point stack underflow
+fltprobe/p28_fltstk 59: floating point stack underflow
+fltprobe/p28_fltstk 60: floating point stack underflow
+fltprobe/p28_fltstk 61: floating point stack underflow
+fltprobe/p28_fltstk 62: floating point stack underflow
+fltprobe/p28_fltstk 65: Floating point stack underflow
+fltprobe/p28_fltstk 65: Floating point stack underflow
+fltprobe/p28_fltstk 73: floating point stack underflow
+fltprobe/p28_fltstk 79: Floating point stack underflow
+fltprobe/p28_fltstk 79: Floating point stack underflow

@@ -30,10 +30,11 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope") - and, beyond the corpus, 26 of the
-27 probes of `tests/mutos_cc/fltprobe/`'s first six rounds with their own
-real-hardware goldens (`p21_fltexp` together with the real compiler's own
-two `c1` error messages - `tests/mutos_cc/c1_errors.txt`), the 27th
+"Floating point" under "Current scope") - and, beyond the corpus, 31 of the
+32 probes of `tests/mutos_cc/fltprobe/`'s first seven rounds with their own
+real-hardware goldens (`p21_fltexp` and `p28_fltstk` together with the
+real compiler's own `c1` error messages, two and twelve of them -
+`tests/mutos_cc/c1_errors.txt`), the 32nd
 (`p19_open3`) up to the real compiler's own invalid output, which
 `mutos_c1` refuses on purpose (see "Floating point beyond the corpus" and
 `tests/mutos_cc/invalid_goldens.txt`), and the first of the nine
@@ -134,8 +135,9 @@ c;` plus assignments and `+ - * / %`):
   `"sub\tsp,*6."` - confirmed byte-for-byte, and consistent with
   `docs/MUTOS_C_ABI.md` sect. 1.9's bound (largest real `libc.a`
   example using plain `sub sp,N`: `N=76`). The `09_abiprobe` goldens
-  have since confirmed both shapes and narrowed the `chkstk` threshold
-  to `(80,128]` - see the `SETSTK` paragraph further below.
+  and `fltprobe/p27_frame` goldens have since confirmed both shapes and
+  narrowed the threshold of the `chkstk` call to `(90,100]` - see the
+  `SETSTK` paragraph further below.
 - **Per-operator instruction shapes** (`c1_gen.c`, confirmed against
   `01_intarith.s.golden`): `+`/`-` both load the left operand into
   `DI` then `add`/`sub` the right operand in place (`DI` is evidently
@@ -1216,10 +1218,10 @@ are C compiled by the real compiler and gave the first shapes (see
 `docs/DEVLOG.md`'s "Floating shapes from libc.a's compiled C");
 `tests/mutos_cc/fltprobe/`'s real-hardware goldens corrected and
 completed them - round 1's nine, the four each of rounds 2, 3 and 6, round
-4's three and round 5's `p17`/`p18` are byte-exact, `p19` up to the real
-compiler's own invalid output, `p21` with the real compiler's own error
-messages (see `docs/DEVLOG.md`'s "The fltprobe goldens" and the round-2
-to round-6 sections after it). The real
+4's three, round 5's `p17`/`p18` and round 7's `p24`..`p27` are byte-exact,
+`p19` up to the real compiler's own invalid output, `p21` and `p28` with the
+real compiler's own error messages (see `docs/DEVLOG.md`'s "The fltprobe
+goldens" and the round-2 to round-7 sections after it). The real
 compiler is
 v7's `c1` with the PDP-11 floating code replaced by calls into the runtime,
 so its **operand order is v7's**,
@@ -1345,39 +1347,63 @@ after a `*` goes through AX (`mov ax,p` / `mov bx,ax` / `lea ax,(bx)`).
 `d = e = 2.5` stores the inner target without a pop (`fstd e` / `fstdp
 d`); `d++`/`++d` as statements add a `.float` 1.0 (`fldd d` / `fadds` /
 `fstdp d`), `e = d--` keeps the old value under the new (`fdup`), `e =
-++d` keeps the new one (`fstd` - inferred); a char operand is widened and
+++d` stores the new one with a pop and loads the variable again (`fstdp d`
+/ `fldd d` - round 7's `p24_fltinf2`; v7's prefix `++` yields its lvalue),
+and a float's `f++` statement is `flds f` / `fadds` / `fstsp f` (`mutos_c0`:
+`CON 1, ITOF(2), INCAFT(3)`); a char operand is widened and
 converted (`movb ax,c` / `cbw` / `itof`), so is a computed int (`(double)
 (i + j)`: `mov di,i` / `add di,j` / `mov ax,di` / `itof`) and a negated one
 (`neg di`); a long sum is converted from DI:SI (`push si` / `push di` /
 `ltof`); `(unsigned) d` is `ftol`, the low word; `?:` with double arms
 loads each arm (`plan_quest()`), a comma typed DOUBLE its last operand.
 
-**The real compiler's own floating-stack errors** (round 6,
-`p21_fltexp`): an assignment whose value is a floating call argument
-(`f = half(d = 3.0)`) is stored WITH a pop and then pushed as the
-argument by a second `fstdp` - wrong code, which the real `c1` reports
-from its compile-time model of the floating-point stack: "56: floating
-point stack underflow" (a store below the bottom), "57: Floating point
-stack underflow" (`ftoi`, one short since), exit status 1, the `.s`
-complete. `mutos_c1` reproduces the code, the two messages and the exit
-status (`fp_track()`, `c1_error()`, `tests/mutos_cc/c1_errors.txt`); the
-model's parts no golden shows (`fadd`...`fcmp` below the bottom, the reset
-per function) are inferred, and the same assignment with the call's result
-unused is refused (round 7's `p28_fltstk` asks).
+**Round 7 (`p24_fltinf2`)** added: a `?:` as an operand has degree 2
+(`optim()`'s default for a binary node - `r + (x ? d : e) * 2.0` computes
+the `?:` first and multiplies the `.float` 2.0 in from memory); `q->x +=
+d * e` pushes the target's address and loads the target FIRST (`lea
+ax,(di)` / `|` / `push ax` / `fldd` / ... / `fadd` / `pop ax` / `fstdp` -
+`SEG_FLOADTP`), and so does `q->x /= e`, which then loads the divisor
+(`lea ax,e` / `fldd` / `fdiv`) where `-=` subtracts from memory (`fsubd`);
+`a[i + 1] = 2.0` scales the index by 8 through CL (`mov cx,*3.` / `sal
+si,cl`) and keeps the constant term as the displacement (`lea
+ax,*8.(di)`); `d = q->k` converts the member through DI (`mov di,*16.(di)` /
+`mov ax,di` / `itof`); `*pick(a, 1) = 2.5` stores through DI (`mov di,ax`
+/ `lea ax,(di)` / `fstdp` - a read through a call's result goes through
+BX).
 
-Refused, each with its own diagnostic (round 7's `p24_fltinf2` asks about
-most): an int converted after an element or `*p` in AX context, or after
-a computed operand other than those above; an int computed for AX other
-than a variable, `x + c`, a sum or difference of two variables, a shift
-by a constant or a product/quotient/remainder - an int member read through
-a pointer among them; `%`/`%=`, `++`/`--` on a float, a floating value
-tested for truth (the real `c1` itself reports "Floating point stack
-underflow" on one), a `?:` as an operand, a long computed other than a sum
-converted, a double element subscripted by a computed index (`a[i + 1]`), a
-pointer to a pointer to double, a store through a function's result, a
-compound assignment of a computed value through a pointer (`q->x += d *
-e`) or one whose value is used, an initializer other than a constant, and
-every operator `fdeg()` has no degree for (`&`, `|`, `^`, ...).
+**The real compiler's own floating-stack errors** (round 6,
+`p21_fltexp`; round 7, `p28_fltstk`): an assignment whose value is a
+floating call argument (`f = half(d = 3.0)`) can be stored WITH a pop and
+then pushed as the argument by a second `fstdp` - wrong code, which the
+real `c1` reports from its compile-time model of the floating-point stack:
+"floating point stack underflow" (a store below the bottom), "Floating
+point stack underflow" (`ftoi`, `fadd`, `fmul`, `fcmp` below it), exit
+status 1, the `.s` complete. `mutos_c1` reproduces the code, all fourteen
+messages of the two goldens and the exit status (`fp_track()`,
+`c1_error()`, `tests/mutos_cc/c1_errors.txt`). `p28` showed how the model
+goes on: it is one per FILE (never reset between functions, so a balanced
+statement in the next function still reports), a statement may end below
+the bottom silently, and a double function's value stored into `fac` pops
+without a check, like an argument push. Which store the real compiler
+picks under a call is inferred from the three statements there are -
+`fstdp` when the statement's own value is floating (`f = half(d = 3.0)`,
+`half(d = 3.0);`), `fstd` when it is not (`x = half(d = 3.0)` into an int:
+right code, no message) - `stmt_ftop`; round 8's `p30_fltstk2` asks.
+
+Refused, each with its own diagnostic (round 8's `p33_fltinf3` asks about
+several): an int converted after an element or `*p` in AX context, or
+after a computed operand other than those above; an int computed for AX
+other than a variable, `x + c`, a sum or difference of two variables, a
+shift by a constant or a product/quotient/remainder - an int member read
+through a pointer among them; `%`/`%=`, a float's `++`/`--` as a value
+(`x = f++`) and any `++`/`--` as an operand of a floating operator (`d = e
++ ++d`), a floating value tested for truth or negated with `!` (the real
+`c1` itself reports "Floating point stack underflow" on one), a long
+computed other than a sum converted, a double element subscripted by a
+computed index other than a variable plus or minus a constant (`a[i + j]`),
+a pointer to a pointer to double, the value of a compound assignment
+through a pointer, an initializer other than a constant, and every
+operator `fdeg()` has no degree for (`&`, `|`, `^`, ...).
 
 **Integer shapes from the round-3 to round-5 goldens.** Round 3: a
 dereferenced left operand of an int `*` whose right operand has code of
@@ -1423,11 +1449,24 @@ bx` / `sub di,(bx)`), `x - *p` the pointer (`push p`); `b[j + 1]` is `mov
 di,*2.(di)`, `a[i] + b[j + 1]` takes its index through DX; two comparisons
 summed compute the right term first and push it (`is_relsum()`); and an
 element compared with 0 is loaded and tested (`mov di,(di)` / `or di,di` -
-`cond_ortest`). Round 7's `p26_elem4` asks about an element tested for
-truth (`if (b[i])` is `cmp (di),*0` today, as through a pointer
-variable), `x * *ip` and the rest `mutos_c1` infers; int compound
-assignments into an element or through a pointer (`b[i] += b[j]`, `*ip +=
-2`) are refused.
+`cond_ortest`). Round 7's `p26_elem4` corrected one inference and settled
+the rest: an element read through a computed address and tested for truth
+is loaded and tested too (`if (b[i])`, `if (ps[i].c)`: `mov di,(di)` / `or
+di,di` - `ortest`; `mutos_c1` had inferred `cmp (di),*0`, the shape through
+a pointer variable); `b[i] * b[j] + b[j - 1]` moves the product into DI
+before the right element's address is computed (`mov di,ax` / `lea si,b`
+/ ... / `add di,*-2.(si)` - `ORD_LEFTDI`); `(b[i] + 1) * b[j]`, `b[j] /
+b[i]` and `b[j] % b[i]` compute the element at offset 0 first and push it
+(`pop cx` / `imul cx`, `cwd` / `pop cx` / `idiv cx`); `r + (b[i] < b[j]) +
+(b[i] > b[j]) * 2 + (b[i] == b[j]) * 4` is v7's `distrib()` (`(A*2 + B)*2`,
+computed first, then C, each comparison's 0/1 pushed in both arms -
+`is_distrib()`, `plan_distrib()`, see `docs/DEVLOG.md`'s round-7 section);
+`b[i] += b[j]` / `b[j] -= x` push the target's address (`pop bx` / `add
+(bx),di` - `is_aspush()`), `*ip += 2` is `add (di),*2.`, `ps[i].c += x`
+computes the right-hand side first (`add *4.(si),di` - `is_asdisp()`),
+`b[0] *= b[i]` multiplies in AX (`imul *-28.(bp)` / `mov *-28.(bp),ax`);
+and a constant-index element is a leaf (degree 0), added in order after a
+computed member.
 
 **`unsigned` locals, `long` mixing and octal constants (round 4).** A
 plain `unsigned` local is accepted (`p16_open2`: NAME typed `UNSIGN`, `u =
@@ -1487,13 +1526,24 @@ variables compared (`mov si,l+2` / `mov di,l` / `cmp di,m` ...), `~l`
 bit; `sar di,*1` / `rcr si,*1`), `x ? l : m` (each arm into DI:SI), `x =
 (int) (l - 5)` (the low word in DI), `(long) u` and `l & m`.
 
-Still refused (round 7's `p25_long3` asks): a long shifted by more than 2
-or by a variable, `(int) (l - c)` other than added to or assigned, `-l`, a
-long under `&&`/`||` or as the condition of `?:`, `l++`/`++l`/`l--`, a
-chained long assignment, `l * 3` (a constant multiplier), a long product,
-quotient or remainder with a computed operand, a char with a long in an
-operator. Inferred (no golden yet): `l | m`, `l ^ m`, `x = (int) (l + 5)`,
-`l += 1`, `l = c`, `l / 7`, `l + i * j`. Silent miscompiles
+**Round 7 (`p25_long3`)** settled the rest of what round 6 refused or
+inferred: `l += 1`, `l++` and `++l` in place (`add l+2,*1.` / `adc l,*0`;
+`l--` `sub` / `sbb ...,*0`); `-l` (`neg di` / `neg si` / `sbb di,*0`); a
+shift by 3 or more through CX (`mov cx,*3.` / `sal si,*1` / `rcl di,*1` /
+`loop .-4`); a long under `&&`/`||` and as the condition of `?:` (both
+words tested, the high one first); `r + (int) (l - 9990)` the other term
+first (`mov di,r` / `add di,l+2` / `add di,#-9990.`), `r + 10 - (int) (l -
+4995)` through SI (`mov si,l+2` / `add si,#-4995.` / `sub di,si`); `l * 3`
+(`mov ax,*3.` / `cwd` / pushed / `call lmul`); `l + i * j` (`imul j` /
+`cwd`, no `mov ax,ax`); `m = l = 5` (`mov ax,*5.` / `cwd` / both stores).
+`l | m`, `l ^ m`, `x = (int) (l + 5)`, `l = c` and `l / 7` matched as
+inferred.
+
+Still refused (round 8's `p31_long4` asks about several): a long shifted
+by a variable, a long `++`/`--` whose value is used, `l += c` with a
+constant that is not a widened int (`l += 70000`), `!l` as a value, a
+constant minus a long's low word, a long product, quotient or remainder
+with a computed operand, a char with a long in an operator. Silent miscompiles
 found while testing this, each a refusal or fixed now: two long variables
 compared (`l > m` compared the high words only), a long tested for truth
 (the high word only), `~l`, `l << 2` and `x ? l : m` (one word each), and
@@ -1515,11 +1565,16 @@ additional instruction - confirmed via `tests/mutos_cc/00_smoke/
 goldens pin both shapes down: up to `extra = 80` emits a plain `"sub
 sp,N"` (`02_frame080.s.golden`: `"sub\tsp,*80."`), and from `extra =
 128` up `"mov ax,N / call chkstk"` (`03_frame128` … `07_frame300`, e.g.
-`"mov\tax,#300."`) - `N` rendered as an ordinary immediate either way,
-so the `chkstk` form always takes the `#` marker. The real threshold is
-therefore in `(80,128]`; `extra` of 81..127 bytes is an explicit "not yet
-supported" rather than a guess (see `docs/DEVLOG.md`'s Milestone 4 "Open
-item").
+`"mov\tax,#300."`) - `N` rendered as an ordinary immediate either way.
+Round 7's `fltprobe/p27_frame` narrowed the gap between them: 82 and 90
+bytes are `"sub\tsp,*82."` / `"sub\tsp,*90."`, 100 to 126 bytes `"mov\tax,*100."`
+... `"mov\tax,*126."` / `"call\tchkstk"` (the `*` marker up to 127, like any
+immediate), and a 127-byte array rounds the frame to 128 (`"mov\tax,#128."`).
+`MCC_SUBSP_MAX` is therefore 90 and `MCC_CHKSTK_MIN` 100 - the switch of
+the real compiler to the guarded form lies in `(90,100]` - and an `extra`
+of 92..98 bytes is an explicit "not yet supported" rather than a guess
+(round 8's `fltprobe/p29_frame2` asks; see `docs/DEVLOG.md`'s Milestone 4
+"Open item").
 
 **Register-occupancy guard.** `c1` has no register allocator: each
 operator loads into its golden-confirmed working register (`DI`, `AX`,
@@ -1738,11 +1793,12 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    degree, globals and their initializers, pointers, elements, calls,
    conversions, the register an int is converted in, a floating zero - see
    "Floating point beyond the corpus"), and so are round 5's `p17` and
-   `p18` (`p19` up to the real compiler's own invalid output) and all
+   `p18` (`p19` up to the real compiler's own invalid output), all
    four of round 6 (`p21` with the real compiler's own `c1` error
-   messages). Left: `fltprobe`'s round 7 (`p24`..`p28`) - what `mutos_c1`
-   still infers or refuses, the 82..127-byte frames and the real `c1`'s
-   floating-stack model. On
+   messages) and all five of round 7 (`p28` with the real compiler's
+   twelve messages). Left: `fltprobe`'s round 8 (`p29`..`p33`) - the
+   92..98-byte frames, which store an assignment under a call gets, and
+   what `mutos_c1` still infers or refuses after round 7. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in
@@ -1762,8 +1818,8 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    constant with the reason - `mutos_c1` itself still writes it, as the
    real compiler would, so a program with such a constant fails at the
    assembler step either way. The
-   81..127-byte `chkstk` gap stays "not yet supported" until a golden
-   lands in it (round 7's `p27_frame` asks).
+   92..98-byte `chkstk` gap stays "not yet supported" until a golden
+   lands in it (round 8's `p29_frame2` asks).
 6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
    files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
    already present, currently 1/9): a second, separate golden corpus

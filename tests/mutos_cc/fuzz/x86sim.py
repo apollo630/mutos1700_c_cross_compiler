@@ -24,8 +24,8 @@ fltprobe/p21_fltexp),
 dmath.o's "fac" (a double function's result) and ".float" data, in
 MUTOS's own floating format (see mbf_encode()), and the 'long' helpers
 "lmul", "ldiv", "lrem" and "almul" (see LONG_RUNTIME), a long shifted a
-bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1") and
-"neg". It is a checker, not an emulator: anything outside the subset
+bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1"),
+also CX times ("loop .-4" back over the pair), and "neg". It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
 message, never with a guess.
@@ -595,7 +595,11 @@ class Sim:
             elif mnem == "not":
                 self.put(ops[0], ~self.get(ops[0]))
             elif mnem == "neg":
-                self.put(ops[0], -self.get(ops[0]))
+                a = self.get(ops[0])
+                self.put(ops[0], -a)
+                # CF set unless the operand was 0 - for a 'long' negated,
+                # "neg di" / "neg si" / "sbb di,*0" (fltprobe/p25_long3)
+                self.carry_next = 1 if a & M16 else 0
             elif mnem in ("sal", "shl"):
                 a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
                 self.put(ops[0], a << n)
@@ -606,6 +610,22 @@ class Sim:
                 self.put(ops[0], s16(a) >> n)
                 if n == 1:              # CF, for an "rcr" right after it
                     self.carry_next = a & 1
+            elif mnem == "loop":
+                # "loop .-4": back over the two one-bit shifts before it,
+                # two bytes each - a 'long' shifted CX times, the only use
+                # (fltprobe/p25_long3.s.golden's "mov cx,*3." / "sal si,*1"
+                # / "rcl di,*1" / "loop .-4")
+                pair = [self.prog[k] if 0 <= k < len(self.prog) else None
+                        for k in (pc - 3, pc - 2)]
+                if ops != [".-4"] or None in pair or \
+                        (pair[0][0], pair[1][0]) not in (("sal", "rcl"),
+                                                         ("sar", "rcr")) or \
+                        pair[0][1][1] != "*1" or pair[1][1][1] != "*1":
+                    raise SimError("'loop' other than back over a one-bit "
+                                   "long shift pair")
+                self.regs["cx"] = (self.regs["cx"] - 1) & M16
+                if self.regs["cx"] != 0:
+                    pc -= 3
             elif mnem in ("rcl", "rcr"):
                 # The other word of a 'long' shifted by one: through the
                 # carry of the "sal"/"sar" right before it

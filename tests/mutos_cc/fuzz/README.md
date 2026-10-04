@@ -52,11 +52,15 @@ initialized char array), and `04_funcs/05_staticvar` and all three
 Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
 `16.+_ga`-style addresses were added for them) and returns its program's
 value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e` -
-and so do 25 of the 27 `fltprobe` goldens of rounds 1 to 6: `p19_open3`
-is invalid assembly from line 229 on, and `p21_fltexp` stops with
-"'fstdp' with an empty floating-point stack" where the real compiler's
-own code pops its floating-point stack twice (`half(d = 3.0)` - the
-compiler reported it too); with that one store corrected it returns 60.
+and so do 29 of the 32 `fltprobe` goldens of rounds 1 to 7 (round 7's
+`p24` 174, `p25` 153, `p26` 238, `p27` 24 since `loop .-4` - a long shifted
+by 3 or more - and the carry of `neg` - `sbb di,*0` after a long's
+negation - are modelled, 2026-10-04): `p19_open3`
+is invalid assembly from line 229 on, and `p21_fltexp` and `p28_fltstk`
+stop with "'fstdp' with an empty floating-point stack" where the real
+compiler's own code pops its floating-point stack twice (`half(d = 3.0)` -
+the compiler reported it too); with that one store corrected `p21`
+returns 60.
 `fuzz_c.py` itself generates neither chars, calls, structs nor globals
 (`--scope` adds file-scope ints); hand-written programs of that kind can
 be run through the same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s
@@ -150,7 +154,7 @@ refused statement discards the whole program): no constant in a truth
 context (`if (4)`, `x && 3`), no constant divisor or constant multiplier
 of 0 or a power of two, no `x = y;`, a right operand that is usually
 simple (`c1` cannot spill yet - two compound operands mostly collide in
-its registers), and frames of at most 80 bytes (81-127 is `c1`'s
+its registers), and frames of at most 80 bytes (92-98 is `c1`'s
 unconfirmed `chkstk` gap). About 30% of programs compile with arrays,
 about 60% without.
 
