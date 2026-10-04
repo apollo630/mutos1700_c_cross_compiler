@@ -1,0 +1,23 @@
+cc -S p24_fltinf2.c
+/lib/cpp -P p24_fltinf2.c > p24_fltinf2.i; /lib/c0 p24_fltinf2.i p24_fltinf2.1 p24_fltinf2.2
+cc -S p25_long3.c
+/lib/cpp -P p25_long3.c > p25_long3.i; /lib/c0 p25_long3.i p25_long3.1 p25_long3.2
+cc -S p26_elem4.c
+/lib/cpp -P p26_elem4.c > p26_elem4.i; /lib/c0 p26_elem4.i p26_elem4.1 p26_elem4.2
+cc -S p27_frame.c
+/lib/cpp -P p27_frame.c > p27_frame.i; /lib/c0 p27_frame.i p27_frame.1 p27_frame.2
+cc -S p28_fltstk.c
+49: floating point stack underflow
+50: Floating point stack underflow
+50: Floating point stack underflow
+59: floating point stack underflow
+60: floating point stack underflow
+61: floating point stack underflow
+62: floating point stack underflow
+65: Floating point stack underflow
+65: Floating point stack underflow
+73: floating point stack underflow
+79: Floating point stack underflow
+79: Floating point stack underflow
+*** Error code 1 (ignored)
+/lib/cpp -P p28_fltstk.c > p28_fltstk.i; /lib/c0 p28_fltstk.i p28_fltstk.1 p28_fltstk.2
