@@ -142,10 +142,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
   its `README.md`) - round 1's nine files, the four each of rounds 2, 3
-  and 6 and the three each of rounds 4 and 5 all byte-exact (`p19_open3`
-  up to the real compiler's own invalid output, `p21_fltexp` together with
-  the real compiler's own `c1` error messages, see below), round 7's five
-  (`p24`..`p28`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  and 6, the three each of rounds 4 and 5 and the five of round 7 all
+  byte-exact (`p19_open3` up to the real compiler's own invalid output,
+  `p21_fltexp` and `p28_fltstk` together with the real compiler's own `c1`
+  error messages, see below), round 8's five (`p29`..`p33`) waiting for
+  their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -160,7 +161,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   reported errors - and still wrote the whole `.s`, which is the golden,
   never edited (at present `fltprobe/p21_fltexp`: "56: floating point
   stack underflow", "57: Floating point stack underflow" - its own code
-  pops the floating-point stack twice). `run_goldens.sh` requires
+  pops the floating-point stack twice - and `fltprobe/p28_fltstk`, twelve
+  messages, the same wrong code on purpose). `run_goldens.sh` requires
   `mutos_c1` to print exactly those messages, exit with a nonzero status
   and write exactly the golden `.s` (its category 9).
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
@@ -578,16 +580,18 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, 26 of the 27 probes of
-  `tests/mutos_cc/fltprobe/`'s first six rounds are byte-exact against
+  8086 emulator. Beyond the corpus, 31 of the 32 probes of
+  `tests/mutos_cc/fltprobe/`'s first seven rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
   the register an int is converted in, `long` mixed with int-class
-  values and nearly every `long` operator - `p21_fltexp` with the real
-  compiler's own two `c1` error messages), the 27th up to the real
-  compiler's own invalid output; and `11_kernel/01_delay`, the first of
-  the nine real kernel files.**
+  values and every `long` operator asked, sums of calls, compound
+  assignments into elements, v7's `distrib()`, the `chkstk` threshold in
+  `(90,100]` - `p21_fltexp` and `p28_fltstk` with the real compiler's own
+  `c1` error messages), the 32nd up to the real compiler's own invalid
+  output; and `11_kernel/01_delay`, the first of the nine real kernel
+  files.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -672,16 +676,24 @@ scope and intent, not a snapshot of what's done.
     reporting its own wrong code: `half(d = 3.0)` pops the floating-point
     stack twice, and its compile-time model of that stack said so in two
     messages, which `mutos_c1` reproduces (see "The round-6 fltprobe
-    goldens"). Round 7 (`p24`..`p28`) asks about what `mutos_c1` still
-    infers or refuses, the 82..127-byte frames and that stack model;
-    running it is the first "Next up" in `STATUS.md`.
+    goldens"). Round 7 settled the frames (`sub sp` up to 90 bytes, `call
+    chkstk` from 100), a sum of calls (each right call pushed), that stack
+    model (one per file, twelve messages reproduced; an assignment under a
+    call popped only in a floating statement - inferred), an element
+    tested for truth (loaded and `or`ed), compound assignments into
+    elements, v7's `distrib()` of scaled comparisons, `long` `++`/`--`,
+    negation, shifts by CX and truth tests, and the floating shapes left
+    (see "The round-7 fltprobe goldens"). Round 8 (`p29`..`p33`) asks
+    about the 92..98-byte frames, which store an assignment under a call
+    gets, and round 7's new inferences; running it is the first "Next up"
+    in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
     dependency-ordered list: the floating shapes still refused (see
     `tests/mutos_cc/fltprobe/README.md`), the
-    remaining 81..127-byte `chkstk` gap (the `09_abiprobe`
-    goldens narrowed the threshold to `(80,128]`), then growing coverage
+    remaining 92..98-byte `chkstk` gap (`fltprobe/p27_frame`
+    narrowed the threshold to `(90,100]`), then growing coverage
     into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
     1/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
     Milestone 4 section for the initial assessment), then the `mutos_cc`

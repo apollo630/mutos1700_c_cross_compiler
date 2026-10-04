@@ -104,12 +104,12 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 `fltprobe/` is not part of the corpus either: floating-point probe programs
 with their own `Makefile.mutos` and real-hardware goldens (see
 `fltprobe/README.md`) - a first round of nine, a second, a third and a
-sixth of four, a fourth and a fifth of three, all byte-exact (they stay
-here rather than joining `08_float`; `p21_fltexp` together with the real
-compiler's own error messages, see below) but `p19_open3`, whose
-`.s.golden` ends in the real compiler's own invalid output (see below),
-and a seventh round of five (`p24`..`p28`) whose goldens are still to be
-generated. Unlike `fuzz/`, it
+sixth of four, a fourth and a fifth of three, a seventh of five, all
+byte-exact (they stay here rather than joining `08_float`; `p21_fltexp`
+and `p28_fltstk` together with the real compiler's own error messages,
+see below) but `p19_open3`, whose `.s.golden` ends in the real compiler's
+own invalid output (see below), and an eighth round of five
+(`p29`..`p33`) whose goldens are still to be generated. Unlike `fuzz/`, it
 does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
 category, and `run_goldens.sh` skips each file until it has goldens - one
 with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
@@ -128,10 +128,12 @@ to the refusal to be exactly the golden's leading valid lines (category
 
 `c1_errors.txt` lists the goldens for which the real compiler's `c1`
 reported errors - and wrote the whole `.s` all the same (`cc -S` keeps
-it; `c1` exits with status 1). At present one: `fltprobe/p21_fltexp`,
+it; `c1` exits with status 1). At present two: `fltprobe/p21_fltexp`,
 whose `f = half(d = 3.0)` the real compiler compiles into code that pops
 the floating-point stack twice, and whose `c1` says so - "56: floating
-point stack underflow", "57: Floating point stack underflow". For a
+point stack underflow", "57: Floating point stack underflow" - and
+`fltprobe/p28_fltstk`, the same wrong code on purpose, twelve messages
+from a model of that stack which is never reset. For a
 listed file `run_goldens.sh` requires `mutos_c1` to exit with a nonzero
 status, to print exactly the listed messages and to write exactly the
 golden `.s` (category 9, not a failure).
@@ -189,8 +191,10 @@ files whose *only* difference is a local buffer of 80/128/176/224/256/300
 bytes. Compiling all six on real hardware and checking which ones emit
 `call chkstk` instead of a plain `sub sp,N` pins the real cutoff down for
 the first time. **Result**: `02_frame080` uses `sub sp,*80.`, the other five
-use `call chkstk`, so the threshold is in `(80,128]` bytes (see
-`docs/MUTOS_C_ABI.md` sect. 1.9).
+use `call chkstk`, so the threshold was above 80 and at most 128 bytes;
+`fltprobe/p27_frame` narrowed it further: frames of 82 and 90 bytes use
+`sub sp,N`, from 100 `call chkstk` - the threshold is in `(90,100]` (see
+`docs/MUTOS_C_ABI.md` sect. 1.9; `fltprobe/p29_frame2` asks about 92..98).
 
 ## Workflow
 

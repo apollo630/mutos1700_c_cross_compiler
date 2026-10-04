@@ -1185,6 +1185,22 @@ static void emit_incdec(FILE *t1, int optag, int type, int is_ptr)
         outcode(t1, "BN", optag, TY_DOUBLE);
         return;
     }
+    if (type == TY_FLOAT) {
+        /* A float: the 1 converted to FLOAT, the node typed DOUBLE -
+         * fltprobe/p24_fltinf2.1.golden's "f++;" -> NAME f, CON 1,
+         * ITOF(2), INCAFT(3). */
+        outcode(t1, "BN", OP_ITOF, TY_FLOAT);
+        outcode(t1, "BN", optag, TY_DOUBLE);
+        return;
+    }
+    if (type == TY_LONG) {
+        /* A long: the 1 widened the same way - fltprobe/p25_long3.1.golden's
+         * "l++;" -> NAME l, CON 1, ITOL(6), INCAFT(6); "++l" INCBEF(6),
+         * "l--" DECAFT(6). */
+        outcode(t1, "BN", OP_ITOL, TY_LONG);
+        outcode(t1, "BN", optag, TY_LONG);
+        return;
+    }
     if (is_ptr) {
         /* The scale is the pointed-to object's size (v7/cc/c01.c's
          * build(): convert(..., ITP, plength(p1))) - MCC_SZINT for
@@ -2753,13 +2769,11 @@ static ExprVal parse_primary(Parser *p, FILE *t1)
              * against 05_incdec.1.golden's "j = i++;" (plain int) and
              * "*p++ = 1;" (pointer) trees. */
             int optag = (p->cur.kind == T_INCR) ? OP_INCAFT : OP_DECAFT;
-            if (sym->type == TY_FLOAT)
-                c0_error_at(p->cur.line, "'++'/'--' on a 'float' variable is "
-                                          "not yet supported - see "
-                                          "src/mutos_cc/README.md");
             advance(p);
             emit_incdec(t1, optag, sym->type, sym->is_ptr);
-            return ev_dynamic_typed(sym->type);
+            /* A float's is typed DOUBLE - see emit_incdec(). */
+            return ev_dynamic_typed(sym->type == TY_FLOAT ? TY_DOUBLE
+                                                          : sym->type);
         }
         ExprVal nv = ev_char_obj(sym->type);
         nv.sdef = sym->sdef;           /* a pointer to a struct ("cur") */
@@ -3209,13 +3223,10 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
             advance(p);
             return ev_dynamic();
         }
-        if (sym->type == TY_FLOAT)
-            c0_error_at(line, "'++'/'--' on a 'float' variable is not yet "
-                               "supported - see src/mutos_cc/README.md");
         advance(p);
         emit_name(t1, sym, sym->type);
         emit_incdec(t1, optag, sym->type, sym->is_ptr);
-        return ev_dynamic_typed(sym->type);
+        return ev_dynamic_typed(sym->type == TY_FLOAT ? TY_DOUBLE : sym->type);
     }
     if (p->cur.kind == T_MINUS) {
         int line = p->cur.line;
@@ -3248,6 +3259,12 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
              * "d = -i" -> NAME i, NEG(0), ITOF(3). */
             outcode(t1, "BN", OP_NEG, TY_INT);
             return ev_dynamic();
+        }
+        if (v.type == TY_LONG) {
+            /* A long value negated: NEG typed LONG - fltprobe/p25_long3.1.
+             * golden's "l = -l" -> NAME l, NAME l, NEG(6), ASSIGN(6). */
+            outcode(t1, "BN", OP_NEG, TY_LONG);
+            return ev_dynamic_typed(TY_LONG);
         }
         c0_error_at(line, "unary '-' on this operand is not yet supported "
                           "(only an int, a constant or a 'float'/'double' "
@@ -4436,12 +4453,16 @@ static void parse_static_decl(Parser *p, FILE *t1)
  */
 static void do_return_stmt(Parser *p, FILE *t1, int retlab)
 {
-    int stmt_line = p->cur.line; /* line of the 'return' keyword itself -
-                                   * see README.md's "Known simplifications"
-                                   * for why this is only exact for
-                                   * single-physical-line statements
-                                   * (the only case in this grammar's
-                                   * scope). */
+    int stmt_line = p->cur.line; /* line of the 'return' keyword - for
+                                   * diagnostics only. The EXPR below
+                                   * carries the line of the ';' that ends
+                                   * the expression, as every expression
+                                   * statement's does (v7's doret()/
+                                   * statement(): rcexpr() right after
+                                   * tree(), the ';' peeked) - fltprobe/
+                                   * p27_frame.1.golden's "return f82() +
+                                   * ... +" / "f127();" over two lines:
+                                   * EXPR 87, the second. */
     advance(p); /* consume 'return' */
 
     if (p->cur.kind == T_SEMI) {
@@ -4490,7 +4511,7 @@ static void do_return_stmt(Parser *p, FILE *t1, int retlab)
     }
 
     outcode(t1, "BN", OP_RFORCE, rtype);
-    outcode(t1, "BN", OP_EXPR, stmt_line);
+    outcode(t1, "BN", OP_EXPR, p->prev_line);
     branch_op(t1, retlab);
 }
 
@@ -4603,7 +4624,7 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
             c0_error_at(line, "a compound assignment to a struct");
         parse_struct_assign(p, t1, target_sdef, line);
         expect(p, T_SEMI, "';'");
-        outcode(t1, "BN", OP_EXPR, line);
+        outcode(t1, "BN", OP_EXPR, p->prev_line);
         return;
     }
     if (is_field && optag != OP_ASSIGN)
@@ -4698,11 +4719,12 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     }
 
     outcode(t1, "BN", optag, assign_wire_type(assign_type));
-    outcode(t1, "BN", OP_EXPR, line);
+    outcode(t1, "BN", OP_EXPR, p->prev_line);
 }
 
 /*
  * star-assign-stmt := '*'+ ('++'|'--')? IDENT ('++'|'--')? '=' expr ';'
+ *                   | '*' IDENT assign-op expr ';'
  *
  * Handles "*p++ = 1;" / "*++p = 2;" (05_arrptr/01_expr/05_incdec.c) -
  * an assignment through a dereferenced pointer, optionally combined
@@ -4740,6 +4762,46 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
     if (nstars == 1 && (p->cur.kind == T_INCR || p->cur.kind == T_DECR)) {
         optag = (p->cur.kind == T_INCR) ? OP_INCBEF : OP_DECBEF;
         advance(p);
+    }
+
+    if (nstars == 1 && !optag && p->cur.kind == T_IDENT &&
+        peek2_kind(p) == T_LPAREN && !lookup_var(p, p->cur.ident)) {
+        /* A store through a function's result - fltprobe/p24_fltinf2.1.
+         * golden's "*pick(a, 1) = 2.5;" -> NAME _pick, ... COMMA,
+         * CALL(11), STAR(3), FCON, ASSIGN(3): the call as in an rvalue
+         * ("*pick(a, 2)" - parse_unary()), dereferenced, the right-hand
+         * side converted to the target's type. */
+        ExprVal cv = parse_unary(p, t1);
+        emit_materialize(t1, cv);
+        if (!ty_is_ptr(cv.type)) {
+            c0_error_at(line, "'*' applied to a call that returns no "
+                               "pointer");
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE &&
+                   p->cur.kind != T_EOF)
+                advance(p);
+            if (p->cur.kind == T_SEMI)
+                advance(p);
+            return;
+        }
+        int ctype = ty_decref(cv.type);
+        if (ctype == TY_LONG)
+            refuse_long_access(p);
+        outcode(t1, "BN", OP_STAR, ctype);
+        if (!expect(p, T_ASSIGN, "'='")) {
+            while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE &&
+                   p->cur.kind != T_EOF)
+                advance(p);
+            if (p->cur.kind == T_SEMI)
+                advance(p);
+            return;
+        }
+        ExprVal crhs = parse_expr(p, t1);
+        expect(p, T_SEMI, "';'");
+        emit_materialize(t1, crhs);
+        convert_assign(t1, ctype, crhs, line);
+        outcode(t1, "BN", OP_ASSIGN, assign_wire_type(ctype));
+        outcode(t1, "BN", OP_EXPR, p->prev_line);
+        return;
     }
 
     if (p->cur.kind != T_IDENT) {
@@ -4784,6 +4846,42 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
         }
     }
 
+    /* A compound assignment through a pointer to an int: "*ip += 2;" -
+     * fltprobe/p26_elem4.1.golden: NAME ip, STAR(0), CON 2, ASPLUS(0) -
+     * the same shape as into a variable, the dereference as the target.
+     * Only an int target with an int-class right-hand side, through one
+     * '*' and no '++'/'--'. */
+    int asop = 0;
+    switch (p->cur.kind) {
+    case T_PLUSEQ:    asop = OP_ASPLUS;  break;
+    case T_MINUSEQ:   asop = OP_ASMINUS; break;
+    case T_STAREQ:    asop = OP_ASTIMES; break;
+    case T_SLASHEQ:   asop = OP_ASDIV;   break;
+    case T_PERCENTEQ: asop = OP_ASMOD;   break;
+    case T_SHLEQ:     asop = OP_ASLSH;   break;
+    case T_SHREQ:     asop = OP_ASRSH;   break;
+    case T_ANDEQ:     asop = OP_ASSAND;  break;
+    case T_OREQ:      asop = OP_ASOR;    break;
+    case T_XOREQ:     asop = OP_ASXOR;   break;
+    default:          break;
+    }
+    if (asop) {
+        advance(p);
+        ExprVal crhs = parse_expr(p, t1);
+        expect(p, T_SEMI, "';'");
+        emit_materialize(t1, crhs);
+        if (sym && (nstars != 1 || optag || curtype != TY_INT ||
+                    ty_is_float(crhs.type) || crhs.type == TY_LONG))
+            c0_error_at(line, "a compound assignment through a pointer is "
+                              "only supported into an int, through one '*' "
+                              "with no '++'/'--', with an int-class "
+                              "right-hand side - see src/mutos_cc/README.md");
+        (void)promote_char(t1, crhs);
+        outcode(t1, "BN", asop, TY_INT);
+        outcode(t1, "BN", OP_EXPR, p->prev_line);
+        return;
+    }
+
     if (!expect(p, T_ASSIGN, "'='")) {
         while (p->cur.kind != T_SEMI && p->cur.kind != T_RBRACE && p->cur.kind != T_EOF)
             advance(p);
@@ -4804,7 +4902,7 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
      * 1.golden's NAME p, STAR(3), ..., ASSIGN(3); a float target is
      * written DOUBLE, as for a variable (assign_wire_type()). */
     outcode(t1, "BN", OP_ASSIGN, assign_wire_type(curtype));
-    outcode(t1, "BN", OP_EXPR, line);
+    outcode(t1, "BN", OP_EXPR, p->prev_line);
 }
 
 /*
@@ -4820,15 +4918,14 @@ static void parse_star_assign_stmt(Parser *p, FILE *t1)
  * may be the left operand of a larger expression ("f(x) + 1;" parses,
  * pointless as it is), which parse_expr() handles as usual. Confirmed
  * against 07_strlibc.1.golden: NAME(_strcpy) <args> COMMA CALL, then
- * EXPR with the statement's own line - nothing else, no ASSIGN.
+ * EXPR with the line of its ';' - nothing else, no ASSIGN.
  */
 static void parse_call_stmt(Parser *p, FILE *t1)
 {
-    int line = p->cur.line;
     ExprVal v = parse_expr(p, t1);
     expect(p, T_SEMI, "';'");
     emit_materialize(t1, v);
-    outcode(t1, "BN", OP_EXPR, line);
+    outcode(t1, "BN", OP_EXPR, p->prev_line);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5169,10 +5266,11 @@ static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
     expect(p, T_LPAREN, "'('");
 
     if (p->cur.kind != T_SEMI) {
-        int line = p->cur.line;
         ExprVal v = parse_comma_item(p, t1);
         emit_materialize(t1, v);
-        outcode(t1, "BN", OP_EXPR, line);
+        /* v7's forstmt(): rcexpr(tree()) - EXPR carries the line the
+         * lexer is on once tree() has peeked the ';' that ends it. */
+        outcode(t1, "BN", OP_EXPR, p->cur.line);
     }
     expect(p, T_SEMI, "';'");
 
@@ -5204,7 +5302,10 @@ static void parse_for_stmt(Parser *p, FILE *t1, int retlab)
         } else {
             ExprVal v = parse_comma_item(p, mem);
             emit_materialize(mem, v);
-            outcode(mem, "BN", OP_EXPR, incr_line);
+            /* v7's forstmt() saves "sline = line" right after tree(),
+             * the ')' peeked - the increment's EXPR carries that line,
+             * though it is written after the body. */
+            outcode(mem, "BN", OP_EXPR, p->cur.line);
             fclose(mem);
         }
         expect(p, T_RPAREN, "')'");

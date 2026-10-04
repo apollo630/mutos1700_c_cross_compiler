@@ -1,4 +1,4 @@
-# Makefile.mutos -- fltprobe/ (this directory's 32 files only).
+# Makefile.mutos -- fltprobe/ (this directory's 37 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory on real MUTOS 1700 hardware - the same recipes as every
@@ -21,15 +21,15 @@ CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
 
-# Seven rounds - each added after the previous round's goldens came back
-# (p6..p9, then p10..p13, p14..p16, p17..p19, p20..p23, p24..p28); "make
-# -f Makefile.mutos round7" makes only the newest ones. Should one of them
-# fail to compile on MUTOS, make the others by name ("make -f
-# Makefile.mutos p25_long3.s p25_long3.1") - the failing file's compiler
-# messages are themselves the finding. p28_fltstk is MEANT to make "cc"
-# report errors (see the file): its "cc -S" line starts with "-", so make
-# goes on, and its ".s" is written all the same.
-all: round1 round2 round3 round4 round5 round6 round7
+# Eight rounds - each added after the previous round's goldens came back
+# (p6..p9, then p10..p13, p14..p16, p17..p19, p20..p23, p24..p28,
+# p29..p33); "make -f Makefile.mutos round8" makes only the newest ones.
+# Should one of them fail to compile on MUTOS, make the others by name
+# ("make -f Makefile.mutos p31_long4.s p31_long4.1") - the failing file's
+# compiler messages are themselves the finding. p28_fltstk and p30_fltstk2
+# are MEANT to make "cc" report errors (see the files): their "cc -S" lines
+# start with "-", so make goes on, and the ".s" is written all the same.
+all: round1 round2 round3 round4 round5 round6 round7 round8
 
 round1: 03_fltcmp.s 03_fltcmp.1 04_fltconst.s 04_fltconst.1 05_fltasop.s 05_fltasop.1 06_fltfunc.s 06_fltfunc.1 p1_compare.s p1_compare.1 p2_arith.s p2_arith.1 p3_global.s p3_global.1 p4_const.s p4_const.1 p5_call.s p5_call.1
 
@@ -44,6 +44,8 @@ round5: p17_elem2.s p17_elem2.1 p18_fltop3.s p18_fltop3.1 p19_open3.s p19_open3.
 round6: p20_fltlv.s p20_fltlv.1 p21_fltexp.s p21_fltexp.1 p22_long2.s p22_long2.1 p23_elem3.s p23_elem3.1
 
 round7: p24_fltinf2.s p24_fltinf2.1 p25_long3.s p25_long3.1 p26_elem4.s p26_elem4.1 p27_frame.s p27_frame.1 p28_fltstk.s p28_fltstk.1
+
+round8: p29_frame2.s p29_frame2.1 p30_fltstk2.s p30_fltstk2.1 p31_long4.s p31_long4.1 p32_elem5.s p32_elem5.1 p33_fltinf3.s p33_fltinf3.1
 
 03_fltcmp.s: 03_fltcmp.c
 	$(CC) -S 03_fltcmp.c
@@ -236,6 +238,36 @@ p28_fltstk.s: p28_fltstk.c
 
 p28_fltstk.1: p28_fltstk.c
 	$(CPP) -P p28_fltstk.c > p28_fltstk.i; $(C0) p28_fltstk.i p28_fltstk.1 p28_fltstk.2
+
+p29_frame2.s: p29_frame2.c
+	$(CC) -S p29_frame2.c
+
+p29_frame2.1: p29_frame2.c
+	$(CPP) -P p29_frame2.c > p29_frame2.i; $(C0) p29_frame2.i p29_frame2.1 p29_frame2.2
+
+p30_fltstk2.s: p30_fltstk2.c
+	-$(CC) -S p30_fltstk2.c
+
+p30_fltstk2.1: p30_fltstk2.c
+	$(CPP) -P p30_fltstk2.c > p30_fltstk2.i; $(C0) p30_fltstk2.i p30_fltstk2.1 p30_fltstk2.2
+
+p31_long4.s: p31_long4.c
+	$(CC) -S p31_long4.c
+
+p31_long4.1: p31_long4.c
+	$(CPP) -P p31_long4.c > p31_long4.i; $(C0) p31_long4.i p31_long4.1 p31_long4.2
+
+p32_elem5.s: p32_elem5.c
+	$(CC) -S p32_elem5.c
+
+p32_elem5.1: p32_elem5.c
+	$(CPP) -P p32_elem5.c > p32_elem5.i; $(C0) p32_elem5.i p32_elem5.1 p32_elem5.2
+
+p33_fltinf3.s: p33_fltinf3.c
+	$(CC) -S p33_fltinf3.c
+
+p33_fltinf3.1: p33_fltinf3.c
+	$(CPP) -P p33_fltinf3.c > p33_fltinf3.i; $(C0) p33_fltinf3.i p33_fltinf3.1 p33_fltinf3.2
 
 clean:
 	rm -f *.s *.i *.1 *.2
