@@ -33,11 +33,13 @@ directly, on random programs:
   comparison's low words).
 
 `x86sim.py` is validated on real hardware-compiled code: every
-`tests/mutos_cc` `.s.golden` it can execute (55 of the 62; the others
-call libc or runtime helpers - `lmul` among them -, or use a jump table
-or a function's address) returns the value its C source computes,
+`tests/mutos_cc` `.s.golden` it can execute (56 of the 62; the others
+call libc, or use a jump table or a function's address) returns the
+value its C source computes,
 including `02_long/01_addsub` (11009) and `03_retval` (-31067) since
-`adc`/`sbb` (2026-10-03),
+`adc`/`sbb` (2026-10-03), `02_long/02_muldiv` (24) since `libc.a`'s
+`long` helpers `lmul`/`ldiv`/`lrem`/`almul` are modelled (2026-10-04,
+with `fdup`, `neg` and a long shifted through the carry - `rcl`/`rcr`),
 both `08_float` files (7 and 3 - floating code runs against a model of
 `libc.a`'s software floating-point runtime, see `x86sim.py`'s
 `FP_RUNTIME`), and
@@ -49,7 +51,12 @@ initialized char array), and `04_funcs/05_staticvar` and all three
 `07_scope` files (globals, a file-scope `static`, a shadowing block).
 Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
 `16.+_ga`-style addresses were added for them) and returns its program's
-value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e`.
+value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e` -
+and so do 25 of the 27 `fltprobe` goldens of rounds 1 to 6: `p19_open3`
+is invalid assembly from line 229 on, and `p21_fltexp` stops with
+"'fstdp' with an empty floating-point stack" where the real compiler's
+own code pops its floating-point stack twice (`half(d = 3.0)` - the
+compiler reported it too); with that one store corrected it returns 60.
 `fuzz_c.py` itself generates neither chars, calls, structs nor globals
 (`--scope` adds file-scope ints); hand-written programs of that kind can
 be run through the same pipeline and `x86sim.py` (see `docs/DEVLOG.md`'s

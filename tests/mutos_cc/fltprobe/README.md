@@ -43,13 +43,28 @@ not compared), and skips the others.
   where a register name should be, which `mutos_c1` refuses on purpose -
   see `../invalid_goldens.txt` and `../../../docs/DEVLOG.md`'s "The
   round-5 fltprobe goldens".
-- **Round 6** (`p20`..`p23`, goldens pending): floating lvalues beyond
-  variables (`p20_fltlv` - struct members, pointers to double, elements as
-  compound-assignment targets, `&d`), floating expression forms
-  (`p21_fltexp` - chained assignments, `++`/`--`, char operands, casts of
-  computed ints, `?:`, comma), and the `long` (`p22_long2`) and element
-  (`p23_elem3`) shapes round 5 left open. Run them with `make -f
-  Makefile.mutos round6`.
+- **Round 6** (goldens 2026-10-03, commit `2540271`): floating lvalues
+  beyond variables (`p20_fltlv` - struct members, pointers to double,
+  elements as compound-assignment targets, `&d`), floating expression
+  forms (`p21_fltexp` - chained assignments, `++`/`--`, char operands,
+  casts of computed ints, `?:`, comma), and the `long` (`p22_long2`) and
+  element (`p23_elem3`) shapes round 5 left open - all four refused
+  before, now all **4/4 byte-exact** end-to-end. `p21_fltexp` came back
+  with two compiler messages: the real compiler's code for `half(d =
+  3.0)` pops the value it passes twice, and its `c1`, which counts the
+  floating-point stack at compile time, said so - "56: floating point
+  stack underflow" / "57: Floating point stack underflow", exit status 1,
+  the `.s` complete all the same (`cc -S` keeps it). `mutos_c1` writes the
+  same code and the same two messages and exits with 1 too - see
+  `../c1_errors.txt` and `../../../docs/DEVLOG.md`'s "The round-6
+  fltprobe goldens".
+- **Round 7** (`p24`..`p28`, goldens pending): what `mutos_c1` compiles
+  by inference only or still refuses after round 6 - floating
+  (`p24_fltinf2`), `long` (`p25_long3`) and int element (`p26_elem4`)
+  shapes, the frames from 82 to 127 bytes (`p27_frame` - `sub sp` or
+  `chkstk`?) and, on purpose, more of the real compiler's floating-stack
+  messages (`p28_fltstk`, not a program to run). Run them with `make -f
+  Makefile.mutos round7`.
 
 ## Why these, and not goldens alone
 
@@ -90,10 +105,15 @@ open question the five other files asked.
 | `p17_elem2.c` | no floating point: `return a[i] * b[j]` and `s = ps[i].c * qs[i].d` (the offset decides, not the context), `+`, `-`, `\|`, `^` of two elements (the right one's address pushed - `^` too), a `+` chain, two elements compared (the LEFT one's address pushed: `pop bx` / `cmp (bx),di`) | byte-exact | 84 |
 | `p18_fltop3.c` | `d += e * 2` (computed first), `f += i` into a float, `(d * e) + (i % j)` (the remainder first, `mov ax,dx`), `(long) 3.75`, a negated zero as an initializer | byte-exact | 27 |
 | `p19_open3.c` | `long` with int-class variables (`l + i` and `i + l` - the int widened first, `l > i` and `l == i` - swapped, in DX:AX, `l += i`, `l = u` - `sub di,di`), `&` / `\|` of longs (an int constant widened at run time), `u = 40000`, an unsigned compared with a long constant; `a[i] * b[j - 2]` (`imul *-4.(si)`), `x - b[j]` (pushed); `d -= c`, `d -= e * 2` (the target loaded first, `fsub`); an unsigned converted after a `*` - the real compiler's output invalid there | byte-exact to line 223, then refused on purpose | 111 |
-| `p20_fltlv.c` | a double struct member (target, operand, through a pointer, `+=`), `+=` / `*=` into a double element by a variable, a pointer to double subscripted, with an offset and incremented, `&d` passed, a function returning `double *` | refused | 128 |
-| `p21_fltexp.c` | `d = e = 2.5`, `d++`, `++d`, `e = d--`, `d + c`, `c * 2.5`, `(double) (i + j)`, `(double) (i * j) + 0.5`, `d = -i`, `e = l + 1`, `(unsigned) d`, `x ? d : e`, `(i = 2, d - 40000.0)`, `half(d = 3.0)` | refused | 60 |
-| `p22_long2.c` | no floating point: `l - i`, `i - l`, `l + 1`, `l - 2`, `l ^ 7`, `l -= i`, `l *= i`, `l / i`, `l % i`, `x = 40000`, `l < 0L`, `l >= 0L`, `x = l > 0L`, `i < l`, `l > 2`, `l > 0`, `if (l)`, `!l`, `u < l`, `l > m`, `l == m`, `-100000`, `~l`, `l << 2`, `l >> 1`, `x ? l : m`, `x = (int) (l - 5)`, `(long) u`, `l & m` | refused | 83 |
-| `p23_elem3.c` | no floating point: `ps[i].c > b[j]`, `a[i] > ps[i].c`, `x * b[j]`, `x - *p`, `5 - b[j]`, `g - b[j]` (a file-scope `g`), `b[j + 1]` of a local array, `a[i] + b[j + 1]`, two elements compared as values and under `&&` | refused | 136 |
+| `p20_fltlv.c` | a double struct member (target, operand, through a pointer, `+=` - `lea ax,(di)` / `\|` / `push ax` / ... / `pop ax` / `fstdp`), `+=` / `*=` into a double element by a variable, a pointer to double subscripted, with an offset and incremented (`add p,*8.`), `&d` passed, a function returning `double *` (`mov bx,ax` / `lea ax,(bx)`) | byte-exact | 128 |
+| `p21_fltexp.c` | `d = e = 2.5` (`fstd e` / `fstdp d`), `d++`, `++d`, `e = d--` (`fdup`), `d + c`, `c * 2.5`, `(double) (i + j)`, `(double) (i * j) + 0.5`, `d = -i` (`neg di`), `e = l + 1` (the sum, then `ltof`), `(unsigned) d` (`ftol`, the low word), `x ? d : e`, `(i = 2, d - 40000.0)`, `half(d = 3.0)` (the value popped twice - the real `c1`'s two messages) | byte-exact, both messages reproduced | 60 (the real program: a stack underflow) |
+| `p22_long2.c` | no floating point: `l - i`, `i - l`, `l + 1`, `l - 2`, `l ^ 7`, `l -= i`, `l *= i` (`almul`), `l / i`, `l % i`, `x = 40000`, `l < 0L`, `l >= 0L`, `x = l > 0L`, `i < l`, `l > 2`, `l > 0` (no `tst`), `if (l)`, `!l`, `u < l`, `l > m`, `l == m`, `-100000`, `~l`, `l << 2` (`sal si,*1` / `rcl di,*1`), `l >> 1`, `x ? l : m`, `x = (int) (l - 5)`, `(long) u`, `l & m` | byte-exact | 83 |
+| `p23_elem3.c` | no floating point: `ps[i].c > b[j]` (`cmp *4.(bx),di`), `a[i] > ps[i].c`, `x * b[j]` (the element in AX, `imul x`), `x - *p`, `5 - b[j]`, `g - b[j]` (a file-scope `g`), `b[j + 1]` of a local array, `a[i] + b[j + 1]`, two elements compared as values (the right term first, pushed) and under `&&` (`or di,di`) | byte-exact | 136 |
+| `p24_fltinf2.c` | inferred: `e = ++d`, `e = --d`, `x ? 1.5 : 2.5`, `(i > j) ? e : d`, `-i * e`, `q->y -= e`, `q->x /= e`, `x = q->y * 4.0`, `q->x > e`, `a[i] < q->y`, `a[i] + q->x * s.y`, `d + i * j`, `d * (i + 1)`; refused: `(x ? d : e) * 2.0`, `q->x += d * e`, `a[i + 1]` of doubles, `d = q->k`, `*pick(a, 1) = 2.5`, `f++` on a float | refused | 174 |
+| `p25_long3.c` | no floating point; inferred: `l \| m`, `l ^ m`, `x = (int) (l + 5)`, `l += 1`, `l = c`, `l / 7`, `l + i * j`; refused: `l << 3`, `l >> 4`, `10 - (int) (l - 4995)`, `-l`, `l && i`, `l \|\| j`, `l ? 2 : 50`, `l++`, `++l`, `l--`, `m = l = 5`, `l * 3` | refused | 153 |
+| `p26_elem4.c` | no floating point; inferred: `x * *ip`, `*ip * j`, `if (b[i])`, `b[j] != 0`, `x = b[j] > 0`, `b[j] > 5` under `&&`, `if (ps[i].c)`, `ps[i].c > 2`, `b[i] * b[j] + b[j - 1]`, `g * b[j]`, `b[j] - g`, `(b[i] + 1) * b[j]`, `b[3] = b[j] + b[0]`, `b[j] / b[i]`, `b[j] % b[i]`; refused: three comparisons of two elements summed, `b[i] += b[j]`, `b[j] -= x`, `b[0] *= b[i]`, `*ip += 2`, `ps[i].c += x` | refused | 238 |
+| `p27_frame.c` | no floating point: eight functions with frames of 82, 90, 100, 110, 120, 124, 126 and 127 bytes (`char buf[N]`) - `sub sp,N` or `call chkstk`? | refused (the frame size) | 24 |
+| `p28_fltstk.c` | NOT a program to run: `half(d = 3.0)` (p21's double pop) on purpose, to see the real `c1`'s floating-stack model go on - reset per function?, the argument push and an unused result, `fmul` and `fcmp` below the bottom, `return d` from a double function | refused | - (compiler messages expected) |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
@@ -101,28 +121,37 @@ value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
 `p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
 MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
-golden returns 6, its floats truncated. Every golden of rounds 1 to 5 runs
+golden returns 6, its floats truncated. Every golden of rounds 1 to 6 runs
 under `../fuzz/x86sim.py` and returns these values - `p19_open3`'s up to
 its invalid statement (the first 223 lines, completed with `r = r + (int)
-d`, return 104); `mutos_c1`'s output is byte-identical to them. "inferred"
-means `mutos_c1` compiles the file - its output runs under `x86sim.py` and
-returns the value above - with no golden behind the shapes yet; "refused"
-that `mutos_c0` or `mutos_c1` stops with a diagnostic.
+d`, return 104), and `p21_fltexp`'s with its doubly popped store (line
+250, `fstdp`) made the `fstd` it should be (as written, `x86sim.py` stops
+there: "'fstdp' with an empty floating-point stack"); `mutos_c1`'s output
+is byte-identical to them. "inferred" means `mutos_c1` compiles the file -
+its output runs under `x86sim.py` and returns the value above - with no
+golden behind the shapes yet; "refused" that `mutos_c0` or `mutos_c1`
+stops with a diagnostic. In round 7, the shapes each file lists as
+inferred compile today and give the host's value when the refused ones
+are taken out.
 
 ## Generating the goldens
 
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round6
+make -f Makefile.mutos round7 2>&1 | tee round7.log
 ```
 
-(or plain `make -f Makefile.mutos` for all six rounds), then bring the
+(or plain `make -f Makefile.mutos` for all seven rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
 all four kinds - and run `make goldens` in `..` (it packages every
-category's, this directory's included). Should a round-6 file not compile
-on MUTOS, make the others by name (`make -f Makefile.mutos p22_long2.s
-p22_long2.1`) and bring back the failing one's messages instead.
+category's, this directory's included). `p28_fltstk` is meant to make
+`cc -S` print messages and exit with status 1 (`make` goes on: its recipe
+starts with `-`); its `.s` is written all the same, as `p21_fltexp`'s was -
+please bring back the messages (`round7.log`) with the files. Should
+another round-7 file not compile on MUTOS, make the others by name (`make
+-f Makefile.mutos p25_long3.s p25_long3.1`) and bring back the failing
+one's messages instead.
 
 One more question for the real toolchain, if convenient: `as p19_open3.s`
 - what the real assembler makes of the real compiler's invalid lines 229

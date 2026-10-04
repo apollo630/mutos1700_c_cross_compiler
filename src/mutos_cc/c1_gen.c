@@ -542,6 +542,21 @@ typedef struct {
      * (bx),di" (fltprobe/p17_elem2.s.golden), never loaded first */
     int       cond_memleft; /* VK_COND only: cl is such an operand - see
      * emit_cmp_and_branch() */
+    int       cond_ortest; /* VK_COND only: cl is an element read through a
+     * computed address ("b[j]") and cr the constant 0 - tested, not
+     * compared: loaded into its register and "or reg,reg" (see
+     * emit_cmp_and_branch() and plan_expression()'s `zelem`) */
+    int       lowonly;   /* an int-class value standing for its own ITOL,
+     * whose long sum or difference with a constant is only ever truncated
+     * again (plan_expression()'s `itollow`) - and that sum, computed as an
+     * int, until its LTOI: v7's unoptim() distributes LTOI over '+'/'-'
+     * and cancels LTOI(ITOL(x)) (see OP_ITOL) */
+    int       lowplus;   /* VK_LOWADD only: from "(int) (l + c)", not "(int)
+     * (l - c)" - the other term then comes first (see OP_PLUS) */
+    int       ltest;     /* VK_MEM only: a 'long' variable tested for truth
+     * by a CBRANCH (plan_expression()'s `ltest`) - see gen_long_test() */
+    int       cond_is_ltest; /* VK_COND only: cl is such a 'long' variable,
+     * compared with 0 as a whole (true_op NEQUAL, or EQUAL under '!') */
     int       cond_is_float; /* VK_COND only: a floating comparison, its
      * "call fcmp" / "sahf" already written; `flags_at` is GenState.ninsn
      * right after the "sahf" - the branch must follow with nothing in
@@ -660,9 +675,12 @@ typedef enum {
                   * generated in exchanged order: mirror its relation */
     SEG_FITOF,   /* the register the next int converted to floating is
                   * loaded into: a = FREG_DI or FREG_AX - see fafter() */
-    SEG_FLEAF    /* a floating element or member at a constant offset of
+    SEG_FLEAF,   /* a floating element or member at a constant offset of
                   * a named object, its opcodes never streamed: `start` its
                   * NAME, a the offset, b the type - see ffold() */
+    SEG_FSTREG   /* the register context the next floating store through a
+                  * pointer variable is addressed in: a = FREG_DI or FREG_AX
+                  * - see fp_lea() */
 } SegKind;
 typedef struct {
     SegKind kind;
@@ -813,6 +831,8 @@ typedef struct {
                                  * gen_fp_compare() */
     int  itof_reg;             /* SEG_FITOF's register for the next
                                  * OP_ITOF - see fitof_reg() */
+    int  fst_reg;              /* SEG_FSTREG's context for the next store
+                                 * through a pointer variable - see fp_lea() */
     long op_off;               /* temp1 offset of the opcode being
                                  * handled - a floating constant finds its
                                  * planned label by it (fc_find()) */
@@ -825,6 +845,31 @@ typedef struct {
                                  * noted by plan_expression()'s pre-scan
                                  * (a Val keeps no type): see OP_ITOL */
     int  nitolu;
+    int  fdepth;               /* the real c1's compile-time model of the
+                                 * runtime floating-point stack's depth -
+                                 * see fp_track() */
+    int  fp_nocheck;           /* the next pop is the argument push, which
+                                 * the model does not check (fp_track()) */
+    int  fp_argpop;            /* an assignment's value was stored with a
+                                 * pop as a call argument - fp_store() */
+    int  cur_line;             /* the source line of the expression being
+                                 * generated (its EXPR's or CBRANCH's - see
+                                 * prescan_expr()), for c1_error() */
+    int  nerrors;              /* c1_error()s reported: exit status 1 */
+    long itollow[16];          /* temp1 offsets of the current expression's
+                                 * ITOLs whose value only feeds "+/- a long
+                                 * constant" under an LTOI - see Val's
+                                 * `lowonly` */
+    int  nitollow;
+    long ltest;                /* temp1 offset of the current expression's
+                                 * 'long' NAME a CBRANCH tests for truth
+                                 * (directly or under '!'), -1 for none -
+                                 * see Val's `ltest` */
+    long zelem[16];            /* temp1 offsets of the current expression's
+                                 * comparisons of an element read through a
+                                 * computed address with 0 - see Val's
+                                 * cond_ortest */
+    int  nzelem;
     int  keep_ind;             /* SEG_KEEPIND was just run: the next word
                                  * dereference stays "(reg)" even as a
                                  * comparison's left operand (load_now()) -
@@ -1496,8 +1541,10 @@ static const InsnFx INSN_FX[] = {
     { "mov",  0, 1 }, { "movb", 0, 1 }, { "lea", 0, 1 },
     { "add",  0, 1 }, { "sub",  0, 1 }, { "adc", 0, 1 }, { "sbb", 0, 1 },
     { "and",  0, 1 }, { "or",   0, 1 }, { "xor", 0, 1 }, { "not", 0, 1 },
+    { "neg",  0, 1 },
     { "orb",  0, 1 },
     { "sal",  0, 1 }, { "sar",  0, 1 }, { "shl", 0, 1 },
+    { "rcl",  0, 1 }, { "rcr",  0, 1 },
     { "inc",  0, 1 }, { "dec",  0, 1 }, { "pop", 0, 1 },
     { "pop cx", RB_CX, 0 },        /* the literal-space quirk - OP_PLUS */
     { "xchg", 0, 2 },
@@ -1582,6 +1629,79 @@ static void require_free(Val pending, unsigned regs, const char *ctx)
                   "docs/DEVLOG.md", ctx, reg_name(hit & (~hit + 1u)));
 }
 
+/* An error the REAL compiler's c1 reports and goes on from - v7/cc/
+ * c11.c's error(): "<line>: <message>" on stderr, the error counted, the
+ * output written to the end; c1 then exits with status 1 (c10.c's
+ * "exit(nerror!=0)"), and cc keeps the ".s" of "cc -S" (it removes its
+ * temporary one otherwise - v7/cc/cc.c's dexit()). mutos_c1 does the same
+ * for the errors it reproduces - only fp_track()'s so far. */
+static void c1_error(GenState *g, const char *msg)
+{
+    fflush(g->out);
+    fprintf(stderr, "%d: %s\n", g->cur_line, msg);
+    g->nerrors++;
+}
+
+/* The real compiler's compile-time model of the runtime floating-point
+ * stack (libc.a's stacks.o), reproduced. The MUTOS c1 counts the values
+ * its code pushes and pops, and reports a pop below the bottom - with two
+ * different messages, so from two places in its code: fltprobe/p21_fltexp
+ * (2026-10-03) - "f = half(d = 3.0);" is its own wrong code, the assigned
+ * 3.0 stored WITH a pop ("fstdp", see fp_store()) and then pushed as the
+ * argument by a second "fstdp" - and "cc -S" printed
+ *
+ *     56: floating point stack underflow
+ *     57: Floating point stack underflow
+ *
+ * (exit status 1, the ".s" complete - the golden). The model behind them,
+ * as far as these two lines and round 1's p1_compare (a floating truth
+ * test, docs/DEVLOG.md's "Floating shapes from libc.a's compiled C")
+ * show it:
+ *
+ * - a load, "itof", "ltof", "fdup" and a call's result ("fldd" after it)
+ *   push one value; a "fst<s|d>p" store pops one and reports "floating
+ *   point stack underflow" (lower case) below 0 - line 56's "fstdp" into
+ *   f; "ftoi"/"ftol" pop one and report "Floating point stack underflow"
+ *   (upper case) - line 57's "ftoi", whose statement is balanced, but the
+ *   model was still one short after line 56;
+ * - the push of a floating argument ("sub sp,*8" / "mov ax,sp" / "call
+ *   fstdp") pops one WITHOUT a check: line 56 had exactly one message,
+ *   for its store into f, not two;
+ * - the stack-with-stack operators "fadd"/"fsub"/"fmul"/"fdiv" pop one
+ *   and "fcmp" two - checked, by inference with the upper-case message
+ *   (round 1 reported one message per pop of every floating statement
+ *   after its first underflow, "two per comparison"; no golden shows
+ *   their case);
+ * - the model starts at 0 in every function (an inference - p21's
+ *   underflow is in its last function) and is never reset inside one:
+ *   after an underflow it stays below 0, which is why line 57 reports.
+ *
+ * A correct program never goes below 0, so mutos_c1 reports nothing for
+ * one; the model is checked against every floating golden (make test). */
+static void fp_track(GenState *g, const char *fn)
+{
+    static const struct { const char *fn; int push, pop, store; } FX[] = {
+        { "fldd", 1, 0, 0 }, { "flds", 1, 0, 0 }, { "itof", 1, 0, 0 },
+        { "ltof", 1, 0, 0 }, { "fdup", 1, 0, 0 },
+        { "fstdp", 0, 1, 1 }, { "fstsp", 0, 1, 1 },
+        { "ftoi", 0, 1, 0 }, { "ftol", 0, 1, 0 },
+        { "fadd", 0, 1, 0 }, { "fsub", 0, 1, 0 }, { "fmul", 0, 1, 0 },
+        { "fdiv", 0, 1, 0 }, { "fcmp", 0, 2, 0 },
+    };
+    for (size_t i = 0; i < sizeof FX / sizeof FX[0]; i++) {
+        if (strcmp(FX[i].fn, fn) != 0)
+            continue;
+        g->fdepth += FX[i].push;
+        for (int k = 0; k < FX[i].pop; k++) {
+            if (--g->fdepth < 0 && !g->fp_nocheck)
+                c1_error(g, FX[i].store ? "floating point stack underflow"
+                                        : "Floating point stack underflow");
+        }
+        g->fp_nocheck = 0;
+        return;
+    }
+}
+
 /* THE instruction-line formatter - see this section's header. */
 static void put_insn_ex(GenState *g, const Insn *in, int regvar_store)
 {
@@ -1596,6 +1716,8 @@ static void put_insn_ex(GenState *g, const Insn *in, int regvar_store)
                   in->a.s[0] == '<' ? in->a.s : in->b.s);
     note_writes(g, insn_writes(in), regvar_store);
     g->ninsn++;
+    if (in->nops == 1 && strcmp(in->mnem, "call") == 0)
+        fp_track(g, in->a.s);
     switch (in->nops) {
     case 0:  fprintf(g->out, "%s\n", in->mnem); break;
     case 1:  fprintf(g->out, "%s\t%s\n", in->mnem, in->a.s); break;
@@ -1951,6 +2073,23 @@ static void emit_cmp_and_branch(GenState *g, Val cond, int branch_op_code, int t
         emit_byte_cmp_and_branch(g, l, r, branch_op_code, target_lab);
         return;
     }
+    /* An element read through a computed address compared with 0 - v7's
+     * rcexpr() turns "x > 0" in cctab into a test of x, and cctab's
+     * "rest" entry for a STAR (H) computes it into a register, which the
+     * MUTOS compiler then tests with "or": fltprobe/p23_elem3.s.golden's
+     * "b[j] > 0" -> "lea di,*-36.(bp)" / ... / "add di,si" / "mov
+     * di,(di)" / "or di,di" / "ble L6". (Through a pointer variable or at
+     * a constant offset the dereference stays an operand of "cmp" - the
+     * kernel's "cmp (di),*0", "cmp *16.(di),*0" - see plan_expression().) */
+    if (cond.cond_ortest) {
+        if (l.kind != VK_IND || r.kind != VK_IMM || r.imm != 0)
+            gen_fatal("internal: an element tested against 0 lost its "
+                      "operand shape");
+        ins2(g, "mov", o_reg(l.reg), o_val(l));
+        ins2(g, "or", o_reg(l.reg), o_reg(l.reg));
+        ins1(g, cond_true_mnem(branch_op_code), o_lab(target_lab));
+        return;
+    }
     /* An ADDRESS operand ("p == &x", VK_MEM_DIRECT - OP_AMPER's deferred
      * "lea") has no golden; rendered as a memory operand it compared the
      * variable's CONTENTS instead ("mov di,*-6.(bp)" / "cmp *-10.(bp),di"
@@ -2147,16 +2286,48 @@ static Val gen_long_relop(GenState *g, int op, Val l, Val r)
         w.lreg = LREG_CXBX;
         l = c;
         r = w;
+    } else if (l.kind == VK_LONG && l.fromu && l.lreg == LREG_DISI &&
+               !l.lpair && r.kind == VK_MEM) {
+        /* An unsigned widened and a long variable: the same, the variable
+         * loaded - fltprobe/p22_long2.s.golden's "u < l" -> "mov si,
+         * *-20.(bp)" / "sub di,di" / "push si" / "push di" / "mov si,
+         * *-6.(bp)" / "mov di,*-8.(bp)" / "pop cx" / "pop bx" / "cmp di,cx"
+         * ... "cmp si,bx" (as "l > u": an ITOL of an unsigned leaf has
+         * degree -1, a NAME 0). */
+        relop = find_relop(op)->mirror;
+        ins1(g, "push", o_reg("si"));
+        ins1(g, "push", o_reg("di"));
+        ins2(g, "mov", o_reg("si"), o_mem(r.offset + MCC_SZINT));
+        ins2(g, "mov", o_reg("di"), o_mem(r.offset));
+        ins1(g, "pop", o_reg("cx"));
+        ins1(g, "pop", o_reg("bx"));
+        Val w = val_long();
+        w.lreg = LREG_CXBX;
+        l = val_long();
+        r = w;
     } else if (l.kind == VK_LONG && l.lreg == LREG_DXAX && r.kind == VK_MEM) {
         /* "i < l", "l > i" swapped */
-    } else if (l.kind == VK_MEM && r.kind == VK_LCON && !r.fromu &&
-               r.imm == 0 && r.offset == 0) {
-        /* "c > 0L" */
+    } else if (l.kind == VK_MEM && r.kind == VK_LCON) {
+        /* A long variable and a constant, as written - 02_long/01_addsub's
+         * "c > 0L", fltprobe/p22_long2.s.golden's "l < 0L", "l >= 0L", "l >
+         * 2" and "l > 0" (an int constant widened - lrtab[0] too: "cmp
+         * *-8.(bp),*0" / "blt L7" / "bgt L10006" / "cmp *-6.(bp),*2." /
+         * "blos L7"). */
+    } else if (l.kind == VK_MEM && r.kind == VK_MEM) {
+        /* Two long variables: the left one loaded into DI:SI, compared
+         * with the right one in memory - fltprobe/p22_long2.s.golden's "l
+         * > m" -> "mov si,*-6.(bp)" / "mov di,*-8.(bp)" / "cmp di,*-12.
+         * (bp)" / "blt L12" / "bgt L10010" / "cmp si,*-10.(bp)" / "blos
+         * L12", "l == m" with "bne" / "bne". */
+        ins2(g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+        ins2(g, "mov", o_reg("di"), o_mem(l.offset));
+        l = val_long();
     } else {
         gen_fatal("this 'long' comparison's operand shape is not yet "
-                  "supported (confirmed: a long variable with 0L, an int "
-                  "variable converted, or an unsigned one with a long "
-                  "constant) - see src/mutos_cc/README.md");
+                  "supported (confirmed: a long variable with a constant or "
+                  "another long variable, an int variable converted, or an "
+                  "unsigned one with a long constant or variable) - see "
+                  "src/mutos_cc/README.md");
     }
     Val c = {0};
     c.kind = VK_COND;
@@ -2276,6 +2447,7 @@ static Val as_cond(Val v)
         c.cond_is_byte = 1;
         v.bytev = 0;
     }
+    c.cond_is_ltest = v.ltest;
     c.cl = simple_of(v);
     c.cr = simple_of(val_imm(0));
     return c;
@@ -2705,6 +2877,36 @@ static void gen_cond_branch(GenState *g, Val v, int lbl, int cond_sense, int bas
         return;
     }
     int branch_op = cond_sense ? c.true_op : cond_invert(c.true_op);
+    if (c.cond_is_ltest) {
+        /* A long variable tested for truth (see plan_expression()'s
+         * `ltest`): both words loaded, each compared with 0, the high one
+         * first - v7's cbranch() on a long ("tst R" / "tst R+") -
+         * fltprobe/p22_long2.s.golden's "if (l)" -> "mov si,*-6.(bp)" /
+         * "mov di,*-8.(bp)" / "cmp di,*0" / "bne L10008" / "cmp si,*0" /
+         * "beq L9" / "L10008:", "if (!l)" -> ... "cmp di,*0" / "bne L10" /
+         * "cmp si,*0" / "bne L10". */
+        if (g->ndeferred > base)
+            gen_fatal("a postfix '++'/'--' in a 'long' truth test is not yet "
+                      "supported - see src/mutos_cc/README.md");
+        Val lv = val_from_simple(c.cl);
+        if (lv.kind != VK_MEM || (g->reserved & (RB_DI | RB_SI)))
+            gen_fatal("internal: a 'long' truth test lost its operand");
+        ins2(g, "mov", o_reg("si"), o_mem(lv.offset + MCC_SZINT));
+        ins2(g, "mov", o_reg("di"), o_mem(lv.offset));
+        ins2(g, "cmp", o_reg("di"), o_cmpimm(0));
+        if (branch_op == OP_NEQUAL) {
+            ins1(g, "bne", o_lab(lbl));
+            ins2(g, "cmp", o_reg("si"), o_cmpimm(0));
+            ins1(g, "bne", o_lab(lbl));
+        } else {
+            int xlab = g->next_lab++;
+            ins1(g, "bne", o_lab(xlab));
+            ins2(g, "cmp", o_reg("si"), o_cmpimm(0));
+            ins1(g, "beq", o_lab(lbl));
+            put_label(g, xlab);
+        }
+        return;
+    }
     if (c.cond_is_float) {
         /* The comparison's "call fcmp" / "sahf" are out already (gen_fp_
          * compare()); the branch reads their flags, so nothing may come
@@ -2761,6 +2963,42 @@ static Val gen_logval(GenState *g, int ltrue)
     return val_reg("di");
 }
 
+/* A long "?:" arm's value into DI:SI - see plan_value()'s QUEST. A
+ * constant arm is the LCON's own load (materialize_long()); anything but
+ * a variable or a constant has no golden. */
+static void gen_arm_load_long(GenState *g)
+{
+    Val v = pop_val(g);
+    if (g->reserved & (RB_DI | RB_SI))
+        gen_fatal("a 'long' '?:' in a function with a register variable is "
+                  "not yet supported");
+    if (v.kind == VK_MEM) {
+        ins2(g, "mov", o_reg("si"), o_mem(v.offset + MCC_SZINT));
+        ins2(g, "mov", o_reg("di"), o_mem(v.offset));
+        return;
+    }
+    if (v.kind == VK_LCON) {
+        (void)materialize_long(g, v);
+        return;
+    }
+    gen_fatal("this 'long' '?:' arm is not yet supported (only a 'long' "
+              "variable or constant) - see src/mutos_cc/README.md");
+}
+
+static int is_float_val(const Val *v);
+static void fp_load(GenState *g, Val v);
+
+/* A floating "?:" arm's value onto the floating-point stack - see
+ * plan_quest(). */
+static void gen_arm_load_float(GenState *g)
+{
+    Val v = pop_val_ex(g, POP_FLOAT);
+    if (!is_float_val(&v))
+        gen_fatal("this 'float'/'double' '?:' arm is not yet supported - see "
+                  "src/mutos_cc/README.md");
+    fp_load(g, v);
+}
+
 /* A "?:" arm's value, just generated, into DI - unconditionally, even
  * when DI may already hold it: 07_ternary.s.golden reloads "mov di,
  * *-8.(bp)" at the false label although the compare's own set-up had
@@ -2804,13 +3042,23 @@ static void gen_arm_load(GenState *g)
  * not exercise. */
 static Val gen_long_binop_call(GenState *g, Val l, Val r, const char *helper)
 {
-    if (l.kind != VK_MEM || r.kind != VK_MEM)
+    int rdxax = (r.kind == VK_LONG && !r.lpair && r.lreg == LREG_DXAX);
+    if (l.kind != VK_MEM || (r.kind != VK_MEM && !rdxax))
         gen_fatal("'long' %s with a non-memory operand is not yet "
                   "supported", helper);
-    /* Push order r_low, r_high, l_low, l_high - see above. */
+    /* Push order r_low, r_high, l_low, l_high - see above. An int widened
+     * on the right is pushed straight from DX:AX: fltprobe/p22_long2.s.
+     * golden's "l / i" -> "mov ax,*-14.(bp)" / "cwd" / "push ax" / "push
+     * dx" / "mov di,*-6.(bp)" / "push di" / "mov di,*-8.(bp)" / "push di"
+     * / "call ldiv" / "add sp,*8.", "l % i" the same with "lrem". */
     const int words[4] = { r.offset + MCC_SZINT, r.offset,
                            l.offset + MCC_SZINT, l.offset };
-    for (int i = 0; i < 4; i++) {
+    int first = 0;
+    if (rdxax) {
+        put_seq(g, SEQ_PUSH_AXDX);
+        first = 2;
+    }
+    for (int i = first; i < 4; i++) {
         ins2(g, "mov", o_reg("di"), o_mem(words[i]));
         ins1(g, "push", o_reg("di"));
     }
@@ -3241,9 +3489,10 @@ static const char *long_mnem_hi(int op)
  * "add si,cx" / "adc di,bx", and fltprobe/p19_open3.s.golden's "m & 255"
  * and "m | 6" the same with "and"/"or" for both words. The second "pop"
  * is written "pop cx" with a space, not a tab, in both goldens. */
-static Val gen_long_constop(GenState *g, int op, Val l, Val r)
+/* The rest of gen_long_constop() once the right operand is in DX:AX:
+ * pushed, `l` loaded, popped and combined. */
+static Val gen_long_pushop(GenState *g, int op, Val l)
 {
-    emit_cwd_from(g, o_imm(r.imm));
     put_seq(g, SEQ_PUSH_AXDX);
     ins2(g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
     ins2(g, "mov", o_reg("di"), o_mem(l.offset));
@@ -3253,6 +3502,12 @@ static Val gen_long_constop(GenState *g, int op, Val l, Val r)
     ins2(g, aluop(op)->mnem, o_reg("si"), o_reg("cx"));
     ins2(g, long_mnem_hi(op), o_reg("di"), o_reg("bx"));
     return val_long();
+}
+
+static Val gen_long_constop(GenState *g, int op, Val l, Val r)
+{
+    emit_cwd_from(g, o_imm(r.imm));
+    return gen_long_pushop(g, op, l);
 }
 
 /* -------------------------------------------------------------- */
@@ -3736,6 +3991,7 @@ typedef struct {
     long off;         /* its own opcode tag */
     long after;       /* just past its arguments */
     int  lbl, cond;   /* OP_CBRANCH's label and sense */
+    int  line;        /* its source line */
 } Term;
 
 /* Indexes the expression starting at temp1's current position into
@@ -3752,14 +4008,17 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
     int depth = 0, cap = 0, root = -1;
     for (;;) {
         long off = ftell(t1);
-        int type = 0, lbl = 0, cond = 0;
+        int type = 0, lbl = 0, cond = 0, line = 0;
         long aux = 0;
         int op = c1_read_op(t1, "temp1");
         Arity ar;
         if (op == OP_CBRANCH) {
             lbl = c1_read_num(t1, "temp1");
             cond = c1_read_num(t1, "temp1");
-            (void)c1_read_num(t1, "temp1");      /* source line */
+            line = c1_read_num(t1, "temp1");      /* source line */
+            ar = AR_STMT;
+        } else if (op == OP_EXPR) {
+            line = c1_read_num(t1, "temp1");
             ar = AR_STMT;
         } else {
             ar = scan_op_args_v(t1, op, &type, &aux);
@@ -3774,6 +4033,7 @@ static int prescan_expr(FILE *t1, ETree *t, Term *term)
                 term->after = ftell(t1);
                 term->lbl = lbl;
                 term->cond = cond;
+                term->line = line;
             }
             break;
         }
@@ -3946,28 +4206,34 @@ static int is_pushaddr(const ETree *t, int i)
         return 0;
     if (is_elem_read(t, n->kid[0], 0))
         return 1;
-    return n->op == OP_MINUS && is_int_memvar(t, n->kid[0]);
+    /* A variable or a constant minus the element: fltprobe/p23_elem3.s.
+     * golden's "5 - b[j]" -> ... "push di" / "mov di,*5." / "pop bx" / "sub
+     * di,(bx)", "g - b[j]" (a file-scope g) -> "mov di,_g". */
+    return n->op == OP_MINUS && (is_int_memvar(t, n->kid[0]) ||
+                                 t->v[n->kid[0]].op == OP_CON);
 }
 
-/* A comparison of two words read through computed addresses, both at
- * offset 0: the LEFT one's address is computed first and pushed, the
- * right one computed and loaded, the address popped into BX and compared
- * in place - fltprobe/p17_elem2.s.golden's "if (a[i] > b[j])" -> "lea
- * di,*-10.(bp)" / "mov si,*-18.(bp)" / "sal si,*1" / "add di,si" / "push
- * di" / "lea di,*-16.(bp)" / ... / "mov di,(di)" / "pop bx" / "cmp (bx),di"
- * / "ble L10" (the relation as written). v7's cctab "%nw*,nw*" ([move11]:
- * FS*, S*, "cmp" through both) - after "%n,ew*", which 02_bubsort's "a[j]
- * > a[j + 1]" matches ("cmp di,*2.(si)"). A left element with an offset
- * and a right one at offset 0 has no golden (the left address pushed
- * with its offset added, or "*N.(bx)"?): left as it was - the "%n,ew*"
- * shape. */
+/* A comparison of two words read through computed addresses, the right
+ * one at offset 0: the LEFT one's address is computed first and pushed,
+ * the right one computed and loaded, the address popped into BX and
+ * compared in place - fltprobe/p17_elem2.s.golden's "if (a[i] > b[j])" ->
+ * "lea di,*-10.(bp)" / "mov si,*-18.(bp)" / "sal si,*1" / "add di,si" /
+ * "push di" / "lea di,*-16.(bp)" / ... / "mov di,(di)" / "pop bx" / "cmp
+ * (bx),di" / "ble L10" (the relation as written). v7's cctab "%nw*,nw*"
+ * ([move11]: FS*, S*, "cmp" through both) - after "%n,ew*", which
+ * 02_bubsort's "a[j] > a[j + 1]" and p23_elem3's "a[i] > ps[i].c" match
+ * (a right one WITH an offset: "cmp di,*2.(si)", "cmp di,*4.(si)"). A left
+ * one with an offset keeps it as the displacement off BX: p23_elem3.s.
+ * golden's "if (ps[i].c > b[j])" -> "lea di,*-20.(bp)" / ... / "add
+ * di,si" / "push di" / "lea di,*-36.(bp)" / ... / "mov di,(di)" / "pop bx"
+ * / "cmp *4.(bx),di". */
 static int is_pushleft(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
     switch (n->op) {
     case OP_LESS: case OP_LESSEQ: case OP_GREAT: case OP_GREATEQ:
     case OP_EQUAL: case OP_NEQUAL:
-        return is_elem_read(t, n->kid[0], 1) && is_elem_read(t, n->kid[1], 1);
+        return is_elem_read(t, n->kid[0], 0) && is_elem_read(t, n->kid[1], 1);
     default:
         return 0;
     }
@@ -4025,18 +4291,20 @@ static int is_disp_store(const ETree *t, int i)
     return 1;
 }
 
-/* An int "x - *p" whose left operand has code of its own and whose
- * right one reads through a pointer VARIABLE with no offset (the first
- * member of "p->..."): the pointer is pushed before the left operand is
- * computed and popped into BX for the subtraction - 06_struct/05_nestst.
- * s.golden's "rp->botright.x - rp->topleft.x" -> "push *4.(bp)" / "mov
- * di,*4.(bp)" / "mov di,*4.(di)" / "pop bx" / "sub di,(bx)". It is the
- * store's VK_IND_PENDING shape (see is_disp_store()) for an operand:
- * "*p" is an addressable PDP-11 operand ("@4(r5)"), which the x86 code
- * reaches through BX. With a non-zero offset ("rp->botright.y -
- * rp->topleft.y") the same golden computes left to right, "mov si,
- * *4.(bp)" / "sub di,*2.(si)". A leaf left operand ("x - *p") and '+'
- * have no golden. */
+/* An int "x - *p" whose left operand has code of its own or is a
+ * variable, and whose right one reads through a pointer VARIABLE with no
+ * offset (the first member of "p->..."): the pointer is pushed before the
+ * left operand is computed and popped into BX for the subtraction -
+ * 06_struct/05_nestst.s.golden's "rp->botright.x - rp->topleft.x" ->
+ * "push *4.(bp)" / "mov di,*4.(bp)" / "mov di,*4.(di)" / "pop bx" / "sub
+ * di,(bx)", and fltprobe/p23_elem3.s.golden's "x - *p" -> "push *-38.
+ * (bp)" / "mov di,*-44.(bp)" / "pop bx" / "sub di,(bx)" (the variable
+ * loaded by SEG_DEFPOP). It is the store's VK_IND_PENDING shape (see
+ * is_disp_store()) for an operand: "*p" is an addressable PDP-11 operand
+ * ("@4(r5)"), which the x86 code reaches through BX. With a non-zero
+ * offset ("rp->botright.y - rp->topleft.y") the same golden computes left
+ * to right, "mov si,*4.(bp)" / "sub di,*2.(si)". A constant on the left
+ * and '+' have no golden. */
 static int is_deferred_ptr(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
@@ -4044,7 +4312,8 @@ static int is_deferred_ptr(const ETree *t, int i)
         return 0;
     const ENode *l = &t->v[n->kid[0]];
     const ENode *r = &t->v[n->kid[1]];
-    if (l->kid[0] < 0 || r->op != OP_STAR || r->type != TY_INT)
+    if ((l->kid[0] < 0 && !is_int_memvar(t, n->kid[0])) ||
+        r->op != OP_STAR || r->type != TY_INT)
         return 0;
     if (l->op == OP_AMPER && t->v[l->kid[0]].op == OP_NAME)
         return 0;
@@ -4229,11 +4498,42 @@ static int acommute_order(const ETree *t, int top, int *order)
     return same ? 0 : n;
 }
 
+static int is_logic(const ETree *t, int i);
+
+/* Node `i`'s value is a comparison's (or "&&"/"||"/"!"'s) 0/1, or one
+ * scaled by a constant - computed with branches, so v7's dcalc() rates it
+ * far beyond the registers left over: no "%n,e" template takes it as a
+ * right operand. */
+static int is_relval(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (find_relop(n->op) || is_logic(t, i) || n->op == OP_EXCLA)
+        return 1;
+    if ((n->op == OP_TIMES || n->op == OP_LSHIFT) && n->kid[1] >= 0 &&
+        t->v[n->kid[1]].op == OP_CON)
+        return is_relval(t, n->kid[0]);
+    return 0;
+}
+
+/* An int '+' of two such values: v7's cr40 "%n,n" - the right operand
+ * computed first and pushed (SS), the left one into the register (F),
+ * the right one popped and added ("I (sp)+,R") - fltprobe/p23_elem3.s.
+ * golden's "(a[i] < b[j]) + (a[i] > b[j]) * 2" -> [a[i] > b[j]'s 0/1]
+ * / "sal di,*1" / "push di" / [a[i] < b[j]'s 0/1] / "pop bx" / "add
+ * di,bx". (A comparison plus a variable is acommute()'s other order - see
+ * OP_PLUS.) */
+static int is_relsum(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    return n->op == OP_PLUS && (n->type == TY_INT || n->type == TY_UNSIGN) &&
+           is_relval(t, n->kid[0]) && is_relval(t, n->kid[1]);
+}
+
 /* The evaluation order of node `i` - see EvalOrder. */
 static EvalOrder eval_order(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
-    if (order_right_first(t, i))
+    if (order_right_first(t, i) || is_relsum(t, i))
         return ORD_SPILL;
     if (is_disp_store(t, i))
         return ORD_DISPSTORE;
@@ -4475,10 +4775,50 @@ static void plan_call(Plan *p, const ETree *t, int i)
     plan_add(p, (Seg){ SEG_CALL, n->end, 0, words, n->type, 0 });
 }
 
+static void plan_quest(Plan *p, const ETree *t, int i);
 static void plan_fvalue(Plan *p, const ETree *t, int i); /* see        */
+static void gen_fp_incdec(GenState *g, FILE *t1, int op);
 static int is_fnode(const ETree *t, int i);             /* "Floating  */
 static Val val_facc(void);                              /* point"     */
 static void gen_ltof(GenState *g, int type);
+
+/* A "?:" - v7's cexpr(): cbranch(tr1, c=isn++, 0), the true arm, "jbr
+ * r=isn++", "c:", the false arm, "r:". Each arm is loaded where the value
+ * goes - the segments' `start`: 0 DI (an int); 1 DI:SI (typed LONG, two
+ * long arms - mutos_c0): fltprobe/p22_long2.s.golden's "l = x ? l : m" ->
+ * "cmp *-16.(bp),*0" / "beq L10011" / "mov si,*-6.(bp)" / "mov di,*-8.
+ * (bp)" / "jmp L10012" / "L10011:mov si,*-10.(bp)" / "mov di,*-12.(bp)" /
+ * "L10012:"; 2 the floating-point stack (typed DOUBLE): p21_fltexp.s.
+ * golden's "d = x ? d : e" -> "cmp *-44.(bp),*0" / "beq L10009" / "lea
+ * ax,*-12.(bp)" / "call fldd" / "jmp L10010" / "L10009:lea ax,*-20.(bp)"
+ * / "call fldd" / "L10010:". */
+static void plan_quest(Plan *p, const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    const ENode *colon = &t->v[n->kid[1]];
+    if (colon->op != OP_COLON)
+        gen_fatal("internal: QUEST without a preceding COLON pair");
+    int how = 0;
+    if (n->type == TY_LONG && colon->type == TY_LONG)
+        how = 1;
+    else if (n->type == TY_DOUBLE && colon->type == TY_DOUBLE)
+        how = 2;
+    if (!how) {
+        check_int_node(colon);
+        check_int_node(n);
+    }
+    int lfalse = plan_slots(p, 1);
+    int lend = plan_slots(p, 1);
+    int rec = plan_slots(p, 2);
+    plan_op(p, SEG_ALLOC, lfalse, 0, 0);
+    plan_cbranch(p, t, n->kid[0], lfalse, 0);
+    plan_op(p, SEG_MARK, rec, 0, 0);
+    plan_value(p, t, colon->kid[0]);
+    plan_add(p, (Seg){ SEG_QTRUE, how, 0, lfalse, lend, rec });
+    plan_op(p, SEG_MARK, rec, 0, 0);
+    plan_value(p, t, colon->kid[1]);
+    plan_add(p, (Seg){ SEG_QFALSE, how, 0, 0, lend, rec });
+}
 
 /* Node i's value onto the value stack. */
 static void plan_value(Plan *p, const ETree *t, int i)
@@ -4505,24 +4845,7 @@ static void plan_value(Plan *p, const ETree *t, int i)
         return;
     }
     if (n->op == OP_QUEST) {
-        /* v7's cexpr(): cbranch(tr1, c=isn++, 0), the true arm, "jbr
-         * r=isn++", "c:", the false arm, "r:". */
-        const ENode *colon = &t->v[n->kid[1]];
-        if (colon->op != OP_COLON)
-            gen_fatal("internal: QUEST without a preceding COLON pair");
-        check_int_node(colon);
-        check_int_node(n);
-        int lfalse = plan_slots(p, 1);
-        int lend = plan_slots(p, 1);
-        int rec = plan_slots(p, 2);
-        plan_op(p, SEG_ALLOC, lfalse, 0, 0);
-        plan_cbranch(p, t, n->kid[0], lfalse, 0);
-        plan_op(p, SEG_MARK, rec, 0, 0);
-        plan_value(p, t, colon->kid[0]);
-        plan_op(p, SEG_QTRUE, lfalse, lend, rec);
-        plan_op(p, SEG_MARK, rec, 0, 0);
-        plan_value(p, t, colon->kid[1]);
-        plan_op(p, SEG_QFALSE, 0, lend, rec);
+        plan_quest(p, t, i);
         return;
     }
     if (n->op == OP_SEQNC) {
@@ -4655,8 +4978,10 @@ static int plan_expression(GenState *g, FILE *t1)
         return 0;
 
     ETree t = { NULL, 0, 0 };
-    Term term = { 0, 0, 0, 0, 0 };
+    Term term = { 0, 0, 0, 0, 0, 0 };
     int root = prescan_expr(t1, &t, &term);
+    if (root >= 0)
+        g->cur_line = term.line;        /* see c1_error() */
     /* Which ITOLs widen an unsigned value (see OP_ITOL) - all it
      * indexed, as far as it got. */
     g->nitolu = 0;
@@ -4674,9 +4999,45 @@ static int plan_expression(GenState *g, FILE *t1)
      * "if (l)", "!l", "l && i", "l ? a : b" tested its high word only,
      * refused here (v7's longrel() tests both words, "tst" - no golden). */
     g->nlrel = 0;
+    g->nzelem = 0;
+    g->ltest = -1;
+    g->nitollow = 0;
+    for (int i = 0; root >= 0 && i < t.n; i++) {
+        /* An int value widened only to have a long constant added or
+         * subtracted and the long truncated again - "(int) (i + 100000L)",
+         * fltprobe/p21_fltexp.1.golden's "r = r + u - 39990" (NAME r, NAME
+         * u, PLUS(7), ITOL, LCON, MINUS(6), LTOI(0)): v7's unoptim()
+         * distributes the LTOI and cancels LTOI(ITOL(x)), so the real
+         * compiler computes it in one word - "mov di,*-46.(bp)" / "add
+         * di,*-38.(bp)" / "add di,#25546.". */
+        const ENode *n = &t.v[i];
+        if (n->op != OP_ITOL || n->parent < 0 || n->kid[0] < 0 ||
+            t.v[n->kid[0]].op == OP_CON)
+            continue;
+        const ENode *pn = &t.v[n->parent];
+        if ((pn->op != OP_PLUS && pn->op != OP_MINUS) || pn->type != TY_LONG ||
+            pn->kid[0] != i || pn->parent < 0 ||
+            t.v[pn->parent].op != OP_LTOI)
+            continue;
+        const ENode *c = &t.v[pn->kid[1]];
+        if (!(c->op == OP_LCON || (c->op == OP_ITOL && c->kid[0] >= 0 &&
+                                   t.v[c->kid[0]].op == OP_CON)))
+            continue;
+        if (g->nitollow < (int)(sizeof g->itollow / sizeof g->itollow[0]))
+            g->itollow[g->nitollow++] = n->off;
+    }
     for (int i = 0; root >= 0 && i < t.n; i++) {
         const ENode *n = &t.v[i];
         int k0 = n->kid[0], k1 = n->kid[1];
+        /* An element read through a computed address compared with 0 -
+         * see Val's cond_ortest. */
+        if (find_relop(n->op) && k0 >= 0 && k1 >= 0 &&
+            ((t.v[k1].op == OP_CON && t.v[k1].aux == 0 &&
+              is_elem_read(&t, k0, 0)) ||
+             (t.v[k0].op == OP_CON && t.v[k0].aux == 0 &&
+              is_elem_read(&t, k1, 0))) &&
+            g->nzelem < (int)(sizeof g->zelem / sizeof g->zelem[0]))
+            g->zelem[g->nzelem++] = n->off;
         if (find_relop(n->op) && k0 >= 0 && k1 >= 0 &&
             (t.v[k0].type == TY_LONG || t.v[k1].type == TY_LONG) &&
             g->nlrel < (int)(sizeof g->lrel / sizeof g->lrel[0]))
@@ -4694,6 +5055,19 @@ static int plan_expression(GenState *g, FILE *t1)
         if (tested < 0 && i == root && term.op == OP_CBRANCH &&
             n->type == TY_LONG)
             tested = i;
+        if (tested >= 0 && term.op == OP_CBRANCH &&
+            t.v[tested].op == OP_NAME && t.v[tested].aux == SC_AUTO) {
+            /* A long variable a CBRANCH tests for truth itself, or under
+             * a chain of '!' - "if (l)", "if (!l)": both words tested
+             * (gen_cond_branch()). */
+            int j = tested;
+            while (t.v[j].parent >= 0 && t.v[t.v[j].parent].op == OP_EXCLA)
+                j = t.v[j].parent;
+            if (j == root) {
+                g->ltest = t.v[tested].off;
+                tested = -1;
+            }
+        }
         if (tested >= 0) {
             free(t.v);
             gen_fatal("a 'long' value tested for truth ('if (l)', '!l', 'l "
@@ -4859,16 +5233,19 @@ static void plan_defpush(GenState *g)
     push_val(g, s);
 }
 
-/* SEG_ADDRPUSH: the element just computed (is_pushaddr()) is "(reg)" -
- * its address in a register - and that register is pushed: "push di". */
+/* SEG_ADDRPUSH: the element just computed (is_pushaddr(), is_pushleft())
+ * is "(reg)" - its address in a register - and that register is pushed:
+ * "push di". A comparison's left element may have a displacement ("*4.
+ * (di)" - a member of an element, is_pushleft()); the marker keeps it for
+ * SEG_DEFPOPL ("*4.(bx)"). */
 static void plan_addrpush(GenState *g)
 {
     if (g->valsp < 1)
         gen_fatal("expression stack underflow - malformed temp1 stream");
     Val v = g->valstack[g->valsp - 1];
-    if (v.kind != VK_IND || v.bytev || v.sym || v.imm != 0)
+    if (v.kind != VK_IND || v.bytev || v.sym)
         gen_fatal("internal: an element whose address is pushed is not a "
-                  "dereference of a register at offset 0");
+                  "word dereference of a register");
     if (v.clobbered)
         fatal_clobbered();
     g->keep_ind = 0;
@@ -4876,6 +5253,7 @@ static void plan_addrpush(GenState *g)
     ins1(g, "push", o_reg(v.reg));
     Val s = {0};
     s.kind = VK_STACKED;
+    s.imm = v.imm;
     push_val(g, s);
 }
 
@@ -4897,11 +5275,12 @@ static void plan_defpop(GenState *g)
     if (l.kind == VK_IND && !l.bytev) {
         ins2(g, "mov", o_reg(l.reg), o_val(l));
         l = val_reg(l.reg);
-    } else if ((l.kind == VK_MEM || l.kind == VK_STATIC) && !l.bytev &&
-               !l.structv) {
+    } else if (((l.kind == VK_MEM || l.kind == VK_STATIC) && !l.bytev &&
+                !l.structv) || l.kind == VK_IMM) {
         if (di_busy(g))
-            gen_fatal("a variable minus an element while DI holds a pending "
-                      "value is not yet supported - see src/mutos_cc/README.md");
+            gen_fatal("a variable or constant minus an element while DI "
+                      "holds a pending value is not yet supported - see "
+                      "src/mutos_cc/README.md");
         load_into_di(g, l);
         l = val_reg("di");
     }
@@ -4922,7 +5301,7 @@ static void plan_defpopl(GenState *g)
         gen_fatal("internal: a pushed element address is missing from "
                   "below the value stack's top");
     Val r = materialize(g, pop_val(g));
-    g->valsp--;                          /* the VK_STACKED marker */
+    long disp = g->valstack[--g->valsp].imm;   /* the VK_STACKED marker */
     if (r.kind == VK_IND && !r.bytev) {
         ins2(g, "mov", o_reg(r.reg), o_val(r));
         r = val_reg(r.reg);
@@ -4932,7 +5311,7 @@ static void plan_defpopl(GenState *g)
                   "elements is not in a register");
     require_free(r, RB_BX, "a comparison of two elements");
     ins1(g, "pop", o_reg("bx"));
-    Val l = val_ind("bx");
+    Val l = val_ind_disp("bx", disp);
     l.memleft = 1;
     push_val(g, l);
     push_val(g, r);
@@ -4968,17 +5347,36 @@ static void plan_control_step(GenState *g, FILE *t1, const Seg *s)
         push_val(g, gen_logval(g, p->slot[s->a]));
         return;
     case SEG_QTRUE:
-        gen_arm_load(g);
+        if (s->start == 1) {
+            gen_arm_load_long(g);
+        } else if (s->start == 2) {
+            gen_arm_load_float(g);
+            /* The other arm's value takes the same place: the real
+             * compiler's stack model (fp_track()) counts only one -
+             * fltprobe/p21_fltexp's "d = x ? d : e" leaves it balanced,
+             * or its line-56 underflow would not have been reported
+             * (v7's cexpr() restores nstack after a "?:"'s first arm the
+             * same way). */
+            g->fdepth--;
+        } else {
+            gen_arm_load(g);
+        }
         region_close(g, &p->slot[s->c]);
         p->slot[s->b] = g->next_lab++;
         ins1(g, "jmp", o_lab(p->slot[s->b]));
         put_label(g, p->slot[s->a]);
         return;
     case SEG_QFALSE:
-        gen_arm_load(g);
+        if (s->start == 1)
+            gen_arm_load_long(g);
+        else if (s->start == 2)
+            gen_arm_load_float(g);
+        else
+            gen_arm_load(g);
         region_close(g, &p->slot[s->c]);
         put_label(g, p->slot[s->b]);
-        push_val(g, val_reg("di"));
+        push_val(g, s->start == 1 ? val_long() :
+                    s->start == 2 ? val_facc() : val_reg("di"));
         return;
     case SEG_DISCARD:
         discard_val(g);
@@ -5077,7 +5475,8 @@ static void plan_step(GenState *g, FILE *t1)
         }
         if (s->kind == SEG_FDATA || s->kind == SEG_FLOAD ||
             s->kind == SEG_FLOADT || s->kind == SEG_FSWAP ||
-            s->kind == SEG_FITOF || s->kind == SEG_FLEAF) {
+            s->kind == SEG_FITOF || s->kind == SEG_FLEAF ||
+            s->kind == SEG_FSTREG) {
             fplan_step(g, t1, s);        /* see "Floating point" */
             p->cur++;
             continue;
@@ -5524,14 +5923,25 @@ static void fp_lea(GenState *g, Val v)
     case FM_LAB:
         ins2(g, "lea", o_reg("ax"), o_lab(v.offset));
         return;
-    default:
+    default: {
         if (g->reserved & RB_DI)
             gen_fatal("a 'float'/'double' read through a pointer while DI "
                       "holds a register variable is not yet supported - see "
                       "src/mutos_cc/README.md");
-        load_into_di(g, val_from_simple(v.cl));
-        ins2(g, "lea", o_reg("ax"), o_sym("(di)"));
+        Val ptr = val_from_simple(v.cl);
+        if (ptr.kind == VK_REG && strcmp(ptr.reg, "ax") == 0) {
+            /* A call's result: AX is no base register - moved to BX,
+             * fltprobe/p20_fltlv.s.golden's "*pick(a, 2)" -> "call
+             * _pick" / "add sp,*4." / "mov bx,ax" / "lea ax,(bx)". */
+            ins2(g, "mov", o_reg("bx"), o_reg("ax"));
+            ins2(g, "lea", o_reg("ax"), o_sym("(bx)"));
+            return;
+        }
+        load_into_di(g, ptr);
+        ins2(g, "lea", o_reg("ax"),
+             v.imm ? o_fmt("*%ld.(di)", v.imm) : o_sym("(di)"));
         return;
+    }
     }
 }
 
@@ -6207,6 +6617,15 @@ static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg)
         }
         plan_fvalue_r(p, t, l, freg);
         plan_fvalue_r(p, t, r, freg);
+        /* A store through a pointer variable is addressed in the register
+         * the right-hand side left the context in - fltprobe/p20_fltlv.s.
+         * golden's "*p = *p * 2.0" -> "fmuls" / "mov ax,*4.(bp)" / "mov
+         * bx,ax" / "lea ax,(bx)" / "call fstdp" (AX after a '*', as an int
+         * is converted there - fafter()), "q->y = q->x + 1.5" -> "fadds" /
+         * "mov di,*-22.(bp)" / "lea ax,*8.(di)" (DI after a '+'). */
+        plan_op(p, SEG_FSTREG, fafter(t, r, -1, freg) == FREG_AX ? FREG_AX
+                                                                : FREG_DI,
+                0, 0);
         plan_range(p, n->off, n->end);
         return;
     case OP_ASPLUS: case OP_ASMINUS: case OP_ASDIV:
@@ -6228,6 +6647,20 @@ static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg)
         return;
     case OP_ASTIMES:
         plan_fdata(p, t, r);
+        if (fstar_computed(t, l)) {
+            /* A target whose address takes code: the right operand
+             * loaded first, as for any '*=' (see gen_fp_asop()) - before
+             * that code: fltprobe/p20_fltlv.s.golden's "a[i] *= s.y" ->
+             * "lea ax,*-12.(bp)" / "call fldd" / "lea di,*-46.(bp)" / ... /
+             * "add di,si" / "lea ax,(di)" / "|" / "push ax" / "call fmuld"
+             * / "pop ax" / "call fstdp". */
+            plan_fvalue_r(p, t, r, freg);
+            plan_op(p, SEG_FLOAD, 0, 0, 0);
+            plan_fvalue_r(p, t, l, freg);
+            plan_op(p, SEG_SWAP2, 0, 0, 0);
+            plan_range(p, n->off, n->end);
+            return;
+        }
         plan_fvalue_r(p, t, l, freg);
         plan_fvalue_r(p, t, r, freg);
         plan_range(p, n->off, n->end);
@@ -6240,6 +6673,23 @@ static void plan_fvalue_r(Plan *p, const ETree *t, int i, int freg)
         plan_fvalue_r(p, t, l, freg);
         plan_range(p, n->off, n->end);
         return;
+    case OP_QUEST:
+        plan_quest(p, t, i);
+        return;
+    case OP_SEQNC: {
+        /* A comma whose last operand is floating (SEQNC typed DOUBLE): the
+         * left operand for its effect, then the right one - fltprobe/
+         * p21_fltexp.s.golden's "g = (i = 2, d - 40000.0)" -> "mov *-40.
+         * (bp),*2." / ".data" / "L10011: .float 4.0...e+04" / ".text" /
+         * "lea ax,*-12.(bp)" / "call fldd" / ... (the constant's block
+         * where its '-' is matched, after the left operand's code). */
+        int rec = plan_slots(p, 2);
+        plan_op(p, SEG_MARK, rec, 0, 0);
+        plan_value(p, t, l);
+        plan_op(p, SEG_DISCARD, 0, 0, rec);
+        plan_fvalue_r(p, t, r, freg);
+        return;
+    }
     default:
         break;
     }
@@ -6391,6 +6841,9 @@ static void fplan_step(GenState *g, FILE *t1, const Seg *s)
     case SEG_FITOF:
         g->itof_reg = s->a;
         return;
+    case SEG_FSTREG:
+        g->fst_reg = s->a;
+        return;
     default:
         gen_fatal("internal: unknown floating plan step %d", (int)s->kind);
     }
@@ -6446,9 +6899,40 @@ static void fp_store(GenState *g, FILE *t1, Val lhs)
 {
     Consumer c = scan_consumer(t1);
     int keep = (c.op != OP_EXPR);
+    /* An assignment whose value is a call argument: the REAL compiler
+     * stores it WITH a pop, as for a statement, and then pushes the
+     * argument from the stack all the same - its code pops the value
+     * twice, and its own stack model reports it (see fp_track()):
+     * fltprobe/p21_fltexp.s.golden's "f = half(d = 3.0);" -> "lea
+     * ax,L10013" / "call flds" / "lea ax,*-12.(bp)" / "call fstdp" / "sub
+     * sp,*8" / "mov ax,sp" / "call fstdp" / "call _half", and "56:
+     * floating point stack underflow". Reproduced as it is - the same
+     * code and the same error, exit status 1 (v7's sptab has no entry for
+     * an assignment; whatever the MUTOS port's argument path does with
+     * one, it picks the store that pops). */
+    int argpop = keep && (c.op == OP_CALL || c.op == OP_COMMA);
+    if (argpop)
+        g->fp_argpop = 1;
     char fn[8];
-    snprintf(fn, sizeof fn, keep ? "fst%c" : "fst%cp", fp_suffix(lhs));
-    fp_lea(g, lhs);
+    snprintf(fn, sizeof fn, (keep && !argpop) ? "fst%c" : "fst%cp",
+             fp_suffix(lhs));
+    if (lhs.kind == VK_FMEM && lhs.fmode == FM_IND && g->fst_reg == 1) {
+        /* A store after a value computed in AX's context (SEG_FSTREG):
+         * the pointer variable through AX into BX - fltprobe/p20_fltlv.s.
+         * golden's "*p = *p * 2.0" -> "mov ax,*4.(bp)" / "mov bx,ax" /
+         * "lea ax,(bx)" / "call fstdp". */
+        Val ptr = val_from_simple(lhs.cl);
+        if (!(ptr.kind == VK_MEM || ptr.kind == VK_STATIC) || lhs.imm != 0)
+            gen_fatal("a 'float'/'double' store through this address after a "
+                      "value computed in AX's context is not yet supported - "
+                      "see src/mutos_cc/README.md");
+        ins2(g, "mov", o_reg("ax"), o_val(ptr));
+        ins2(g, "mov", o_reg("bx"), o_reg("ax"));
+        ins2(g, "lea", o_reg("ax"), o_sym("(bx)"));
+    } else {
+        fp_lea(g, lhs);
+    }
+    g->fst_reg = 0;
     ins1(g, "call", o_sym(fn));
     g->nfloat = 1;
     if (keep) {
@@ -6481,6 +6965,52 @@ static void gen_fp_asop(GenState *g, FILE *t1, int op)
                   "not yet supported (only a variable) - see "
                   "src/mutos_cc/README.md");
     char name[8];
+    if (lhs.fmode == FM_IND) {
+        /* A target reached through a pointer or a computed address: its
+         * address into AX, an empty "|" comment line, the address kept on
+         * the machine stack while the runtime is called, popped back for
+         * the store - fltprobe/p20_fltlv.s.golden's "q->x += 0.5" -> "mov
+         * di,*-22.(bp)" / "lea ax,(di)" / "|" / "push ax" / "call fldd" /
+         * "lea ax,L10004" / "call fadds" / "pop ax" / "call fstdp", "a[i] +=
+         * 1.5" the same after the element's address, and "a[i] *= s.y" ->
+         * (s.y loaded first) ... "lea ax,(di)" / "|" / "push ax" / "call
+         * fmuld" / "pop ax" / "call fstdp" - v7's code table for a
+         * compound assignment through a register. A computed right operand
+         * other than for '*=', and a used value, have no golden. */
+        if (scan_consumer(t1).op != OP_EXPR)
+            gen_fatal("the value of a compound assignment through a pointer "
+                      "to a 'float'/'double' is not yet supported - see "
+                      "src/mutos_cc/README.md");
+        if (op == OP_ASTIMES) {
+            fp_load(g, rhs);
+            fp_lea(g, lhs);
+            put_line(g, "|");
+            ins1(g, "push", o_reg("ax"));
+            snprintf(name, sizeof name, "%s%c", fn, fp_suffix(lhs));
+            ins1(g, "call", o_sym(name));
+        } else {
+            if (rhs.kind == VK_FACC)
+                gen_fatal("a compound assignment through a pointer to a "
+                          "'float'/'double' with a computed right operand is "
+                          "not yet supported - see src/mutos_cc/README.md");
+            fp_lea(g, lhs);
+            put_line(g, "|");
+            ins1(g, "push", o_reg("ax"));
+            snprintf(name, sizeof name, "fld%c", fp_suffix(lhs));
+            ins1(g, "call", o_sym(name));
+            snprintf(name, sizeof name, "%s%c", fn, fp_suffix(rhs));
+            fp_lea(g, rhs);
+            ins1(g, "call", o_sym(name));
+        }
+        ins1(g, "pop", o_reg("ax"));
+        snprintf(name, sizeof name, "fst%cp", fp_suffix(lhs));
+        ins1(g, "call", o_sym(name));
+        g->nfloat = 1;
+        Val res = {0};
+        res.kind = VK_FDONE;
+        push_val(g, res);
+        return;
+    }
     if (op == OP_ASTIMES ||
         (op == OP_ASPLUS && rhs.kind == VK_FACC && !lhs.fonstk)) {
         fp_load(g, rhs);
@@ -6607,10 +7137,23 @@ static void gen_ltof(GenState *g, int type)
     if (type != TY_DOUBLE && type != TY_FLOAT)
         gen_fatal("LTOF of type %d not yet supported", type);
     Val v = pop_val(g);
+    if (v.kind == VK_LONG && v.lreg == LREG_DISI && !v.lpair) {
+        /* A long just computed in DI:SI: pushed from there, low word
+         * first - fltprobe/p21_fltexp.s.golden's "e = l + 1" -> ... "add
+         * si,cx" / "adc di,bx" / "push si" / "push di" / "call ltof" /
+         * "add sp,*4". */
+        ins1(g, "push", o_reg("si"));
+        ins1(g, "push", o_reg("di"));
+        ins1(g, "call", o_sym("ltof"));
+        ins2(g, "add", o_reg("sp"), o_sym("*4"));
+        g->nfloat = 1;
+        push_val(g, val_facc());
+        return;
+    }
     if (v.kind != VK_MEM)
         gen_fatal("converting this 'long' operand to 'float'/'double' is "
-                  "not yet supported (only a 'long' variable) - see "
-                  "src/mutos_cc/README.md");
+                  "not yet supported (only a 'long' variable or a value "
+                  "computed in DI:SI) - see src/mutos_cc/README.md");
     const char *r = (g->reserved & RB_DI) ? "si" : "di";
     ins2(g, "mov", o_reg(r), o_mem(v.offset + MCC_SZINT));
     ins1(g, "push", o_reg(r));
@@ -6631,6 +7174,17 @@ static void gen_ltof(GenState *g, int type)
  * inference). */
 static void gen_fp_to_int(GenState *g, int op, int type)
 {
+    if (op == OP_FTOI && type == TY_UNSIGN) {
+        /* To an unsigned: v7's unoptim() makes FTOI(UNSIGN) LTOI(FTOL) -
+         * the long's low word, AX - fltprobe/p21_fltexp.s.golden's "u =
+         * (unsigned) d" -> "lea ax,*-12.(bp)" / "call fldd" / "call ftol"
+         * / "mov *-38.(bp),ax". */
+        Val v = pop_float(g, "FTOI");
+        fp_load(g, v);
+        ins1(g, "call", o_sym("ftol"));
+        push_val(g, val_reg("ax"));
+        return;
+    }
     if ((op == OP_FTOI && type != TY_INT) || (op == OP_FTOL && type != TY_LONG))
         gen_fatal("%s of type %d not yet supported", op == OP_FTOI ? "FTOI"
                                                                    : "FTOL", type);
@@ -6641,6 +7195,50 @@ static void gen_fp_to_int(GenState *g, int op, int type)
         push_val(g, val_reg("ax"));
     else
         push_val(g, emit_dxax_to_long(g));
+}
+
+/* OP_INCBEF/OP_DECBEF/OP_INCAFT/OP_DECAFT typed DOUBLE - its operand a
+ * double in memory, its amount the constant 1.0 (mutos_c0's ITOF of CON
+ * 1, a ".float" planned as any constant, its .data block written ahead):
+ * the variable loaded, the 1.0 added or subtracted from memory and the
+ * sum stored back - fltprobe/p21_fltexp.s.golden's "d++;" and "++d;" ->
+ * "lea ax,*-12.(bp)" / "call fldd" / "lea ax,L10002" / "call fadds" /
+ * "lea ax,*-12.(bp)" / "call fstdp". A postfix one whose value is used
+ * keeps the old value on the stack under the new one ("fdup"): "e =
+ * d--;" -> "fldd d" / "call fdup" / "lea ax,L10004" / "call fsubs" /
+ * "fstdp d" / "fstdp e". A prefix one whose value is used stores the new
+ * value without popping it ("fstd" - an inference, as for "e = (d *=
+ * e)"). */
+static void gen_fp_incdec(GenState *g, FILE *t1, int op)
+{
+    Val amt = pop_float(g, "floating '++'/'--'");
+    Val lv = pop_val_ex(g, POP_FLOAT);
+    if (lv.kind != VK_FMEM || !lv.fdouble || amt.kind != VK_FCON)
+        gen_fatal("'++'/'--' on this 'float'/'double' operand is not yet "
+                  "supported (only a 'double' variable) - see "
+                  "src/mutos_cc/README.md");
+    int used = (scan_consumer(t1).op != OP_EXPR);
+    int after = (op == OP_INCAFT || op == OP_DECAFT);
+    int incr = (op == OP_INCBEF || op == OP_INCAFT);
+    fp_load(g, lv);
+    if (after && used)
+        ins1(g, "call", o_sym("fdup"));
+    char fn[8];
+    snprintf(fn, sizeof fn, "%s%c", incr ? "fadd" : "fsub", fp_suffix(amt));
+    fp_lea(g, amt);
+    ins1(g, "call", o_sym(fn));
+    snprintf(fn, sizeof fn, (used && !after) ? "fst%c" : "fst%cp",
+             fp_suffix(lv));
+    fp_lea(g, lv);
+    ins1(g, "call", o_sym(fn));
+    g->nfloat = 1;
+    if (used) {
+        push_val(g, val_facc());
+        return;
+    }
+    Val res = {0};
+    res.kind = VK_FDONE;
+    push_val(g, res);
 }
 
 /* OP_ASSIGN typed DOUBLE: the right-hand side onto the stack, then
@@ -6685,6 +7283,7 @@ static int push_fp_arg(GenState *g, Val v)
     fp_load(g, v);
     ins2(g, "sub", o_reg("sp"), o_sym("*8"));
     ins2(g, "mov", o_reg("ax"), o_reg("sp"));
+    g->fp_nocheck = 1;                  /* see fp_track() */
     ins1(g, "call", o_sym("fstdp"));
     g->nfloat = 1;
     return 4;
@@ -6704,6 +7303,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
     GenState g = {0};
     g.out = out;
     g.next_lab = 10000; /* see GenState's next_lab field comment */
+    g.ltest = -1;
 
     for (;;) {
         /* Evaluation order - see that section: an active plan decides
@@ -6747,6 +7347,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_SAVE:
+            g.fdepth = 0;                /* see fp_track() */
+            g.fp_argpop = 0;
             /* Fixed, unconditional prologue - see docs/MUTOS_C_ABI.md
              * sect. 1.2: every compiled function saves bp/di/si
              * regardless of actual usage, so "|NREG 3" is a constant,
@@ -7056,6 +7658,9 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "so far)", type);
             int offset = c1_read_num(temp1, "temp1");
             Val mv = val_mem(offset);
+            /* A long variable a CBRANCH tests for truth - see Val's
+             * `ltest`. */
+            mv.ltest = (type == TY_LONG && g.ltest == g.op_off);
             /* A whole struct (06_struct: "&p", "p2 = p1") - see Val's
              * `structv`. A member reference never reaches here as a
              * struct: mutos_c0 retypes its NAME to the member's type. */
@@ -7160,6 +7765,12 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fatal("LTOI to type %d not yet supported (only "
                           "TY_INT and TY_UNSIGN are covered so far)", type);
             Val v = pop_val(&g);
+            if (v.lowonly) {
+                /* Computed as a word already - see Val's `lowonly`. */
+                v.lowonly = 0;
+                push_val(&g, v);
+                break;
+            }
             if (v.kind == VK_LCON) {
                 /* A long constant to a word: its low word - v7's unoptim()
                  * (LTOI of an LCON is a CON) - fltprobe/p19_open3.s.
@@ -7168,11 +7779,14 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             if (v.kind == VK_LOWADD) {
-                /* Already a word - see VK_LOWADD; only a '+' consumes one
-                 * (fltprobe/p19_open3's "r + (int) (l - 100000)"). */
+                /* Already a word - see VK_LOWADD; a '+' consumes one
+                 * (fltprobe/p19_open3's "r + (int) (l - 100000)") and an
+                 * assignment as its right-hand side (p22_long2's "x = (int)
+                 * (l - 5)"). */
                 Consumer cons = scan_consumer(temp1);
-                if (cons.op != OP_PLUS || !(cons.type == TY_INT ||
-                                            cons.type == TY_UNSIGN))
+                if (!((cons.op == OP_PLUS || (cons.op == OP_ASSIGN &&
+                                              !cons.as_left)) &&
+                      (cons.type == TY_INT || cons.type == TY_UNSIGN)))
                     gen_fatal("'(int)' of a long sum or difference used other "
                               "than added to a variable is not yet supported - "
                               "see src/mutos_cc/README.md");
@@ -7302,11 +7916,27 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             for (int k = 0; k < g.nitolu; k++)
                 if (g.itolu[k] == g.op_off)
                     uns = 1;
+            for (int k = 0; k < g.nitollow; k++)
+                if (g.itollow[k] == g.op_off) {
+                    /* Only its low word is ever used - see Val's
+                     * `lowonly`: no code, the int itself. */
+                    Val v = materialize(&g, pop_val(&g));
+                    if (v.kind != VK_REG && v.kind != VK_MEM &&
+                        v.kind != VK_STATIC)
+                        gen_fatal("this int-class operand of a truncated "
+                                  "'long' sum is not yet supported - see "
+                                  "src/mutos_cc/README.md");
+                    v.lowonly = 1;
+                    push_val(&g, v);
+                    goto itol_done;
+                }
             Val v = materialize(&g, pop_val(&g));
             Consumer cons = scan_consumer(temp1);
             int lbinop = (cons.op == OP_PLUS || cons.op == OP_MINUS ||
                           cons.op == OP_AND || cons.op == OP_OR ||
-                          cons.op == OP_EXOR || find_relop(cons.op));
+                          cons.op == OP_EXOR || find_relop(cons.op) ||
+                          ((cons.op == OP_LSHIFT || cons.op == OP_RSHIFT) &&
+                           !cons.as_left));
             if (v.kind == VK_IMM && !uns && lbinop) {
                 /* An int constant widened: kept as the long constant it
                  * is, VK_LCON, rendered by its consumer as an LCON is -
@@ -7347,10 +7977,17 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 push_val(&g, l);
                 break;
             }
-            if (find_relop(cons.op)) {
+            if (find_relop(cons.op) ||
+                (!cons.as_left && (cons.op == OP_MINUS || cons.op == OP_DIVIDE ||
+                                   cons.op == OP_MOD || cons.op == OP_ASTIMES))) {
                 /* Compared: left in DX:AX - fltprobe/p19_open3.s.golden's
                  * "l > i" -> "mov ax,*-26.(bp)" / "cwd" / "cmp dx,*-8.
-                 * (bp)" ... (gen_long_relop()). */
+                 * (bp)" ... (gen_long_relop()). The right operand of '-',
+                 * '/', '%' or '*=' likewise: v7's templates push it ("SS")
+                 * straight from DX:AX - fltprobe/p22_long2.s.golden's "l -
+                 * i", "l / i", "l % i" and "l *= i" -> "mov ax,*-14.(bp)" /
+                 * "cwd" / "push ax" / "push dx" / ... (OP_MINUS, gen_long_
+                 * binop_call(), OP_ASTIMES). */
                 emit_cwd_from(&g, o_val(v));
                 Val l = val_long();
                 l.lreg = LREG_DXAX;
@@ -7359,6 +7996,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             emit_cwd_from(&g, o_val(v));
             push_val(&g, emit_dxax_to_long(&g));
+        itol_done:
             break;
         }
 
@@ -7657,6 +8295,36 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  *   confirmed by any golden. */
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
+                if (l.lowonly && r.kind == VK_LCON) {
+                    /* "(int) (x + c)" with an int x - see Val's `lowonly`:
+                     * the word plus the constant's low word (negated for
+                     * '-', as v7's optim() makes "x - c" "x + -c"), in DI
+                     * - fltprobe/p21_fltexp.s.golden's "r + u - 39990" ->
+                     * "mov di,*-46.(bp)" / "add di,*-38.(bp)" / "add di,
+                     * #25546.". */
+                    uint32_t c = ((uint32_t)(uint16_t)r.offset << 16) |
+                                 (uint16_t)r.imm;
+                    if (op == OP_MINUS)
+                        c = 0u - c;
+                    long lo = (int16_t)(uint16_t)(c & 0xFFFFu);
+                    l.lowonly = 0;
+                    if (!(l.kind == VK_REG && strcmp(l.reg, "di") == 0)) {
+                        if (di_busy(&g) || (g.reserved & RB_DI))
+                            gen_fatal("'(int)' of a long sum while DI is "
+                                      "taken is not yet supported");
+                        load_into_di(&g, l);
+                    }
+                    if (lo == 1)
+                        ins1(&g, "inc", o_reg("di"));
+                    else if (lo == -1)
+                        ins1(&g, "dec", o_reg("di"));
+                    else if (lo != 0)
+                        ins2(&g, "add", o_reg("di"), o_imm(lo));
+                    Val w = val_reg("di");
+                    w.lowonly = 1;
+                    push_val(&g, w);
+                    break;
+                }
                 if (op == OP_PLUS)
                     constant_to_right(&l, &r);
                 const AluOp *a = aluop(op);
@@ -7669,6 +8337,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     w.kind = VK_LOWADD;
                     w.offset = l.offset + MCC_SZINT;
                     w.imm = (int16_t)(op == OP_PLUS ? r.imm : -r.imm);
+                    w.lowplus = (op == OP_PLUS);
                     push_val(&g, w);
                     break;
                 }
@@ -7685,8 +8354,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     l = r;
                     r = t;
                 }
-                if (op == OP_PLUS && l.kind == VK_LONG && !l.lpair &&
-                    l.lreg == LREG_DISI && r.kind == VK_MEM) {
+                if (l.kind == VK_LONG && !l.lpair && l.lreg == LREG_DISI &&
+                    r.kind == VK_MEM) {
+                    /* The widened int left, in DI:SI, the variable combined
+                     * from memory - "l + i" / "i + l" above, and "i - l":
+                     * fltprobe/p22_long2.s.golden's "l = i - l" -> "mov ax,
+                     * *-14.(bp)" / "cwd" / "mov di,dx" / "mov si,ax" / "sub
+                     * si,*-6.(bp)" / "sbb di,*-8.(bp)". */
                     ins2(&g, a->mnem, o_reg("si"), o_mem(r.offset + MCC_SZINT));
                     ins2(&g, a->mnem_hi, o_reg("di"), o_mem(r.offset));
                     push_val(&g, val_long());
@@ -7696,13 +8370,51 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     gen_fatal("'long' %s with a non-memory left operand "
                               "is not yet supported",
                               op == OP_PLUS ? "addition" : "subtraction");
+                if (op == OP_MINUS && r.kind == VK_LONG && !r.lpair &&
+                    r.lreg == LREG_DXAX) {
+                    /* A long variable minus an int widened: v7's "%nl,nl"
+                     * - the right operand computed and pushed ("SS"), the
+                     * left loaded, the right popped - fltprobe/p22_long2.s.
+                     * golden's "l = l - i" -> "mov ax,*-14.(bp)" / "cwd" /
+                     * "push ax" / "push dx" / "mov si,*-6.(bp)" / "mov di,
+                     * *-8.(bp)" / "pop bx" / "pop cx" / "sub si,cx" / "sbb
+                     * di,bx" - c + 1L's shape (gen_long_pushop()). */
+                    (void)gen_long_pushop(&g, op, l);
+                    push_val(&g, val_long());
+                    break;
+                }
                 if (r.kind == VK_MEM) {
                     ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
                     ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
                     ins2(&g, a->mnem, o_reg("si"), o_mem(r.offset + MCC_SZINT));
                     ins2(&g, a->mnem_hi, o_reg("di"), o_mem(r.offset));
-                } else if (r.kind == VK_LCON && r.offset == (r.imm < 0 ? -1 : 0)) {
-                    (void)gen_long_constop(&g, op, l, r);
+                } else if (r.kind == VK_LCON) {
+                    /* A constant: v7's optim() makes "x - c" "x + -c", and
+                     * its c1 keeps a constant that fits in an int as
+                     * ITOL(CON) when it is not negative (getree()'s LCON
+                     * case) but folds a negative one back into an LCON
+                     * (unoptim()) - two templates: the ITOL pushed as for
+                     * "c + 1L" (gen_long_constop() - 02_long/01_addsub.s.
+                     * golden, fltprobe/p22_long2.s.golden's "l + 1"), the
+                     * LCON added as two immediates - p22_long2.s.golden's
+                     * "l - 2" -> "mov si,*-6.(bp)" / "mov di,*-8.(bp)" /
+                     * "add si,*-2." / "adc di,*-1.". */
+                    uint32_t c = ((uint32_t)(uint16_t)r.offset << 16) |
+                                 (uint16_t)r.imm;
+                    if (op == OP_MINUS)
+                        c = 0u - c;
+                    Val e = r;
+                    e.offset = (int16_t)(uint16_t)(c >> 16);
+                    e.imm = (int16_t)(uint16_t)(c & 0xFFFFu);
+                    const AluOp *pa = aluop(OP_PLUS);
+                    if (e.offset == 0 && e.imm >= 0) {
+                        (void)gen_long_constop(&g, OP_PLUS, l, e);
+                    } else {
+                        ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+                        ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
+                        ins2(&g, pa->mnem, o_reg("si"), o_imm(e.imm));
+                        ins2(&g, pa->mnem_hi, o_reg("di"), o_imm(e.offset));
+                    }
                 } else {
                     gen_fatal("'long' %s with this right-operand shape "
                               "is not yet supported",
@@ -7717,6 +8429,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("%s of type %d not yet supported", aluop(op)->name,
                           type);
+            if (op == OP_PLUS && g.valsp >= 2 &&
+                g.valstack[g.valsp - 1].kind == VK_STACKED) {
+                /* The right operand was computed first and pushed (see
+                 * is_relsum()): the left one into DI, the right one popped
+                 * into BX and added - fltprobe/p23_elem3.s.golden's "pop
+                 * bx" / "add di,bx" (v7's "%n,n": SS, F, "add (sp)+,R"). */
+                (void)pop_any(&g);              /* the VK_STACKED marker */
+                Val l = materialize(&g, pop_val(&g));
+                if (l.kind != VK_REG || strcmp(l.reg, "di") != 0 || l.regvar)
+                    gen_fatal("internal: the left operand of a '+' with a "
+                              "pushed right operand is not in DI");
+                ins1(&g, "pop", o_reg("bx"));
+                ins2(&g, "add", o_reg("di"), o_reg("bx"));
+                push_val(&g, val_reg("di"));
+                break;
+            }
             Val l, r;
             int rcond = g.valsp >= 1 &&
                         g.valstack[g.valsp - 1].kind == VK_COND;
@@ -7744,8 +8472,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     gen_fatal("'(int)' of a long sum or difference while DI "
                               "holds a pending value is not yet supported - see "
                               "src/mutos_cc/README.md");
-                ins2(&g, "mov", o_reg("di"), o_mem(w.offset));
-                ins2(&g, "add", o_reg("di"), o_val(o));
+                /* "(int) (l + c)" takes the other term first: fltprobe/
+                 * p22_long2.s.golden's "r + (int) (l + 99990)" -> "mov
+                 * di,*-18.(bp)" / "add di,*-6.(bp)" / "add di,#-31082.",
+                 * against "(int) (l - 99990)"'s "mov di,*-6.(bp)" / "add
+                 * di,*-18.(bp)" / "add di,#31082." in the same golden. */
+                if (w.lowplus) {
+                    ins2(&g, "mov", o_reg("di"), o_val(o));
+                    ins2(&g, "add", o_reg("di"), o_mem(w.offset));
+                } else {
+                    ins2(&g, "mov", o_reg("di"), o_mem(w.offset));
+                    ins2(&g, "add", o_reg("di"), o_val(o));
+                }
                 if (w.imm == 1)
                     ins1(&g, "inc", o_reg("di"));
                 else if (w.imm == -1)
@@ -8014,11 +8752,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 Val r = pop_val(&g);
                 Val l = pop_val(&g);
                 constant_to_right(&l, &r);
+                if (l.kind == VK_MEM && r.kind == VK_MEM) {
+                    /* Two long variables: the left one loaded, the right
+                     * one combined from memory - fltprobe/p22_long2.s.
+                     * golden's "l = l & m" -> "mov si,*-6.(bp)" / "mov di,
+                     * *-8.(bp)" / "and si,*-10.(bp)" / "and di,*-12.(bp)"
+                     * ('|' and '^' by the same table entry, no golden). */
+                    ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+                    ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
+                    ins2(&g, aluop(op)->mnem, o_reg("si"),
+                         o_mem(r.offset + MCC_SZINT));
+                    ins2(&g, aluop(op)->mnem, o_reg("di"), o_mem(r.offset));
+                    push_val(&g, val_long());
+                    break;
+                }
                 if (l.kind != VK_MEM || r.kind != VK_LCON ||
                     r.offset != (r.imm < 0 ? -1 : 0))
                     gen_fatal("'long' %s of anything but a long variable and "
-                              "a constant is not yet supported - see "
-                              "src/mutos_cc/README.md", aluop(op)->name);
+                              "a constant or another long variable is not yet "
+                              "supported - see src/mutos_cc/README.md",
+                              aluop(op)->name);
                 push_val(&g, gen_long_constop(&g, op, l, r));
                 break;
             }
@@ -8075,6 +8828,38 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_LSHIFT:
         case OP_RSHIFT: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG) {
+                /* A long variable shifted by a constant (mutos_c0 widens the
+                 * count - OP_ITOL keeps it a VK_LCON): loaded into DI:SI and
+                 * shifted a bit at a time through the carry - fltprobe/
+                 * p22_long2.s.golden's "l << 2" -> "mov si,*-6.(bp)" / "mov
+                 * di,*-8.(bp)" / "sal si,*1" / "rcl di,*1" / "sal si,*1" /
+                 * "rcl di,*1", "l >> 1" -> ... "sar di,*1" / "rcr si,*1". A
+                 * count above 2 (an int is shifted by CL from 3 up) and a
+                 * variable count have no golden. */
+                Val r = pop_val(&g);
+                Val l = pop_val(&g);
+                if (l.kind != VK_MEM || r.kind != VK_LCON || r.offset != 0 ||
+                    r.imm < 0 || r.imm > MCC_SHIFT_REPEAT_MAX ||
+                    (g.reserved & (RB_DI | RB_SI)))
+                    gen_fatal("this 'long' shift is not yet supported (only a "
+                              "'long' variable shifted by a constant count "
+                              "up to %d) - see src/mutos_cc/README.md",
+                              MCC_SHIFT_REPEAT_MAX);
+                ins2(&g, "mov", o_reg("si"), o_mem(l.offset + MCC_SZINT));
+                ins2(&g, "mov", o_reg("di"), o_mem(l.offset));
+                for (long k = 0; k < r.imm; k++) {
+                    if (op == OP_LSHIFT) {
+                        ins2(&g, "sal", o_reg("si"), o_shift1());
+                        ins2(&g, "rcl", o_reg("di"), o_shift1());
+                    } else {
+                        ins2(&g, "sar", o_reg("di"), o_shift1());
+                        ins2(&g, "rcr", o_reg("si"), o_shift1());
+                    }
+                }
+                push_val(&g, val_long());
+                break;
+            }
             /* An unsigned left shift is the int one; an unsigned right
              * shift would need SHR, not this handler's SAR (mutos_c0
              * refuses it too). */
@@ -8151,9 +8936,28 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 c->fromu = 0;
                 break;
             }
+            if (type == TY_INT) {
+                /* An int negated: computed in DI, "neg" - fltprobe/
+                 * p21_fltexp.s.golden's "d = -i" -> "mov di,*-40.(bp)" /
+                 * "neg di" / "mov ax,di" / "call itof". */
+                Val v = materialize(&g, pop_val(&g));
+                if (v.kind != VK_MEM && v.kind != VK_STATIC &&
+                    !(v.kind == VK_REG && strcmp(v.reg, "di") == 0 &&
+                      !v.regvar))
+                    gen_fatal("unary '-' of this int operand is not yet "
+                              "supported (only a variable) - see "
+                              "src/mutos_cc/README.md");
+                if (v.kind != VK_REG && (g.reserved & RB_DI))
+                    gen_fatal("unary '-' in a function with a register "
+                              "variable in DI is not yet supported");
+                load_into_di(&g, v);
+                ins1(&g, "neg", o_reg("di"));
+                push_val(&g, val_reg("di"));
+                break;
+            }
             if (type != TY_DOUBLE && type != TY_FLOAT)
-                gen_fatal("NEG of type %d not yet supported (only a "
-                          "'float'/'double' operand)", type);
+                gen_fatal("NEG of type %d not yet supported (only an int or "
+                          "a 'float'/'double' operand)", type);
             gen_fp_neg(&g);
             break;
         }
@@ -8167,6 +8971,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 c->offset = (int16_t)~(uint16_t)c->offset;
                 c->imm = (int16_t)~(uint16_t)c->imm;
                 c->fromu = 0;
+                break;
+            }
+            if (type == TY_LONG) {
+                /* A long variable complemented: loaded into DI:SI, the high
+                 * word first - fltprobe/p22_long2.s.golden's "l = ~l" ->
+                 * "mov si,*-6.(bp)" / "mov di,*-8.(bp)" / "not di" / "not
+                 * si". */
+                Val v = pop_val(&g);
+                if (v.kind != VK_MEM || (g.reserved & (RB_DI | RB_SI)))
+                    gen_fatal("'~' of anything but a 'long' variable is not "
+                              "yet supported - see src/mutos_cc/README.md");
+                ins2(&g, "mov", o_reg("si"), o_mem(v.offset + MCC_SZINT));
+                ins2(&g, "mov", o_reg("di"), o_mem(v.offset));
+                ins1(&g, "not", o_reg("di"));
+                ins1(&g, "not", o_reg("si"));
+                push_val(&g, val_long());
                 break;
             }
             if (type != TY_INT)
@@ -8640,18 +9460,29 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * "lea ax,(di)" / "call fldd" (as an assignment's target
                  * it is computed after the right-hand side - see
                  * plan_fvalue()). */
-                Val ptr = pop_val(&g);
+                Val ptr = pop_any(&g);
+                long disp = 0;
+                if (ptr.kind == VK_REGOFF) {
+                    /* "p->y", "p[2]": the pointer plus a constant, the
+                     * constant the displacement - fltprobe/p20_fltlv.s.
+                     * golden's "q->y" -> "mov di,*-22.(bp)" / "lea ax,*8.
+                     * (di)", "p[2]" -> "lea ax,*16.(di)". */
+                    disp = ptr.imm;
+                    ptr = val_from_simple(ptr.cl);
+                }
                 if (ptr.kind != VK_MEM && ptr.kind != VK_STATIC &&
                     !(ptr.kind == VK_REG && !ptr.regvar &&
-                      strcmp(ptr.reg, "di") == 0))
+                      (strcmp(ptr.reg, "di") == 0 ||
+                       (strcmp(ptr.reg, "ax") == 0 && disp == 0))))
                     gen_fatal("reading a 'float'/'double' through anything but "
-                              "a pointer variable or an address computed "
-                              "into DI is not yet supported - see "
-                              "src/mutos_cc/README.md");
+                              "a pointer variable, an address computed into "
+                              "DI or a call's result is not yet supported - "
+                              "see src/mutos_cc/README.md");
                 Val fv = {0};
                 fv.kind = VK_FMEM;
                 fv.fmode = FM_IND;
                 fv.cl = simple_of(ptr);
+                fv.imm = disp;
                 fv.fdouble = (type == TY_DOUBLE);
                 push_val(&g, fv);
                 break;
@@ -8838,11 +9669,17 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                     load_into(&g, reg, base);
                 }
                 Val ind = val_ind_disp(reg, ptr.imm);
-                if (load_now(&cons)) {
+                /* A comparison's left element at an offset whose address
+                 * is about to be pushed (SEG_KEEPIND - is_pushleft()) stays
+                 * "*N.(di)": fltprobe/p23_elem3.s.golden's "ps[i].c >
+                 * b[j]" -> ... "add di,si" / "push di" / ... / "pop bx" /
+                 * "cmp *4.(bx),di". */
+                if (load_now(&cons) && !g.keep_ind) {
                     ins2(&g, "mov", o_reg(reg), o_val(ind));
                     push_val(&g, val_reg(reg));
                     break;
                 }
+                g.keep_ind = 0;
                 push_val(&g, ind);
                 break;
             }
@@ -8937,12 +9774,31 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_INCAFT:
         case OP_DECAFT: {
             int type = c1_read_num(temp1, "temp1");
-            if (type != TY_INT && type != TY_PTR_INT)
+            if (type == TY_DOUBLE) {
+                gen_fp_incdec(&g, temp1, op);  /* see "Floating point" */
+                break;
+            }
+            if (type != TY_INT && !ty_is_ptr(type))
                 gen_fatal("'++'/'--' of type %d not yet supported "
-                          "(only TY_INT/TY_PTR_INT are covered so far)",
+                          "(only an int or a pointer is covered so far)",
                           type);
             Val amt = pop_val(&g);
             Val lv  = pop_val(&g);
+            if (scan_consumer(temp1).op == OP_EXPR && lv.kind == VK_MEM &&
+                amt.kind == VK_IMM) {
+                /* A statement of its own, its value unused: the increment
+                 * alone, in place - v7's efftab - tests/mutos_cc/11_kernel/
+                 * 01_delay.s.golden's "i++;" -> "inc *-6.(bp)",
+                 * fltprobe/p20_fltlv.s.golden's "p++;" -> "add *-48.
+                 * (bp),*8.". */
+                int is_incr = (op == OP_INCBEF || op == OP_INCAFT);
+                if (amt.imm == 1)
+                    ins1(&g, is_incr ? "inc" : "dec", o_val(lv));
+                else
+                    ins2(&g, is_incr ? "add" : "sub", o_val(lv), o_imm(amt.imm));
+                push_val(&g, lv);
+                break;
+            }
             push_val(&g, gen_incdec(&g, op, lv, amt));
             break;
         }
@@ -9066,6 +9922,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             c.cl = simple_of(l);
             c.cr = simple_of(r);
             c.cond_memleft = l.memleft;      /* see SEG_DEFPOPL */
+            if (l.kind == VK_IND && !l.bytev && !l.sym &&
+                r.kind == VK_IMM && r.imm == 0)
+                for (int k = 0; k < g.nzelem; k++)
+                    if (g.zelem[k] == g.op_off)
+                        c.cond_ortest = 1;
             /* A 'long' comparison - NOT signaled by `type` above
              * (confirmed always TY_INT here regardless of operand
              * type: a comparison's own RESULT is always plain int,
@@ -9153,6 +10014,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * 2026-09-26; now gen_long_cmp() refuses the inverted
              * operator, as it refuses any other unconfirmed shape. */
             neg.cond_is_long = c.cond_is_long;
+            neg.cond_is_ltest = c.cond_is_ltest;
             neg.cond_is_byte = c.cond_is_byte;
             neg.cond_memleft = c.cond_memleft;
             /* A floating comparison has already set the flags; "!" only
@@ -9298,6 +10160,18 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             Val l, r;
             pop_operands_ex(&g, &l, &r, POP_CHARX);
             constant_to_right(&l, &r);
+            if ((l.kind == VK_MEM || l.kind == VK_STATIC) && !l.bytev &&
+                !l.structv && r.kind == VK_IND && !r.bytev) {
+                /* A variable times a dereference: v7's acommute() orders a
+                 * commutative operator's operands by decreasing degree, so
+                 * the dereference (computed) goes first, into AX, and the
+                 * variable is the IMUL operand - fltprobe/p23_elem3.s.
+                 * golden's "x * b[j]" -> "lea di,*-36.(bp)" / ... / "add
+                 * di,si" / "mov ax,(di)" / "imul *-44.(bp)". */
+                Val t = l;
+                l = r;
+                r = t;
+            }
             if (l.kind == VK_CHARX || r.kind == VK_CHARX) {
                 /* A char times an int: the char widened into AX, then the
                  * ordinary shape below with AX as the "mov ax,<left>"
@@ -9568,6 +10442,32 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 gen_fp_asop(&g, temp1, op);     /* see "Floating point" */
                 break;
             }
+            if (type == TY_LONG) {
+                /* A long variable *= an int widened: the runtime's
+                 * in-place multiply, "almul", given the right operand's two
+                 * words (pushed from DX:AX - OP_ITOL) and the target's
+                 * address - fltprobe/p22_long2.s.golden's "l *= i" -> "mov
+                 * ax,*-14.(bp)" / "cwd" / "push ax" / "push dx" / "lea
+                 * di,*-8.(bp)" / "push di" / "call almul" / "add sp,*6."
+                 * (no store: almul writes the product itself). */
+                Val rhs = pop_val(&g);
+                Val lhs = pop_val(&g);
+                if (lhs.kind != VK_MEM || rhs.kind != VK_LONG ||
+                    rhs.lreg != LREG_DXAX || rhs.lpair)
+                    gen_fatal("'long' *= with anything but an int value "
+                              "multiplied into a long variable is not yet "
+                              "supported - see src/mutos_cc/README.md");
+                if (g.reserved & RB_DI)
+                    gen_fatal("'long' *= in a function with a register "
+                              "variable in DI is not yet supported");
+                put_seq(&g, SEQ_PUSH_AXDX);
+                ins2(&g, "lea", o_reg("di"), o_mem(lhs.offset));
+                ins1(&g, "push", o_reg("di"));
+                ins1(&g, "call", o_sym("almul"));
+                ins2(&g, "add", o_reg("sp"), o_imm(6));
+                push_val(&g, lhs);
+                break;
+            }
             if (type != TY_INT)
                 gen_fatal("ASTIMES of type %d not yet supported", type);
             Val rhs = materialize(&g, pop_val(&g));
@@ -9782,6 +10682,26 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
              * - one word, whatever it points to). */
             if (!ty_is_word(type) && type != TY_CHAR)
                 gen_fatal("ASSIGN of type %d not yet supported", type);
+            if ((type == TY_INT || type == TY_UNSIGN) && g.valsp >= 1 &&
+                g.valstack[g.valsp - 1].kind == VK_LOWADD) {
+                /* "x = (int) (l - c)" - the low words only (see VK_LOWADD),
+                 * computed in DI: fltprobe/p22_long2.s.golden's "x = (int)
+                 * (l - 5)" -> "mov di,*-6.(bp)" / "add di,*-5." / "mov
+                 * *-16.(bp),di". */
+                Val w = pop_any(&g);
+                if (di_busy(&g) || (g.reserved & RB_DI))
+                    gen_fatal("'(int)' of a long sum or difference while DI "
+                              "is taken is not yet supported - see "
+                              "src/mutos_cc/README.md");
+                ins2(&g, "mov", o_reg("di"), o_mem(w.offset));
+                if (w.imm == 1)
+                    ins1(&g, "inc", o_reg("di"));
+                else if (w.imm == -1)
+                    ins1(&g, "dec", o_reg("di"));
+                else if (w.imm != 0)
+                    ins2(&g, "add", o_reg("di"), o_imm(w.imm));
+                push_val(&g, val_reg("di"));
+            }
             Val rhs = pop_val_ex(&g, type == TY_CHAR ? POP_BYTE : POP_CHARX);
             if (rhs.kind == VK_CHARX) {
                 /* A char stored into an int (mutos_c0's ITOC(TY_INT) on
@@ -10049,8 +10969,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             /* RFORCE carries the type of the value converted to the
              * function's (v7/cc/c04.c's doret()): unsigned for a bit-field
              * returned from an int function - 06_struct/07_bitfield.1.
-             * golden's RFORCE(7) - the same word in AX. */
-            if (type != TY_INT && type != TY_UNSIGN)
+             * golden's RFORCE(7) - the same word in AX; a pointer from a
+             * function returning one - fltprobe/p20_fltlv.s.golden's
+             * "return a + i;" in "double *pick()" -> "mov di,*6.(bp)" /
+             * "mov cx,*3." / "sal di,cl" / "add di,*4.(bp)" / "mov ax,di". */
+            if (type != TY_INT && type != TY_UNSIGN && !ty_is_ptr(type))
                 gen_fatal("RFORCE to type %d not yet supported (only "
                           "int/long-returning functions are covered so "
                           "far)", type);
@@ -10105,6 +11028,24 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         }
 
         case OP_EXPR: {
+            /* Every statement leaves the floating-point stack as it found
+             * it - see fp_track(); below 0 only after the real compiler's
+             * own underflow has been reported. */
+            if (g.fdepth < 0 && !g.nerrors && g.fp_argpop)
+                /* The real compiler's double pop (fp_store()) with nothing
+                 * popped below the bottom yet - "half(d = 3.0);", its
+                 * result unused: the code is p21_fltexp's, but whether
+                 * and where the real c1 reports the deficit later has no
+                 * golden (fltprobe/p28_fltstk asks). */
+                gen_fatal("an assignment's value as a 'float'/'double' call "
+                          "argument is not yet supported here: the real "
+                          "compiler pops it twice (fltprobe/p21_fltexp), and "
+                          "how its floating-point stack model goes on after "
+                          "this statement has no golden yet - see "
+                          "src/mutos_cc/README.md");
+            if (g.fdepth > 0 || (g.fdepth < 0 && !g.nerrors))
+                gen_fatal("internal: the floating-point stack model is off "
+                          "by %d at the end of a statement", g.fdepth);
             (void)c1_read_num(temp1, "temp1"); /* source line - not
                                                  * rendered into the
                                                  * .s output anywhere
@@ -10233,5 +11174,5 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
     ins0(&g, ".data");
     gen_strings(&g, temp2);
     free_names(&g);
-    return 0;
+    return g.nerrors ? 1 : 0;          /* see c1_error() */
 }

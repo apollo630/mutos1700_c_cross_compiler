@@ -16,19 +16,24 @@ local variable's word(s), located through c1's own "| _name=-N." frame
 comments. Floating-point code runs against a model of libc.a's software
 floating-point runtime (the calls mutos_c1 emits - "flds"/"fldd",
 "fstsp"/"fstdp", "fsts"/"fstd", "fadds"..."fdivd", stkmath.o's
-"fadd"..."fdiv", "fneg" and "fcmp" (read by "sahf" and a signed branch),
-"itof", "ftoi", "ftol", "ltof" - on a stack of host floats, see
-FP_RUNTIME),
+"fadd"..."fdiv", "fneg", "fdup" and "fcmp" (read by "sahf" and a signed
+branch), "itof", "ftoi", "ftol", "ltof" - on a stack of host floats, see
+FP_RUNTIME; popping an empty stack is an error, as the real compiler's
+own code for an assignment passed as a floating argument does it -
+fltprobe/p21_fltexp),
 dmath.o's "fac" (a double function's result) and ".float" data, in
-MUTOS's own floating format (see mbf_encode()). It is a checker, not an emulator: anything outside the subset
+MUTOS's own floating format (see mbf_encode()), and the 'long' helpers
+"lmul", "ldiv", "lrem" and "almul" (see LONG_RUNTIME), a long shifted a
+bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1") and
+"neg". It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
 message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
-.s.golden it can execute (53 of the 62 - the rest call libc or runtime
-helpers, or use 'long' carries, a jump table or a function's address)
-returns the value its C source computes, among them 08_float/01_floatbas
+.s.golden it can execute (56 of the 62 - the rest call libc, or use a
+jump table or a function's address) returns the value its C source
+computes, among them 02_long/02_muldiv (24), 08_float/01_floatbas
 (7) and 02_dblconv (3), 01_expr/06_compasgn
 (33), 04_funcs/05_staticvar (3), 07_scope/01_globstat (3) and
 03_externdef (12),
@@ -63,7 +68,8 @@ STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 # the byte forms, "cmpb" and "orb dx,dx" (a char loaded into DL and
 # tested).
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
-                "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb"}
+                "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb",
+                "rcl", "rcr"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi", "blo",
             "bhis"}
 
@@ -122,11 +128,27 @@ FP_RUNTIME = {
     # stkmath.o: the top two entries - second op top - into one
     "fadd": ("s+", 0), "fsub": ("s-", 0), "fmul": ("s*", 0), "fdiv": ("s/", 0),
     "fneg": ("neg", 0),                            # the top, sign flipped
+    "fdup": ("dup", 0),                            # the top, pushed again
     "fcmp": ("cmp", 0),                            # pops both, AH <- flags
     "itof": ("itof", 0), "ftoi": ("ftoi", 0), "ftol": ("ftol", 0),
     # lconvert.o: the long on the machine stack, high word on top
     "ltof": ("ltof", 0),
 }
+
+
+# libc.a's 'long' helpers mutos_c1 calls (lmul.o, ldiv.o, lrem.o, almul.o):
+# their operands on the machine stack - each long pushed low word first,
+# the right operand first, so at the call [sp] is the left operand's high
+# word - and the result in DX:AX; "almul" (a long variable *= a long)
+# takes the target's address on top and the right operand below it and
+# multiplies the target in place. C semantics: products wrap at 32 bits,
+# quotients truncate toward zero.
+LONG_RUNTIME = {"lmul", "ldiv", "lrem", "almul"}
+
+
+def s32(v):
+    v &= 0xFFFFFFFF
+    return v - (1 << 32) if v & 0x80000000 else v
 
 
 def fp_arith(op, a, b):
@@ -395,6 +417,8 @@ class Sim:
             st.append(fp_arith(kind[1], a, b))
         elif kind == "neg":
             st[-1] = -st[-1]
+        elif kind == "dup":
+            st.append(st[-1])
         elif kind == "cmp":
             b = st.pop()
             a = st.pop()
@@ -429,6 +453,35 @@ class Sim:
         elif kind == "ftol":
             self.regs["ax"] = v & M16
             self.regs["dx"] = (v >> 16) & M16
+
+    # -- the 'long' runtime ---------------------------------------------
+    def _long_at(self, addr):
+        """The long at `addr`, high word first (docs/MUTOS_C_ABI.md
+        sect. 1.6)."""
+        return s32((self._rd(addr) << 16) | self._rd((addr + 2) & M16))
+
+    def _long_call(self, name):
+        sp = self.regs["sp"]
+        if name == "almul":
+            target = self._rd(sp)
+            r = self._long_at((sp + 2) & M16)
+            v = s32(self._long_at(target) * r)
+            self._wr(target, (v >> 16) & M16)
+            self._wr((target + 2) & M16, v & M16)
+        else:
+            a = self._long_at(sp)
+            b = self._long_at((sp + 4) & M16)
+            if name == "lmul":
+                v = s32(a * b)
+            else:
+                if b == 0:
+                    raise SimError("'long' division by zero")
+                q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
+                v = s32(q if name == "ldiv" else a - q * b)
+        for r in ("bx", "cx"):
+            self.regs[r] = 0xDEAD
+        self.regs["ax"] = v & M16
+        self.regs["dx"] = (v >> 16) & M16
 
     # -- execution ------------------------------------------------------
     def run(self):
@@ -541,10 +594,33 @@ class Sim:
                 self.put(ops[0], self.get(ops[0]) - 1)
             elif mnem == "not":
                 self.put(ops[0], ~self.get(ops[0]))
+            elif mnem == "neg":
+                self.put(ops[0], -self.get(ops[0]))
             elif mnem in ("sal", "shl"):
-                self.put(ops[0], self.get(ops[0]) << (self.get(ops[1]) & 0x1F))
+                a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
+                self.put(ops[0], a << n)
+                if n == 1:              # CF, for an "rcl" right after it
+                    self.carry_next = (a >> 15) & 1
             elif mnem == "sar":
-                self.put(ops[0], s16(self.get(ops[0])) >> (self.get(ops[1]) & 0x1F))
+                a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
+                self.put(ops[0], s16(a) >> n)
+                if n == 1:              # CF, for an "rcr" right after it
+                    self.carry_next = a & 1
+            elif mnem in ("rcl", "rcr"):
+                # The other word of a 'long' shifted by one: through the
+                # carry of the "sal"/"sar" right before it
+                if self.carry is None or self.get(ops[1]) != 1:
+                    raise SimError(f"'{mnem}' not right after a one-bit "
+                                   "sal/sar")
+                a = self.get(ops[0])
+                if mnem == "rcl":
+                    res = ((a << 1) | self.carry) & M16
+                    self.carry_next = (a >> 15) & 1
+                else:
+                    res = (a >> 1) | (self.carry << 15)
+                    self.carry_next = a & 1
+                self.put(ops[0], res)
+                self.carry = None
             elif mnem == "imul":
                 prod = s16(self.regs["ax"]) * s16(self.get(ops[0]))
                 self.regs["ax"] = prod & M16
@@ -563,6 +639,9 @@ class Sim:
                 self.regs["dx"] = (n - q * d) & M16
             elif mnem == "call" and ops[0] in FP_RUNTIME:
                 self._fp_call(ops[0])
+                self.cmp = None
+            elif mnem == "call" and ops[0] in LONG_RUNTIME:
+                self._long_call(ops[0])
                 self.cmp = None
             elif mnem == "call" and ops[0] == "chkstk":
                 # The large-frame allocation helper (docs/MUTOS_C_ABI.md

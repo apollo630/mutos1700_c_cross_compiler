@@ -35,6 +35,11 @@
 # wrote before refusing must be exactly the golden's first lines (as many
 # as the list gives) - listed apart (category 8), not a failure.
 #
+# A file listed in c1_errors.txt is one the real compiler's c1 reported
+# errors for - and still wrote out whole: mutos_c1 must exit with a
+# nonzero status, print exactly the listed messages on stderr and write
+# exactly the golden's .s - listed apart (category 9), not a failure.
+#
 # Exit status: 0 if every file with goldens produced a byte-exact
 # match at every stage, 1 otherwise (this is expected/normal until
 # grammar coverage grows well beyond 00_smoke - see README.md).
@@ -67,7 +72,18 @@ if [ -f invalid_goldens.txt ]; then
     done < invalid_goldens.txt
 fi
 
+# "<category>/<name>" -> the real c1's error messages, one per line (see
+# c1_errors.txt)
+declare -A c1_errors=()
+if [ -f c1_errors.txt ]; then
+    while read -r key msg; do
+        case "$key" in ''|'#'*) continue ;; esac
+        c1_errors["$key"]+="$msg"$'\n'
+    done < c1_errors.txt
+fi
+
 pass=()
+pass_c1err=()
 pass_invalid=()
 pass_no_i=()
 cpp_mismatch=()
@@ -132,6 +148,18 @@ for cat in */; do
             fi
             continue
         fi
+        if [ -n "${c1_errors[$cat/$name]:-}" ]; then
+            if "$MUTOS_C1" "$out_1" "$out_2" "$out_s" 2>"$WORK/err"; then
+                c1_mismatch+=("$cat/$name (compiled without the real compiler's c1 errors - see c1_errors.txt)")
+            elif [ "$(cat "$WORK/err")"$'\n' != "${c1_errors[$cat/$name]}" ]; then
+                c1_mismatch+=("$cat/$name (c1's messages differ from c1_errors.txt: $(head -1 "$WORK/err"))")
+            elif ! diff -q "$out_s" "$golden_s" >/dev/null 2>&1; then
+                c1_mismatch+=("$cat/$name (.s differs from golden)")
+            else
+                pass_c1err+=("$cat/$name ($(wc -l < "$WORK/err") messages, as the real c1's)")
+            fi
+            continue
+        fi
         if ! "$MUTOS_C1" "$out_1" "$out_2" "$out_s" 2>"$WORK/err"; then
             c1_unsupported+=("$cat/$name: $(tail -1 "$WORK/err")")
             continue
@@ -185,6 +213,11 @@ echo
 echo "8. Byte-exact up to the real compiler's own invalid output, refused there"
 echo "   on purpose - see invalid_goldens.txt (${#pass_invalid[@]})"
 for f in "${pass_invalid[@]}"; do echo "  $f"; done
+
+echo
+echo "9. Byte-exact, with the real compiler's own c1 errors reproduced - see"
+echo "   c1_errors.txt (${#pass_c1err[@]})"
+for f in "${pass_c1err[@]}"; do echo "  $f"; done
 echo "=================================================================="
 
 # Success means: nothing in the "genuine mismatch" categories (2, 4, 6).
