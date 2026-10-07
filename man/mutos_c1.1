@@ -55,13 +55,13 @@ and a tail jump to the shared
 .B cret
 epilogue (see
 .IR docs/MUTOS_C_ABI.md ).
-A local-variable frame of up to 90 bytes beyond the register-save area
+A local-variable frame of up to 98 bytes beyond the register-save area
 is allocated with
 .BR "sub sp,N" ,
 one of 100 bytes or more with
-.BR "mov ax,N / call chkstk" ;
-the real threshold lies somewhere in between, so 92 to 98 bytes is an
-explicit \(lqnot yet supported\(rq diagnostic rather than a guess.
+.BR "mov ax,N / call chkstk" ,
+as the real compiler does (a frame is always even, so no size lies
+in between).
 .PP
 There is no general register allocator: each operator uses the working
 register the real compiler's output confirms (DI for most integer

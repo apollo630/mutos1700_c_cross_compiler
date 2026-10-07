@@ -74,13 +74,31 @@ not compared), and skips the others.
   (`x = half(d = 3.0)` - right code); v7's `distrib()`; compound
   assignments into elements and through pointers; every `long` shape
   asked. See `../../../docs/DEVLOG.md`'s "The round-7 fltprobe goldens".
-- **Round 8** (`p29`..`p33`, goldens pending): the frames of 92 to 98
-  bytes (`p29_frame2`), which store an assignment under a call gets - the
-  statement's type, or what the previous floating statement left
-  (`p30_fltstk2`, on purpose not a program to run, like `p28`) - and what
-  `mutos_c1` now compiles by inference only or still refuses: `long`
-  (`p31_long4`), int (`p32_elem5`) and floating (`p33_fltinf3`) shapes.
-  Run them with `make -f Makefile.mutos round8`.
+- **Round 8** (goldens 2026-10-07, commit `2eaa65f`, with `round8.log`):
+  the frames of 92 to 98 bytes (`p29_frame2`), which store an assignment
+  under a call gets (`p30_fltstk2`, written to make the real `c1` report
+  again - it reported nothing) and what `mutos_c1` compiled by inference
+  only or still refused after round 7: `long` (`p31_long4`), int
+  (`p32_elem5`) and floating (`p33_fltinf3`) shapes - all five refused
+  before, now all **5/5 byte-exact** end-to-end. The goldens settled the
+  frames (`sub sp,N` up to 98 bytes - no size is left open), corrected
+  three inferences (the store under a call depends on the CALL's own
+  consumer, not the statement's type: `fstd` in all of `p30`, whose code
+  is right and runs; `m * i` pushes the long first; a comparison of a
+  variable with a constant in a `distrib()` sum is computed into SI, not
+  pushed) and settled every refusal: `x = l++` (the low word as an int),
+  `l += 70000`, `l << i` (`jz .+8`), `x = !l`, `10 - (int) (l - 35)`, `*ip
+  += x` (the pointer pushed), `b[3] ^= b[i]`, `x + f(1) + g(2)` (the calls
+  first), a quotient plus a remainder (the remainder pushed from DX), a
+  float's `f++`/`++f` as values, `e = (q->x += d)`, `e = ++d * 2.0` (the
+  increment first). See `../../../docs/DEVLOG.md`'s "The round-8 fltprobe
+  goldens".
+- **Round 9** (`p34`..`p37`, goldens pending): what `mutos_c1` now
+  compiles by inference only or still refuses after round 8 - `long`
+  (`p34_long5`), int (`p35_elem6`) and floating (`p36_fltinf4`) shapes -
+  and, on purpose not a program to run, like `p28`, which store an
+  assignment passed as a floating argument gets where `p30` did not ask
+  (`p37_fltstk3`). Run them with `make -f Makefile.mutos round9`.
 
 ## Why these, and not goldens alone
 
@@ -130,11 +148,15 @@ open question the five other files asked.
 | `p26_elem4.c` | no floating point; inferred: `x * *ip`, `*ip * j`, `if (b[i])`, `b[j] != 0`, `x = b[j] > 0`, `b[j] > 5` under `&&`, `if (ps[i].c)`, `ps[i].c > 2`, `b[i] * b[j] + b[j - 1]`, `g * b[j]`, `b[j] - g`, `(b[i] + 1) * b[j]`, `b[3] = b[j] + b[0]`, `b[j] / b[i]`, `b[j] % b[i]`; refused: three comparisons of two elements summed, `b[i] += b[j]`, `b[j] -= x`, `b[0] *= b[i]`, `*ip += 2`, `ps[i].c += x` | byte-exact | 238 |
 | `p27_frame.c` | no floating point: eight functions with frames of 82, 90, 100, 110, 120, 124, 126 and 127 bytes (`char buf[N]`): `sub sp,*82.`/`*90.`, from 100 `mov ax,*N.` / `call chkstk` (127 rounded: `#128.`); `main()`'s sum of eight calls (each right call pushed: `push ax` / ... / `pop bx` / `add ax,bx`) | byte-exact | 24 |
 | `p28_fltstk.c` | NOT a program to run: `half(d = 3.0)` (p21's double pop) on purpose, to see the real `c1`'s floating-stack model go on: never reset (not between functions), the argument push, an unused result and a returned double's store into `fac` unchecked, `fmul`/`fadd`/`fcmp` below the bottom upper case; `x = half(d = 3.0)` stored with `fstd` (right code) | byte-exact, all twelve messages reproduced | - (the real program: a stack underflow) |
-| `p29_frame2.c` | no floating point: frames of 92, 94, 96 and 98 bytes - `sub sp,N` or `call chkstk`? | refused (the frame size) | 50 |
-| `p30_fltstk2.c` | NOT a program to run: an assignment passed as a floating argument after a floating statement in an int statement (`fstd` or `fstdp`?), after an int use of a double, under a floating sum, a comparison as a condition and as a value, `return half(d = 3.0)` in a double function, two such arguments | inferred (by the statement's type) | - (compiler messages expected) |
-| `p31_long4.c` | no floating point; inferred: `l -= 1`, `--l`, `l += 300`, `m = -l`, `l && m`, `l << 5`, `l >> 7`, `l * 7`, `m * i`, `l ? x : 7`; refused: `x = l++`, `l += 70000`, `l << i`, `x = !l`, `10 - (int) (l - 35)` | refused | 140 |
-| `p32_elem5.c` | no floating point; inferred: `if (!b[i])`, `x = !b[j]`, `b[j] ? 3 : 9`, `if (a[i][j])`, `(b[i] - x) * b[j]`, `~b[i] * b[j]`, `(b[j] + 3) / b[i]`, `(b[3] & 7) % b[4]`, `b[i] += 7`, `ps[i].d ^= x`, `p->b += x`, `a[i][j] += x`, `(x > 2) * 2 + (x < 9) * 4 + (x == 5) + x`, `... * 2 + ... * 2 + x`, `x = f(1) + g(2)`, `x = f(1) + g(2) + h(3)`; refused: `*ip += x`, `b[3] ^= b[i]`, `x = x + f(1) + g(2)`, `b[j] / b[i] + b[j] % b[i]` | refused | 284 |
-| `p33_fltinf3.c` | inferred: `++f`, `--f`, `f--`, `(x ? d : e) + 1.5`, `((i > j) ? d : e) * f`, `q->y /= 2.0`, `q->x -= d * e`, `q->x /= d + e`, `a[i + 1] += 1.0`, `a[i + 2] = a[j] * 2.0`, `d = q->k * 2.0`, `*pick(a, i) = d + e`; refused: `e = f++`, `d = ++f`, `e = (q->x += d)`, `e = ++d * 2.0` | refused | 82 |
+| `p29_frame2.c` | no floating point: frames of 92, 94, 96 and 98 bytes - all `sub sp,*N.` | byte-exact | 50 |
+| `p30_fltstk2.c` | written NOT to run: an assignment passed as a floating argument after a floating statement in an int statement, after an int use of a double, under a floating sum, a comparison as a condition and as a value, `return half(d = 3.0)` in a double function, two such arguments - `fstd` everywhere (the call's value used: right code, no message) | byte-exact, no message (as the real `c1`) | 9 |
+| `p31_long4.c` | no floating point: `l -= 1`, `--l`, `l += 300`, `m = -l`, `l && m`, `l << 5`, `l >> 7`, `l * 7`, `m * i` (the long pushed first), `l ? x : 7`, `x = l++` (`mov di,l+2` / `inc l+2` - the low word as an int), `l += 70000` (through DI:SI), `l << i` (`mov cx,i` / `or cx,cx` / `jz .+8` / ... / `loop .-4`), `x = !l`, `10 - (int) (l - 35)` (`mov di,*10.` first) | byte-exact | 140 |
+| `p32_elem5.c` | no floating point: `if (!b[i])`, `x = !b[j]`, `b[j] ? 3 : 9`, `if (a[i][j])`, `(b[i] - x) * b[j]`, `~b[i] * b[j]`, `(b[j] + 3) / b[i]`, `(b[3] & 7) % b[4]`, `b[i] += 7`, `ps[i].d ^= x`, `p->b += x`, `a[i][j] += x`, `(x > 2) * 2 + (x < 9) * 4 + (x == 5) + x` (each comparison into SI after the left term), `... * 2 + ... * 2 + x`, `x = f(1) + g(2)`, `... + h(3)`, `*ip += x` (`push ip` / ... / `pop bx` / `add (bx),di`), `b[3] ^= b[i]` (`xor *-50.(bp),di`), `x = x + f(1) + g(2)` (the calls first, `add ax,x`), `b[j] / b[i] + b[j] % b[i]` (the remainder first, `push dx`) | byte-exact | 284 |
+| `p33_fltinf3.c` | `++f`, `--f`, `f--`, `(x ? d : e) + 1.5`, `((i > j) ? d : e) * f`, `q->y /= 2.0`, `q->x -= d * e`, `q->x /= d + e`, `a[i + 1] += 1.0`, `a[i + 2] = a[j] * 2.0`, `d = q->k * 2.0`, `*pick(a, i) = d + e`, `e = f++` (`fdup`), `d = ++f` (`fstsp f` / `flds f`), `e = (q->x += d)` (`fldd d` first, `fstd` through the popped address), `e = ++d * 2.0` (the increment first, then `flds 2.0` / `fmuld d`) | byte-exact | 82 |
+| `p34_long5.c` | no floating point; inferred: `x = ++l`, `x = --l`, `x = l--`, `l += -5`, `l -= -3`, `l = l >> i`, `m = i * m`, `l *= 3`, `l = -i`, `l = l + m * 2`, `l = l * m`; refused: `l <<= 3`, `l >>= 2`, `l /= m`, `x = (int) (l * 2)`, `l = l - m - 1`, `l = 100000 - l` | refused | 248 |
+| `p35_elem6.c` | no floating point; inferred: `*ip -= y`, `*ip \|= b[i]`, `*ip &= x + 1`, `*ip += f(1)`, `b[i] += f(1)`, `x += y * 2`, `x -= b[i]`, `x &= b[i] + 1`, `x = x + f(1) + y`, `x = f(1) + g(2) + y + f(3)`, `x = f(1) + c / d`, `x = c / d + f(2)`, `x = f(1) + c % d`, `x = c / d + c / y`, `x = (y > 2) + (y < 9) * 2 + y`, `x = (y > 2) + (x < 3)`; refused: `x = c % d + c / d`, `x = c * d + f(1)`, `x = f(1) - g(2)`, `x = f(1) * g(2)`, `x = b[i] + f(1)`, `x = f(1) + g(2) * 3` | refused | 856 |
+| `p36_fltinf4.c` | inferred: `e = (q->x *= 2.0)`, `e = (q->x *= d + e)`, `e = (a[i] += d)`, `e = (a[i] *= 2.0)`, `e = f--`, `d = --f`, `e = ++d + 1.5`, `e = 10.0 - --d`, `e = ++d / 4.0`, `e = ++d * ++e`, `e = ++f * 2.0`, `e = (d += 1.0) * 2.0`, `e = -(++d)`, `e = d * (e = 2.0)`, `e = (d = 2.0) * 3.0`; refused: `e = (q->y -= d)`, `e = (q->y /= d)`, `e = d++ * 2.0`, `x = ++d > 2.0`, `if (++d > 2.0)` | refused | 133 |
+| `p37_fltstk3.c` | NOT a program to run: an assignment passed as a floating argument of a call nested as an argument, of two calls in a sum, of an int function (its value stored and unused), two of them as arguments of an unused call, one of two with the value stored, the call's value returned from an int function and stored into a float | inferred (the call's consumer) | - (compiler messages expected) |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
@@ -142,37 +164,42 @@ value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
 `p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
 MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
-golden returns 6, its floats truncated. Every golden of rounds 1 to 7 runs
+golden returns 6, its floats truncated. Every golden of rounds 1 to 8 runs
 under `../fuzz/x86sim.py` and returns these values - `p19_open3`'s up to
 its invalid statement (the first 223 lines, completed with `r = r + (int)
 d`, return 104), and `p21_fltexp`'s with its doubly popped store (line
 250, `fstdp`) made the `fstd` it should be (as written, `x86sim.py` stops
 there: "'fstdp' with an empty floating-point stack"); `p28_fltstk` is not
-meant to run; `mutos_c1`'s output is byte-identical to them. "inferred" means `mutos_c1` compiles the file -
+meant to run, and `p30_fltstk2`, written not to, turned out right code (9);
+`mutos_c1`'s output is byte-identical to them. "inferred" means `mutos_c1` compiles the file -
 its output runs under `x86sim.py` and returns the value above - with no
 golden behind the shapes yet; "refused" that `mutos_c0` or `mutos_c1`
-stops with a diagnostic. In round 8, the shapes each file lists as
+stops with a diagnostic. In round 9, the shapes each file lists as
 inferred compile today and give the host's value when the refused ones
-are taken out.
+are taken out (`p34` 178, `p35` 189, `p36` 124).
 
 ## Generating the goldens
 
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round8 2>&1 | tee round8.log
+make -f Makefile.mutos round9 2>&1 | tee round9.log
 ```
 
-(or plain `make -f Makefile.mutos` for all eight rounds), then bring the
+(or plain `make -f Makefile.mutos` for all nine rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
 all four kinds - and run `make goldens` in `..` (it packages every
-category's, this directory's included). `p30_fltstk2` is meant to make
+category's, this directory's included). `p37_fltstk3` is meant to make
 `cc -S` print messages and exit with status 1 (`make` goes on: its recipe
 starts with `-`), as `p28_fltstk` did; its `.s` is written all the same -
-please bring back the messages (`round8.log`) with the files. Should
-another round-8 file not compile on MUTOS, make the others by name (`make
--f Makefile.mutos p31_long4.s p31_long4.1`) and bring back the failing
-one's messages instead.
+please bring back the messages (`round9.log`) with the files. Should
+another round-9 file not compile on MUTOS, make the others by name (`make
+-f Makefile.mutos p35_elem6.s p35_elem6.1`) and bring back the failing
+one's messages instead. Should `make` itself run out of memory on the
+larger `Makefile.mutos` (41 files now; the corpus's one makefile of 62 did,
+see `../README.md`), the commands are the ones `round8.log` shows - `cc -S
+p34_long5.c`, then `/lib/cpp -P p34_long5.c > p34_long5.i; /lib/c0
+p34_long5.i p34_long5.1 p34_long5.2` - for each file.
 
 One more question for the real toolchain, if convenient: `as p19_open3.s`
 - what the real assembler makes of the real compiler's invalid lines 229

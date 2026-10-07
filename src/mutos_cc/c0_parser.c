@@ -1418,6 +1418,60 @@ static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
     return elemtype;
 }
 
+static int starts_chain(Parser *p, const SymEntry *sym);
+static ExprVal parse_postfix_chain(Parser *p, FILE *t1, const SymEntry *sym,
+                                   int *is_field);
+
+/* From an IDENT at p->cur followed by a member access or a subscript:
+ * whether the member/subscript chain ends in '+=', '-=', '*=' or '/=' -
+ * "(q->x += d)" - returning that operator's opcode (0 if not). Scans the
+ * tokens ahead with the lexer and puts it back where it was (the source
+ * is a regular file, read through a seekable FILE*), so nothing is
+ * emitted or consumed - parse_comma_item() needs to know before it writes
+ * the chain, which an rvalue would write the same way but continue
+ * differently. */
+static int lvalue_asop_ahead(Parser *p)
+{
+    if (p->cur.kind != T_IDENT)
+        return 0;
+    TokKind k2 = peek2_kind(p);
+    if (k2 != T_ARROW && k2 != T_DOT && k2 != T_LBRACK)
+        return 0;
+    long pos = ftell(p->lx.fp);
+    if (pos < 0)
+        return 0;
+    Lexer save = p->lx;
+    int depth = (k2 == T_LBRACK) ? 1 : 0, optag = 0;
+    for (;;) {
+        Token t = lex_next(&p->lx);
+        TokKind k = t.kind;
+        free(t.sval);
+        if (k == T_EOF || k == T_SEMI)
+            break;
+        if (k == T_LBRACK || k == T_LPAREN) {
+            depth++;
+            continue;
+        }
+        if (k == T_RBRACK || k == T_RPAREN) {
+            if (depth == 0)
+                break;
+            depth--;
+            continue;
+        }
+        if (depth > 0 || k == T_ARROW || k == T_DOT || k == T_IDENT)
+            continue;
+        optag = k == T_PLUSEQ ? OP_ASPLUS : k == T_MINUSEQ ? OP_ASMINUS :
+                k == T_STAREQ ? OP_ASTIMES : k == T_SLASHEQ ? OP_ASDIV : 0;
+        break;
+    }
+    p->lx = save;
+    if (fseek(p->lx.fp, pos, SEEK_SET) != 0) {
+        fprintf(stderr, "mutos_c0: internal: the source is not seekable\n");
+        exit(1);
+    }
+    return optag;
+}
+
 /*
  * comma-item := (IDENT '=' expr) | expr
  *
@@ -1426,10 +1480,11 @@ static int emit_subscript(Parser *p, FILE *t1, SymEntry *sym)
  * expression is not otherwise reachable from parse_expr()'s
  * precedence chain (assign-stmt, handling '=' and the ten compound-
  * assignment operators, is a distinct, statement-level-only
- * production - see parse_assign_stmt()). Only plain '=' is supported
- * here, not any compound-assignment operator - not exercised by any
- * confirmed golden in this position (07_ternary.c's own
- * "(a = a + 1, b = b + 1, a + b)" only ever uses '='). The NAME node
+ * production - see parse_assign_stmt()). Plain '=' is supported here,
+ * and '+=', '-=', '*=' and '/=' into a floating variable, member or
+ * element (fltprobe/p2_arith's "e = (d *= e)", p33_fltinf3's "e = (q->x
+ * += d)" - see lvalue_asop_ahead()); 07_ternary.c's own "(a = a + 1, b =
+ * b + 1, a + b)" only ever uses '='. The NAME node
  * for the identifier is emitted the same way either way (see
  * parse_assign_stmt()'s identical emission), so peek2_kind() decides
  * which continuation to take before anything is emitted - no
@@ -1483,6 +1538,45 @@ static ExprVal parse_comma_item(Parser *p, FILE *t1)
             emit_to_float(t1, sym->type, rhs, line);
             outcode(t1, "BN", optag, TY_DOUBLE);
             return ev_dynamic_typed(sym->type);
+        }
+        /* The same into a floating member or element, "e = (q->x += d)"
+         * - fltprobe/p33_fltinf3.1.golden: NAME q, CON 0, PLUS, STAR(3),
+         * NAME d, ASPLUS(3), then the outer ASSIGN - the target written as
+         * parse_assign_stmt() writes it. */
+        int aop = lvalue_asop_ahead(p);
+        if (aop) {
+            int line = p->cur.line;
+            SymEntry *tsym = lookup_var(p, p->cur.ident);
+            if (!tsym) {
+                c0_error_at(line, "'%s' undeclared", p->cur.ident);
+                return parse_expr(p, t1);
+            }
+            advance(p); /* consume IDENT */
+            int ttype;
+            int is_field = 0;
+            if (starts_chain(p, tsym)) {
+                ttype = parse_postfix_chain(p, t1, tsym, &is_field).type;
+            } else if (p->cur.kind == T_LBRACK &&
+                       (tsym->is_array || tsym->is_ptr)) {
+                ttype = emit_subscript(p, t1, tsym);
+            } else {
+                c0_error_at(line, "this embedded compound assignment is not "
+                                  "yet supported - see src/mutos_cc/README.md");
+                return ev_dynamic_typed(TY_INT);
+            }
+            if (!ty_is_float(ttype) || is_field) {
+                c0_error_at(line, "an embedded compound assignment into a "
+                                  "member or an element of a type other than "
+                                  "'float'/'double' is not yet supported - see "
+                                  "src/mutos_cc/README.md");
+            }
+            advance(p); /* consume the operator */
+            ExprVal rhs = parse_expr(p, t1);
+            emit_materialize(t1, rhs);
+            if (ty_is_float(ttype))
+                emit_to_float(t1, ttype, rhs, line);
+            outcode(t1, "BN", aop, TY_DOUBLE);
+            return ev_dynamic_typed(ty_is_float(ttype) ? ttype : TY_INT);
         }
     }
     return parse_expr(p, t1);
