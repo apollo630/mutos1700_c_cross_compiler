@@ -7701,8 +7701,13 @@ p19_open3.s: 3 errors.
   with its other messages, it does not copy the real text. The 0-byte
   object the real `as` leaves behind is not reproduced either; no golden
   or test depends on a failed run's output file.
-- **Not recorded:** the real `as`'s exit status for a syntax error. Its
-  floating overflow abort exits with 4.
+- **Exit status 2** (a second run, `as -o p19.o p19_open3.s` then `echo
+  $?`, the same six messages, appended to `p19_as.log`). The floating
+  overflow abort exits with 4. So the real `as` uses a different status
+  for each case, and neither is the error count (3). `mutos_as` exits with
+  1 for both. That difference is documented, and nothing in this project
+  depends on the exact value: every script only checks for a nonzero
+  status.
 - **A process note for future real-hardware runs.** The first attempt was
   `as -o p19.o p19_open3.s > p19_as.log 2>&1 ; echo "exit=$?" >>
   p19_as.log` followed by `ls -l p19.o a.out >> p19_as.log 2>&1`. It left

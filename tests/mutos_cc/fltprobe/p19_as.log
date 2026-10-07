@@ -9,3 +9,13 @@
 p19_open3.s: 3 errors.
 # ls -l p19.o
 -rw-r--r-- 1 root     other          0 Oct  7 16:47 p19.o
+# as -o p19.o p19_open3.s
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 231
+***ERROR*** syntax error, line 231
+p19_open3.s: 3 errors.
+# echo $?
+2

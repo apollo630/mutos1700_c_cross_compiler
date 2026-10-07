@@ -207,8 +207,8 @@ p34_long5.i p34_long5.1 p34_long5.2` - for each file.
 
 Settled on real hardware on 2026-10-07: `as -o p19.o p19_open3.s` prints
 `***ERROR*** syntax error, line 229` four times and `***ERROR*** syntax
-error, line 231` twice, then `p19_open3.s: 3 errors.`, and leaves a `p19.o`
-of 0 bytes. `p19_as.log` holds the terminal transcript. It was copied from
+error, line 231` twice, then `p19_open3.s: 3 errors.`, exits with status 2
+and leaves a `p19.o` of 0 bytes. `p19_as.log` holds the terminal transcript. It was copied from
 the screen because a first run redirected with `> p19_as.log 2>&1` left the
 file empty. The real compiler's invalid lines are invalid for the real
 assembler too, so no MUTOS 1700 binary can have contained this code.

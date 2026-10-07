@@ -628,13 +628,14 @@ Milestone 4 section.**
 The real assembler refuses the real compiler's invalid lines too. On
 MUTOS, `as -o p19.o p19_open3.s` prints `***ERROR*** syntax error, line
 229` four times and `***ERROR*** syntax error, line 231` twice, then
-`p19_open3.s: 3 errors.`, and leaves a 0-byte `p19.o`
+`p19_open3.s: 3 errors.`, exits with status 2 and leaves a 0-byte `p19.o`
 (`tests/mutos_cc/fltprobe/p19_as.log`). No MUTOS 1700 binary can contain
 that code. `mutos_as`'s refusal of the same two lines ("could not classify
 operands", exit status 1, no object) and `p19_open3`'s place in
-`invalid_goldens.txt` are confirmed; nothing in the code changes. Still
-unrecorded: the real `as`'s exit status for a syntax error (4 for its
-floating overflow abort). A first attempt, run with `> p19_as.log 2>&1`,
+`invalid_goldens.txt` are confirmed; nothing in the code changes. The
+real exit statuses are 2 for syntax errors and 4 for the floating overflow
+abort; `mutos_as` exits with 1 for both, a documented difference that no
+test depends on. A first attempt, run with `> p19_as.log 2>&1`,
 left the log empty, even the `echo` appended after it, and that is
 unexplained (the disk was not full). The transcript was copied from the
 screen.
