@@ -1,0 +1,10 @@
+cc -S p29_frame2.c
+/lib/cpp -P p29_frame2.c > p29_frame2.i; /lib/c0 p29_frame2.i p29_frame2.1 p29_frame2.2
+cc -S p30_fltstk2.c
+/lib/cpp -P p30_fltstk2.c > p30_fltstk2.i; /lib/c0 p30_fltstk2.i p30_fltstk2.1 p30_fltstk2.2
+cc -S p31_long4.c
+/lib/cpp -P p31_long4.c > p31_long4.i; /lib/c0 p31_long4.i p31_long4.1 p31_long4.2
+cc -S p32_elem5.c
+/lib/cpp -P p32_elem5.c > p32_elem5.i; /lib/c0 p32_elem5.i p32_elem5.1 p32_elem5.2
+cc -S p33_fltinf3.c
+/lib/cpp -P p33_fltinf3.c > p33_fltinf3.i; /lib/c0 p33_fltinf3.i p33_fltinf3.1 p33_fltinf3.2
