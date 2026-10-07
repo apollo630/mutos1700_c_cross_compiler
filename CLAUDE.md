@@ -142,11 +142,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
   its `README.md`) - round 1's nine files, the four each of rounds 2, 3
-  and 6, the three each of rounds 4 and 5 and the five of round 7 all
-  byte-exact (`p19_open3` up to the real compiler's own invalid output,
-  `p21_fltexp` and `p28_fltstk` together with the real compiler's own `c1`
-  error messages, see below), round 8's five (`p29`..`p33`) waiting for
-  their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  and 6, the three each of rounds 4 and 5 and the five each of rounds 7
+  and 8 all byte-exact (`p19_open3` up to the real compiler's own invalid
+  output, `p21_fltexp` and `p28_fltstk` together with the real compiler's
+  own `c1` error messages, see below), round 9's four (`p34`..`p37`)
+  waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -580,18 +580,19 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, 31 of the 32 probes of
-  `tests/mutos_cc/fltprobe/`'s first seven rounds are byte-exact against
+  8086 emulator. Beyond the corpus, 36 of the 37 probes of
+  `tests/mutos_cc/fltprobe/`'s first eight rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
   the register an int is converted in, `long` mixed with int-class
-  values and every `long` operator asked, sums of calls, compound
-  assignments into elements, v7's `distrib()`, the `chkstk` threshold in
-  `(90,100]` - `p21_fltexp` and `p28_fltstk` with the real compiler's own
-  `c1` error messages), the 32nd up to the real compiler's own invalid
-  output; and `11_kernel/01_delay`, the first of the nine real kernel
-  files.**
+  values and every `long` operator asked, sums of calls and of quotients,
+  compound assignments into elements and through pointers, v7's
+  `distrib()`, which store an assignment passed as a floating argument
+  gets, the `chkstk` threshold `(98,100]` - `p21_fltexp` and `p28_fltstk`
+  with the real compiler's own `c1` error messages), the 37th up to the
+  real compiler's own invalid output; and `11_kernel/01_delay`, the first
+  of the nine real kernel files.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
   into the top-level `Makefile`'s `test` target). Several MUTOS-specific
@@ -683,17 +684,21 @@ scope and intent, not a snapshot of what's done.
     tested for truth (loaded and `or`ed), compound assignments into
     elements, v7's `distrib()` of scaled comparisons, `long` `++`/`--`,
     negation, shifts by CX and truth tests, and the floating shapes left
-    (see "The round-7 fltprobe goldens"). Round 8 (`p29`..`p33`) asks
-    about the 92..98-byte frames, which store an assignment under a call
-    gets, and round 7's new inferences; running it is the first "Next up"
-    in `STATUS.md`.
+    (see "The round-7 fltprobe goldens"). Round 8 settled every frame
+    size (`sub sp,N` up to 98 bytes), that the CALL's own consumer decides
+    whether an assignment passed as its floating argument is stored with a
+    pop (`p30_fltstk2` - no message, right code), and round 7's inferences
+    and refusals (`x = l++` the low word as an int, `l << i` through CX,
+    `*ip += x` the pointer pushed, calls summed before variables, a
+    remainder pushed from DX, a comparison computed into SI, `e = ++d *
+    2.0` the increment first - see "The round-8 fltprobe goldens"). Round
+    9 (`p34`..`p37`) asks about round 8's new inferences; running it is
+    the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
     dependency-ordered list: the floating shapes still refused (see
-    `tests/mutos_cc/fltprobe/README.md`), the
-    remaining 92..98-byte `chkstk` gap (`fltprobe/p27_frame`
-    narrowed the threshold to `(90,100]`), then growing coverage
+    `tests/mutos_cc/fltprobe/README.md`), then growing coverage
     into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
     1/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
     Milestone 4 section for the initial assessment), then the `mutos_cc`

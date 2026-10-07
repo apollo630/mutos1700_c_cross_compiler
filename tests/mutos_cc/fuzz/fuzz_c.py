@@ -183,8 +183,9 @@ class Gen:
             self.globals = {n: rnd.choice(GLOBAL_KINDS) for n in names}
         if arrays:
             # Locals beyond the scalars' 20 bytes: at most 60, so the frame
-            # stays within the confirmed "sub sp,N" range (N <= 90) - N in
-            # 92..98 is an explicit c1 refusal (see c1_gen.c's SETSTK).
+            # stays a plain "sub sp,N" (N < 100 - see c1_gen.c's SETSTK;
+            # x86sim.py runs "call chkstk" too, but these programs keep to
+            # the one shape).
             while True:
                 self.a2 = {name: (rnd.choice([2, 4]), rnd.choice([2, 4]))
                            for name in ("a", "b", "c")[: rnd.randint(1, 3)]}

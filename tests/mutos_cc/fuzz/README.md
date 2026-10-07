@@ -52,10 +52,12 @@ initialized char array), and `04_funcs/05_staticvar` and all three
 Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
 `16.+_ga`-style addresses were added for them) and returns its program's
 value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e` -
-and so do 29 of the 32 `fltprobe` goldens of rounds 1 to 7 (round 7's
+and so do 34 of the 37 `fltprobe` goldens of rounds 1 to 8 (round 7's
 `p24` 174, `p25` 153, `p26` 238, `p27` 24 since `loop .-4` - a long shifted
 by 3 or more - and the carry of `neg` - `sbb di,*0` after a long's
-negation - are modelled, 2026-10-04): `p19_open3`
+negation - are modelled, 2026-10-04; round 8's `p29` 50, `p30` 9, `p31`
+140 - with `jz .+8`, a long shifted by a variable count that may be 0 -
+`p32` 284 and `p33` 82, 2026-10-07): `p19_open3`
 is invalid assembly from line 229 on, and `p21_fltexp` and `p28_fltstk`
 stop with "'fstdp' with an empty floating-point stack" where the real
 compiler's own code pops its floating-point stack twice (`half(d = 3.0)` -

@@ -25,7 +25,9 @@ dmath.o's "fac" (a double function's result) and ".float" data, in
 MUTOS's own floating format (see mbf_encode()), and the 'long' helpers
 "lmul", "ldiv", "lrem" and "almul" (see LONG_RUNTIME), a long shifted a
 bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1"),
-also CX times ("loop .-4" back over the pair), and "neg". It is a checker, not an emulator: anything outside the subset
+also CX times ("loop .-4" back over the pair) or by a variable count
+("or cx,cx" / "jz .+8" past the pair and the loop when CX is 0), and
+"neg". It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
 message, never with a guess.
@@ -610,6 +612,20 @@ class Sim:
                 self.put(ops[0], s16(a) >> n)
                 if n == 1:              # CF, for an "rcr" right after it
                     self.carry_next = a & 1
+            elif mnem == "jz":
+                # "jz .+8": past a long shift's one-bit pair and its "loop
+                # .-4" (two bytes each) when the count in CX is 0 - the only
+                # use (fltprobe/p31_long4.s.golden's "l << i": "mov cx,
+                # *-14.(bp)" / "or cx,cx" / "jz .+8" / "sal si,*1" / "rcl
+                # di,*1" / "loop .-4")
+                nxt = [self.prog[k] if 0 <= k < len(self.prog) else None
+                       for k in (pc, pc + 1, pc + 2)]
+                if ops != [".+8"] or None in nxt or nxt[2][0] != "loop" or \
+                        self.cmp is None or self.cmp[1] != 0:
+                    raise SimError("'jz' other than past a long shift's loop "
+                                   "after 'or cx,cx'")
+                if self.cmp[0] == 0:
+                    pc += 3
             elif mnem == "loop":
                 # "loop .-4": back over the two one-bit shifts before it,
                 # two bytes each - a 'long' shifted CX times, the only use
