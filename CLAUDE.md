@@ -154,7 +154,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `invalid_goldens.txt` lists every golden whose `.s` stops being valid
   assembly at some line - the real compiler's own broken output, never
   edited (at present `fltprobe/p19_open3`: 118 bytes of libc's `_ctype_`
-  where a register name belongs). `run_goldens.sh` requires `mutos_c1` to
+  where a register name belongs - the real `as` refuses those lines too,
+  `***ERROR*** syntax error`, see `fltprobe/p19_as.log`). `run_goldens.sh` requires `mutos_c1` to
   refuse such a file and to have written exactly the golden's lines
   before that point (its category 8).
   `c1_errors.txt` lists every golden for which the real compiler's `c1`
@@ -669,7 +670,8 @@ scope and intent, not a snapshot of what's done.
     (the target loaded first), and `long` mixed with int-class values
     (`mutos_c0` writes v7's `ITOL`; v7's long comparisons) - and showed
     the real compiler emitting invalid assembly for an unsigned converted
-    after a computed `*` (see "The round-5 fltprobe goldens"). Round 6
+    after a computed `*` (see "The round-5 fltprobe goldens"; the real `as`
+    refuses it too - 2026-10-07, "The real assembler on `p19_open3.s`"). Round 6
     settled floating lvalues beyond variables (members and pointers,
     compound assignments into them), floating expression forms (`++`/`--`,
     chained assignments, `?:`, comma), nearly every `long` operator and

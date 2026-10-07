@@ -1331,6 +1331,9 @@ of libc's _ctype_ table>,ax` / `sub ax,ax` / `push <the same>` / `push ax`
 / `call ltof` - its code table asks for the register pair starting at AX,
 and the register-name table ends there). `run_goldens.sh` checks that
 golden up to the line before (`../../tests/mutos_cc/invalid_goldens.txt`).
+The real `as` refuses those lines too (`***ERROR*** syntax error, line
+229`, real hardware 2026-10-07, `../../tests/mutos_cc/fltprobe/p19_as.log`):
+no MUTOS 1700 program can contain this code.
 
 **Floating lvalues and expression forms (round 6, `p20_fltlv`,
 `p21_fltexp`).** A double struct member is an operand and a target like a

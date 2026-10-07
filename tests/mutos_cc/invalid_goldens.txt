@@ -20,5 +20,8 @@
 # ax,ax" / "push <garbage>" / "push ax" / "call ltof") - its code table asks
 # for a register pair starting at AX. Golden lines 224 on are that
 # statement and the rest of the function. See docs/DEVLOG.md's "The
-# round-5 fltprobe goldens".
+# round-5 fltprobe goldens". The real assembler refuses it too (real
+# hardware, 2026-10-07): "***ERROR*** syntax error, line 229" (four times),
+# "..., line 231" (twice), "p19_open3.s: 3 errors.", a 0-byte object -
+# fltprobe/p19_as.log.
 fltprobe/p19_open3 223

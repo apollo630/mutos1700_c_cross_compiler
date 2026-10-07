@@ -120,7 +120,9 @@ apart (category 7).
 from some line on - the real compiler's own broken output, kept as it
 came back. At present one: `fltprobe/p19_open3`, whose `d = (d * e) + u`
 has 118 bytes of libc's `_ctype_` table where a register name belongs
-(the real `c1` asks for the register pair starting at AX). For a listed
+(the real `c1` asks for the register pair starting at AX); the real `as`
+refuses those lines too (`***ERROR*** syntax error`,
+`fltprobe/p19_as.log`), so no MUTOS 1700 binary can contain them. For a listed
 file `run_goldens.sh` requires `mutos_c1` to refuse it and its output up
 to the refusal to be exactly the golden's leading valid lines (category
 8, not a failure); `../mutos_as/assemble_cc_goldens.sh` requires

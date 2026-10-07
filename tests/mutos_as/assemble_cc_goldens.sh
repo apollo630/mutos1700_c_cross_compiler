@@ -13,7 +13,8 @@
 #
 # A golden listed in tests/mutos_cc/invalid_goldens.txt ends in the real
 # compiler's own invalid output (a register name that is not one): it is
-# expected NOT to assemble, and counted apart - a listed file that does
+# expected NOT to assemble - the real assembler refuses it as well
+# (tests/mutos_cc/fltprobe/p19_as.log) - and counted apart; a listed file that does
 # assemble is reported as a failure, the list being out of date.
 #
 # Usage (from anywhere):
