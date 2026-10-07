@@ -623,6 +623,22 @@ the 62/62 figure above - see "Next up" below and `docs/DEVLOG.md`'s
 Milestone 4 section.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
 
+### Real-hardware finding: the real `as` on `p19_open3.s` (2026-10-07)
+
+The real assembler refuses the real compiler's invalid lines too. On
+MUTOS, `as -o p19.o p19_open3.s` prints `***ERROR*** syntax error, line
+229` four times and `***ERROR*** syntax error, line 231` twice, then
+`p19_open3.s: 3 errors.`, and leaves a 0-byte `p19.o`
+(`tests/mutos_cc/fltprobe/p19_as.log`). No MUTOS 1700 binary can contain
+that code. `mutos_as`'s refusal of the same two lines ("could not classify
+operands", exit status 1, no object) and `p19_open3`'s place in
+`invalid_goldens.txt` are confirmed; nothing in the code changes. Still
+unrecorded: the real `as`'s exit status for a syntax error (4 for its
+floating overflow abort). A first attempt, run with `> p19_as.log 2>&1`,
+left the log empty, even the `echo` appended after it, and that is
+unexplained (the disk was not full). The transcript was copied from the
+screen.
+
 ### `mutos_c0`/`mutos_c1`: verified this session (the round-8 `fltprobe` goldens - 5/5; every frame size settled, the call's own value deciding an argument store's pop, the rest of round 7's inferences and refusals)
 
 **62/62 corpus files, 36/37 `fltprobe` files and `11_kernel/01_delay`
@@ -888,7 +904,8 @@ fltprobe goldens".
   `mutos_c1` refuses that shape for good; `tests/mutos_cc/
   invalid_goldens.txt` lists the golden, `run_goldens.sh` checks it up to
   the line before (category 8) and `assemble_cc_goldens.sh` expects
-  `mutos_as` to refuse it.
+  `mutos_as` to refuse it. The real `as` refuses it too (2026-10-07, see
+  "Real-hardware finding: the real `as` on `p19_open3.s`" above).
 - **Silent miscompiles found testing `long`, each refused or fixed** (no
   golden involved): two long variables compared (`l > m` compared the high
   words only), a long tested for truth (`if (l)`, `!l`, `l && ...`, `l ?
@@ -3362,9 +3379,7 @@ is now fully covered (62/62). In order:
    (on purpose, like `p28`: which store an assignment passed as a floating
    argument gets under a nested call, an int function, an unused call of
    two such arguments, a float target - its `cc -S` is expected to report
-   errors, `make` goes on). If convenient, also `as p19_open3.s` on MUTOS:
-   what the real assembler makes of its compiler's invalid lines 229/231.
-   Rounds 1 to 8 are byte-exact (`p19` to line 223, `p21` and `p28` with
+   errors, `make` goes on). Rounds 1 to 8 are byte-exact (`p19` to line 223, `p21` and `p28` with
    their messages) - see the sections above and
    `tests/mutos_cc/fltprobe/README.md`.
 2. **Globals beyond `07_scope`**, each with kernel evidence (see

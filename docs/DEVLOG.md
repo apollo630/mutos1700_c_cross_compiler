@@ -6999,7 +6999,8 @@ LTOF(ITOL)); in AX context (after a computed `*`, `/` or call) the code
 table asks for the register pair starting at AX, and the register-name
 table has no entry after AX. `mutos_as` stops at line 229 ("could not
 classify operands"); whether the real `as` assembles it is not known
-(asked in `STATUS.md`'s "Next up"). There is nothing meaningful to
+(asked in `STATUS.md`'s "Next up"; settled 2026-10-07: it does not, see
+"The real assembler on `p19_open3.s`" below). There is nothing meaningful to
 reproduce: `mutos_c1` refuses an unsigned converted after a computed
 operand, with a diagnostic that says why, for good.
 
@@ -7649,6 +7650,74 @@ every one compiled gives the host C compiler's value; the round-9 probes
 with their refused statements taken out give theirs (`p34` 178, `p35`
 189, `p36` 124). `make check-libcatof` not run (`unicorn` is not installed
 in this sandbox); `c1_fltdec.c` is unchanged.
+
+### The real assembler on `p19_open3.s` (real-hardware finding, 2026-10-07)
+
+Round 5 left one question open. The real compiler's `d = (d * e) + u`
+writes 118 bytes of libc's `_ctype_` table where a register name belongs
+(golden lines 229, `mov <garbage>,ax`, and 231, `push <garbage>`). Would
+the real assembler accept that? If it did, `mutos_as` would have to
+reproduce whatever it made of the bytes. If it did not, no MUTOS 1700
+binary can ever have contained the code.
+
+The bytes are libc's `_ctype_` class table from the `'\n'` entry on (see
+"The round-5 fltprobe goldens"). Read as text (`od -c` of line 229), they
+are mostly control characters (`\b`, `020`, `004`, `001`, `002`), plus
+runs of spaces and the letters `AAAAAA` and `BBBBBB`, between `mov\t` and
+`,ax`.
+
+The run on MUTOS, in `fltprobe` (`tests/mutos_cc/fltprobe/p19_as.log`):
+
+```
+# as -o p19.o p19_open3.s
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 229
+***ERROR*** syntax error, line 231
+***ERROR*** syntax error, line 231
+p19_open3.s: 3 errors.
+# ls -l p19.o
+-rw-r--r-- 1 root     other          0 Oct  7 16:47 p19.o
+```
+
+- **Refused.** The real `as` rejects both lines and writes no code; the
+  output file it created stays at 0 bytes (in both runs). No other line
+  draws a message. That covers the 223 lines `invalid_goldens.txt` counts
+  as valid, and also the ordinary lines of the statement and the function
+  around 229 and 231 (`mov ax,*-36.(bp)`, `sub ax,ax`, `push ax`, `call
+  ltof`, ...).
+- **Message form.** The real format is `***ERROR*** <text>, line <n>`,
+  followed by a summary `<file>: <n> errors.`. This is the same `***ERROR***`
+  prefix as the floating overflow abort (`***ERROR*** floating point
+  over/under flow- assembly aborted`, `tests/mutos_as/float_open/`).
+  A syntax error does not abort, though: the assembler goes on to line 231
+  and prints the summary at the end. There are six messages but the count
+  is 3. How the real `as` counts is not known; one message per token it
+  trips over is only a guess. Nothing here depends on it.
+- **`mutos_as`** refuses the same two lines: `error: could not classify
+  operands at line 229` and `... 231`, then `2 error(s) in Pass 1,
+  aborting before Pass 2`, exit status 1, and no object file at all. As
+  with its other messages, it does not copy the real text. The 0-byte
+  object the real `as` leaves behind is not reproduced either; no golden
+  or test depends on a failed run's output file.
+- **Not recorded:** the real `as`'s exit status for a syntax error. Its
+  floating overflow abort exits with 4.
+- **A process note for future real-hardware runs.** The first attempt was
+  `as -o p19.o p19_open3.s > p19_as.log 2>&1 ; echo "exit=$?" >>
+  p19_as.log` followed by `ls -l p19.o a.out >> p19_as.log 2>&1`. It left
+  `p19_as.log` at 0 bytes: no message, not even the `echo`'s line, not
+  even `ls`'s. `df` showed the disks 13 % and 22 % used, so it was not a
+  full file system. The cause is unexplained. The round logs, written
+  with `2>&1 | tee`, have always come back complete, so `| tee` is the
+  form to ask for. When a log comes back empty, copying from the screen
+  works, as it did here.
+
+Consequence: none for the code. `p19_open3` stays in `invalid_goldens.txt`
+(category 8), `mutos_c1` keeps refusing an unsigned converted after a
+computed operand, and `assemble_cc_goldens.sh` keeps requiring `mutos_as`
+to refuse the golden. That is now confirmed real-assembler behaviour, not
+just this project's choice.
 
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 

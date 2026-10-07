@@ -42,7 +42,9 @@ not compared), and skips the others.
   converted after a computed `*`) has 118 bytes of libc's `_ctype_` table
   where a register name should be, which `mutos_c1` refuses on purpose -
   see `../invalid_goldens.txt` and `../../../docs/DEVLOG.md`'s "The
-  round-5 fltprobe goldens".
+  round-5 fltprobe goldens". The real `as` refuses those lines as well
+  (`***ERROR*** syntax error`, `p19_as.log`, see "The real assembler on
+  `p19_open3.s`" below).
 - **Round 6** (goldens 2026-10-03, commit `2540271`): floating lvalues
   beyond variables (`p20_fltlv` - struct members, pointers to double,
   elements as compound-assignment targets, `&d`), floating expression
@@ -201,8 +203,16 @@ see `../README.md`), the commands are the ones `round8.log` shows - `cc -S
 p34_long5.c`, then `/lib/cpp -P p34_long5.c > p34_long5.i; /lib/c0
 p34_long5.i p34_long5.1 p34_long5.2` - for each file.
 
-One more question for the real toolchain, if convenient: `as p19_open3.s`
-- what the real assembler makes of the real compiler's invalid lines 229
-and 231 (`mutos_as` stops with "could not classify operands"). An error
-there settles that no MUTOS 1700 binary could ever have contained this
-code.
+## The real assembler on `p19_open3.s`
+
+Settled on real hardware on 2026-10-07: `as -o p19.o p19_open3.s` prints
+`***ERROR*** syntax error, line 229` four times and `***ERROR*** syntax
+error, line 231` twice, then `p19_open3.s: 3 errors.`, and leaves a `p19.o`
+of 0 bytes. `p19_as.log` holds the terminal transcript. It was copied from
+the screen because a first run redirected with `> p19_as.log 2>&1` left the
+file empty. The real compiler's invalid lines are invalid for the real
+assembler too, so no MUTOS 1700 binary can have contained this code.
+`mutos_as` refuses the same two lines ("could not classify operands at
+line 229" and "... 231", exit status 1, no object written), and that is
+the right behaviour. It does not copy the real message texts, which is the
+same choice made for its other messages.
