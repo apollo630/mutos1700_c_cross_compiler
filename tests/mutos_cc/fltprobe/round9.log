@@ -23,4 +23,4 @@ cc -S p37_fltstk3.c
 100: floating point stack underflow
 101: Floating point stack underflow
 *** Error code 1 (ignored)
-/lib/cpp -P p37_fltstk3.c > p37_fltstk3.i; /lib/c0 p37_fltstk3.i
+/lib/cpp -P p37_fltstk3.c > p37_fltstk3.i; /lib/c0 p37_fltstk3.i p37_fltstk3.1 p37_fltstk3.2
