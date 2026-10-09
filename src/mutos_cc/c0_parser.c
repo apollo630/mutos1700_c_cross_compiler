@@ -4795,12 +4795,22 @@ static void parse_assign_stmt(Parser *p, FILE *t1)
     } else if (assign_type == TY_CHAR) {
         c0_error_at(line, "a compound assignment to a 'char' is not yet "
                           "supported - see src/mutos_cc/README.md");
-    } else if (assign_type == TY_LONG && rhs.type != TY_LONG &&
-               optag != OP_ASLSH && optag != OP_ASRSH) {
+    } else if (assign_type == TY_LONG && (optag == OP_ASLSH ||
+                                          optag == OP_ASRSH) &&
+               (rhs.type == TY_LONG ||
+                (!rhs.is_const && rhs.type == TY_CHAR))) {
+        /* A long shifted in place by a long or a char count: no golden (a
+         * binary shift by one is refused the same way - parse_shift()). */
+        c0_error_at(line, "a shift of a 'long' by a 'char' or by a 'long' "
+                          "count is not yet supported - see "
+                          "src/mutos_cc/README.md");
+    } else if (assign_type == TY_LONG && rhs.type != TY_LONG) {
         /* An int-class right-hand side of a compound assignment to a
          * 'long': converted to the target's type, as for '=' -
          * fltprobe/p19_open3.1.golden's "l += i" (NAME l, NAME i, ITOL,
-         * ASPLUS(LONG)); a shift count stays an int. */
+         * ASPLUS(LONG)). A shift count too, as for a binary shift -
+         * fltprobe/p34_long5.1.golden's "l <<= 3" (NAME l, CON 3, ITOL(6),
+         * ASLSH(6)) and "l >>= 2" (ASRSH). */
         emit_itol(t1, rhs, 0, line);
     } else if (rhs.type == TY_LONG && assign_type != TY_LONG) {
         /* v7 converts the right operand to the target's type first (as

@@ -43,3 +43,31 @@ fltprobe/p28_fltstk 65: Floating point stack underflow
 fltprobe/p28_fltstk 73: floating point stack underflow
 fltprobe/p28_fltstk 79: Floating point stack underflow
 fltprobe/p28_fltstk 79: Floating point stack underflow
+#
+# fltprobe/p37_fltstk3: the store an assignment passed as a floating
+# argument gets, after round 8 (round 9, 2026-10-08): it pops when the
+# call's value goes nowhere - an int function's too ("ihalf(d = 3.0);",
+# line 68) - or straight into the statement's floating store (a float's,
+# line 100), or when that call is itself an argument of such a call ("f =
+# half(half(d = 3.0));", line 43). An argument that is neither an
+# assignment nor a call's result is pushed WITH a check, the upper-case
+# message - "e = two(d = 1.0, 2.0);": the 2.0's push is line 84's first
+# message. The model is never reset (p28): seventeen messages, every one
+# reproduced.
+fltprobe/p37_fltstk3 43: floating point stack underflow
+fltprobe/p37_fltstk3 44: Floating point stack underflow
+fltprobe/p37_fltstk3 51: floating point stack underflow
+fltprobe/p37_fltstk3 52: Floating point stack underflow
+fltprobe/p37_fltstk3 68: floating point stack underflow
+fltprobe/p37_fltstk3 69: Floating point stack underflow
+fltprobe/p37_fltstk3 76: floating point stack underflow
+fltprobe/p37_fltstk3 76: floating point stack underflow
+fltprobe/p37_fltstk3 77: Floating point stack underflow
+fltprobe/p37_fltstk3 84: Floating point stack underflow
+fltprobe/p37_fltstk3 84: floating point stack underflow
+fltprobe/p37_fltstk3 84: floating point stack underflow
+fltprobe/p37_fltstk3 85: Floating point stack underflow
+fltprobe/p37_fltstk3 92: Floating point stack underflow
+fltprobe/p37_fltstk3 100: floating point stack underflow
+fltprobe/p37_fltstk3 100: floating point stack underflow
+fltprobe/p37_fltstk3 101: Floating point stack underflow

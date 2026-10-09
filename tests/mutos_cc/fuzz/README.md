@@ -38,7 +38,8 @@ call libc, or use a jump table or a function's address) returns the
 value its C source computes,
 including `02_long/01_addsub` (11009) and `03_retval` (-31067) since
 `adc`/`sbb` (2026-10-03), `02_long/02_muldiv` (24) since `libc.a`'s
-`long` helpers `lmul`/`ldiv`/`lrem`/`almul` are modelled (2026-10-04,
+`long` helpers `lmul`/`ldiv`/`lrem`/`almul` are modelled (2026-10-04 - `aldiv`/`alrem`
+since 2026-10-08,
 with `fdup`, `neg` and a long shifted through the carry - `rcl`/`rcr`),
 both `08_float` files (7 and 3 - floating code runs against a model of
 `libc.a`'s software floating-point runtime, see `x86sim.py`'s
@@ -52,14 +53,15 @@ initialized char array), and `04_funcs/05_staticvar` and all three
 Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
 `16.+_ga`-style addresses were added for them) and returns its program's
 value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e` -
-and so do 34 of the 37 `fltprobe` goldens of rounds 1 to 8 (round 7's
+and so do 37 of the 41 `fltprobe` goldens of rounds 1 to 9 (round 7's
 `p24` 174, `p25` 153, `p26` 238, `p27` 24 since `loop .-4` - a long shifted
 by 3 or more - and the carry of `neg` - `sbb di,*0` after a long's
 negation - are modelled, 2026-10-04; round 8's `p29` 50, `p30` 9, `p31`
 140 - with `jz .+8`, a long shifted by a variable count that may be 0 -
-`p32` 284 and `p33` 82, 2026-10-07): `p19_open3`
-is invalid assembly from line 229 on, and `p21_fltexp` and `p28_fltstk`
-stop with "'fstdp' with an empty floating-point stack" where the real
+`p32` 284 and `p33` 82, 2026-10-07; round 9's `p34` 248 - with `aldiv` -
+`p35` 856 and `p36` 133, 2026-10-08): `p19_open3`
+is invalid assembly from line 229 on, and `p21_fltexp`, `p28_fltstk` and
+`p37_fltstk3` stop with "'fstdp' with an empty floating-point stack" where the real
 compiler's own code pops its floating-point stack twice (`half(d = 3.0)` -
 the compiler reported it too); with that one store corrected `p21`
 returns 60.

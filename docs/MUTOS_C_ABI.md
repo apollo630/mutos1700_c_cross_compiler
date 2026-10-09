@@ -659,9 +659,15 @@ it; the note says so where that's the case.
 - [x] Long multiply/divide/modulo: calls to runtime helpers (§1.8). Implemented
       and verified as the real compiler's output shows it (`02_long/02_muldiv`):
       `call lmul` / `ldiv` / `lrem` with both operands pushed flat, low word then
-      high word, right operand first, the result in `DX:AX` - simpler than §1.8's
-      pointer-first `almul`/`aldiv`/`alrem` convention, which this compiled code
-      does not use.
+      high word, right operand first, the result in `DX:AX` (only its low word
+      used, straight from `AX`, under an `(int)` cast - `fltprobe/p34_long5`'s
+      `(int) (l * 2)` -> `call lmul` / `add sp,*8.` / `mov x,ax`). The compound
+      assignments use §1.8's pointer-first convention: the right operand's two
+      words pushed (low word first), then the target's address, `add sp,*6.`
+      after the call - `fltprobe/p22_long2`'s `l *= i` (`call almul`, the int
+      widened in `DX:AX` and pushed) and `p34_long5`'s `l /= m` (`mov di,m+2` /
+      `push di` / `mov di,m` / `push di` / `lea di,l` / `push di` / `call
+      aldiv`); `%=` (`alrem`) is inferred the same way.
 - [ ] `crt0` (own object, real or reimplemented) must: read `argc`/`argv` off the
       initial `sp`, scan for the NULL `argv` terminator, set `_environ`, call `_main`
       with `(argc, argv, envp)` per the standard ABI, then call `exit()` (not raw

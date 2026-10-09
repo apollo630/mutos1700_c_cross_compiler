@@ -23,7 +23,8 @@ own code for an assignment passed as a floating argument does it -
 fltprobe/p21_fltexp),
 dmath.o's "fac" (a double function's result) and ".float" data, in
 MUTOS's own floating format (see mbf_encode()), and the 'long' helpers
-"lmul", "ldiv", "lrem" and "almul" (see LONG_RUNTIME), a long shifted a
+"lmul", "ldiv", "lrem", "almul", "aldiv" and "alrem" (see LONG_RUNTIME),
+a long shifted a
 bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1"),
 also CX times ("loop .-4" back over the pair) or by a variable count
 ("or cx,cx" / "jz .+8" past the pair and the loop when CX is 0), and
@@ -138,14 +139,14 @@ FP_RUNTIME = {
 }
 
 
-# libc.a's 'long' helpers mutos_c1 calls (lmul.o, ldiv.o, lrem.o, almul.o):
-# their operands on the machine stack - each long pushed low word first,
-# the right operand first, so at the call [sp] is the left operand's high
-# word - and the result in DX:AX; "almul" (a long variable *= a long)
-# takes the target's address on top and the right operand below it and
-# multiplies the target in place. C semantics: products wrap at 32 bits,
-# quotients truncate toward zero.
-LONG_RUNTIME = {"lmul", "ldiv", "lrem", "almul"}
+# libc.a's 'long' helpers mutos_c1 calls (lmul.o, ldiv.o, lrem.o, almul.o,
+# aldiv.o, alrem.o): their operands on the machine stack - each long pushed
+# low word first, the right operand first, so at the call [sp] is the left
+# operand's high word - and the result in DX:AX; "almul", "aldiv" and
+# "alrem" (a long variable *=, /=, %= a long) take the target's address on
+# top and the right operand below it and compute into the target in place.
+# C semantics: products wrap at 32 bits, quotients truncate toward zero.
+LONG_RUNTIME = {"lmul", "ldiv", "lrem", "almul", "aldiv", "alrem"}
 
 
 def s32(v):
@@ -462,12 +463,19 @@ class Sim:
         sect. 1.6)."""
         return s32((self._rd(addr) << 16) | self._rd((addr + 2) & M16))
 
+    def _long_div(self, name, a, b):
+        if b == 0:
+            raise SimError("'long' division by zero")
+        q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
+        return s32(q if name in ("ldiv", "aldiv") else a - q * b)
+
     def _long_call(self, name):
         sp = self.regs["sp"]
-        if name == "almul":
+        if name in ("almul", "aldiv", "alrem"):
             target = self._rd(sp)
             r = self._long_at((sp + 2) & M16)
-            v = s32(self._long_at(target) * r)
+            t = self._long_at(target)
+            v = s32(t * r) if name == "almul" else self._long_div(name, t, r)
             self._wr(target, (v >> 16) & M16)
             self._wr((target + 2) & M16, v & M16)
         else:
@@ -476,10 +484,7 @@ class Sim:
             if name == "lmul":
                 v = s32(a * b)
             else:
-                if b == 0:
-                    raise SimError("'long' division by zero")
-                q = abs(a) // abs(b) * (1 if (a < 0) == (b < 0) else -1)
-                v = s32(q if name == "ldiv" else a - q * b)
+                v = self._long_div(name, a, b)
         for r in ("bx", "cx"):
             self.regs[r] = 0xDEAD
         self.regs["ax"] = v & M16
