@@ -290,6 +290,27 @@ words unsigned, as the original compiler's long comparisons are \(en
 or, as a constant, pushed and popped into BX and CX like a
 .B long
 constant.
+.BR long " *, /"
+and
+.B %
+call the original runtime helpers
+.BR lmul ,
+.B ldiv
+and
+.B lrem
+with both operands pushed; the compound assignments
+.BR *= ,
+.B /=
+and
+.B %=
+into a
+.B long
+variable call
+.BR almul ,
+.B aldiv
+and
+.B alrem
+with the right operand pushed and the target's address on top.
 An expression whose evaluation would overwrite a
 register still holding a pending value \(en which the real compiler
 handles by spilling or reordering in ways not yet reverse-engineered
@@ -331,6 +352,21 @@ immediately \(en
 does not attempt to produce best-effort assembly output for input it
 cannot fully handle (what it wrote before the refusal is left in the
 output file, unfinished).
+.PP
+The original compiler counts its floating-point stack at compile time
+and reports a value popped below the bottom \(en
+.RI \(lq line ": floating point stack underflow\(rq"
+for a store,
+.RI \(lq line ": Floating point stack underflow\(rq"
+for a conversion, an operator or a checked argument push \(en while
+still writing the whole
+.BR .s ;
+its code for an assignment passed as a floating call argument can pop
+the value twice.
+.B mutos_c1
+writes the same code, prints the same messages on standard error
+(the model is one per file, never reset) and exits with status 1 after
+writing its output in full.
 .SH BUGS
 .B mutos_cc,
 the driver that would normally chain

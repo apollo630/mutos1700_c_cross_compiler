@@ -7724,6 +7724,153 @@ computed operand, and `assemble_cc_goldens.sh` keeps requiring `mutos_as`
 to refuse the golden. That is now confirmed real-assembler behaviour, not
 just this project's choice.
 
+### The round-9 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-09)
+
+The four round-9 programs (`p34_long5`, `p35_elem6`, `p36_fltinf4`,
+`p37_fltstk3`) came back in commits `ee6c08e` (2026-10-07) and `f03faae`
+(2026-10-08, completing the set), all four kinds of file, with
+`round9.log`: seventeen messages from `cc -S p37_fltstk3.c` (`*** Error code
+1 (ignored)`, as planned), none from the other three. Before this session
+`mutos_c0` wrote `p34`'s `l <<= 3` without the count's `ITOL`, `mutos_c1`
+refused `p35` and `p36` and gave `p37` two wrong stores and wrong messages;
+now all four are byte-exact at every stage, `p37` with all seventeen
+messages and exit status 1 (`tests/mutos_cc/c1_errors.txt`), and the 96
+files byte-exact before are unchanged.
+
+**1. `long` shapes** (`p34_long5`). Matched as inferred: `x = l--` (`mov
+di,l+2` / `dec l+2` - round 8's postfix shape), `l = l >> i`, `m = i * m`,
+`l *= 3`, `l = l + m * 2`, `l = l * m`. Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `x = ++l` | `add *-6.(bp),*1.` / `adc *-8.(bp),*0` / `mov di,*-6.(bp)` / `mov *-16.(bp),di` - the WHOLE long incremented in place, as a statement `++l` is, then its low word read. `mutos_c1` had incremented the low word as an int, as round 8 showed for the postfix `x = l++`. It is what v7's `sreorder()` does with a prefix operator on a NAME (compiled for its effect, the NAME put in its place - `LTOI` of the NAME is then its low word); v7's own `reorder()` does not reach a node under an `LTOI`, and its `unoptim()` distributes `LTOI` into no `++` at all, so the MUTOS compiler differs from v7 in both directions here (`x = l++` distributed, `x = ++l` reordered). `x = --l` the same with `sub`/`sbb` |
+| `l += -5`, `l -= -3` | `mov si,*-5.` / `mov di,*-1.` / `add *-6.(bp),si` / `adc *-8.(bp),di` (`sub`/`sbb`) - the negative int constant widened is an LCON (v7's `unoptim()`, its `ITOL` case) and is loaded as two numbers, as `l += 70000` is; `mutos_c1` had widened it with `cwd` |
+| `l = -i` | `mov ax,*-14.(bp)` / `neg ax` / `cwd` / `mov di,dx` / `mov si,ax` - negated in AX, where `cwd` needs it (`d = -i` converted to floating stays `neg di` - p21) |
+| `l <<= 3`, `l >>= 2` | `mov si,l+2` / `mov di,l` / `mov cx,*3.` / `sal si,*1` / `rcl di,*1` / `loop .-4` / `mov l,di` / `mov l+2,si` - computed in DI:SI and stored back HIGH word first; `>>= 2` is `mov cx,*2.` / `sar di,*1` / `rcr si,*1` / `loop .-4` - the count of 2 looped too, where `l >> 2` repeats the pair (p22). `mutos_c0` now widens the count (`CON 3`, `ITOL`, `ASLSH(6)`), as for a binary shift; a char or long count is refused |
+| `l /= m` | `mov di,m+2` / `push di` / `mov di,m` / `push di` / `lea di,l` / `push di` / `call aldiv` / `add sp,*6.` - `l *= i`'s `almul` shape with a long divisor pushed through DI (`gen_long_asop_call()`; `%=` and `alrem` inferred the same way) |
+| `x = (int) (l * 2)` | ... `call lmul` / `add sp,*8.` / `mov *-16.(bp),ax` - only the low word used, straight from AX (`dxax_result()`) |
+| `l = l - m - 1` | `mov si,l+2` / `mov di,l` / `sub si,m+2` / `sbb di,m` / `add si,*-1.` / `adc di,*-1.` - the computed long plus an LCON, two immediates as for `l - 2` (a non-negative int constant widened has another template - still refused) |
+| `l = 100000 - l` | `mov si,#-31072.` / `mov di,*1.` / `sub si,*-6.(bp)` / `sbb di,*-8.(bp)` - the constant loaded as for `l += 70000`, the variable subtracted from memory |
+
+**2. Int shapes** (`p35_elem6`). Matched as inferred: `*ip -= y`, `*ip |=
+b[i]`, `*ip &= x + 1`, `*ip += f(1)`, `b[i] += f(1)`, `x += y * 2`, `x -=
+b[i]`, `x &= b[i] + 1`, `x = x + f(1) + y`, `x = f(1) + g(2) + y + f(3)`, `x
+= f(1) + c / d`, `x = f(1) + c % d` (the remainder pushed from DX), `x = c /
+d + c / y`. Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `x = c / d + f(2)` | `mov ax,c` / `cwd` / `idiv d` / `push ax` / [f(2)] / `pop bx` / `add ax,bx` - the quotient first and pushed: `acommute()` orders by degree, the call (10) on the LEFT, so cr40's `%n,n` pushes the quotient as the right operand (`mutos_c1` had called first). `is_callsumx()`, `ORD_SPILLX` |
+| `x = (y > 2) + (y < 9) * 2 + y` | [y > 2 into DI] / `cmp y,*9.` / `blt` / `mov si,*0.` / ... / `mov si,*1.` / `sal si,*1` / `add di,si` / `add di,y` - the left comparison into DI, the right one (a variable compared with a constant, degree 1) into SI (`%n,e`), its multiple shifted there; one constant multiple leaves `distrib()` nothing to factor. `mutos_c1` had pushed the right one. `is_rele()`, `ORD_RELE`, `SEG_MATDI` |
+| `x = (y > 2) + (x < 3)` | the same without the shift: `L10007:add di,si` |
+| `x = c % d + c / d` | [c / d] / `push ax` / [c % d: `idiv`] / `pop bx` / `add dx,bx` / `mov x,dx` - the right operand first as for two quotients, the sum formed in DX, where the remainder is |
+| `x = c * d + f(1)` | [f(1)] / `mov di,ax` / `mov ax,c` / `imul d` / `add di,ax` / `mov x,di` - the call first (its degree), moved into DI, the product computed into AX after it (`%n,e`: the product of two variables is easy for `dcalc()`). `ORD_LEFTDIX` |
+| `x = f(1) - g(2)` | [g(2)] / `push ax` / [f(1)] / `pop bx` / `sub ax,bx` - `%n,n` as for a sum of calls (`is_hardsub()`) |
+| `x = f(1) * g(2)` | [g(2)] / `push ax` / [f(1)] / `mov ax,ax` / `pop cx` / `imul cx` - 05_matmul's spilled product, the call's own value "moved" into AX (`is_calltimes()`) |
+| `x = b[i] + f(1)` | `lea di,b` / `mov si,i` / `sal si,*1` / `add di,si` / `push di` / [f(1)] / `pop bx` / `add ax,(bx)` - the call left by degree, the element the right operand at offset 0: its address pushed first (`is_pushaddr()`'s `%n,nw*`), added to AX from memory. `ORD_PUSHADDRX` |
+| `x = f(1) + g(2) * 3` | [f(1)] / `push ax` / [g(2)] / `mov ax,ax` / `mov cx,*3.` / `imul cx` / `pop bx` / `add ax,bx` - the product (it makes a call) the left operand, the call pushed |
+
+**3. Floating shapes** (`p36_fltinf4`). Matched as inferred: `e = (q->x *=
+2.0)`, `e = (q->x *= d + e)`, `e = (a[i] *= 2.0)`, `e = f--`, `d = --f`, `e =
+++d + 1.5`, `e = 10.0 - --d`, `e = ++d / 4.0`, `e = ++d * ++e`, `e = ++f *
+2.0`, `e = -(++d)`, `e = d * (e = 2.0)`, `e = (d = 2.0) * 3.0`. Corrected and
+settled:
+
+| Source | Golden |
+|---|---|
+| `e = (a[i] += d)` | `fldd d` / `lea di,a` / ... / `add di,si` / `lea ax,(di)` / `\|` / `push ax` / `faddd` / `pop ax` / `fstd` - `d` loaded before the element's address, as `*=` does with a computed target (`mutos_c1` had loaded it after) |
+| `e = (d += 1.0) * 2.0` | `.data` / `L10028: .float 1.0` / `.text` / `fldd d` / `fadds L10028` / `fstdp d` / `.data` / `L10029: .float 2.0` / `.text` / `flds L10029` / `lea ax,d` / `fmuld` / `fstdp e` - `d += 1.0` done FIRST, as a statement (a pop), then `d` an operand like any variable: `sreorder()` takes `+=`/`-=` on a NAME as it takes a prefix `++` (`mutos_c1` had computed it in place, `fstd`). `is_fpreinc()`, `plan_fhoist()`, `SEG_FHOIST` |
+| `e = (q->y -= d)`, `e = (q->y /= d)` | `mov di,q` / `lea ax,*8.(di)` / `\|` / `push ax` / `fldd` / `fldd d` / `fsub` (`fdiv`) / `pop ax` / `fstd` - the target pushed and loaded first, the right operand loaded too, combined on the stack, stored without a pop (as `q->x /= e` as a statement, which pops) |
+| `e = d++ * 2.0` | `.data` / `L10034: .float 2.0` / `.text` / `.data` / `L10035: .float 1.0` / `.text` / `fldd d` / `fdup` / `fadds L10035` / `fstdp d` / `fmuls L10034` / `fstdp e` - the `++` (degree 2 - `optim()`'s default for a binary node) computed first, the `.float` 2.0 (degree 1) multiplied in from memory; both `.data` blocks first, the written constant numbered first |
+| `x = ++d > 2.0`, `if (++d > 2.0)` | [the increment, `fstdp d`] / `.data` / `L10036: .float 2.0` / `.text` / `flds L10036` / `fldd d` / `fcmp` / `sahf` / `blt` (`bge L4` for the `if`) - hoisted under a comparison too, the constant (degree 1) loaded first and the relation mirrored |
+
+**4. Which store an assignment passed as a floating argument gets, and
+which push the model checks** (`p37_fltstk3`). Round 8 (p30) had found
+that the store pops when the call's value goes nowhere or straight into
+the statement's floating store. `p37` adds:
+
+| `p37` | statement | store | messages |
+|---|---|---|---|
+| `f1` | `f = half(half(d = 3.0));` | `fstdp` (the inner call is an argument of a popping call) | 43, 44 |
+| `f2` | `e = half(d = 1.0) + half(e = 2.0);` | `fstd`, both | 51, 52 |
+| `f3` | `x = ihalf(d = 3.0);` (an int function) | `fstd` | - |
+| `f4` | `ihalf(d = 3.0);` | `fstdp` (an int call's value going nowhere) | 68, 69 |
+| `f5` | `two(d = 1.0, e = 2.0);` | `fstdp`, both | 76 (2), 77 |
+| `f6` | `e = two(d = 1.0, 2.0);` | `fstdp` | 84 (3), 85 |
+| `f7` | `return half(d = 3.0);` (an int function) | `fstd` | 92 |
+| `f8` | `g = half(d = 3.0);` (a float `g`) | `fstdp` | 100 (2), 101 |
+
+`plan_expression()` now marks the popping calls on the pre-scanned tree,
+whatever their type - the root call, the call stored by the statement's
+floating `ASSIGN`, and (walking down, postfix order backwards) every call
+that is an argument of a marked one - and their floating assignment
+arguments go into `argpop_end` as before. Line 84's three messages are in
+code order: the 2.0 is pushed first (`flds` / `sub sp,*8` / `mov ax,sp` /
+`fstdp` - "84: Floating point stack underflow", upper case), then the
+store into `d` ("floating", lower case) and its push (silent), the call,
+and the store into `e` ("floating"). So the push of an argument IS checked,
+with the upper-case message, unless the value pushed is an assignment's
+(p21, p28, p37's other lines) or a call's result (f1's inner `half()`):
+`push_fp_arg()` sets `fp_nocheck` to 1 for those, 2 otherwise, and
+`fp_track()` reports a checked push in upper case. All seventeen messages
+follow (the model, never reset, starts `f1` at 0 - `half`, `two` and
+`ihalf` are balanced, a double function's store into `fac` unchecked).
+
+**5. Tooling.** `x86sim.py` models `aldiv` and `alrem` (the target's
+address on top, the right operand below it, the result written through
+the address): 37 of the 41 `fltprobe` goldens run and return their C
+sources' values (`p34` 248, `p35` 856, `p36` 133; `p19`, `p21`, `p28` and
+`p37` as before - `p37` stops at its first double pop). `make
+check-libcatof` ran again (the Python module `unicorn` installed): 38 real
+constants, 8357 texts, 2000 operand pairs and 12,021 literals - 0
+differences.
+
+**6. Found by the fuzzer on the way.** A first run of the new orders
+against `f03faae` gave one regression and one internal error: `t = (((u =
+5, t) == x) + (y != x))` - two variables compared on the right of a sum of
+comparisons - went into SI after a value already in DI (refused by the
+register guard, where the old build pushed it and was right), and `x = (!(n++
+|| t) | ((x != i) + (s <= i)))` materialized the left comparison while DI
+held the `!`'s value (`internal:` error). `is_easyrel()` now takes only a
+variable compared with a constant - the one shape the golden shows - and
+`SEG_MATDI` refuses while DI holds another value or a register variable.
+After that: no regression, no output changed.
+
+**7. Round 10** (`make -f Makefile.mutos round10`): `p38_long6`,
+`p39_elem7` and `p40_fltinf5` - what `mutos_c1` now compiles by inference
+only (`l <<= 1`, `l <<= i`, `l += 5L`, `l /= i`, `l %= m`, `(int) (l / m)`,
+`(l + m) - 3`, `5L - l`, `m + -i`; the other written orders of round 9's
+call shapes, two remainders, a call minus a quotient, a comparison scaled
+by 4, `x - f(1)`, `(y > 2) + (x < y)`; a hoisted `+=` with a computed right
+operand or a member target, compared, `*=`/`/=` as operands, the values of
+`-=`/`/=`/`+=` through a pointer and into an element with computed right
+operands, postfix operands) and what it still refuses (`(l - m) + 3`, `5 -
+l`, `l * m * 2`, `l <<= 0`; `f(1) & b[i]`, `c * d + c * y`, `c * d - f(1)`,
+`f(1) + c * 3`, `(y > 2) - (x < 3)`, `f(1) + g(2) - f(3)`, `f(1) | g(2)`) -
+and `p41_fltstk4` (not a program to run: a variable, a sum and an int
+converted pushed as arguments, nested calls, a call's value multiplied,
+negated and compared, a constant argument of an unused call).
+
+**Verification.** `make test`: 100 files byte-exact at all four stages
+(62/62 corpus, 37 `fltprobe`, `11_kernel/01_delay`), `p19_open3` in
+category 8, `p21_fltexp`, `p28_fltstk` and `p37_fltstk3` in category 9 (2,
+12 and 17 messages, exit status 1, the `.s` byte-exact), 0 mismatches,
+zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 111/111
+compiler goldens assemble and `p19_open3`'s is refused as listed,
+`mutos_cpp` 5/5. Against the previous build (`f03faae`) over all 112
+golden inputs and the four round-10 probes: identical output but for the
+four round-9 files and the four new probes. `fuzz_c.py` against
+`f03faae`: 28,000 programs (seeds 1, 7 `--scope`, 3 scalars only, 21, 41
+`--scope`, 55 scalars only), 0 WRONG, 0 BAD, no regression, no program's
+output changed; 1,500 more (seed 31) through ASan/UBSan builds: 0 WRONG,
+0 BAD; ASan/UBSan builds over the 112 golden inputs, the round-10 probes
+and the hand-written programs: no reports, output identical. Hand-written
+programs (`h1`..`h5`: every long, call-order, comparison-sum and floating
+shape added, and their neighbours): every one compiled gives the host C
+compiler's value (`h5`'s `f(1) & b[i]` refused); the round-10 probes with
+their refused statements taken out give theirs (`p38` 448, `p39` 785, `p40`
+143 - nothing refused there).
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
