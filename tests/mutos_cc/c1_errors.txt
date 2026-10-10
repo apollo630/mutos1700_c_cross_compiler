@@ -106,3 +106,38 @@ fltprobe/p41_fltstk4 100: floating point stack underflow
 fltprobe/p41_fltstk4 101: Floating point stack underflow
 fltprobe/p41_fltstk4 101: Floating point stack underflow
 fltprobe/p41_fltstk4 107: Floating point stack underflow
+#
+# fltprobe/p45_fltstk5: the model after round 10 (round 11, 2026-10-10):
+# one below the bottom from the start again (f1's "half(d = 3.0);"), then
+# which argument pushes are checked. A float variable's is, like a
+# double's (line 48: "Floating ..." for the push, "floating ..." for the
+# store); an element subscripted by a variable and a member through a
+# pointer are not (lines 62, 63: the store only) - loaded through an
+# address, v7's '*' node, not a NAME; a negation, a conversion and a
+# product are not (lines 74-76, computed first), nor a call's value
+# multiplied (line 85: the inner push of d checked, the outer not); of two
+# arguments a variable and a sum, the variable's is (line 95). The model
+# is never reset (p28): twenty-three messages, every one reproduced.
+fltprobe/p45_fltstk5 47: floating point stack underflow
+fltprobe/p45_fltstk5 48: Floating point stack underflow
+fltprobe/p45_fltstk5 48: floating point stack underflow
+fltprobe/p45_fltstk5 49: Floating point stack underflow
+fltprobe/p45_fltstk5 59: floating point stack underflow
+fltprobe/p45_fltstk5 60: floating point stack underflow
+fltprobe/p45_fltstk5 62: floating point stack underflow
+fltprobe/p45_fltstk5 63: floating point stack underflow
+fltprobe/p45_fltstk5 64: Floating point stack underflow
+fltprobe/p45_fltstk5 72: floating point stack underflow
+fltprobe/p45_fltstk5 74: floating point stack underflow
+fltprobe/p45_fltstk5 75: floating point stack underflow
+fltprobe/p45_fltstk5 76: floating point stack underflow
+fltprobe/p45_fltstk5 77: Floating point stack underflow
+fltprobe/p45_fltstk5 84: floating point stack underflow
+fltprobe/p45_fltstk5 85: Floating point stack underflow
+fltprobe/p45_fltstk5 85: floating point stack underflow
+fltprobe/p45_fltstk5 86: Floating point stack underflow
+fltprobe/p45_fltstk5 93: floating point stack underflow
+fltprobe/p45_fltstk5 94: floating point stack underflow
+fltprobe/p45_fltstk5 95: Floating point stack underflow
+fltprobe/p45_fltstk5 95: floating point stack underflow
+fltprobe/p45_fltstk5 96: Floating point stack underflow
