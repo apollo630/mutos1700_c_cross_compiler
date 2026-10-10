@@ -243,9 +243,11 @@ not compared), and skips the others.
   (`mov di,l+2` / `push di` / `mov di,l` / `push di`) - `mutos_c1` had
   pushed its high word alone, silently wrong code no golden had shown. See
   `../../../docs/DEVLOG.md`'s "The round-13 fltprobe goldens".
-- **Round 14** (`p54`..`p57`, goldens pending): round 13 corrected more than
-  a handful too (twelve, by seven rules), so a fourteenth round asks about
-  their neighbours: `long` (`p54_long10`), int (`p55_elem11`) and floating
+- **Round 14** (`p54`..`p57`, goldens pending - **not run for now**, decided
+  2026-10-10: the corrections per round do not fall, so the original `c1`
+  binary is read first, see `../../../STATUS.md`'s "Next up"): round 13
+  corrected more than a handful too (twelve, by seven rules), so a
+  fourteenth round asks about their neighbours: `long` (`p54_long10`), int (`p55_elem11`) and floating
   (`p56_fltinf9`) shapes, and, not a program to run, the stack model's top
   and which stores report in upper case (`p57_fltstk8`). Run them with
   `make -f Makefile.mutos round14`. See `../../../STATUS.md`'s "Next up".
@@ -355,6 +357,9 @@ the host's value when the refused ones are taken out (`p54` 701, `p55`
 686; `p56` compiles whole, 179).
 
 ## Generating the goldens
+
+(Round 14 is prepared but not to be run for now - see above. The
+instructions stay for when it is.)
 
 On MUTOS 1700, from inside this directory:
 

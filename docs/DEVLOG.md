@@ -8430,6 +8430,9 @@ and stored into a double - and negations of other hoists) and `p57_fltstk8`
 (not a program to run: an unhoisted compound store, an increment's and
 `fdup`'s pushes, below the bottom and at the top).
 
+(Prepared, then put aside before any hardware run - see "Plan after round
+13: read the original `c1`" below.)
+
 **Verification.** `make test`: 111 files byte-exact at all four stages
 (62/62 corpus, 48 `fltprobe`, `11_kernel/01_delay`), `p19_open3` in
 category 8, `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`,
@@ -8585,6 +8588,46 @@ of genuinely risk-free `-mv30` wins worth pursuing when Milestone 5 actually sta
 not `PREPARE`/`DISPOSE`.
 
 ---
+
+## Plan after round 13: read the original `c1` (2026-10-10)
+
+Asked whether `c1_gen.c` converges or circles, the honest answer was: both.
+For the shapes probed, the output is byte-exact (111 files, 0 mismatches,
+a 28,000-program differential fuzz without wrong code). But the shape
+*space* does not close: the corrections per round were 7, 7, 3, 11 and 12,
+round 13 refuted twelve of some sixty inferences, and each new rule widens
+the neighbourhood the next round has to ask about. Round 13 also exposed a
+silent wrong-code bug (a `long` variable passed as an argument pushed as its
+high word alone) that neither the goldens nor the fuzzer had shown. And
+`c1_gen.c` (~15k lines, one file) is a growing list of `is_*` predicates
+(`is_sube`, `is_lspillx`, `is_callbitx`, ...), each describing a shape that
+was seen, not the mechanism of v7's `optim()`/`acommute()`/`degree()`/
+`rcexpr()` and its code tables; the rule "a handful or fewer corrections
+ends the series" would not have been met.
+
+What closes the space is the real compiler's own tables. v7's `c1` is small
+C code plus tables (`efftab`, `regtab`, `cctab`, `sptab`, `instab`, whose
+templates are plain text); the obstacle named earlier for a faithful port -
+"the MUTOS tables are unknown" - disappears if the original `c1` binary is
+read: the tables are data structures that can be extracted without
+disassembling anything, and the few key functions can be compared with
+`v7/cc/c10.c`..`c13.c`. Decisions taken:
+
+1. **Round 14 is not run** (`p54`..`p57` stay in the tree, prepared). A
+   hardware run later is a check of what the tables predict, not a data
+   source.
+2. **First the binary**: bring `c1` (and `c0`, `as`, `ld`) from the hardware;
+   header and symbols; extract the tables; compare the key functions;
+   test the tables against the existing goldens. Only then decide whether
+   `c1_gen.c` becomes table-driven (step by step) or the tables serve as
+   a reference to correct it by. Risks, to be seen only with the file: a
+   stripped binary, another memory model or overlays, MUTOS-specific
+   deviations from v7 (registers, `long`, floating point).
+3. **Then `11_kernel`** (the project's purpose, and the best measure of
+   which shapes matter), with int division by a constant. Measuring how far
+   the nine kernel files get today needs no hardware and no binary.
+4. **Independent of the outcome**: split `c1_gen.c` into modules and add
+   tests for call arguments and `long` arguments.
 
 ## Recurring process lessons
 
