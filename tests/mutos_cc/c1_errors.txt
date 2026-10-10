@@ -141,3 +141,41 @@ fltprobe/p45_fltstk5 94: floating point stack underflow
 fltprobe/p45_fltstk5 95: Floating point stack underflow
 fltprobe/p45_fltstk5 95: floating point stack underflow
 fltprobe/p45_fltstk5 96: Floating point stack underflow
+#
+# fltprobe/p49_fltstk6: the model after round 11 (round 12, 2026-10-10):
+# one below the bottom from the start again (f1's "half(d = 3.0);"), then
+# the argument pushes of the operand kinds left. A file-scope double, a
+# constant-indexed element of a file-scope array and a local struct's
+# member are checked (lines 54, 55, 56: "Floating ..." for the push,
+# "floating ..." for the store) - NAMEs to v7's optim(), the address
+# folded - and so is a local static (line 66); a value through a pointer
+# variable ("*p", "p[1]") and a float element subscripted by a variable
+# are not (lines 81, 82, 83: the store only) - v7's '*' node; of two
+# arguments a member and an element, the member's is (line 96). All as
+# round 11 inferred. Twenty-six messages, every one reproduced.
+fltprobe/p49_fltstk6 51: floating point stack underflow
+fltprobe/p49_fltstk6 52: floating point stack underflow
+fltprobe/p49_fltstk6 53: floating point stack underflow
+fltprobe/p49_fltstk6 54: Floating point stack underflow
+fltprobe/p49_fltstk6 54: floating point stack underflow
+fltprobe/p49_fltstk6 55: Floating point stack underflow
+fltprobe/p49_fltstk6 55: floating point stack underflow
+fltprobe/p49_fltstk6 56: Floating point stack underflow
+fltprobe/p49_fltstk6 56: floating point stack underflow
+fltprobe/p49_fltstk6 57: Floating point stack underflow
+fltprobe/p49_fltstk6 65: floating point stack underflow
+fltprobe/p49_fltstk6 66: Floating point stack underflow
+fltprobe/p49_fltstk6 66: floating point stack underflow
+fltprobe/p49_fltstk6 67: Floating point stack underflow
+fltprobe/p49_fltstk6 77: floating point stack underflow
+fltprobe/p49_fltstk6 78: floating point stack underflow
+fltprobe/p49_fltstk6 79: floating point stack underflow
+fltprobe/p49_fltstk6 81: floating point stack underflow
+fltprobe/p49_fltstk6 82: floating point stack underflow
+fltprobe/p49_fltstk6 83: floating point stack underflow
+fltprobe/p49_fltstk6 84: Floating point stack underflow
+fltprobe/p49_fltstk6 94: floating point stack underflow
+fltprobe/p49_fltstk6 95: floating point stack underflow
+fltprobe/p49_fltstk6 96: Floating point stack underflow
+fltprobe/p49_fltstk6 96: floating point stack underflow
+fltprobe/p49_fltstk6 97: Floating point stack underflow

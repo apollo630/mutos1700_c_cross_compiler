@@ -142,11 +142,12 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
   its `README.md`) - round 1's nine files, the four each of rounds 2, 3,
-  6, 9, 10 and 11, the three each of rounds 4 and 5 and the five each of
-  rounds 7 and 8 all byte-exact (`p19_open3` up to the real compiler's own
-  invalid output, `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`
-  and `p45_fltstk5` together with the real compiler's own `c1` error
-  messages, see below), round 12's four (`p46`..`p49`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  6, 9, 10, 11 and 12, the three each of rounds 4 and 5 and the five each
+  of rounds 7 and 8 all byte-exact (`p19_open3` up to the real compiler's
+  own invalid output, `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`,
+  `p41_fltstk4`, `p45_fltstk5` and `p49_fltstk6` together with the real
+  compiler's own `c1` error messages, see below), round 13's four
+  (`p50`..`p53`) waiting for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -163,9 +164,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   never edited (at present `fltprobe/p21_fltexp`: "56: floating point
   stack underflow", "57: Floating point stack underflow" - its own code
   pops the floating-point stack twice - and `fltprobe/p28_fltstk`,
-  `p37_fltstk3`, `p41_fltstk4` and `p45_fltstk5`, twelve, seventeen,
-  twenty-three and twenty-three messages, the same wrong code on
-  purpose). `run_goldens.sh` requires
+  `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5` and `p49_fltstk6`, twelve,
+  seventeen, twenty-three, twenty-three and twenty-six messages, the same
+  wrong code on purpose). `run_goldens.sh` requires
   `mutos_c1` to print exactly those messages, exit with a nonzero status
   and write exactly the golden `.s` (its category 9).
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
@@ -583,8 +584,8 @@ scope and intent, not a snapshot of what's done.
   `STATUS.md`/`docs/DEVLOG.md`). `mutos_as` assembles that output
   (`.float`, `lea <reg>,<label>`), and linked with the real `crt0.o`/
   `libc.a` it runs: both goldens return their C sources' values under an
-  8086 emulator. Beyond the corpus, 48 of the 49 probes of
-  `tests/mutos_cc/fltprobe/`'s first eleven rounds are byte-exact against
+  8086 emulator. Beyond the corpus, 52 of the 53 probes of
+  `tests/mutos_cc/fltprobe/`'s first twelve rounds are byte-exact against
   their own real-hardware goldens (v7's operand order for every floating
   operator, constants of any value and their degree, floating globals and
   their initializers, pointers, members, elements, calls, conversions and
@@ -594,9 +595,9 @@ scope and intent, not a snapshot of what's done.
   comparisons, compound assignments into elements and through pointers
   and their values, v7's `distrib()` and `sreorder()`, which store an
   assignment passed as a floating argument gets, the `chkstk` threshold
-  `(98,100]` - `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`
-  and `p45_fltstk5` with the real compiler's own `c1` error messages), the
-  49th up to the real compiler's own invalid output; and
+  `(98,100]` - `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`,
+  `p45_fltstk5` and `p49_fltstk6` with the real compiler's own `c1` error
+  messages), the 53rd up to the real compiler's own invalid output; and
   `11_kernel/01_delay`, the first of the nine real kernel files.**
   Real `.c` → real `mutos_cpp` → `mutos_c0` → `mutos_c1` → `.s` matches every
   covered golden byte-for-byte (`tests/mutos_cc/run_goldens.sh`, also wired
@@ -720,9 +721,21 @@ scope and intent, not a snapshot of what's done.
     a pointer) is unchecked (`p45_fltstk5`: twenty-three messages); LTOI
     distributed over a long `+`/`-`, a divisor that makes a division or a
     call pushed first, hoists inside a hoisted `+=` left to right - see
-    "The round-11 fltprobe goldens". Round 12 (`p46`..`p49`) asks about
-    round 11's new inferences and is planned as the series' last; running
-    it is the first "Next up" in `STATUS.md`.
+    "The round-11 fltprobe goldens". Round 12 settled round 11's, eleven of
+    some fifty inferences corrected (by eight rules): an LTOI'd `i + (l -
+    m)` takes the difference first, an int `-` whose right operand is
+    easy loads its left one into DI first and computes the right one into
+    SI (v7's `%n,e` - `(int) (l - (m - l))`, `f(1) - (x < y)`), a
+    remainder plus a variable or constant stays in DX, every computed
+    divisor is pushed first (no `idiv di`), a call's product on the right
+    of a `-` is pushed, a hoisted `+=` that is an operand of a `+` hoists
+    its right operand right to left, and one hoisted from a comparison
+    with two hoists inside is stored without a pop (`fstd` - the real
+    compiler's own wrong code, unreported; `p49_fltstk6`: twenty-six
+    messages, all as inferred) - see "The round-12 fltprobe goldens".
+    Round 12 had been planned as the series' last unless it corrected
+    more than a handful, so round 13 (`p50`..`p53`) asks about those
+    rules' neighbours; running it is the first "Next up" in `STATUS.md`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete
