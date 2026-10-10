@@ -147,8 +147,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   compiler's own invalid output, `p21_fltexp`, `p28_fltstk`,
   `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`,
   `p52_fltinf8` and `p53_fltstk7` together with the real compiler's own
-  `c1` error messages, see below), round 14's four (`p54`..`p57`) waiting
-  for their goldens. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  `c1` error messages, see below), round 14's four (`p54`..`p57`) prepared
+  but not run on the hardware for now (see `STATUS.md`'s "Next up"). It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -753,8 +753,13 @@ scope and intent, not a snapshot of what's done.
     wrong - and the stack model's top (six values: `p52_fltinf8`'s
     twenty-two "Floating point stack overflow; simplify expression") -
     see "The round-13 fltprobe goldens". That is more than a handful
-    again, so round 14 (`p54`..`p57`) asks about the new rules'
-    neighbours; running it is the first "Next up" in `STATUS.md`.
+    again. Round 14 (`p54`..`p57`) is prepared, but **not run now**
+    (decided 2026-10-10): the corrections per round do not fall (7, 7, 3,
+    11, 12) and `c1_gen.c` has become a list of shapes, not v7's
+    mechanism. The first "Next up" in `STATUS.md` is therefore to read the
+    original `c1` binary - its code tables and the tree optimizer's key
+    functions - and to decide from that whether `c1_gen.c` becomes
+    table-driven; then growing coverage into `11_kernel`.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete

@@ -673,7 +673,8 @@ not planned ("Floating point stack overflow; simplify expression"). `.i`,
 gave `p52` four wrong stores, a wrong hoist order and none of its
 messages, and `p53` its `.s` with two messages in the wrong case. Of some
 sixty inferred shapes twelve were wrong, from seven rules - more than a
-handful again, so a round 14 follows. Full derivation in
+handful again; round 14 is prepared, but not run now - the original
+binaries come first (see "Next up"). Full derivation in
 `docs/DEVLOG.md`'s "The round-13 fltprobe goldens".
 
 - **`p50_long9`**: `x = (int) (l - (m + i))` adds m's low word to i (`mov
@@ -715,7 +716,7 @@ handful again, so a round 14 follows. Full derivation in
   in UPPER case - a compound assignment's or increment's store does, an
   assignment's in lower case (corrected: `fp_compound`).
 - **`tests/mutos_cc/fltprobe/` round 14** (`make -f Makefile.mutos
-  round14`): `p54_long10`, `p55_elem11`, `p56_fltinf9` (round 13's new
+  round14`; **not run now**, see "Next up"): `p54_long10`, `p55_elem11`, `p56_fltinf9` (round 13's new
   rules' neighbours, and the refusals left) and `p57_fltstk8` (on purpose:
   the model's top and upper-case stores, unhoisted).
 
@@ -3816,10 +3817,36 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **Run `tests/mutos_cc/fltprobe/`'s round 14 on real hardware** (`make
-   -f Makefile.mutos round14 2>&1 | tee round14.log` there, then `make
-   goldens` in `tests/mutos_cc` on the modern host - all four kinds of
-   file, and the log): `p54_long10.c` (other commutative nodes of a
+1. **The original binaries first; round 14 is not run now** (decided
+   2026-10-10). Rounds 1 to 13 inferred the real compiler's shapes one probe
+   at a time, and the series does not converge: the corrections per round
+   were 7, 7, 3, 11 and 12, round 13 refuted twelve of some sixty
+   inferences and found a silent wrong-code bug no fuzzer run had shown.
+   `c1_gen.c` (~15k lines) is a list of `is_*` predicates, each one a shape
+   seen, not v7's mechanism (`optim()`, `acommute()`, `degree()`,
+   `rcexpr()`/`cexpr()`, the code tables). So the old rule - "a handful or
+   fewer corrections ends the series" - is dropped, and the next step is
+   to get the mechanism from the real compiler itself:
+   1. **Bring the original `c1`** (also `c0`, `as`, `ld`, if possible) from
+      the hardware to the workspace. Nothing of it is in the repo yet.
+   2. **Read it**: the `a.out` header and whether symbols are left;
+      extract the code tables (`efftab`, `regtab`, `cctab`, `sptab`,
+      `instab` and their template strings - data, no disassembly needed;
+      `v7/cc/table.s` is the PDP-11 original to compare the structure
+      with); disassemble the few key functions (`optim`, `acommute`,
+      `degree`, `rcexpr`, `cexpr`, `unoptim`, `fp_track`'s source of the
+      stack messages) and compare them with `v7/cc/c10.c`..`c13.c`. Check
+      the tables against the existing goldens: if they explain them without
+      the `is_*` predicates, the hypothesis holds.
+   3. **Decide with evidence**: a table-driven core replacing or
+      underpinning `c1_gen.c` step by step, or the tables as a reference
+      to correct the predicates by. Either way split `c1_gen.c` into
+      modules (planning, long, floating, int, calls) and add tests for
+      call arguments and `long` arguments - the class of bug round 13 found.
+   4. **Round 14** (for when it is run: `make -f Makefile.mutos round14 2>&1
+      | tee round14.log` in `tests/mutos_cc/fltprobe/`, then `make goldens`
+      in `tests/mutos_cc` - all four kinds of file, and the log). Its files:
+      `p54_long10.c` (other commutative nodes of a
    distributed LTOI with an int widened, a complement or negation of a
    region, a long call's result divided, modulo or times a constant, a
    variable times a quotient, remainder, difference or call, computed longs
@@ -3837,18 +3864,19 @@ is now fully covered (62/62). In order:
    and of a `+=` under a `*` - all inferred) and `p57_fltstk8.c` (on
    purpose, like `p28`, `p37`, `p41`, `p45`, `p49` and `p53`: unhoisted
    compound stores below the bottom, `fdup` and a call's value at the top
-   - its `cc -S` is expected to report errors, `make` goes on). Rounds 1 to
-   13 are byte-exact (`p19` to line 223, `p21`, `p28`, `p37`, `p41`, `p45`,
-   `p49`, `p52` and `p53` with their messages) - see the sections above and
-   `tests/mutos_cc/fltprobe/README.md`. **Round 12 was planned as the last
-   round unless it corrected more than a handful**: it corrected eleven
-   inferences by eight rules, round 13 twelve of some sixty by seven -
-   with a silent wrong-code bug (a long variable passed as an argument)
-   and the stack model's top besides - so round 14 asks about their
-   neighbours. Once round 14's goldens are reproduced, the same test
-   decides again: a handful or fewer corrections ends the series, and the
-   shapes left are taken from real compiled code - the `11_kernel`
-   goldens, which need no hardware run (items 2, 3 and 6 below).
+   - its `cc -S` is expected to report errors, `make` goes on). They are
+      prepared and compile (`p54` 701 and `p55` 686 on the host without
+      their refusals, `p56` 179) but are **not run on the hardware now**; the table analysis answers the same questions
+      mechanically. A hardware run stays useful later as a test of what the
+      tables predict, or if a trip to the machine is made anyway. Rounds 1
+      to 13 are byte-exact (`p19` to line 223, `p21`, `p28`, `p37`, `p41`,
+      `p45`, `p49`, `p52` and `p53` with their messages) - see the sections
+      above and `tests/mutos_cc/fltprobe/README.md`.
+   5. **Meanwhile, no hardware needed**: measure how far the
+      `11_kernel` sources get today (which of the nine fail first, and
+      on what) - items 2, 3 and 6 below take their shapes from the real
+      compiled kernel goldens, which is the work that serves the project's
+      purpose.
 2. **Int division by a constant** (`x / 4`, `x % 3`): refused today
    ("dividing by an immediate"), although the real kernel goldens show its
    shape - `mov ax,<x>` / `cwd` / `mov cx,*4.` / `idiv cx`
@@ -4086,10 +4114,12 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
-   byte-exact): `fltprobe`'s round 14 (`p54`..`p57`, the neighbours of
-   round 13's corrections), int division by a constant (kernel evidence already in
-   the repo), growing coverage into the `tests/mutos_cc/11_kernel` real-kernel corpus
-   (1/9 so far), and the `mutos_cc` driver - see its "Next up".
+   byte-exact): first read the original `c1` binary (its code tables and the
+   key functions of the tree optimizer) instead of probing shape by shape -
+   `fltprobe`'s round 14 (`p54`..`p57`) is prepared but not run now -, then
+   int division by a constant (kernel evidence already in the repo), growing
+   coverage into the `tests/mutos_cc/11_kernel` real-kernel corpus (1/9 so
+   far), and the `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string
