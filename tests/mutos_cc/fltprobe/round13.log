@@ -1,0 +1,37 @@
+cc -S p50_long9.c
+/lib/cpp -P p50_long9.c > p50_long9.i; /lib/c0 p50_long9.i p50_long9.1 p50_long9.2
+cc -S p51_elem10.c
+/lib/cpp -P p51_elem10.c > p51_elem10.i; /lib/c0 p51_elem10.i p51_elem10.1 p51_elem10.2
+cc -S p52_fltinf8.c
+74: Floating point stack overflow; simplify expression
+78: Floating point stack overflow; simplify expression
+78: Floating point stack overflow; simplify expression
+79: Floating point stack overflow; simplify expression
+79: Floating point stack overflow; simplify expression
+80: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+82: Floating point stack overflow; simplify expression
+83: Floating point stack overflow; simplify expression
+84: Floating point stack overflow; simplify expression
+84: Floating point stack overflow; simplify expression
+84: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+86: Floating point stack overflow; simplify expression
+87: Floating point stack overflow; simplify expression
+87: Floating point stack overflow; simplify expression
+87: Floating point stack overflow; simplify expression
+87: Floating point stack overflow; simplify expression
+88: Floating point stack overflow; simplify expression
+*** Error code 1 (ignored)
+/lib/cpp -P p52_fltinf8.c > p52_fltinf8.i; /lib/c0 p52_fltinf8.i p52_fltinf8.1 p52_fltinf8.2
+cc -S p53_fltstk7.c
+38: floating point stack underflow
+39: floating point stack underflow
+40: floating point stack underflow
+41: Floating point stack underflow
+41: Floating point stack underflow
+*** Error code 1 (ignored)
+/lib/cpp -P p53_fltstk7.c > p53_fltstk7.i; /lib/c0 p53_fltstk7.i p53_fltstk7.1 p53_fltstk7.2
