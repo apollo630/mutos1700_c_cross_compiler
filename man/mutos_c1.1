@@ -356,13 +356,17 @@ output file, unfinished).
 The original compiler counts its floating-point stack at compile time
 and reports a value popped below the bottom \(en
 .RI \(lq line ": floating point stack underflow\(rq"
-for a store,
+for an assignment's store,
 .RI \(lq line ": Floating point stack underflow\(rq"
-for a conversion, an operator or a checked argument push \(en while
-still writing the whole
+for a compound assignment's or an increment's store, a conversion, an
+operator or a checked argument push \(en and a value pushed beyond the
+six it holds \(en
+.RI \(lq line ": Floating point stack overflow; simplify expression\(rq"
+\(en while still writing the whole
 .BR .s ;
 its code for an assignment passed as a floating call argument can pop
-the value twice.
+the value twice, and a compound assignment hoisted out of a comparison
+whose value is taken can leave its value on the stack.
 .B mutos_c1
 writes the same code, prints the same messages on standard error
 (the model is one per file, never reset) and exits with status 1 after

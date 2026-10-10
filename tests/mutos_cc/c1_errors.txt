@@ -179,3 +179,51 @@ fltprobe/p49_fltstk6 95: floating point stack underflow
 fltprobe/p49_fltstk6 96: Floating point stack underflow
 fltprobe/p49_fltstk6 96: floating point stack underflow
 fltprobe/p49_fltstk6 97: Floating point stack underflow
+#
+# fltprobe/p52_fltinf8: NOT written to report anything (round 13,
+# 2026-10-10) - the real compiler's own wrong code, met by chance. Every
+# comparison whose VALUE is taken keeps the hoisted '+=' of a computed
+# right operand on the stack ("fstd d", used by nothing): lines 57, 60,
+# 63, 71, 74 and 78 each leave the model one higher for good. At four
+# (line 74) "fldd d" before "fcmp" is the seventh value, and the model
+# holds six: "Floating point stack overflow; simplify expression" for
+# every push beyond six - one at 74, and from line 78 on (the model at six
+# between statements) every push of every statement. The depth still goes
+# up past six. Twenty-two messages, every one reproduced (fp_track()).
+fltprobe/p52_fltinf8 74: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 78: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 78: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 79: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 79: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 80: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 81: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 81: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 81: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 81: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 82: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 83: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 84: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 84: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 84: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 85: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 86: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 87: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 87: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 87: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 87: Floating point stack overflow; simplify expression
+fltprobe/p52_fltinf8 88: Floating point stack overflow; simplify expression
+#
+# fltprobe/p53_fltstk7: whether the model counts the value "fstd" leaves
+# (round 13, 2026-10-10): it does. One below the bottom from the start
+# (f1's "half(d = 3.0);"), the three stores of lines 38-40 report as
+# before; line 41's "x = (d += ++w + ++y) > 2.0;" reports twice in UPPER
+# case - the stores of the hoisted "++w" and "++y" (a compound
+# assignment's or an increment's store: upper case, where an
+# assignment's is lower case) - and "fcmp" does not: the "fstd d"
+# leftover brings the model back to the bottom, and nothing after it
+# reports. Five messages, every one reproduced.
+fltprobe/p53_fltstk7 38: floating point stack underflow
+fltprobe/p53_fltstk7 39: floating point stack underflow
+fltprobe/p53_fltstk7 40: floating point stack underflow
+fltprobe/p53_fltstk7 41: Floating point stack underflow
+fltprobe/p53_fltstk7 41: Floating point stack underflow
