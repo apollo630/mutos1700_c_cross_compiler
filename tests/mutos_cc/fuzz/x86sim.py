@@ -27,7 +27,9 @@ MUTOS's own floating format (see mbf_encode()), and the 'long' helpers
 a long shifted a
 bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1"),
 also CX times ("loop .-4" back over the pair) or by a variable count
-("or cx,cx" / "jz .+8" past the pair and the loop when CX is 0), and
+("or cx,cx" / "jz .+8" past the pair and the loop when CX is 0 - "jz
+.+16" past the stores of a compound assignment too, when they are
+four-byte ones), and
 "neg". It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
 "and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
@@ -622,15 +624,30 @@ class Sim:
                 # .-4" (two bytes each) when the count in CX is 0 - the only
                 # use (fltprobe/p31_long4.s.golden's "l << i": "mov cx,
                 # *-14.(bp)" / "or cx,cx" / "jz .+8" / "sal si,*1" / "rcl
-                # di,*1" / "loop .-4")
+                # di,*1" / "loop .-4"). "jz .+16" is a compound assignment's
+                # (p38_long6's "l <<= i"): past the loop AND the two stores
+                # back - when each takes four bytes (a file-scope long); a
+                # local's take three ("*-8."), and the real code jumps into
+                # the middle of the next instruction - not run.
                 nxt = [self.prog[k] if 0 <= k < len(self.prog) else None
-                       for k in (pc, pc + 1, pc + 2)]
-                if ops != [".+8"] or None in nxt or nxt[2][0] != "loop" or \
-                        self.cmp is None or self.cmp[1] != 0:
+                       for k in (pc, pc + 1, pc + 2, pc + 3, pc + 4)]
+                ok8 = ops == [".+8"] and None not in nxt[:3] and \
+                    nxt[2][0] == "loop"
+                ok16 = ops == [".+16"] and None not in nxt and \
+                    nxt[2][0] == "loop" and nxt[3][0] == "mov" and \
+                    nxt[4][0] == "mov"
+                if not (ok8 or ok16) or self.cmp is None or self.cmp[1] != 0:
                     raise SimError("'jz' other than past a long shift's loop "
                                    "after 'or cx,cx'")
                 if self.cmp[0] == 0:
-                    pc += 3
+                    if ok8:
+                        pc += 3
+                    elif any(nxt[k][1][0].startswith("*") for k in (3, 4)):
+                        raise SimError("'jz .+16' with a count of 0 past "
+                                       "three-byte stores: the real code "
+                                       "jumps into the next instruction")
+                    else:
+                        pc += 5
             elif mnem == "loop":
                 # "loop .-4": back over the two one-bit shifts before it,
                 # two bytes each - a 'long' shifted CX times, the only use

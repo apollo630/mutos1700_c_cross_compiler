@@ -30,11 +30,12 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope") - and, beyond the corpus, 40 of the
-41 probes of `tests/mutos_cc/fltprobe/`'s first nine rounds with their own
-real-hardware goldens (`p21_fltexp`, `p28_fltstk` and `p37_fltstk3`
-together with the real compiler's own `c1` error messages, two, twelve
-and seventeen of them - `tests/mutos_cc/c1_errors.txt`), the 41st
+"Floating point" under "Current scope") - and, beyond the corpus, 44 of the
+45 probes of `tests/mutos_cc/fltprobe/`'s first ten rounds with their own
+real-hardware goldens (`p21_fltexp`, `p28_fltstk`, `p37_fltstk3` and
+`p41_fltstk4` together with the real compiler's own `c1` error messages,
+two, twelve, seventeen and twenty-three of them -
+`tests/mutos_cc/c1_errors.txt`), the 45th
 (`p19_open3`) up to the real compiler's own invalid output, which
 `mutos_c1` refuses on purpose (see "Floating point beyond the corpus" and
 `tests/mutos_cc/invalid_goldens.txt`), and the first of the nine
@@ -1402,8 +1403,27 @@ result (`e = (q->y -= d)` -> `lea ax,*8.(di)` / `|` / `push ax` / `fldd` /
 loads the right operand before the element's address (`e = (a[i] += d)`).
 A computed right operand of a hoisted `+=`/`-=`, a member or a constant
 element as its target, and `+=` / `-=` / `*=` / `/=` through a pointer with
-a computed right operand, its value used, are inferred (round 10's
-`p40_fltinf5` asks).
+a computed right operand, its value used, were inferred and confirmed by
+round 10 (`p40_fltinf5`), which also showed v7's `reorder()` at work on a
+floating `+`: `e = (d += 2.0) + (e -= 1.0)` hoists `e -= 1.0` FIRST
+(`sreorder()` of a `+` reorders its right operand before its left one) -
+`plan_fsreorder()` and `plan_fchain()` now simulate `reorder()`/
+`sreorder()` over the chain (`fsim_plus()`, `fsim_times()`), sorting it
+with the unhoisted node's degree before each hoist and the NAME's after
+(`fdeg_live`); a hoisted float compared with a `.float` constant is the
+NAME it has become, so the constant goes first (`x = ++f > 2.0` -> `flds
+2.0` / `flds f` / `fcmp` / `blt` - `frel_swap()`); and the value of `e =
+(q->x += d * e)` computes the right operand first and adds the target
+from memory, `q` addressed in the register context the right operand
+left - after a `*` through AX into BX (`mov ax,q` / `mov bx,ax` / `lea
+ax,(bx)` / `|` / `push ax` / `faddd` / `pop ax` / `fstd`), as `e = (q->x
+*= d * e)` (`fp_lea_ctx()`). A `+=` chain reached as a returned value or
+an argument, two hoisted floats compared, a member target at an offset
+after a `*`, `q->y = d * e`, the value of `+=` into an element with a
+computed right operand (the right operand first, then the address), a
+hoist inside a hoisted `+=`'s right operand (done while that operand is
+computed), and two of them there (refused) are round 11's
+(`p44_fltinf6`).
 
 **The real compiler's own floating-stack errors** (round 6,
 `p21_fltexp`; round 7, `p28_fltstk`): an assignment whose value is a
@@ -1433,8 +1453,15 @@ ihalf(d = 3.0)` keeps; and the push of an argument is checked after all -
 with the upper-case message - when the argument is neither an
 assignment's value nor a call's result (`e = two(d = 1.0, 2.0)`: the 2.0's
 push reports, the stores into d and e the lower-case message). Round 10's
-`p41_fltstk4` asks about a variable, a sum and an int converted as
-arguments and more nested calls.
+`p41_fltstk4` (twenty-three messages) refined that: the push is checked
+for a value LOADED for it - a variable (`half(d)`), a constant - and not
+for one computed onto the stack before it - a sum (`half(d + e)`), an int
+converted, a call's result, an assignment's value (`push_fp_arg()`: a
+`VK_FACC` is pushed unchecked); a call nested in an int conversion keeps
+its inner store, one nested in an unused call or in one whose value is
+stored pops it. Round 11's `p45_fltstk5` asks about a float variable, an
+element, a member through a pointer, a negation, a conversion and a
+product pushed.
 
 Refused, each with its own diagnostic: an int converted after an element
 or `*p` in AX context, or after a computed operand other than those above;
@@ -1534,13 +1561,32 @@ g(2)` and `f(1) * g(2)` push the right call's value (`pop bx` / `sub
 ax,bx`; `mov ax,ax` / `pop cx` / `imul cx` - `is_hardsub()`,
 `is_calltimes()`); `b[i] + f(1)` pushes the element's address first and
 adds it to the call's value (`pop bx` / `add ax,(bx)` - `ORD_PUSHADDRX`).
-Inferred from those (round 10's `p39_elem7` asks): the other written
-orders (`f(1) + c * d`, `f(1) + b[i]`, `g(2) * 3 + f(1)`), two remainders,
-a call minus a quotient or a remainder and the reverse, a comparison
-scaled by 4, a constant on the left of an easy comparison. Still refused:
-`&`, `|`, `^` of an element and a call, two products summed, a product
-minus a call, a call plus a product by a constant, a difference of two
-comparisons, a sum of calls minus a call, `|` of two calls.
+Round 10's `p39_elem7` confirmed all seventeen inferences (the other
+written orders, two remainders, a call minus a quotient or a remainder
+and the reverse, a comparison scaled by 4, a constant on the left of an
+easy comparison) except one: `f(2) * f(3) * 2` shifts the product where it
+is (`imul cx` / `sal ax,*1` - a value in AX is shifted there, not moved
+into DI). It settled the rest: `x - f(1)` pushes the call and loads `x`
+into DI after it (`pop bx` / `sub di,bx` - `is_hardsub()` widened to a
+variable, a constant, a sum of calls or a product on the left), `f(1) - x`
+subtracts in AX (`sub ax,x`); `(y > 2) + (x < y)` compares the two
+variables through SI, where the 0/1 goes (`mov si,y` / `cmp x,si` -
+`cmp_reg`), and `(y > 2) - (x < 3)` is `is_rele()`'s `sub di,si`; `f(1) &
+b[i]` pushes the element's address (`and ax,(bx)`); `c * d + c * y` and
+`f(1) + c * 3` move the left value into DI and compute the right product
+in AX (`is_leftdi()`, `is_easyprod()`); `c * d - f(1)`, `f(1) + g(2) -
+f(3)` and `f(1) | g(2)` push the right call (`sub ax,bx`, `or ax,bx`).
+Inferred from those (round 11's `p43_elem8` asks): a call, a quotient or a
+product shifted in AX (`f(1) * 4`, `c / d * 2`), a remainder in DX (`c %
+d * 2` -> `sal dx,*1`), a quotient or remainder on the right of a
+variable, an element on the left of a call (`b[i] - f(1)`), `f(1) -
+b[i]` (`sub ax,(bx)`), `|`, `^`, `&` of a call and an element or two
+calls, a product by a constant on either side of a sum or a difference,
+two variables compared on the right of a difference. A value in AX that
+is the divisor of a `/` or `%` is still moved into DI first, as before
+(`divisor_next()`). Still refused: `y % (c / d - s)` with the divisor
+computed into AX, a call times a constant next to a quotient or another
+call, a product plus a call times a constant.
 
 **`unsigned` locals, `long` mixing and octal constants (round 4).** A
 plain `unsigned` local is accepted (`p16_open2`: NAME typed `UNSIGN`, `u =
@@ -1640,18 +1686,37 @@ di,m` / `push di` / `lea di,l` / `push di` / `call aldiv` / `add sp,*6.`);
 `(int) (l * 2)` (the `lmul` result's low word stored straight from AX);
 `l - m - 1` (`sub`/`sbb` from memory, then `add si,*-1.` / `adc di,*-1.`);
 `100000 - l` (`mov si,#-31072.` / `mov di,*1.` / `sub si,l+2` / `sbb
-di,l`). Inferred from those (round 10's `p38_long6` asks): a variable or a
-constant count of 1 in place, an in-range long constant added in place
-(`mov si,*5.` / `mov di,*0.`), `l /= i`, `l %= m` (`alrem`), `l *= m`,
-`(int) (l / m)`, a computed long plus or minus a negative or 32-bit
-constant, a long constant on the left of `-`, an int negated and widened
-for another operator.
+di,l`).
 
-Still refused: a long shifted in place by 0 or by a char or long count, a
-computed long plus a non-negative int constant (`(l - m) + 3`), a widened
-int constant on the left of `-` (`5 - l`), a long product, quotient or
-remainder with another computed operand (`l * m * 2`), a char with a long
-in an operator. Silent miscompiles
+**Round 10 (`p38_long6`)** corrected three inferences: `l <<= 1` shifts the
+variable IN PLACE and then loads it (`sal l+2,*1` / `rcl l,*1` / `mov
+di,l` / `mov si,l+2`); `l <<= i` and `l >>= i` skip with `jz .+16`, not
+`.+8` - the template's own displacement, as if each store back took four
+bytes (a file-scope long's do; a local's take three, so with a count of 0
+the real code jumps two bytes into the next instruction - written as the
+real compiler writes it); `l += 5L` is in place (`add l+2,*5.` / `adc
+l,*0`) - v7's `c1` reads a long constant that fits an int as the `ITOL` of
+a CON (getree()), so `5L` is `5` widened (`OP_LCON`'s `fromu`). It settled
+every refusal: `l <<= 0` is no code at all; `5 - l` (and `5L - l`) goes
+through `cwd` (`mov ax,*5.` / `cwd` / `mov di,dx` / `mov si,ax` / `sub
+si,l+2` / `sbb di,l`), where `-5L - l` loads the LCON's two words; `(l -
+m) + 3` pushes the constant first (`mov ax,*3.` / `cwd` / `push ax` /
+`push dx` / [l - m in DI:SI] / `pop bx` / `pop cx` / `add si,cx` / `adc
+di,bx` - v7's `%n,n`), and `l * m * 2` the same, the first product's DX:AX
+pushed straight after it as the left argument (`push ax` / `push dx` /
+`call lmul` - `is_lspill()`, `ORD_LSPILL`, `SEG_LSPILL`). Matched as
+inferred: `l -= 70000`, `l /= i`, `l %= m`, `l %= 7`, `l *= m`, `(int) (l /
+m)`, `(int) (l % 7)`, `(l + m) - 3`, `(l - m) + 70000`, `l * m - 1`, `l /
+m + l`, `-5L - l`, `m + -i`, `m - -i`. Inferred from those (round 11's
+`p42_long7` asks): `l >>= 1` in place (`sar l,*1` / `rcr l+2,*1`), `l >>=
+0`, `l += 300L` / `l -= 300` in place, `300 - l` through `cwd`, a sum,
+product or quotient plus a constant, a product or quotient times, by or
+modulo a constant.
+
+Still refused: a long shifted in place by a char or long count, a
+computed long plus a non-negative int constant under a truncation (`(int)
+((l - m) + 3)`), a sum times a constant (`(l + m) * 2`), a char with a
+long in an operator. Silent miscompiles
 found while testing this, each a refusal or fixed now: two long variables
 compared (`l > m` compared the high words only), a long tested for truth
 (the high word only), `~l`, `l << 2` and `x ? l : m` (one word each), and
@@ -1905,9 +1970,10 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    messages) and all five of round 7 (`p28` with the real compiler's
    twelve messages) and all five of round 8 (every frame size, which store
    an assignment under a call gets, round 7's inferences) and all four of
-   round 9 (`p37` with the real compiler's seventeen messages). Left:
-   `fltprobe`'s round 10 (`p38`..`p41`) - what `mutos_c1` still infers or
-   refuses after round 9. On
+   round 9 (`p37` with the real compiler's seventeen messages) and all
+   four of round 10 (`p41` with twenty-three). Left: `fltprobe`'s round 11
+   (`p42`..`p45`) - what `mutos_c1` still infers or refuses after round
+   10. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in

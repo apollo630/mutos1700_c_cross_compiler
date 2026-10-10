@@ -7871,6 +7871,173 @@ compiler's value (`h5`'s `f(1) & b[i]` refused); the round-10 probes with
 their refused statements taken out give theirs (`p38` 448, `p39` 785, `p40`
 143 - nothing refused there).
 
+### The round-10 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-10)
+
+The four round-10 programs (`p38_long6`, `p39_elem7`, `p40_fltinf5`,
+`p41_fltstk4`) came back in commit `074b6de`, all four kinds of file, with
+`round10.log`: twenty-three messages from `cc -S p41_fltstk4.c` (`*** Error
+code 1 (ignored)`, as planned), none from the other three. `.i`, `.1` and
+`.2` were byte-exact for all four already; `mutos_c1` refused `p38` and
+`p39`, gave `p40` three wrong shapes and `p41` one message too many. Now
+all four are byte-exact at every stage, `p41` with all twenty-three
+messages and exit status 1 (`tests/mutos_cc/c1_errors.txt`), and the 100
+files byte-exact before are unchanged.
+
+**1. `long` shapes** (`p38_long6`). Matched as inferred: `l -= 70000`, `l /=
+i` (pushed from DX:AX, `aldiv`), `l %= m` and `l %= 7` (`alrem`), `l *= m`,
+`(int) (l / m)` and `(int) (l % 7)` (the low word from AX), `(l + m) - 3`
+and `(l - m) + 70000` (two immediates), `l * m - 1`, `l / m + l`, `-5L - l`
+(the LCON's two words), `m + -i` (`neg ax` / `cwd`, the variable added),
+`m - -i` (pushed from DX:AX, `pop bx` / `pop cx` / `sub si,cx` / `sbb
+di,bx`). Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `l <<= 1` | `sal *-6.(bp),*1` / `rcl *-8.(bp),*1` / `mov di,*-8.(bp)` / `mov si,*-6.(bp)` - shifted IN PLACE, then the value loaded (high word first, unused - the template's own); `mutos_c1` had looped in DI:SI as for `<<= 3`. `>>= 1` inferred as `sar *-8.(bp),*1` / `rcr *-6.(bp),*1` and the same load |
+| `l <<= i`, `l >>= i` | `mov si,*-6.(bp)` / `mov di,*-8.(bp)` / `mov cx,*-14.(bp)` / `or cx,cx` / `jz .+16` / `sal si,*1` / `rcl di,*1` / `loop .-4` / `mov *-8.(bp),di` / `mov *-6.(bp),si` - `.+16` where `l << i` has `.+8`: past the pair, the loop AND the two stores, counted as four bytes each. That is right for a file-scope long (`mov _l,di` is `89 3E lo hi`); a local's stores take three (`89 7E F8`), so with a count of 0 the jump lands two bytes into the next instruction - in `p38`, on the `EE` of `mov di,*-18.(bp)` (`8B 7E EE`), which the 8086 executes as `out dx,al`. The real compiler's own bug, written as it writes it (a count of 0 never occurs in `p38`) |
+| `l <<= 0` | no code at all - the next statement's `r = r + ...` follows directly (`>>= 0` inferred the same way) |
+| `l += 5L` | `add *-6.(bp),*5.` / `adc *-8.(bp),*0` - in place, as `l += 1`: v7's `c1` reads an LCON whose value fits an int as `ITOL(CON)` (`getree()`), so `5L` is the int `5` widened. `mutos_c1` had loaded `mov si,*5.` / `mov di,*0.`. `OP_LCON` now marks such a constant `fromu`, as `OP_ITOL` of a CON does |
+| `l = 5 - l`, `l = 5L - l` | `mov ax,*5.` / `cwd` / `mov di,dx` / `mov si,ax` / `sub si,*-6.(bp)` / `sbb di,*-8.(bp)` - the constant into DI:SI as an assignment of one (`materialize_long()`), the variable subtracted from memory |
+| `l = (l - m) + 3` | `mov ax,*3.` / `cwd` / `push ax` / `push dx` / `mov si,*-6.(bp)` / `mov di,*-8.(bp)` / `sub si,*-10.(bp)` / `sbb di,*-12.(bp)` / `pop bx` / `pop cx` / `add si,cx` / `adc di,bx` - the constant (an ITOL of a non-negative CON) computed first and pushed, the template `c + 1L` takes (02_long/01_addsub), here with a computed left operand |
+| `l = l * m * 2` | `mov ax,*2.` / `cwd` / `push ax` / `push dx` / [`l`, `m` pushed] / `call lmul` / `add sp,*8.` / `push ax` / `push dx` / `call lmul` / `add sp,*8.` / `mov di,dx` / `mov si,ax` - the same `%n,n`: the constant pushed first, the first product's DX:AX pushed straight after it as the left argument pair |
+
+`is_lspill()` (`ORD_LSPILL`, `SEG_LSPILL`, `plan_lspill()`) plans a `long`
+`+`, `*`, `/` or `%` of a computed left operand (a sum, difference,
+product, quotient or remainder) and an ITOL constant: the constant pushed
+first, `GenState.lkeep_off` telling the left operand's helper call to keep
+its result in DX:AX (`long_keep()`), `gen_long_stacked_call()` and the
+long `+` handler popping it. Not under an `LTOI` (`(int) ((l - m) + 3)` -
+the low words only, `lowonly`): refused, as is `(l + m) * 2` (a sum as a
+helper's argument).
+
+**2. Int shapes** (`p39_elem7`). Matched as inferred: `c % d + c % y`, `f(1)
+- c / d`, `c / d - f(1)`, `c % d - c / d`, `f(1) - c % d`, `f(1) + c * d`,
+`f(1) + b[i]`, `(y > 2) + (x <= 3) * 4` (`sal si,*1` twice), `(y > 2) +
+(5 < x)`, `(y < 2) + (y > 1) * 2 + (x == 3)`, `g(2) * 3 + f(1)`, `c % d +
+f(1)`, `c * f(1) + d`. Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `x = f(2) * f(3) * 2` | ... `mov ax,ax` / `pop cx` / `imul cx` / `sal ax,*1` / `mov x,ax` - the product shifted where it is; `mutos_c1` had moved it into DI first. A value computed into AX (or a remainder in DX) is shifted there now, unless it is a divisor next (`divisor_next()`) |
+| `x = x - f(1)` | [f(1)] / `push ax` / `mov di,x` / `pop bx` / `sub di,bx` - `%n,n`: the call first and pushed, the variable loaded after it (`is_hardsub()` widened: a variable, a constant, a sum of calls, an easy product - `is_easyprod()` - or an element on the left) |
+| `x = f(1) - x` | [f(1)] / `sub ax,*-16.(bp)` / `mov *-16.(bp),ax` - in AX (`%n,aw`) |
+| `x = (y > 2) + (x < y)` | [y > 2 into DI] / `mov si,*-18.(bp)` / `cmp *-16.(bp),si` / `blt` / `mov si,*0.` / ... / `add di,si` - two variables compared through SI, the register the 0/1 goes into (`is_easyrel()` widened; `GenState.cmp_reg`) |
+| `x = f(1) & b[i]` | `lea di,b` / ... / `push di` / [f(1)] / `pop bx` / `and ax,(bx)` - `f(1) + b[i]`'s shape for `&` (`is_pushaddr()`; `|`, `^` and `-` inferred) |
+| `x = c * d + c * y` | `mov ax,c` / `imul d` / `mov di,ax` / `mov ax,c` / `imul y` / `add di,ax` - the left product moved into DI, the right one computed into AX (`is_leftdi()`) |
+| `x = c * d - f(1)` | [f(1)] / `push ax` / `mov ax,c` / `imul d` / `pop bx` / `sub ax,bx` |
+| `x = f(1) + c * 3` | [f(1)] / `mov di,ax` / `mov ax,c` / `mov cx,*3.` / `imul cx` / `add di,ax` |
+| `x = (y > 2) - (x < 3)` | `is_rele()`'s shape with `sub di,si` |
+| `x = f(1) + g(2) - f(3)` | [f(3)] / `push ax` / [g(2)] / `push ax` / [f(1)] / `pop bx` / `add ax,bx` / `pop bx` / `sub ax,bx` |
+| `x = f(1) \| g(2)` | [g(2)] / `push ax` / [f(1)] / `pop bx` / `or ax,bx` (`is_callsum()` for `\|`, `&`, `^` of two calls) |
+
+**3. Floating shapes** (`p40_fltinf5`). Matched as inferred: twenty-three of
+the twenty-six statements. Corrected:
+
+| Source | Golden |
+|---|---|
+| `e = (d += 2.0) + (e -= 1.0)` | `.data` / `L10040: .float 1.0` / `.text` / `fldd e` / `fsubs L10040` / `fstdp e` / `.data` / `L10039: .float 2.0` / `.text` / `fldd d` / `fadds L10039` / `fstdp d` / `fldd d` / `faddd e` / `fstdp e` - the RIGHT one hoisted first: v7's `reorder()` of the ASSIGN calls `sreorder()` on the `+` with `recurf`, which `reorder()`s the `+`'s right operand (`tr2`) before its left one (`mutos_c1` had hoisted left to right) |
+| `x = ++f > 2.0` (a float f) | [++f: `flds f` / `fadds 1.0` / `fstsp f`] / `.data` / `L10034: .float 2.0` / `.text` / `flds L10034` / `flds f` / `fcmp` / `sahf` / `blt` - the constant first: after the hoist f is a NAME, and of two operands of equal degree (1 and 1) `optim()` exchanges the comparison when only the left one is a NAME (`frel_swap()`) |
+| `e = (q->x += d * e)` | `fldd d` / `fmuld e` / `mov ax,q` / `mov bx,ax` / `lea ax,(bx)` / `\|` / `push ax` / `faddd` / `pop ax` / `fstd` - its value used, the right operand computed FIRST and the target added from memory (as `*=` does), where `mutos_c1` had pushed and loaded the target first, as the statement `q->x += d * e;` is; and `q` addressed in the register context the right operand left: after a `*` through AX into BX (`fp_lea_ctx()`). `e = (q->x *= d * e)` the same with `fmuld` (`mutos_c1` had used DI) |
+
+`plan_fchain()` and the new `plan_fsreorder()` now simulate v7's
+`reorder()`/`sreorder()` over a floating `+`/`*` chain (`fsim_plus()`,
+`fsim_times()`): the chain sorted by `insert()`'s rule as read, each `+`
+link's right operand `reorder()`ed before its left one, re-sorted after
+each hoist, an operand's degree the unhoisted node's (`optim()`'s "def:",
+2 for `d += 1.0`) until its hoist and its NAME's after (`fdeg_live`); a
+`*` link hoists only when it is compiled, the innermost link's left term
+before its right one. That reproduces every hoist of rounds 7 to 10 (`++d
+* 2.0`, `(d += 1.0) * 2.0`, `++d * ++e`, `10.0 - --d`, `(d += 2.0) + (e
+-= 1.0)` - rounds 8 to 10). A hoist inside a hoisted `+=`'s right operand
+is done while that operand is computed (inferred: the hoisted statement's
+`rcexpr()` runs no `reorder()` of its own, its template's `rcexpr()` of
+the operand does); two of them there are refused (their order would be a
+node's `reorder()`, left to right). The value of `+=` into an element
+with a computed right operand - refused on the way, where the previous
+build had pushed and loaded the element first - is inferred as `q->x`'s:
+the right operand first, then the element's address (as `e = (a[i] +=
+d)`, p36).
+
+**4. The argument push the model checks** (`p41_fltstk4`):
+
+| `p41` | statement | store | messages |
+|---|---|---|---|
+| `f1` | `half(d = 3.0);` | `fstdp` | - (one below the bottom) |
+| `f2` | `e = half(d) + 1.0;` | - | 44; 45 twice - the push of `d` (upper case), then the store into `e`; 46 |
+| `f3` | `e = half(d + e) + 1.0;` | - | 53, 54; 55 once - the store into `e`, the sum's push NOT checked; 56 |
+| `f4` | `e = half(i) + 1.0;` | - | 65 (the store - the conversion's push not checked), 66 |
+| `f5` | `x = half(half(d = 3.0));` | `fstd` | 74 |
+| `f6` | `two(d = 1.0, half(e = 2.0));` | `fstdp`, both | 82 (2), 83 |
+| `f7` | `e = two(half(d = 1.0), half(e = 2.0));` | `fstdp`, both | 90 (3), 91 |
+| `f8` | `e = half(d = 3.0) * 2.0;`, `e = -half(d = 3.0);`, `x = half(d = 3.0) > 1.0 ? 1 : 2;` | `fstd`, all three | 99, 100, 101 (2) |
+| `f9` | `half(2.0);` | - | 107: the constant's push |
+
+So the push is checked for a value LOADED for it (a variable, a constant -
+`flds`/`fldd` right before `sub sp,*8`) and not for one already computed
+onto the stack (a sum, a conversion, a call's result, an assignment's
+value): `push_fp_arg()` now passes any `VK_FACC` unchecked, and `Val`'s
+`fnochk` is gone. Every other store matched round 9's rule.
+
+**5. Tooling.** `x86sim.py` runs `jz .+16` past a compound shift's stores
+when they are four-byte ones, and refuses it with a count of 0 past a
+local's three-byte stores: 40 of the 45 `fltprobe` goldens run and return
+their C sources' values (`p38` 525, `p39` 1141, `p40` 143).
+
+**6. Found by the fuzzer on the way.** A first run against `074b6de` gave
+one regression: `y = (y % ((19 / t) - s))` - a quotient minus a variable,
+newly computed in AX (`sub ax,s`, as `f(1) - x`), was then a divisor, and
+the `%` refused it (AX is the dividend's). The value in AX that is the
+divisor of a `/` or `%` is moved into DI first again, as before
+(`divisor_next()`, for the new AX shifts too). After that: no regression;
+349 programs' output changed, all still correct. The ten among the first
+600 of seed 1 are all one change: a quotient, a remainder or a product
+shifted by a constant where it was computed (`sal ax,*1`, `sar dx,cl`)
+instead of in DI, `p39`'s rule (`fuzz_c.py` generates no calls or longs).
+
+**7. Round 11** (`make -f Makefile.mutos round11`): `p42_long7`, `p43_elem8`
+and `p44_fltinf6` - what `mutos_c1` now compiles by inference only (`l
+>>= 1`, `l >>= 0`, `l += 300L`, `300 - l`, a sum, product or quotient
+plus a constant, a product or quotient times, by or modulo a constant;
+a call, quotient, remainder or product shifted in AX/DX, `5 - f(1)`, a
+quotient or remainder subtracted from a variable, `b[i] - f(1)`, `f(1) -
+b[i]`, `|`/`^`/`&` of a call and an element or two calls, products by
+constants summed, two variables compared in a difference; three hoists in
+a `+` chain, a hoist sorted by its unhoisted degree, a product of two
+hoists, a hoisted sum under a `-`, a returned sum of two hoists, two
+hoisted floats compared, `q->y += d * e` at an offset, `q->y = d * e`,
+`e = (a[i] += d * e)`, a hoist inside a hoisted `+=`) and what it still
+refuses (`(int) ((l - m) + 3)`, `(l + m) * 2`, `(int) (l * m * 2)`; `y %
+(c / d - s)`, `f(1) * 2 + c / d`, `f(1) * 3 - f(2)`, `c * d + f(1) * 3`;
+`e = (d += ++w + ++y) * 2.0`) -
+and `p45_fltstk5` (not a program to run: a float variable, an element and
+a member through a pointer, a negation, a conversion, a product and a
+call's value multiplied pushed as arguments, two arguments).
+
+**Verification.** `make test`: 103 files byte-exact at all four stages
+(62/62 corpus, 40 `fltprobe`, `11_kernel/01_delay`), `p19_open3` in
+category 8, `p21_fltexp`, `p28_fltstk`, `p37_fltstk3` and `p41_fltstk4`
+in category 9 (2, 12, 17 and 23 messages, exit status 1, the `.s`
+byte-exact), 0 mismatches, zero warnings; `mutos_as` 76/76,
+`check_floatdat.sh` 13/13, 115/115 compiler goldens assemble and
+`p19_open3`'s is refused as listed, `mutos_cpp` 5/5. Against the previous
+build (`074b6de`) over all 116 golden inputs and the four round-11 probes:
+identical output but for the four round-10 files and the four new probes
+(`p44` compiled by the previous build, refused now on purpose: its `e =
+(d += ++w + ++y) * 2.0`). `fuzz_c.py` against `074b6de`: 28,000 programs
+(seeds 1, 7 `--scope`, 3 scalars only, 21, 41 `--scope`, 55 scalars
+only), 0 WRONG, 0 BAD, no regression, 112 now correct that were refused,
+349 changed and still correct (see 6); 1,500 more (seed 31) through
+ASan/UBSan builds: 0 WRONG, 0 BAD; ASan/UBSan builds over the 116 golden
+inputs, the four round-11 probes and the hand-written programs: no
+reports, output identical. `make check-libcatof`: 0 differences.
+Hand-written programs (`h1`..`h6`: every long, int and floating shape
+added, and their neighbours; divisors computed in AX; `+=` into an
+element as a value; hoists inside a hoisted `+=`): every one gives the
+host C compiler's value (`h1` 7795, `h2` 1379, `h3` 148, `h4` 404, `h5`
+7, `h6` 43); the round-11
+probes with their refused statements taken out give theirs (`p42` 8148,
+`p43` 1347, `p44` 114).
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a

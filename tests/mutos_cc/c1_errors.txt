@@ -71,3 +71,38 @@ fltprobe/p37_fltstk3 92: Floating point stack underflow
 fltprobe/p37_fltstk3 100: floating point stack underflow
 fltprobe/p37_fltstk3 100: floating point stack underflow
 fltprobe/p37_fltstk3 101: Floating point stack underflow
+#
+# fltprobe/p41_fltstk4: the model after round 9 (round 10, 2026-10-09):
+# the push of a floating argument is checked only for a value loaded for
+# the push itself - a variable, "e = half(d) + 1.0;" (line 45: the push
+# of d, then the store into e) - and not for one computed onto the stack
+# before it - a sum, "e = half(d + e) + 1.0;" (line 55: the store only).
+# A call nested in an int conversion keeps its inner store ("fstd", line
+# 74), one nested in an unused call or in one whose value is stored pops
+# it (lines 82, 90), a call's value multiplied, negated or compared keeps
+# it (lines 99-101), and a constant argument of an unused call is checked
+# (line 107). The model is never reset (p28): twenty-three messages, every
+# one reproduced.
+fltprobe/p41_fltstk4 44: floating point stack underflow
+fltprobe/p41_fltstk4 45: Floating point stack underflow
+fltprobe/p41_fltstk4 45: floating point stack underflow
+fltprobe/p41_fltstk4 46: Floating point stack underflow
+fltprobe/p41_fltstk4 53: floating point stack underflow
+fltprobe/p41_fltstk4 54: floating point stack underflow
+fltprobe/p41_fltstk4 55: floating point stack underflow
+fltprobe/p41_fltstk4 56: Floating point stack underflow
+fltprobe/p41_fltstk4 65: floating point stack underflow
+fltprobe/p41_fltstk4 66: Floating point stack underflow
+fltprobe/p41_fltstk4 74: Floating point stack underflow
+fltprobe/p41_fltstk4 82: floating point stack underflow
+fltprobe/p41_fltstk4 82: floating point stack underflow
+fltprobe/p41_fltstk4 83: Floating point stack underflow
+fltprobe/p41_fltstk4 90: floating point stack underflow
+fltprobe/p41_fltstk4 90: floating point stack underflow
+fltprobe/p41_fltstk4 90: floating point stack underflow
+fltprobe/p41_fltstk4 91: Floating point stack underflow
+fltprobe/p41_fltstk4 99: floating point stack underflow
+fltprobe/p41_fltstk4 100: floating point stack underflow
+fltprobe/p41_fltstk4 101: Floating point stack underflow
+fltprobe/p41_fltstk4 101: Floating point stack underflow
+fltprobe/p41_fltstk4 107: Floating point stack underflow
