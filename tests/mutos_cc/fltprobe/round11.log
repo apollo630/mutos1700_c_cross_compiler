@@ -1,0 +1,32 @@
+cc -S p42_long7.c
+/lib/cpp -P p42_long7.c > p42_long7.i; /lib/c0 p42_long7.i p42_long7.1 p42_long7.2
+cc -S p43_elem8.c
+/lib/cpp -P p43_elem8.c > p43_elem8.i; /lib/c0 p43_elem8.i p43_elem8.1 p43_elem8.2
+cc -S p44_fltinf6.c
+/lib/cpp -P p44_fltinf6.c > p44_fltinf6.i; /lib/c0 p44_fltinf6.i p44_fltinf6.1 p44_fltinf6.2
+cc -S p45_fltstk5.c
+47: floating point stack underflow
+48: Floating point stack underflow
+48: floating point stack underflow
+49: Floating point stack underflow
+59: floating point stack underflow
+60: floating point stack underflow
+62: floating point stack underflow
+63: floating point stack underflow
+64: Floating point stack underflow
+72: floating point stack underflow
+74: floating point stack underflow
+75: floating point stack underflow
+76: floating point stack underflow
+77: Floating point stack underflow
+84: floating point stack underflow
+85: Floating point stack underflow
+85: floating point stack underflow
+86: Floating point stack underflow
+93: floating point stack underflow
+94: floating point stack underflow
+95: Floating point stack underflow
+95: floating point stack underflow
+96: Floating point stack underflow
+*** Error code 1 (ignored)
+/lib/cpp -P p45_fltstk5.c > p45_fltstk5.i; /lib/c0 p45_fltstk5.i p45_fltstk5.1 p45_fltstk5.2
