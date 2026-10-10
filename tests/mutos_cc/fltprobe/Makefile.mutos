@@ -391,7 +391,7 @@ p51_elem10.1: p51_elem10.c
 	$(CPP) -P p51_elem10.c > p51_elem10.i; $(C0) p51_elem10.i p51_elem10.1 p51_elem10.2
 
 p52_fltinf8.s: p52_fltinf8.c
-	$(CC) -S p52_fltinf8.c
+	-$(CC) -S p52_fltinf8.c
 
 p52_fltinf8.1: p52_fltinf8.c
 	$(CPP) -P p52_fltinf8.c > p52_fltinf8.i; $(C0) p52_fltinf8.i p52_fltinf8.1 p52_fltinf8.2
