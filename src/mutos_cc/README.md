@@ -30,12 +30,12 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope") - and, beyond the corpus, 44 of the
-45 probes of `tests/mutos_cc/fltprobe/`'s first ten rounds with their own
-real-hardware goldens (`p21_fltexp`, `p28_fltstk`, `p37_fltstk3` and
-`p41_fltstk4` together with the real compiler's own `c1` error messages,
-two, twelve, seventeen and twenty-three of them -
-`tests/mutos_cc/c1_errors.txt`), the 45th
+"Floating point" under "Current scope") - and, beyond the corpus, 48 of the
+49 probes of `tests/mutos_cc/fltprobe/`'s first eleven rounds with their own
+real-hardware goldens (`p21_fltexp`, `p28_fltstk`, `p37_fltstk3`,
+`p41_fltstk4` and `p45_fltstk5` together with the real compiler's own `c1`
+error messages, two, twelve, seventeen, twenty-three and twenty-three of
+them - `tests/mutos_cc/c1_errors.txt`), the 49th
 (`p19_open3`) up to the real compiler's own invalid output, which
 `mutos_c1` refuses on purpose (see "Floating point beyond the corpus" and
 `tests/mutos_cc/invalid_goldens.txt`), and the first of the nine
@@ -1422,8 +1422,18 @@ an argument, two hoisted floats compared, a member target at an offset
 after a `*`, `q->y = d * e`, the value of `+=` into an element with a
 computed right operand (the right operand first, then the address), a
 hoist inside a hoisted `+=`'s right operand (done while that operand is
-computed), and two of them there (refused) are round 11's
-(`p44_fltinf6`).
+computed) were inferred and confirmed by round 11 (`p44_fltinf6`, all
+fifteen), which also settled two of them there: `e = (d += ++w + ++y) *
+2.0` hoists `++w`, then `++y`, then `fldd w` / `faddd y` / `faddd d` /
+`fstdp d` - the hoisted statement's `rcexpr()` (called with a negative
+register) runs no `reorder()` of its own, its template's `rcexpr()` of
+the right operand does, and `reorder()` of a `+` as a node takes its left
+operand first (`fchain_direct()`). A statement `d += ++w + ++y;` (its
+`reorder()` sreorder()s the `+` as an operand: the right one first), a
+`-=`, three terms, `--`, a `+=` operand there, its value compared, a `+=`
+through a pointer or into an element with a hoist in its right operand
+(not hoisted itself), and two hoists under a `*` or a `-` there (refused)
+are round 12's (`p48_fltinf7`).
 
 **The real compiler's own floating-stack errors** (round 6,
 `p21_fltexp`; round 7, `p28_fltstk`): an assignment whose value is a
@@ -1459,9 +1469,15 @@ for one computed onto the stack before it - a sum (`half(d + e)`), an int
 converted, a call's result, an assignment's value (`push_fp_arg()`: a
 `VK_FACC` is pushed unchecked); a call nested in an int conversion keeps
 its inner store, one nested in an unused call or in one whose value is
-stored pops it. Round 11's `p45_fltstk5` asks about a float variable, an
-element, a member through a pointer, a negation, a conversion and a
-product pushed.
+stored pops it. Round 11's `p45_fltstk5` (twenty-three messages): a float
+variable's push is checked like a double's, a negation, a conversion, a
+product and a call's value multiplied are not - and neither is an element
+subscripted by a variable or a member through a pointer (`half(a[i])`,
+`half(q->y)`): a value read through an address is v7's `*` node, not a
+NAME (`push_fp_arg()`: `FM_IND` unchecked). Round 12's `p49_fltstk6` asks
+about the NAMEs and `*` nodes left - a file-scope double, a
+constant-indexed element of a file-scope array, a local struct's member,
+a local static (checked?), `*p`, `p[1]`, a float element (not checked?).
 
 Refused, each with its own diagnostic: an int converted after an element
 or `*p` in AX context, or after a computed operand other than those above;
@@ -1576,17 +1592,30 @@ b[i]` pushes the element's address (`and ax,(bx)`); `c * d + c * y` and
 `f(1) + c * 3` move the left value into DI and compute the right product
 in AX (`is_leftdi()`, `is_easyprod()`); `c * d - f(1)`, `f(1) + g(2) -
 f(3)` and `f(1) | g(2)` push the right call (`sub ax,bx`, `or ax,bx`).
-Inferred from those (round 11's `p43_elem8` asks): a call, a quotient or a
-product shifted in AX (`f(1) * 4`, `c / d * 2`), a remainder in DX (`c %
-d * 2` -> `sal dx,*1`), a quotient or remainder on the right of a
-variable, an element on the left of a call (`b[i] - f(1)`), `f(1) -
-b[i]` (`sub ax,(bx)`), `|`, `^`, `&` of a call and an element or two
-calls, a product by a constant on either side of a sum or a difference,
-two variables compared on the right of a difference. A value in AX that
-is the divisor of a `/` or `%` is still moved into DI first, as before
-(`divisor_next()`). Still refused: `y % (c / d - s)` with the divisor
-computed into AX, a call times a constant next to a quotient or another
-call, a product plus a call times a constant.
+Round 11's `p43_elem8` confirmed those inferences (a call, a quotient or a
+product shifted in AX, by CL too, a remainder in DX, a quotient or
+remainder on the right of a variable, `b[i] - f(1)`, `f(1) - b[i]` - `sub
+ax,(bx)` -, `|`, `^`, `&` of a call and an element or two calls, products
+by a constant summed, differences of comparisons) except one: `c % d - x`
+subtracts in DX, the remainder's working register (`sub dx,x` / `mov
+x,dx` - not moved into DI first). It settled the refusals: `y % (c / d -
+s)` computes the divisor where it ends (AX) and pushes it, then loads the
+dividend into DI (`sub ax,s` / `push ax` / `mov di,y` / `mov ax,di` /
+`cwd` / `pop cx` / `idiv cx` - `is_harddiv()`, `ORD_SPILL`: a divisor that
+makes a division or a call, v7's degree beyond the registers left; such a
+divisor is exempt from `divisor_next()`); `f(1) * 2 + c / d` pushes the
+quotient first (`is_callsum()` with a call's product on the left), `f(1)
+* 3 - f(2)` the right call (`is_hardsub()` likewise), and `c * d + f(1) *
+3` computes the call's product first and moves it into DI
+(`is_leftdix()`). Inferred from those (round 12's `p47_elem9` asks): a
+quotient, a remainder or a call as the divisor, an element as the
+dividend, `c % d + x` and `c % d + 3` (moved into DI, as before - or
+added in DX, as `-`?), a call's product next to a remainder, a quotient,
+a variable or another call; `y % (c - s)` and `y % (c * d - s)` keep the
+older path (the divisor computed into DI, `idiv di` - no golden either
+way). Still refused: a product as the whole divisor (`y % (c * d)`), a
+remainder minus an element, a call's product next to a product by a
+constant or another call's product.
 
 **`unsigned` locals, `long` mixing and octal constants (round 4).** A
 plain `unsigned` local is accepted (`p16_open2`: NAME typed `UNSIGN`, `u =
@@ -1707,16 +1736,36 @@ pushed straight after it as the left argument (`push ax` / `push dx` /
 `call lmul` - `is_lspill()`, `ORD_LSPILL`, `SEG_LSPILL`). Matched as
 inferred: `l -= 70000`, `l /= i`, `l %= m`, `l %= 7`, `l *= m`, `(int) (l /
 m)`, `(int) (l % 7)`, `(l + m) - 3`, `(l - m) + 70000`, `l * m - 1`, `l /
-m + l`, `-5L - l`, `m + -i`, `m - -i`. Inferred from those (round 11's
-`p42_long7` asks): `l >>= 1` in place (`sar l,*1` / `rcr l+2,*1`), `l >>=
-0`, `l += 300L` / `l -= 300` in place, `300 - l` through `cwd`, a sum,
-product or quotient plus a constant, a product or quotient times, by or
-modulo a constant.
+m + l`, `-5L - l`, `m + -i`, `m - -i`.
 
-Still refused: a long shifted in place by a char or long count, a
-computed long plus a non-negative int constant under a truncation (`(int)
-((l - m) + 3)`), a sum times a constant (`(l + m) * 2`), a char with a
-long in an operator. Silent miscompiles
+**Round 11 (`p42_long7`)** confirmed every inference (`l >>= 1` in place -
+`sar l,*1` / `rcr l+2,*1` -, `l >>= 0`, `l += 300L` / `l -= 300` in place,
+`300 - l` through `cwd`, a sum, product or quotient plus a constant, a
+product or quotient times, by or modulo a constant) but one: `l = -300`
+loads the constant's two words (`mov si,#-300.` / `mov di,*-1.`), where `l
+= 300` goes through `cwd` - v7's `getree()` reads an LCON that fits an int
+as the ITOL of a CON, and `optim()` turns an ITOL of a NEGATIVE CON back
+into an LCON (`OP_ITOL`, `materialize_long()`; a negative long constant
+argument is inferred to be pushed as two words the same way). It settled
+the refusals: `(int) ((l - m) + 3)` is computed in one word, `mov di,l+2`
+/ `sub di,m+2` / `add di,*3.` - `unoptim()` distributes an LTOI over a
+long `+`/`-`, takes a long NAME's low word, an ITOL's int and an LCON's
+low word (`lowword_region()`: the region's nodes are compiled as the int
+expression, retyped in the pre-scan too); `(l + m) * 2` pushes the 2
+first and the sum from DI:SI (`push si` / `push di` / `call lmul` -
+`is_lspill()` with a sum on the left, `gen_long_stacked_call()`); `(int)
+(l * m * 2)` is pushed as `l * m * 2` is, an LTOI not being distributed
+into a `*` (`mov x,ax`). Inferred from those (round 12's `p46_long8`
+asks): `l = -5L`, `l = -1`, a negative long constant passed and returned,
+an LTOI over other sums and differences of long variables and int values,
+a sum or difference times, by or modulo a constant, a quotient or product
+under an LTOI.
+
+Still refused: a long shifted in place by a char or long count, an LTOI
+over `&`, `|` or `^` (`(int) (l & m)`), a sum times a variable (`(l + m) *
+m`), a shifted long plus a constant (`(l << 2) + 3`), two computed sums
+under one LTOI (`(int) ((l - m) - (l + m))`), a char with a long in an
+operator. Silent miscompiles
 found while testing this, each a refusal or fixed now: two long variables
 compared (`l > m` compared the high words only), a long tested for truth
 (the high word only), `~l`, `l << 2` and `x ? l : m` (one word each), and
@@ -1971,9 +2020,10 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    twelve messages) and all five of round 8 (every frame size, which store
    an assignment under a call gets, round 7's inferences) and all four of
    round 9 (`p37` with the real compiler's seventeen messages) and all
-   four of round 10 (`p41` with twenty-three). Left: `fltprobe`'s round 11
-   (`p42`..`p45`) - what `mutos_c1` still infers or refuses after round
-   10. On
+   four of round 10 (`p41` with twenty-three) and all four of round 11
+   (`p45` with twenty-three). Left: `fltprobe`'s round 12 (`p46`..`p49`)
+   - what `mutos_c1` still infers or refuses after round 11, planned as
+   the series' last. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in

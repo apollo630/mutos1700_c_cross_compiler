@@ -155,14 +155,41 @@ not compared), and skips the others.
   move the left value into DI; `(y > 2) - (x < 3)` is `sub di,si`, `(y >
   2) + (x < y)` compares through SI (`mov si,y` / `cmp x,si`). See
   `../../../docs/DEVLOG.md`'s "The round-10 fltprobe goldens".
-- **Round 11** (`p42`..`p45`, goldens pending): what `mutos_c1` now
-  compiles by inference only or still refuses after round 10 - `long`
-  (`p42_long7`), int (`p43_elem8`) and floating (`p44_fltinf6`) shapes -
-  and, on purpose not a program to run, like `p28`, `p37` and `p41`, the
-  real `c1`'s floating-stack model where `p41` left it open (`p45_fltstk5`:
-  the push of a float variable, an element, a member through a pointer, a
-  negation, a conversion and a product). Run them with `make -f
-  Makefile.mutos round11`.
+- **Round 11** (`p42`..`p45`, goldens 2026-10-10, commit `12731f2`, with
+  `round11.log`): what `mutos_c1` compiled by inference only or still
+  refused after round 10 - `long` (`p42_long7`), int (`p43_elem8`) and
+  floating (`p44_fltinf6`) shapes - and, on purpose not a program to run,
+  the real `c1`'s floating-stack model where `p41` left it open
+  (`p45_fltstk5`) - now all **4/4 byte-exact** end-to-end, `p45` together
+  with all twenty-three of the real compiler's messages. The goldens
+  corrected three inferences of some seventy: `l = -300` loads the
+  constant's two words (`mov si,#-300.` / `mov di,*-1.` - v7's `optim()`
+  makes an ITOL of a negative CON an LCON; `l = 300` keeps `cwd`), `c % d
+  - x` subtracts in DX (`sub dx,x`), and the push of an element
+  subscripted by a variable or of a member through a pointer is not
+  checked (`half(a[i])`, `half(q->y)` - a `*` node, not a NAME), where a
+  float variable's is; `p44`'s fifteen inferred shapes all matched. They
+  settled every refusal: `(int) ((l - m) + 3)` in one word (`mov di,l` /
+  `sub di,m` / `add di,*3.` - `unoptim()` distributes the LTOI), `(l + m)
+  * 2` with the 2 pushed first and the sum pushed from DI:SI (`push si` /
+  `push di`), `(int) (l * m * 2)` pushed as `l * m * 2` is (`mov x,ax`);
+  `y % (c / d - s)` with the divisor computed in AX and pushed (`sub
+  ax,s` / `push ax` / `mov di,y` / `mov ax,di` / `cwd` / `pop cx` / `idiv
+  cx`), `f(1) * 2 + c / d` and `f(1) * 3 - f(2)` with the right one pushed
+  first, `c * d + f(1) * 3` with the call's product moved into DI; `e = (d
+  += ++w + ++y) * 2.0` hoisting `++w`, then `++y`, inside the hoisted `+=`
+  (its template's `reorder()` of the `+` as a node, left to right). See
+  `../../../docs/DEVLOG.md`'s "The round-11 fltprobe goldens".
+- **Round 12** (`p46`..`p49`, goldens pending): what `mutos_c1` now
+  compiles by inference only or still refuses after round 11 - `long`
+  (`p46_long8`), int (`p47_elem9`) and floating (`p48_fltinf7`) shapes -
+  and, on purpose not a program to run, the floating-stack model's
+  argument checks for the remaining kinds of operand (`p49_fltstk6`: a
+  file-scope double, a constant-indexed element of a file-scope array, a
+  local struct's member, a local static, a value through a pointer
+  variable, a float element). Run them with `make -f Makefile.mutos
+  round12`. Planned as the last round of this series - see
+  `../../../STATUS.md`'s "Next up".
 
 ## Why these, and not goldens alone
 
@@ -225,10 +252,14 @@ open question the five other files asked.
 | `p39_elem7.c` | no floating point: `x = c % d + c % y`, `x = f(1) - c / d`, `x = c / d - f(1)`, `x = c % d - c / d`, `x = f(1) - c % d`, `x = f(1) + c * d`, `x = f(1) + b[i]`, `x = (y > 2) + (x <= 3) * 4`, `x = (y > 2) + (5 < x)`, `x = (y < 2) + (y > 1) * 2 + (x == 3)`, `x = g(2) * 3 + f(1)`, `x = c % d + f(1)`, `x = f(2) * f(3) * 2` (`sal ax,*1`), `x = x - f(1)` (the call pushed), `x = f(1) - x` (`sub ax,x`), `x = c * f(1) + d`, `x = (y > 2) + (x < y)` (`mov si,y` / `cmp x,si`), `x = f(1) & b[i]` (`and ax,(bx)`), `x = c * d + c * y`, `x = c * d - f(1)`, `x = f(1) + c * 3`, `x = (y > 2) - (x < 3)` (`sub di,si`), `x = f(1) + g(2) - f(3)`, `x = f(1) \| g(2)` (`or ax,bx`) | byte-exact | 1141 |
 | `p40_fltinf5.c` | `e = (d -= 0.5) * 2.0`, `e = 3.0 - (d += 1.0)`, `e = (d += e * 2.0) * 3.0`, `e = (d += i) * 2.0`, `e = (s.x += 1.0) * 2.0`, `e = (f -= 0.5) * 2.0`, `x = (d += 1.0) > 2.0`, `if ((d -= 1.0) < 1.0)`, `x = 1.0 < (d += 1.0)`, `if (--d < 1.0)`, `x = ++f > 2.0` (`flds 2.0` first), `e = (d += 2.0) + (e -= 1.0)` (`e -= 1.0` first), `e = (d *= 2.0) * 3.0` and `e = (d /= 2.0) + 1.0` (not hoisted), `e = (q->y -= 0.5)`, `e = (q->y /= 2.0)`, `e = (q->x += d * e)` (`fmuld` / `mov ax,q` / `mov bx,ax` / `lea ax,(bx)` / ... / `faddd`), `e = (q->y -= d * e)`, `e = (q->x /= d + e)`, `e = (q->x *= d * e)` (through AX into BX), `e = (a[i] += 1.5)`, `e = (a[i] -= 0.5)`, `e = (a[i] /= 2.0)`, `e = d-- * 2.0`, `e = f++ * 2.0`, `e = d++ + e--` | byte-exact | 143 |
 | `p41_fltstk4.c` | NOT a program to run: the floating-stack model one below the bottom from the start (`half(d = 3.0);`), then a variable (checked), a sum (not checked) and an int converted pushed as arguments, a call nested in an int conversion (`fstd`), a call nested in an unused call and two of them (`fstdp`), a call's value multiplied, negated and compared (`fstd`), a constant argument of an unused call (checked) | byte-exact, all twenty-three messages reproduced | - (the real program: a stack underflow) |
-| `p42_long7.c` | no floating point; inferred: `l >>= 1`, `l >>= 0`, `l = -300; l >>= 1`, `l <<= i`, `l >>= i`, `l += 5L`, `l -= 5L`, `l += 300L`, `l -= 300`, `l = 5L - l`, `l = 5 - l`, `l = 300 - l`, `l = -5L - l`, `l = (l - m) + 3`, `l = (l + m) + 300`, `l = l * m + 3`, `l = l / m + 7`, `l = l * m * 2`, `l = l * m * 3`, `l = l / m * 2`, `l = (l * m) / 3`, `l = (l * m) % 5`, `l = l * m + l`; refused: `x = (int) ((l - m) + 3)`, `l = (l + m) * 2`, `x = (int) (l * m * 2)` | refused | 9554 |
-| `p43_elem8.c` | no floating point; inferred: `x = f(1) * 2`, `* 4`, `* 8`, `x = c / d * 2`, `x = c % d * 2`, `x = c * d * 2`, `x = f(1) << 1`, `x = f(1) >> 1`, `x = c / d << 3`, `x = c % d >> 1`, `x = 5 - f(1)`, `x = x - c / d`, `x = x - c % d`, `x = c * 3 - f(1)`, `x = b[i] - f(1)`, `x = f(1) - b[i]`, `x = c * d - x`, `x = c / d - x`, `x = c % d - x`, `x = (y > 2) - (x < y)`, `x = (y > 2) - (x < 3) * 2`, `x = (x < y) + (y > x)`, `x = (x < y) - (y < 9)`, `x = f(1) \| b[i]`, `x = f(1) ^ b[i]`, `x = f(1) & g(2)`, `x = f(1) ^ g(2)`, `x = c * 3 + c * 5`, `x = c * d + c * 3`; refused: `y = y % (c / d - s)`, `x = f(1) * 2 + c / d`, `x = f(1) * 3 - f(2)`, `x = c * d + f(1) * 3` | refused | 1100 |
-| `p44_fltinf6.c` | inferred: `e = (d += 1.0) + (e -= 2.0) + (f += 0.5)`, `e = w + ++d`, `e = w * ++d`, `e = (d += 1.0) * (e += 2.0) * 2.0`, `e = y - ((d += 1.0) + (e -= 1.0))`, `d -= (e += 1.0) + 2.0`, `return (a += 1.0) + (b -= 1.0);`, `x = ++f > g`, `e = (q->y += d * e)`, `q->x *= d * e`, `e = (q->y *= d * e)`, `q->y = d * e`, `q->x = d + e`, `e = (a[i] += d * e)`, `e = (d += ++w + 1.0) * 2.0`; refused: `e = (d += ++w + ++y) * 2.0` | refused | 120 |
-| `p45_fltstk5.c` | NOT a program to run: the floating-stack model one below the bottom from the start, then a float variable, an element and a member through a pointer pushed as arguments (checked, as loads?), a negation, a conversion, a product and a call's value multiplied pushed (not checked, as computed?), a variable and a sum as two arguments | inferred | - (compiler messages expected) |
+| `p42_long7.c` | no floating point: `l >>= 1` (`sar *-8.(bp),*1` / `rcr *-6.(bp),*1` / `mov di,*-8.(bp)` / `mov si,*-6.(bp)`), `l >>= 0` (no code), `l = -300` (`mov si,#-300.` / `mov di,*-1.` - an LCON to v7's `optim()`), `l >>= i`, `l <<= i`, `l += 5L`, `l -= 5L`, `l += 300L`, `l -= 300`, `5L - l`, `5 - l`, `300 - l`, `-5L - l`, `(l - m) + 3`, `(l + m) + 300`, `l * m + 3`, `l / m + 7`, `l * m * 2`, `l * m * 3`, `l / m * 2`, `(l * m) / 3`, `(l * m) % 5`, `l * m + l`, `x = (int) ((l - m) + 3)` (`mov di,*-6.(bp)` / `sub di,*-10.(bp)` / `add di,*3.`), `l = (l + m) * 2` (`mov ax,*2.` / `cwd` / `push ax` / `push dx` / [the sum] / `push si` / `push di` / `call lmul`), `x = (int) (l * m * 2)` (`mov *-16.(bp),ax`) | byte-exact | 9554 |
+| `p43_elem8.c` | no floating point: a call, quotient, remainder or product shifted in AX/DX (by CL too), `5 - f(1)`, `x - c / d`, `x - c % d`, `c * 3 - f(1)`, `b[i] - f(1)`, `f(1) - b[i]`, `c * d - x`, `c / d - x`, `c % d - x` (`sub dx,*-16.(bp)` / `mov *-16.(bp),dx`), differences of comparisons, `\|`/`^`/`&` of a call and an element or two calls, products by constants summed, `y % (c / d - s)` (`sub ax,*-24.(bp)` / `push ax` / `mov di,*-18.(bp)` / `mov ax,di` / `cwd` / `pop cx` / `idiv cx`), `f(1) * 2 + c / d` (the quotient pushed first, `sal ax,*1` / `pop bx` / `add ax,bx`), `f(1) * 3 - f(2)` (`f(2)` pushed first), `c * d + f(1) * 3` (the call's product moved into DI) | byte-exact | 1100 |
+| `p44_fltinf6.c` | three hoists in a `+` chain, a hoist next to a variable, a product of two hoists times a constant, a hoisted sum under a `-`, `d -= (e += 1.0) + 2.0`, a returned sum of two hoists, two hoisted floats compared, `q->y += d * e` and other pointer targets after a `*`, `e = (a[i] += d * e)`, a hoist inside a hoisted `+=`, `e = (d += ++w + ++y) * 2.0` (`++w`, then `++y`, then `fldd w` / `faddd y` / `faddd d` / `fstdp d` - the hoisted `+=`'s right operand reordered as a node) | byte-exact | 120 |
+| `p45_fltstk5.c` | NOT a program to run: the floating-stack model one below the bottom from the start, then a float variable pushed (checked, as a double), an element subscripted by a variable and a member through a pointer (NOT checked - a `*` node, not a NAME), a negation, a conversion, a product and a call's value multiplied (not checked), a variable and a sum as two arguments | byte-exact, all twenty-three messages reproduced | - (the real program: a stack underflow) |
+| `p46_long8.c` | no floating point; inferred: `l = -5L`, `l = -1` (two words), `lsub(-300L, 7L)` (`mov di,#-300.` / `push di` / `mov di,*-1.` / `push di`), `return -5L;`, `(int) (l - m)`, `(int) (l + m) + 3`, `r + (int) (l - m)`, `(int) ((l + m) - i)`, `(int) (i + (l - m))`, `(int) (l + m + l)`, `(int) (l - (m - l))`, `(l - m) * 3`, `(l + m) / 3`, `(l - m) % 7`, `(int) (l / m * 2)`, `(int) ((l * m) % 9)`, `(l + i) * 3`, `(int) ((l + m) * 3)`; refused: `x = (int) (l & m)`, `x = (int) (l \| m) + 1`, `l = (l + m) * m`, `l = (l << 2) + 3` | refused | 1682 |
+| `p47_elem9.c` | no floating point; inferred: `y / (c % d + s)`, `y / f(1)`, `y % f(2)`, `y / (c / d)`, `b[i] / (c / d - s)`, `y % (f(1) - s)`, `y % (c - s)`, `y % (c * d - s)`, `c % d + x`, `c % d + 3`, `f(1) * 2 + c % d`, `f(1) * 3 - c / d`, `c * d + f(1) * 2`, `f(1) * 3 - x`, `x - f(1) * 3`, `f(2) * 4 - f(1)`, `f(1) % c`, `x * (c / d)`, `f(1) - (x < y)`; refused: `x = y % (c * d)`, `x = c % d - b[i]`, `x = c * 3 + f(1) * 5`, `x = f(1) * 2 + f(2) * 3` | refused | 563 |
+| `p48_fltinf7.c` | inferred: `d += ++w + ++y;` as a statement (`++y` first?), `e = (d -= ++w + ++y) * 2.0`, `e = (d += ++w + ++y + 1.0) * 2.0`, `e = (d += (w += 1.0) + ++y) * 3.0`, `e = (d += --w + --y) + 1.0`, `x = (d += ++w + ++y) > 2.0`, `e = (q->x += ++w + 1.0)`, `e = (a[i] += ++w + 1.0)`, `e = (d *= ++w + 1.0) * 2.0`, `e = (++w + ++y) * (++d + 1.0)`; refused: `e = (d += ++w * ++y) * 2.0`, `e = (d += ++w - ++y) * 2.0` | refused | 737 |
+| `p49_fltstk6.c` | NOT a program to run: the floating-stack model one below the bottom from the start, then a file-scope double, a constant-indexed element of a file-scope array, a local struct's member and a local static pushed as arguments (checked, as NAMEs?), `*p`, `p[1]` and a float element (not checked, as `*` nodes?), a member and an element as two arguments | inferred | - (compiler messages expected) |
 
 "Result" is what `main()` returns under C semantics (the host C compiler's
 value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
@@ -236,13 +267,13 @@ value). The real compiler's `i *= e` is `i * (int)e`, not `(int)(i * e)` - v7's
 target's type first (`p2_arith.1.golden`: `FTOI`, then `ASTIMES(INT)`) - so
 `p2_arith`'s golden returns 16 - and `p13_open`'s `j /= e` gives 42 on
 MUTOS for the same reason (its golden: `FTOI`, `ASDIV(INT)`); `p12_init2`'s
-golden returns 6, its floats truncated. Every golden of rounds 1 to 10 runs
+golden returns 6, its floats truncated. Every golden of rounds 1 to 11 runs
 under `../fuzz/x86sim.py` and returns these values - `p19_open3`'s up to
 its invalid statement (the first 223 lines, completed with `r = r + (int)
 d`, return 104), and `p21_fltexp`'s with its doubly popped store (line
 250, `fstdp`) made the `fstd` it should be (as written, `x86sim.py` stops
 there: "'fstdp' with an empty floating-point stack"); `p28_fltstk`,
-`p37_fltstk3` and `p41_fltstk4` are not meant to run, and `p30_fltstk2`,
+`p37_fltstk3`, `p41_fltstk4` and `p45_fltstk5` are not meant to run, and `p30_fltstk2`,
 written not to, turned out right code (9); `mutos_c1`'s output is
 byte-identical to them. (`p38_long6`'s `l <<= i` with `jz .+16` runs
 because its count is never 0: with a count of 0 the jump lands inside a
@@ -250,33 +281,33 @@ local's three-byte store, which `x86sim.py` refuses to run.)
 "inferred" means `mutos_c1` compiles the file - its output runs under
 `x86sim.py` and returns the value above - with no golden behind the shapes
 yet; "refused" that `mutos_c0` or `mutos_c1` stops with a diagnostic. In
-round 11, the shapes each file lists as inferred compile today and give
-the host's value when the refused ones are taken out (`p42` 8148, `p43`
-1347, `p44` 114).
+round 12, the shapes each file lists as inferred compile today and give
+the host's value when the refused ones are taken out (`p46` 1142, `p47`
+412, `p48` 548).
 
 ## Generating the goldens
 
 On MUTOS 1700, from inside this directory:
 
 ```
-make -f Makefile.mutos round11 2>&1 | tee round11.log
+make -f Makefile.mutos round12 2>&1 | tee round12.log
 ```
 
-(or plain `make -f Makefile.mutos` for all eleven rounds), then bring the
+(or plain `make -f Makefile.mutos` for all twelve rounds), then bring the
 `.s`, `.i`, `.1` and `.2` files back to this directory on the modern host -
 all four kinds - and run `make goldens` in `..` (it packages every
-category's, this directory's included). `p45_fltstk5` is meant to make
+category's, this directory's included). `p49_fltstk6` is meant to make
 `cc -S` print messages and exit with status 1 (`make` goes on: its recipe
-starts with `-`), as `p28_fltstk`, `p37_fltstk3` and `p41_fltstk4` did;
-its `.s` is written all the same - please bring back the messages
-(`round11.log`) with the files. Should another round-11 file not compile
-on MUTOS, make the others by name (`make -f Makefile.mutos p43_elem8.s
-p43_elem8.1`) and bring back the failing one's messages instead. Should
-`make` itself run out of memory on the larger `Makefile.mutos` (49 files
-now; the corpus's one makefile of 62 did, see `../README.md`), the
-commands are the ones `round10.log` shows - `cc -S p42_long7.c`, then
-`/lib/cpp -P p42_long7.c > p42_long7.i; /lib/c0 p42_long7.i p42_long7.1
-p42_long7.2` - for each file.
+starts with `-`), as `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4` and
+`p45_fltstk5` did; its `.s` is written all the same - please bring back
+the messages (`round12.log`) with the files. Should another round-12 file
+not compile on MUTOS, make the others by name (`make -f Makefile.mutos
+p47_elem9.s p47_elem9.1`) and bring back the failing one's messages
+instead. Should `make` itself run out of memory on the larger
+`Makefile.mutos` (53 files now; the corpus's one makefile of 62 did, see
+`../README.md`), the commands are the ones `round11.log` shows - `cc -S
+p46_long8.c`, then `/lib/cpp -P p46_long8.c > p46_long8.i; /lib/c0
+p46_long8.i p46_long8.1 p46_long8.2` - for each file.
 
 ## The real assembler on `p19_open3.s`
 

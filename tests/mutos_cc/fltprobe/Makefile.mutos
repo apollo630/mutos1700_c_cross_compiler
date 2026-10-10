@@ -1,4 +1,4 @@
-# Makefile.mutos -- fltprobe/ (this directory's 49 files only).
+# Makefile.mutos -- fltprobe/ (this directory's 53 files only).
 #
 # Genuine V7/MUTOS make(1)-compatible makefile, run from INSIDE this
 # directory on real MUTOS 1700 hardware - the same recipes as every
@@ -21,17 +21,18 @@ CC  = cc
 CPP = /lib/cpp
 C0  = /lib/c0
 
-# Eleven rounds - each added after the previous round's goldens came back
+# Twelve rounds - each added after the previous round's goldens came back
 # (p6..p9, then p10..p13, p14..p16, p17..p19, p20..p23, p24..p28,
-# p29..p33, p34..p37, p38..p41, p42..p45); "make -f Makefile.mutos
-# round11" makes only the newest ones. Should one of them fail to compile
-# on MUTOS, make the others by name ("make -f Makefile.mutos p43_elem8.s
-# p43_elem8.1") - the failing file's compiler messages are themselves the
-# finding. p28_fltstk, p37_fltstk3, p41_fltstk4 and p45_fltstk5 are MEANT
-# to make "cc" report errors (see the files), and p30_fltstk2 was expected
-# to: their "cc -S" lines start with "-", so make goes on, and the ".s" is
-# written all the same.
-all: round1 round2 round3 round4 round5 round6 round7 round8 round9 round10 round11
+# p29..p33, p34..p37, p38..p41, p42..p45, p46..p49); "make -f
+# Makefile.mutos round12" makes only the newest ones. Should one of them
+# fail to compile on MUTOS, make the others by name ("make -f
+# Makefile.mutos p47_elem9.s p47_elem9.1") - the failing file's compiler
+# messages are themselves the finding. p28_fltstk, p37_fltstk3,
+# p41_fltstk4, p45_fltstk5 and p49_fltstk6 are MEANT to make "cc" report
+# errors (see the files), and p30_fltstk2 was expected to: their "cc -S"
+# lines start with "-", so make goes on, and the ".s" is written all the
+# same.
+all: round1 round2 round3 round4 round5 round6 round7 round8 round9 round10 round11 round12
 
 round1: 03_fltcmp.s 03_fltcmp.1 04_fltconst.s 04_fltconst.1 05_fltasop.s 05_fltasop.1 06_fltfunc.s 06_fltfunc.1 p1_compare.s p1_compare.1 p2_arith.s p2_arith.1 p3_global.s p3_global.1 p4_const.s p4_const.1 p5_call.s p5_call.1
 
@@ -54,6 +55,8 @@ round9: p34_long5.s p34_long5.1 p35_elem6.s p35_elem6.1 p36_fltinf4.s p36_fltinf
 round10: p38_long6.s p38_long6.1 p39_elem7.s p39_elem7.1 p40_fltinf5.s p40_fltinf5.1 p41_fltstk4.s p41_fltstk4.1
 
 round11: p42_long7.s p42_long7.1 p43_elem8.s p43_elem8.1 p44_fltinf6.s p44_fltinf6.1 p45_fltstk5.s p45_fltstk5.1
+
+round12: p46_long8.s p46_long8.1 p47_elem9.s p47_elem9.1 p48_fltinf7.s p48_fltinf7.1 p49_fltstk6.s p49_fltstk6.1
 
 03_fltcmp.s: 03_fltcmp.c
 	$(CC) -S 03_fltcmp.c
@@ -348,6 +351,30 @@ p45_fltstk5.s: p45_fltstk5.c
 
 p45_fltstk5.1: p45_fltstk5.c
 	$(CPP) -P p45_fltstk5.c > p45_fltstk5.i; $(C0) p45_fltstk5.i p45_fltstk5.1 p45_fltstk5.2
+
+p46_long8.s: p46_long8.c
+	$(CC) -S p46_long8.c
+
+p46_long8.1: p46_long8.c
+	$(CPP) -P p46_long8.c > p46_long8.i; $(C0) p46_long8.i p46_long8.1 p46_long8.2
+
+p47_elem9.s: p47_elem9.c
+	$(CC) -S p47_elem9.c
+
+p47_elem9.1: p47_elem9.c
+	$(CPP) -P p47_elem9.c > p47_elem9.i; $(C0) p47_elem9.i p47_elem9.1 p47_elem9.2
+
+p48_fltinf7.s: p48_fltinf7.c
+	$(CC) -S p48_fltinf7.c
+
+p48_fltinf7.1: p48_fltinf7.c
+	$(CPP) -P p48_fltinf7.c > p48_fltinf7.i; $(C0) p48_fltinf7.i p48_fltinf7.1 p48_fltinf7.2
+
+p49_fltstk6.s: p49_fltstk6.c
+	-$(CC) -S p49_fltstk6.c
+
+p49_fltstk6.1: p49_fltstk6.c
+	$(CPP) -P p49_fltstk6.c > p49_fltstk6.i; $(C0) p49_fltstk6.i p49_fltstk6.1 p49_fltstk6.2
 
 clean:
 	rm -f *.s *.i *.1 *.2

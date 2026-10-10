@@ -926,6 +926,14 @@ typedef struct {
                                  * constant" under an LTOI - see Val's
                                  * `lowonly` */
     int  nitollow;
+    long lowword[32];          /* temp1 offsets of the current expression's
+                                 * nodes under an LTOI that v7's unoptim()
+                                 * distributes the LTOI into - computed as
+                                 * ints: see lowword_region() */
+    int  nlowword;
+    long spilldiv[8];          /* temp1 offsets of the current expression's
+                                 * divisors pushed first - is_harddiv() */
+    int  nspilldiv;
     long ltests[8];            /* temp1 offsets of the current expression's
                                  * 'long' NAMEs tested for truth - by a
                                  * CBRANCH (directly or under '!'), as an
@@ -1962,7 +1970,12 @@ static Val materialize_long(GenState *g, Val v)
     if (v.kind != VK_LCON)
         return v;
     long lo = v.imm, hi = v.offset;
-    if (hi == (lo < 0 ? -1 : 0)) {
+    /* The CWD idiom is v7's template for an ITOL of a CON - what its
+     * getree() (c11.c) makes of an LCON in int range - but optim()
+     * (c12.c) turns an ITOL of a NEGATIVE CON back into an LCON, which
+     * loads its two words: fltprobe/p42_long7.s.golden's "l = -300;" ->
+     * "mov si,#-300." / "mov di,*-1.". */
+    if (hi == 0 && lo >= 0) {
         emit_cwd_from(g, o_imm(lo));
         put_seq(g, SEQ_DXAX_TO_DISI);
     } else {
@@ -3377,9 +3390,12 @@ static int push_call_arg(GenState *g, Val v)
          * "addlong(100000L, 5L)" -> the "5L" argument rendering
          * as "mov ax,*5. / cwd / push ax / push dx", never the
          * direct-split shape even though both take the same
-         * VK_LCON wire path. */
+         * VK_LCON wire path. A NEGATIVE int-range value is an LCON
+         * again to v7's optim() (see materialize_long(): fltprobe/
+         * p42_long7.s.golden's "l = -300;" loads two words) and is
+         * inferred to direct-split here too ("f(-300L)"). */
         long lo = v.imm, hi = v.offset;
-        if (hi == (lo < 0 ? -1 : 0)) {
+        if (hi == 0 && lo >= 0) {
             emit_cwd_from(g, o_imm(lo));
             put_seq(g, SEQ_PUSH_AXDX);
         } else {
@@ -3529,8 +3545,8 @@ static Val gen_call(GenState *g, Val callee, Val args, int is_long_ret)
         else if (items[i].bytev || items[i].kind == VK_CHARX)
             w = RB_AX;                           /* movb ax / cbw / push ax */
         else if (items[i].kind == VK_LCON)
-            w = (items[i].offset == (items[i].imm < 0 ? -1 : 0))
-                ? (RB_AX | RB_DX) : RB_DI;
+            w = (items[i].offset == 0 && items[i].imm >= 0)
+                ? (RB_AX | RB_DX) : RB_DI;   /* see push_call_arg() */
         else if (items[i].kind == VK_IMM || items[i].kind == VK_MEM_DIRECT ||
                  items[i].kind == VK_STATICADDR || items[i].kind == VK_FUNCADDR ||
                  items[i].kind == VK_COND)
@@ -4159,8 +4175,13 @@ static int dxax_result(FILE *t1)
  * "idiv" needs AX for the dividend. The shapes computed in place in AX or
  * DX (a difference, a shift - fltprobe/p39_elem7) keep that move there
  * (no golden either way). */
-static int divisor_next(FILE *t1)
+static int divisor_next(const GenState *g, FILE *t1)
 {
+    /* ... unless it is pushed first (is_harddiv()): computed where it
+     * ends, as any spilled operand. */
+    for (int k = 0; k < g->nspilldiv; k++)
+        if (g->spilldiv[k] == g->op_off)
+            return 0;
     Consumer c = scan_consumer(t1);
     return (c.op == OP_DIVIDE || c.op == OP_MOD || c.op == OP_ASDIV ||
             c.op == OP_ASMOD) && !c.as_left;
@@ -4190,10 +4211,16 @@ static int gen_long_stacked_call(GenState *g, const char *helper, int keep,
         return 0;
     (void)pop_any(g);
     Val l = pop_val_ex(g, POP_LPAIR);
-    if (!(l.kind == VK_LONG && !l.lpair && l.lreg == LREG_DXAX))
+    if (l.kind == VK_LONG && !l.lpair && l.lreg == LREG_DISI) {
+        /* A sum computed into DI:SI - see is_lspill(). */
+        ins1(g, "push", o_reg("si"));
+        ins1(g, "push", o_reg("di"));
+    } else if (l.kind == VK_LONG && !l.lpair && l.lreg == LREG_DXAX) {
+        put_seq(g, SEQ_PUSH_AXDX);
+    } else {
         gen_fatal("internal: the left operand of a 'long' %s with a pushed "
-                  "right one is not in DX:AX", helper);
-    put_seq(g, SEQ_PUSH_AXDX);
+                  "right one is not in DX:AX or DI:SI", helper);
+    }
     ins1(g, "call", o_sym(helper));
     ins2(g, "add", o_reg("sp"), o_imm(8));
     *res = long_call_result(g, keep);
@@ -5126,8 +5153,13 @@ static int is_callsum(const ETree *t, int i)
     if (is_int_call(r))
         return is_int_call(l) || is_callsum(t, n->kid[0]) ||
                is_callprod(t, n->kid[0]);
+    /* ... and a quotient on the right of a product that makes a call -
+     * p43_elem8.s.golden's "x = f(1) * 2 + c / d;" -> [c / d] / "push ax"
+     * / [f(1)] / "sal ax,*1" / "pop bx" / "add ax,bx" (the product's
+     * degree, a call's, is the higher - it stays on the left). */
     if (is_divmod(r))
-        return is_int_call(l) || is_callsum(t, n->kid[0]);
+        return is_int_call(l) || is_callsum(t, n->kid[0]) ||
+               is_callprod(t, n->kid[0]);
     return 0;
 }
 
@@ -5177,9 +5209,14 @@ static int is_hardsub(const ETree *t, int i)
      * on the right of these, inferred so). */
     /* An element on the left the same way, computed and loaded into DI
      * after the push (inferred). */
+    /* A product that makes a call itself on the left the same way -
+     * p43_elem8.s.golden's "x = f(1) * 3 - f(2);" -> [f(2)] / "push ax" /
+     * [f(1)] / "mov ax,ax" / "mov cx,*3." / "imul cx" / "pop bx" / "sub
+     * ax,bx". */
     return is_int_call(l) || is_divmod(l) || is_int_memvar(t, n->kid[0]) ||
            l->op == OP_CON || is_callsum(t, n->kid[0]) ||
-           is_easyprod(t, n->kid[0]) || is_elem_read(t, n->kid[0], 1);
+           is_easyprod(t, n->kid[0]) || is_elem_read(t, n->kid[0], 1) ||
+           is_callprod(t, n->kid[0]);
 }
 
 /* An int '*' of two calls: "%n,n" - the right one called first and its
@@ -5191,6 +5228,44 @@ static int is_calltimes(const ETree *t, int i)
     const ENode *n = &t->v[i];
     return n->op == OP_TIMES && (n->type == TY_INT || n->type == TY_UNSIGN) &&
            is_int_call(&t->v[n->kid[0]]) && is_int_call(&t->v[n->kid[1]]);
+}
+
+/* Node `i`'s int subtree makes a call or an int '/' or '%' - work that
+ * needs AX and DX itself. */
+static int has_hardint(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (is_int_call(n) || is_divmod(n))
+        return 1;
+    if (!(n->type == TY_INT || n->type == TY_UNSIGN))
+        return 0;
+    switch (n->op) {
+    case OP_PLUS: case OP_MINUS: case OP_TIMES: case OP_AND: case OP_OR:
+    case OP_EXOR: case OP_LSHIFT: case OP_RSHIFT:
+        return has_hardint(t, n->kid[0]) || has_hardint(t, n->kid[1]);
+    default:
+        return 0;
+    }
+}
+
+/* An int '/' or '%' whose divisor makes a call or a division itself:
+ * "%n,n" - the divisor computed first, where it ends (AX, DX) and pushed
+ * from there, the dividend, a variable, loaded into DI, then "mov ax,di" /
+ * "cwd" / "pop cx" / "idiv cx" - fltprobe/p43_elem8.s.golden's "y = y % (c
+ * / d - s);" -> "mov ax,*-20.(bp)" / "cwd" / "idiv *-22.(bp)" / "sub ax,
+ * *-24.(bp)" / "push ax" / "mov di,*-18.(bp)" / "mov ax,di" / "cwd" / "pop
+ * cx" / "idiv cx" / "mov *-18.(bp),dx" (v7: a CALL's degree is 10, a
+ * DIVIDE's operands count two more - both beyond the registers left). A
+ * call, a quotient or a remainder as the whole divisor, and an element as
+ * the dividend (loaded into DI, as p26_elem4's "b[j] / b[i]"), inferred
+ * the same way; a product or a sum of variables keeps the older path. */
+static int is_harddiv(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    if (!is_divmod(n) || n->kid[0] < 0 || n->kid[1] < 0 ||
+        !has_hardint(t, n->kid[1]))
+        return 0;
+    return is_int_memvar(t, n->kid[0]) || is_elem_read(t, n->kid[0], 1);
 }
 
 /* An int product of two int variables - "c * d": computed into AX by
@@ -5255,11 +5330,16 @@ static int is_leftdi(const ETree *t, int i)
  * added - fltprobe/p35_elem6.s.golden's "x = c * d + f(1);" -> [f(1)] /
  * "mov di,ax" / "mov ax,*-22.(bp)" / "imul *-24.(bp)" / "add di,ax" / "mov
  * *-18.(bp),di". */
+/* A product that makes a call on the right the same way - p43_elem8.s.
+ * golden's "x = c * d + f(1) * 3;" -> [f(1)] / "mov ax,ax" / "mov cx,*3."
+ * / "imul cx" / "mov di,ax" / "mov ax,*-20.(bp)" / "imul *-22.(bp)" / "add
+ * di,ax". */
 static int is_leftdix(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
     return n->op == OP_PLUS && (n->type == TY_INT || n->type == TY_UNSIGN) &&
-           is_leafprod(t, n->kid[0]) && is_int_call(&t->v[n->kid[1]]);
+           is_leafprod(t, n->kid[0]) &&
+           (is_int_call(&t->v[n->kid[1]]) || is_callprod(t, n->kid[1]));
 }
 
 /* An int '+' of an element at offset 0 (on the left) and a call:
@@ -5745,23 +5825,35 @@ static int is_litol(const ETree *t, int i)
  * pair - p38's "l = l * m * 2;" -> "mov ax,*2." / "cwd" / "push ax" /
  * "push dx" / [l, m pushed] / "call lmul" / "add sp,*8." / "push ax" /
  * "push dx" / "call lmul" / "add sp,*8." ('/' and '%', and a quotient or
- * remainder on the left, inferred the same way). Not under an LTOI (only
- * the low words are used there - see Val's `lowonly`). */
+ * remainder on the left, inferred the same way). A '+' not under an LTOI
+ * (only the low words are used there - see Val's `lowonly` and
+ * lowword_region()); a '*', '/' or '%' there too - see below. */
 static int is_lspill(const ETree *t, int i)
 {
     const ENode *n = &t->v[i];
     if (n->type != TY_LONG || n->kid[0] < 0 || n->kid[1] < 0 ||
-        !is_litol(t, n->kid[1]) ||
-        (n->parent >= 0 && t->v[n->parent].op == OP_LTOI))
+        !is_litol(t, n->kid[1]))
         return 0;
     const ENode *l = &t->v[n->kid[0]];
     if (l->type != TY_LONG)
         return 0;
     int lcall = (l->op == OP_TIMES || l->op == OP_DIVIDE || l->op == OP_MOD);
+    int lsum = (l->op == OP_PLUS || l->op == OP_MINUS);
     if (n->op == OP_PLUS)
-        return lcall || l->op == OP_PLUS || l->op == OP_MINUS;
+        return (lcall || lsum) &&
+               !(n->parent >= 0 && t->v[n->parent].op == OP_LTOI);
+    /* A '*', '/' or '%' under an LTOI is not distributed (v7's unoptim()
+     * distributes into '+', '-', '&', '|', '^' only) - pushed the same:
+     * p42_long7.s.golden's "x = (int) (l * m * 2);" -> "mov ax,*2." /
+     * "cwd" / "push ax" / "push dx" / [l, m pushed] / "call lmul" / "add
+     * sp,*8." / "push ax" / "push dx" / "call lmul" / "add sp,*8." / "mov
+     * *-16.(bp),ax"; a sum on the left too, computed into DI:SI and
+     * pushed from there - "l = (l + m) * 2;" -> "mov ax,*2." / "cwd" /
+     * "push ax" / "push dx" / "mov si,*-6.(bp)" / "mov di,*-8.(bp)" /
+     * "add si,*-10.(bp)" / "adc di,*-12.(bp)" / "push si" / "push di" /
+     * "call lmul" ('/' and '%' inferred the same). */
     if (n->op == OP_TIMES || n->op == OP_DIVIDE || n->op == OP_MOD)
-        return lcall;
+        return lcall || lsum;
     return 0;
 }
 
@@ -5773,7 +5865,7 @@ static EvalOrder eval_order(const ETree *t, int i)
     if (is_rele(t, i))
         return ORD_RELE;
     if (order_right_first(t, i) || is_relsum(t, i) || is_callsum(t, i) ||
-        is_hardsub(t, i) || is_calltimes(t, i))
+        is_hardsub(t, i) || is_calltimes(t, i) || is_harddiv(t, i))
         return ORD_SPILL;
     if (is_callsumx(t, i))
         return ORD_SPILLX;
@@ -6351,6 +6443,77 @@ static void plan_value(Plan *p, const ETree *t, int i)
  * left unchanged either way. */
 static void fplan_constants(GenState *g, FILE *t1, const ETree *t);
 
+/* Whether the opcode at temp1 offset `off` is in the current
+ * expression's distributed LTOI region - see lowword_region(). */
+static int is_lowword(const GenState *g, long off)
+{
+    for (int k = 0; k < g->nlowword; k++)
+        if (g->lowword[k] == off)
+            return 1;
+    return 0;
+}
+
+/* A 'long' constant to v7's c1: an LCON, or the ITOL of a CON. */
+static int is_lconst_node(const ETree *t, int i)
+{
+    const ENode *n = &t->v[i];
+    return n->op == OP_LCON ||
+           (n->op == OP_ITOL && n->kid[0] >= 0 &&
+            t->v[n->kid[0]].op == OP_CON);
+}
+
+/* v7's unoptim() (c12.c) distributes an LTOI over a 'long' '+' or '-'
+ * (and '&', '|', '^', unary '-' and '~'), turns LTOI of a long NAME into
+ * its low word, of an ITOL into the int itself and of an LCON into a CON:
+ * "(int) ((l - m) + 3)" is the int expression "(l.lo - m.lo) + 3" -
+ * fltprobe/p42_long7.s.golden's "x = (int) ((l - m) + 3);" -> "mov
+ * di,*-6.(bp)" / "sub di,*-10.(bp)" / "add di,*3." / "mov *-16.(bp),di".
+ * Checks that the subtree at `i` is such a region of '+'/'-' whose leaves
+ * are local long variables, ITOLs and long constants, and counts in
+ * `*pairs` the '+'/'-' of two operands neither of which is a constant.
+ * Only such regions are taken (a long variable or an ITOL plus or minus
+ * a constant keeps VK_LOWADD's and `itollow`'s older paths, OP_PLUS);
+ * '&', '|', '^', '-' and '~' have no golden and are left alone. */
+static int lowword_region(const ETree *t, int i, int *pairs)
+{
+    const ENode *n = &t->v[i];
+    if ((n->op == OP_PLUS || n->op == OP_MINUS) && n->type == TY_LONG &&
+        n->kid[0] >= 0 && n->kid[1] >= 0) {
+        if (!lowword_region(t, n->kid[0], pairs) ||
+            !lowword_region(t, n->kid[1], pairs))
+            return 0;
+        if (!is_lconst_node(t, n->kid[0]) && !is_lconst_node(t, n->kid[1]))
+            (*pairs)++;
+        return 1;
+    }
+    if (n->op == OP_NAME && n->type == TY_LONG && n->aux == SC_AUTO)
+        return 1;
+    if (n->op == OP_LCON)
+        return 1;
+    if (n->op == OP_ITOL && n->kid[0] >= 0 && t->v[n->kid[0]].type == TY_INT)
+        return 1;
+    return 0;
+}
+
+/* Records the region lowword_region() accepted, retyping its '+'/'-'
+ * INT in the pre-scan too, so that the order decisions see the int
+ * expression the real compiler compiles. */
+static void lowword_mark(GenState *g, ETree *t, int i)
+{
+    ENode *n = &t->v[i];
+    if (g->nlowword >= (int)(sizeof g->lowword / sizeof g->lowword[0]))
+        gen_fatal("'(int)' of a 'long' expression this large is not yet "
+                  "supported - see src/mutos_cc/README.md");
+    g->lowword[g->nlowword++] = n->off;
+    if (n->op == OP_PLUS || n->op == OP_MINUS) {
+        n->type = TY_INT;
+        lowword_mark(g, t, n->kid[0]);
+        lowword_mark(g, t, n->kid[1]);
+    } else if (n->op == OP_NAME || n->op == OP_LCON) {
+        n->type = TY_INT;
+    }
+}
+
 static int plan_expression(GenState *g, FILE *t1)
 {
     long pos = ftell(t1);
@@ -6460,6 +6623,24 @@ static int plan_expression(GenState *g, FILE *t1)
             continue;
         if (g->nitollow < (int)(sizeof g->itollow / sizeof g->itollow[0]))
             g->itollow[g->nitollow++] = n->off;
+    }
+    /* The divisors is_harddiv() pushes first - see divisor_next(). */
+    g->nspilldiv = 0;
+    for (int i = 0; root >= 0 && i < t.n; i++)
+        if (is_harddiv(&t, i) &&
+            g->nspilldiv < (int)(sizeof g->spilldiv / sizeof g->spilldiv[0]))
+            g->spilldiv[g->nspilldiv++] = t.v[t.v[i].kid[1]].off;
+    /* LTOI distributed over a long sum of two computed terms - see
+     * lowword_region(). */
+    g->nlowword = 0;
+    for (int i = 0; root >= 0 && i < t.n; i++) {
+        int pairs = 0;
+        if (t.v[i].op != OP_LTOI || t.v[i].kid[0] < 0 ||
+            !lowword_region(&t, t.v[i].kid[0], &pairs) || pairs == 0)
+            continue;
+        if (g->nlowword < (int)(sizeof g->lowword / sizeof g->lowword[0]))
+            g->lowword[g->nlowword++] = t.v[i].off;
+        lowword_mark(g, &t, t.v[i].kid[0]);
     }
     for (int i = 0; root >= 0 && i < t.n; i++) {
         const ENode *n = &t.v[i];
@@ -7786,6 +7967,7 @@ static int fnamed(const ETree *t, int i)
 }
 
 static int is_fpreinc(const ETree *t, int i);
+static int fchain_op(const ETree *t, int i);
 
 /* A leaf: a floating operand that can be the memory operand of an
  * operator, with no code of its own before it is loaded (a hoisted
@@ -8271,16 +8453,20 @@ static void plan_fhoist(Plan *p, const ETree *t, int i)
          * stored with a pop, as a statement's is (SEG_FHOIST). */
         int l = n->kid[0], r = n->kid[1];
         /* Its right operand's own hoist is done when that operand is
-         * compiled (the hoisted statement's rcexpr() runs no reorder() of
-         * its own; its template's rcexpr() of the operand does) - inferred.
-         * Of two or more there, the order would be that reorder()'s of the
-         * '+' as a node, left to right, which fsim_plus() does not tell
-         * from an operand's - not taken. */
-        if (count_fpreinc(t, r) > 1)
+         * compiled (the hoisted statement's rcexpr() - called with a
+         * negative register, recurf 1 - runs no reorder() of its own; its
+         * template's rcexpr() of the operand does) - fltprobe/
+         * p44_fltinf6.s.golden's "e = (d += ++w + 1.0) * 2.0;". Of two or
+         * more in a '+' there, that reorder() is the '+''s as a node, left
+         * to right (fchain_direct()): p44's "e = (d += ++w + ++y) * 2.0;"
+         * -> [++w] / [++y] / "fldd w" / "faddd y" / "faddd d" / "fstdp d"
+         * / "flds 2.0" / "fmuld d" / "fstdp e". Two under any other
+         * operator have no golden - not taken. */
+        if (count_fpreinc(t, r) > 1 && fchain_op(t, r) != OP_PLUS)
             gen_fatal("two floating prefix '++'/'--' or '+='/'-=' in the "
                       "right operand of a '+='/'-=' that is itself an "
-                      "operand is not yet supported - see "
-                      "src/mutos_cc/README.md");
+                      "operand, other than in a '+', is not yet supported - "
+                      "see src/mutos_cc/README.md");
         plan_fdata(p, t, r);
         plan_fvalue_r(p, t, l, FREG_DI);
         if (!fleaf(t, r) && n->op == OP_ASMINUS)
@@ -8324,7 +8510,9 @@ static void plan_fhoist(Plan *p, const ETree *t, int i)
  * first sorted with the former. Only a '+' reached as a node's operand
  * (sreorder() with recurf 1) hoists right to left; one compiled by rcexpr()
  * itself - a returned value, a call argument, an arm of a '?:', either
- * side of a ',' - is reorder()ed as a node, left to right (inferred). The
+ * side of a ',' (inferred), the right operand of a hoisted '+='/'-='
+ * (fltprobe/p44_fltinf6 - fchain_direct()) - is reorder()ed as a node,
+ * left to right. The
  * plan emits each hoist where the simulation does it (plan_fhoist() plans
  * one only once), so a '+' chain under a '-' is hoisted before the '-''s
  * left operand is loaded, as v7 does - plan_fsreorder(). Tracked per
@@ -8395,6 +8583,11 @@ static int fchain_direct(const ETree *t, int top)
     if (par < 0)
         return 1;
     int op = t->v[par].op;
+    /* ... and the right operand of a hoisted '+='/'-=' (see
+     * plan_fhoist()): its template's rcexpr() compiles it. */
+    if ((op == OP_ASPLUS || op == OP_ASMINUS) && t->v[par].kid[1] == top &&
+        is_fpreinc(t, par))
+        return 1;
     return op == OP_RFORCE || op == OP_CALL || op == OP_COMMA ||
            op == OP_SEQNC || op == OP_COLON;
 }
@@ -9609,9 +9802,19 @@ static int push_fp_arg(GenState *g, Val v)
      * underflow", the assignment's push silent, the store into e "84:
      * floating ..."; p41's "e = half(d) + 1.0;" -> "45: Floating ..." for
      * the push of d, then "45: floating ..." for the store - see
-     * fp_track(). A negation or a conversion pushed is inferred as the
-     * sum is (computed onto the stack). */
-    g->fp_nocheck = (v.kind == VK_FACC) ? 1 : 2;
+     * fp_track(). A negation, a conversion and a product pushed are
+     * computed onto the stack as the sum is - fltprobe/p45_fltstk5 (lines
+     * 74 to 76: the store into e the only message each); and so is the
+     * push of an operand loaded THROUGH an address, an element or a
+     * member through a pointer (FM_IND - v7's '*' node, not a NAME): p45's
+     * "e = half(a[i]) + 1.0;" and "e = half(q->y) + 1.0;" (lines 62 and
+     * 63) have one message each, for the store, where a float variable's
+     * push (line 48) is checked like a double's. A constant-indexed
+     * element of a file-scope array or a local struct's member is a NAME
+     * to v7's c1 (optim() folds the address) and is inferred checked. */
+    g->fp_nocheck = (v.kind == VK_FACC ||
+                     (v.kind == VK_FMEM && (v.fonstk || v.fmode == FM_IND)))
+                        ? 1 : 2;
     ins1(g, "call", o_sym("fstdp"));
     g->nfloat = 1;
     return 4;
@@ -9985,6 +10188,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                           "int/char/long/pointer/struct locals are covered "
                           "so far)", type);
             int offset = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG && is_lowword(&g, g.op_off)) {
+                /* Its low word only - see lowword_region(). */
+                push_val(&g, val_mem(offset + MCC_SZINT));
+                break;
+            }
             Val mv = val_mem(offset);
             /* A long variable a CBRANCH tests for truth - see Val's
              * `ltest`. */
@@ -10063,6 +10271,11 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_LONG)
                 gen_fatal("LCON of type %d not yet supported (only "
                           "TY_LONG is covered so far)", type);
+            if (is_lowword(&g, g.op_off)) {
+                /* Its low word, a CON - see lowword_region(). */
+                push_val(&g, val_imm((int16_t)lo));
+                break;
+            }
             Val v = {0};
             v.kind = VK_LCON;
             v.imm = lo;
@@ -10103,6 +10316,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_INT && type != TY_UNSIGN)
                 gen_fatal("LTOI to type %d not yet supported (only "
                           "TY_INT and TY_UNSIGN are covered so far)", type);
+            if (is_lowword(&g, g.op_off))
+                break;      /* computed as an int - see lowword_region() */
             Val v = pop_val(&g);
             if (v.lowonly) {
                 /* Computed as a word already - see Val's `lowonly`. */
@@ -10260,6 +10475,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             if (type != TY_LONG)
                 gen_fatal("ITOL to type %d not yet supported (only "
                           "TY_LONG is covered so far)", type);
+            if (is_lowword(&g, g.op_off))
+                break;      /* the int itself - see lowword_region() */
             int uns = 0;
             for (int k = 0; k < g.nitolu; k++)
                 if (g.itolu[k] == g.op_off)
@@ -10309,6 +10526,23 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 c.imm = (int16_t)v.imm;
                 c.offset = c.imm < 0 ? -1 : 0;
                 c.fromu = 1;
+                push_val(&g, c);
+                break;
+            }
+            if (v.kind == VK_IMM && !uns && (int16_t)v.imm < 0) {
+                /* A NEGATIVE int constant widened is an LCON to v7's
+                 * c1 - optim() (c12.c) turns "ITOL of a CON < 0" into
+                 * one - so an assignment loads its two words, as "l +=
+                 * -5" does (OP_ASPLUS): fltprobe/p42_long7.s.golden's "l
+                 * = -300;" -> "mov si,#-300." / "mov di,*-1." where "l =
+                 * 300;" is "mov ax,#300." / "cwd" / "mov di,dx" / "mov
+                 * si,ax". (The operand of a '+', '-', '&', ... keeps the
+                 * branch above, whose consumers tell the two apart by
+                 * the sign.) */
+                Val c = {0};
+                c.kind = VK_LCON;
+                c.imm = (int16_t)v.imm;
+                c.offset = -1;
                 push_val(&g, c);
                 break;
             }
@@ -10397,6 +10631,8 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
         case OP_PLUS:
         case OP_MINUS: {
             int type = c1_read_num(temp1, "temp1");
+            if (type == TY_LONG && is_lowword(&g, g.op_off))
+                type = TY_INT;  /* see lowword_region() */
             if (type == TY_DOUBLE) {
                 gen_fp_binop(&g, op);    /* see "Floating point" */
                 break;
@@ -11261,19 +11497,22 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 break;
             }
             if (op == OP_MINUS && l.kind == VK_REG && !l.regvar &&
-                strcmp(l.reg, "ax") == 0 &&
+                (strcmp(l.reg, "ax") == 0 || strcmp(l.reg, "dx") == 0) &&
                 (r.kind == VK_MEM || r.kind == VK_MEM_CVT ||
                  r.kind == VK_STATIC) && !r.bytev && !r.structv &&
-                !divisor_next(temp1)) {
+                !divisor_next(&g, temp1)) {
                 /* A value in AX - a call's - minus a variable: subtracted
                  * there ("%n,aw": F, "sub A2,R") - fltprobe/p39_elem7.s.
                  * golden's "x = f(1) - x;" -> [f(1)] / "sub ax,*-16.(bp)" /
                  * "mov *-16.(bp),ax" (a product or a quotient on the left
-                 * inferred the same way, as for '+'). As a divisor it is
-                 * still moved into DI first, as before (where "idiv" needs
-                 * AX for the dividend - no golden either way). */
-                ins2(&g, "sub", o_reg("ax"), o_val(r));
-                push_val(&g, val_reg("ax"));
+                 * inferred the same way, as for '+'); a remainder in DX,
+                 * F's register for it - p43_elem8.s.golden's "x = c % d -
+                 * x;" -> "idiv *-22.(bp)" / "sub dx,*-16.(bp)" / "mov
+                 * *-16.(bp),dx". As a divisor it is still moved into DI
+                 * first, as before (where "idiv" needs AX for the dividend
+                 * - no golden either way). */
+                ins2(&g, "sub", o_reg(l.reg), o_val(r));
+                push_val(&g, val_reg(l.reg));
                 break;
             }
             if (op == OP_PLUS && r.kind == VK_REG && !r.regvar && !r.postfix &&
@@ -11491,7 +11730,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
             }
             if (r.kind == VK_IMM && l.kind == VK_REG && !l.regvar &&
                 (strcmp(l.reg, "ax") == 0 || strcmp(l.reg, "dx") == 0) &&
-                !divisor_next(temp1)) {
+                !divisor_next(&g, temp1)) {
                 /* A value computed into AX - a product, a quotient, a
                  * call's - shifted by a constant where it is (v7's F: the
                  * left operand's register is the working one, no move) -
@@ -12988,7 +13227,7 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                  * shifted there (see OP_LSHIFT). */
                 if (ax_side.kind == VK_REG && !ax_side.regvar &&
                     (strcmp(ax_side.reg, "ax") == 0 ||
-                     strcmp(ax_side.reg, "dx") == 0) && !divisor_next(temp1)) {
+                     strcmp(ax_side.reg, "dx") == 0) && !divisor_next(&g, temp1)) {
                     emit_const_shift(&g, "sal", ax_side.reg,
                                      exact_log2(imul_side.imm));
                     push_val(&g, val_reg(ax_side.reg));
@@ -13081,6 +13320,13 @@ int c1_generate(FILE *temp1, FILE *temp2, FILE *out)
                 if (l.kind == VK_IND) {
                     ins2(&g, "mov", o_reg(l.reg), o_val(l));
                     l = val_reg(l.reg);
+                }
+                if ((l.kind == VK_MEM || l.kind == VK_STATIC) && !l.bytev &&
+                    !l.structv && !(g.reserved & RB_DI)) {
+                    /* A variable: v7's F into the working register first -
+                     * see is_harddiv(). */
+                    load_into_di(&g, l);
+                    l = val_reg("di");
                 }
                 if (l.kind != VK_REG || strcmp(l.reg, "ax") == 0 ||
                     strcmp(l.reg, "dx") == 0)

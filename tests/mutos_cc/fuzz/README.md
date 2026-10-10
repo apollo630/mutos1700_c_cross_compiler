@@ -53,7 +53,7 @@ initialized char array), and `04_funcs/05_staticvar` and all three
 Every round-1 `fltprobe` golden runs too (`ltof`, `.double` data and
 `16.+_ga`-style addresses were added for them) and returns its program's
 value - `p2_arith` 16, the real compiler's `i *= e` being `i * (int)e` -
-and so do 40 of the 45 `fltprobe` goldens of rounds 1 to 10 (round 7's
+and so do 43 of the 49 `fltprobe` goldens of rounds 1 to 11 (round 7's
 `p24` 174, `p25` 153, `p26` 238, `p27` 24 since `loop .-4` - a long shifted
 by 3 or more - and the carry of `neg` - `sbb di,*0` after a long's
 negation - are modelled, 2026-10-04; round 8's `p29` 50, `p30` 9, `p31`
@@ -62,9 +62,10 @@ negation - are modelled, 2026-10-04; round 8's `p29` 50, `p30` 9, `p31`
 `p35` 856 and `p36` 133, 2026-10-08; round 10's `p38` 525 - with a
 compound shift's `jz .+16`, which with a count of 0 jumps into the middle
 of a local's three-byte store and is refused then - `p39` 1141 and `p40`
-143, 2026-10-09): `p19_open3`
+143, 2026-10-09; round 11's `p42` 9554, `p43` 1100 and `p44` 120,
+2026-10-10): `p19_open3`
 is invalid assembly from line 229 on, and `p21_fltexp`, `p28_fltstk`,
-`p37_fltstk3` and `p41_fltstk4` stop with "'fstdp' with an empty floating-point stack" where the real
+`p37_fltstk3`, `p41_fltstk4` and `p45_fltstk5` stop with "'fstdp' with an empty floating-point stack" where the real
 compiler's own code pops its floating-point stack twice (`half(d = 3.0)` -
 the compiler reported it too); with that one store corrected `p21`
 returns 60.
