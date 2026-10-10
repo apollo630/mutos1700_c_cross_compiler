@@ -104,14 +104,15 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 `fltprobe/` is not part of the corpus either: floating-point probe programs
 with their own `Makefile.mutos` and real-hardware goldens (see
 `fltprobe/README.md`) - a first round of nine, a second, a third, a
-sixth, a ninth, a tenth, an eleventh and a twelfth of four, a fourth and
-a fifth of three, a seventh and an eighth of five, all byte-exact (they
-stay here rather than joining `08_float`; `p21_fltexp`, `p28_fltstk`,
-`p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5` and `p49_fltstk6` together
-with the real compiler's own error messages, see below) but `p19_open3`,
-whose `.s.golden` ends in the real compiler's own invalid output (see
-below), and a thirteenth round of four (`p50`..`p53`) whose goldens are
-still to be generated. Unlike `fuzz/`, it
+sixth, a ninth, a tenth, an eleventh, a twelfth and a thirteenth of
+four, a fourth and a fifth of three, a seventh and an eighth of five, all
+byte-exact (they stay here rather than joining `08_float`; `p21_fltexp`,
+`p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`,
+`p49_fltstk6`, `p52_fltinf8` and `p53_fltstk7` together with the real
+compiler's own error messages, see below) but `p19_open3`, whose
+`.s.golden` ends in the real compiler's own invalid output (see below),
+and a fourteenth round of four (`p54`..`p57`) whose goldens are still to
+be generated. Unlike `fuzz/`, it
 does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
 category, and `run_goldens.sh` skips each file until it has goldens - one
 with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
@@ -132,14 +133,16 @@ to the refusal to be exactly the golden's leading valid lines (category
 
 `c1_errors.txt` lists the goldens for which the real compiler's `c1`
 reported errors - and wrote the whole `.s` all the same (`cc -S` keeps
-it; `c1` exits with status 1). At present six: `fltprobe/p21_fltexp`,
+it; `c1` exits with status 1). At present eight: `fltprobe/p21_fltexp`,
 whose `f = half(d = 3.0)` the real compiler compiles into code that pops
 the floating-point stack twice, and whose `c1` says so - "56: floating
 point stack underflow", "57: Floating point stack underflow" - and
-`fltprobe/p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5` and
-`p49_fltstk6`, the same wrong code on purpose, twelve, seventeen,
-twenty-three, twenty-three and twenty-six messages from a model of that
-stack which is never reset.
+`fltprobe/p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`,
+`p49_fltstk6` and `p53_fltstk7`, the same wrong code on purpose, twelve,
+seventeen, twenty-three, twenty-three, twenty-six and five messages from a
+model of that stack which is never reset, and `fltprobe/p52_fltinf8`,
+twenty-two "Floating point stack overflow; simplify expression" - the
+values its own `fstd`s leave pile up past the model's six.
 For a
 listed file `run_goldens.sh` requires `mutos_c1` to exit with a nonzero
 status, to print exactly the listed messages and to write exactly the

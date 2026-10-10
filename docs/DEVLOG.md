@@ -8294,6 +8294,170 @@ neighbours of every new rule) each give the host C compiler's value (`h1`
 `p51` 434, `p52` 711; with the refused statements taken out `p50` 1515,
 `p51` 397).
 
+### The round-13 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-10)
+
+The four round-13 programs (`p50_long9`, `p51_elem10`, `p52_fltinf8`,
+`p53_fltstk7`) came back in commit `1b97d3e`, all four kinds of file, with
+`round13.log`: five messages from `cc -S p53_fltstk7.c` (as planned) and -
+not planned - twenty-two from `cc -S p52_fltinf8.c`, "Floating point
+stack overflow; simplify expression" (its `Makefile.mutos` line got its
+`-` with the goldens, so `make` went on). `.i`, `.1` and `.2` were
+byte-exact for all four already; `mutos_c1` refused `p50` and `p51` (over
+the refused statements they were written with), gave `p52` four wrong
+stores and a wrong hoist order and none of its messages, and `p53` the
+right `.s` with two of its five messages in the wrong case. Now all four
+are byte-exact at every stage, `p52` and `p53` with every message
+(`tests/mutos_cc/c1_errors.txt`), and the 124 golden inputs before them are
+unchanged. Of some sixty shapes compiled by inference, twelve were wrong,
+from seven rules - round 12 had corrected eleven by eight - so the series
+goes on (5 below).
+
+**1. `long` shapes** (`p50_long9`). Matched as inferred: thirteen of the
+fourteen (`(int) (i - (l - m))` and `(int) (5 - (l - m))` - the left word
+or constant into DI first, the difference into SI -, `(int) (l - (m - n) -
+i)`, `(int) ((l + m) - (l - n))`, `(int) (l ^ m)` - `xor di,m` -, `(int) ((l
+& m) + i)`, `(int) (i + (l | m))`, `(l * m) * n`, `(l - m) / n`, `(l + m)
+% n` - n pushed first -, `(l >> 2) + 3`, `(l << i) + 7`, `(l << 2) + m`).
+Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `x = (int) (l - (m + i))` | `mov di,*-6.(bp)` / `mov si,*-18.(bp)` / `add si,*-10.(bp)` / `sub di,si` / `mov *-20.(bp),di` - i FIRST, m's low word added to it; `mutos_c1` had `mov si,m` / `add si,i`. v7's `unoptim()` starts with `tree->tr1 = optim(tree->tr1)`: the long tree under the LTOI is `optim()`ed - acommute()d - BEFORE the LTOI is distributed, and in the long `m + ITOL(i)` the ITOL has degree 2 (`islong()`), m 0, so `insert()` puts the ITOL first; the int `optim()` after the distribution keeps that order, the degrees then being equal (0 and 0). `lowword_swap()` marks a commutative node of the region (`+`, `&`, `\|`, `^`) with a long variable on the left and an int variable widened on the right (`GenState.lowswap`), and the int handler exchanges its two memory operands (`&`, `\|`, `^` inferred) |
+| `x = (int) (-l + m)` | `mov di,*-6.(bp)` / `neg di` / `add di,*-10.(bp)` / `mov *-20.(bp),di` - one word: `unoptim()` distributes the LTOI over a NEG (and a COMPL) as over a `+`. `lowword_region()` takes a unary `-` or `~` of a long variable or of a region (`~` inferred), OP_NEG/OP_COMPL treat it as the int one (refused before) |
+| `l = lsub(l, m) * n` | `mov di,*-14.(bp)` / `push di` / `mov di,*-16.(bp)` / `push di` / `mov di,*-10.(bp)` / `push di` / `mov di,*-12.(bp)` / `push di` / `mov di,*-6.(bp)` / `push di` / `mov di,*-8.(bp)` / `push di` / `call _lsub` / `add sp,*8.` / `push ax` / `push dx` / `call lmul` / `add sp,*8.` / `mov di,dx` / `mov si,ax` - n pushed first (`%n,n`), the call's DX:AX pushed from there as a helper's is: `is_lspill()` takes a long function's result on the left of a `*`, `/`, `%` (`/`, `%` and a constant on the right inferred), `finish_call()` keeps it in DX:AX for SEG_LSPILL's `keep` (the CALL's offset now travels in SEG_CALL's `end`). And the arguments: a long VARIABLE is pushed in two words through DI, low word first - `mutos_c1` had pushed `*-12.(bp)`, its high word, alone (`add sp,*4.`): silently wrong code for any long variable passed, no golden had one. `push_call_arg()` now takes a VK_MEM marked `longv` (OP_NAME of TY_LONG) that way |
+| `l = n * (l + m)` | `mov di,*-14.(bp)` / `push di` / `mov di,*-16.(bp)` / `push di` / [l + m into DI:SI] / `push si` / `push di` / `call lmul` - `acommute()` puts the sum (degree 2) ahead of n (0), so it is `(l + m) * n`: `is_lspillx()` (`ORD_LSPILLX`) pushes the variable first and exchanges the two for the handler. A quotient, a remainder, a difference and a call on the right inferred the same; a constant on the left of a long `*` stays refused, as `3 * m` is |
+| `l = (l + m) << 2` | [l + m into DI:SI] / `sal si,*1` / `rcl di,*1` / `sal si,*1` / `rcl di,*1` / `mov *-6.(bp),si` / `mov *-8.(bp),di` - shifted where it was computed: `gen_long_shift()` takes a long in DI:SI too (a right shift and a count in a variable inferred) |
+
+**2. Int shapes** (`p51_elem10`). Matched as inferred: twenty-five of the
+thirty (`a - (c - d)`, `a - (c + 7)`, `5 - (c + d)`, `a - (c < d)`, `a - (c
+> 2) * 4`, `f(1) - (c + d)`, `(c < d) - (a - s)`, `(a + c) - (d - s)` - all
+`%n,e` -, `c % d + 1` and `c % d - 1` - `inc dx`, `dec dx` -, `c % d +
+b[i]`, `c / d - b[i]`, `c / d + b[i]`, `y / (c + d)`, `y % (c << 1)`, `b[i]
+/ (c - d)`, `y / (-c)`, `(c + d) % (a - s)` - every divisor pushed -, `x -
+f(1) * 2`, `f(1) * 3 + f(2) * 2`, `c * 5 + f(1)`, `c * d + f(1) * 4`, `c %
+d * 3`, `c % d + c % s`, `f(1) * 3 - f(2) * 2`). Corrected, by four rules,
+and settled:
+
+| Source | Golden |
+|---|---|
+| `x = x - c * d;` | `mov di,*-16.(bp)` / `mov ax,*-20.(bp)` / `imul *-22.(bp)` / `sub di,ax` / `mov *-16.(bp),di` - `%n,e`: x into DI first (F), the product (degree 2, within the registers left) after it, subtracted from AX; round 12 had inferred the product first. `is_sube()` takes a product of two variables on the right (`is_leafprod()`) |
+| `x = c % d - (a - s);` | `mov ax,*-20.(bp)` / `cwd` / `idiv *-22.(bp)` / `mov di,dx` / `mov si,*-24.(bp)` / `sub si,*-26.(bp)` / `sub di,si` / `mov *-16.(bp),di` - `%n,e` with a remainder on the left: computed, moved into DI (F), the difference into SI. `is_sube()` takes a quotient or remainder of two leaves on the left (a quotient inferred, `mov di,ax`; and a product of two variables, `c * d - (a - s)`), `plan_leftdi()` moves DX as it moves AX |
+| `x = a - (c - d) * 2;` | `mov di,*-24.(bp)` / `mov si,*-20.(bp)` / `sub si,*-22.(bp)` / `sal si,*1` / `sub di,si` / `mov *-16.(bp),di` - `%n,e` again: a difference of two leaves times a power of two keeps its degree (1). `is_sube()` takes it; OP_TIMES shifts a sum computed into SI there while DI is busy |
+| `x = f(1) / (c - d);` | `mov di,*-20.(bp)` / `sub di,*-22.(bp)` / `push di` / [f(1)] / `mov ax,ax` / `cwd` / `pop cx` / `idiv cx` / `mov *-16.(bp),ax` - the divisor pushed first, as every other computed divisor; round 12 had left a call's value as the dividend on the older path (`idiv di`). `is_harddiv()` takes a call (and a product of two variables, a quotient or a remainder - inferred: `mov ax,ax`, `mov ax,dx`), and the spilled division takes its dividend in AX or DX |
+| `x = f(1) * 4 + f(2) * 8;` | [f(1)] / `push ax` / [f(2)] / `sal ax,*1` / `pop bx` / `add ax,bx` / `sal ax,*1` / `sal ax,*1` / `mov *-16.(bp),ax` - v7's `distrib()` factors the two multiples - `f(2) * 8` divided by `f(1) * 4`'s 4: `(f(2) * 2 + f(1)) * 4`, the calls' degrees equal (10, a power of two keeping the call's), so in that order, the right one pushed (`%n,n`). `is_distrib()` takes a chain of int calls (and variables), two or more of them times powers of two, ahead of `is_callsum()` (`is_distrib_call()`); `plan_shift()` shifts AX. Mixing calls and comparisons is still refused |
+| `x = c % d & b[i];` | `lea di,*-12.(bp)` / `mov si,*-14.(bp)` / `sal si,*1` / `add di,si` / `push di` / `mov ax,*-20.(bp)` / `cwd` / `idiv *-22.(bp)` / `pop bx` / `and dx,(bx)` - as `c % d - b[i]` (p47): `is_pushaddr()` takes a quotient or remainder on the left of `&`, `\|`, `^` (`\|`, `^` inferred) |
+| `x = c % d \| f(1);`, `x = c % d + f(1) * 2;` | [c % d] / `push dx` / [f(1)] / `pop bx` / `or ax,bx`; [c % d] / `push dx` / [f(1)] / `sal ax,*1` / `pop bx` / `add ax,bx` - `acommute()` puts the call (or its product - 10 or 11) ahead of the remainder, so the remainder, by then the right operand, is computed and pushed first: `is_callsumx()` takes a quotient or remainder left of a call's product, `is_callbitx()` the same for `&`, `\|`, `^` (`&`, `^` inferred) |
+
+**3. Floating shapes** (`p52_fltinf8`). Matched as inferred: eleven of the
+sixteen (`e = (d += ++w * ++y) + 1.0` and `e = (d += ++w - ++y) + 1.0` -
+left to right -, `e = (d += ++w + ++y) - 1.0`, `e = 1.0 + (d += ++w +
+++y)`, `e = (d += --w + --y + 1.0) + 2.0`, `e = (d += ++w + ++y) + (v -=
+1.0)`, `x = (d -= ++w + ++y) < 0.0` - d loaded first, `fstd` -, `x = 2.0 <
+(d += ++w + ++y)`, `x = (d += ++w + ++y) == (v += 1.0)` - d kept, v popped
+-, `e = (d += ++w + ++y) / 2.0`, `e = (d *= ++w + ++y) + 1.0` - not
+hoisted, `++y` first). Corrected and settled:
+
+| Source | Golden |
+|---|---|
+| `x = (d += ++w + 1.0) > 2.0` | [++w] / `flds 1.0` / `faddd w` / `faddd d` / `fstd d` / `flds 2.0` / `fldd d` / `fcmp` - kept (`fstd`) with one hoist inside; round 12 had taken only two hoists that way |
+| `x = (d += w + y) > 2.0`, `x = (d += a[i] * e) > 2.0` | `fldd w` / `faddd y` / `faddd d` / `fstd d` / ...; [a[i]] / `fmuld e` / `faddd d` / `fstd d` / ... - kept with no hoist inside at all |
+| `if ((d += ++w + ++y) > 2.0)` | [++w] / [++y] / `fldd w` / `faddd y` / `faddd d` / `fstdp d` / `flds 2.0` / `fldd d` / `fcmp` / `sahf` / `bge L4` - popped under a condition, the same expression as p48's kept one |
+
+So it is not the hoists. Every comparison whose value is taken keeps the
+`+=` of a non-leaf right operand, and a condition pops it, as `x = (d +=
+1.0) > 2.0` (p40 - a constant) does. Read with v7's code: `cexpr()`
+compiles a comparison's value by `cbranch()` - but only after the
+`rcexpr(..., regtab)` that reached it has run `reorder()`, which hoists the
+`+=` (`rcexpr(optim(p), efftab, ~reg)`); a condition goes to `cbranch()` and
+`cctab` directly. On the value path the efftab template evidently fails
+for a right operand beyond an addressable one (v7's `dcalc()` above 12)
+and `rcexpr()` falls back to regtab, which keeps the value in its
+register. `plan_fhoist()`'s `keepv` is now: the `+=`'s parent a floating
+comparison that `frel_branch()` does not take for `cbranch()` (a CBRANCH's
+condition - `Plan.cbr_root` -, an operand of `!`, `&&`, `||`, a `?:`'s
+condition), and a right operand `fdcalc_leaf()` does not take (a NAME, a
+constant, `*p` - inferred). The mechanism is an inference (the MUTOS code
+table is not known); the shapes are not.
+
+| Source | Golden |
+|---|---|
+| `e = -(d += ++w + ++y)` | [++w] / [++y] / `fldd w` / `faddd y` / `faddd d` / `fstdp d` / `fldd d` / `fneg` / `fstdp e` - hoisted out of the negation (v7's `reorder()` of the NEG `sreorder()`s its operand), its right operand left to right (hoisted by a `sreorder()` alone - `plan_fhoist()`); `mutos_c1` had computed it in place (`fstd d` / `fneg`) after `++y` first. `is_fpreinc()` takes a NEG parent, OP_NEG's plan `sreorder()`s its operand |
+
+**4. The model's top, and which stores report in upper case** (`p52`,
+`p53`). `p52`'s twenty-two messages, lines 74 to 88: its value-comparisons
+on lines 57, 60, 63, 71, 74 and 78 each leave one value (`fstd`, used by
+nothing), and the model counts them - four by line 74, whose `fldd d`
+before `fcmp` is the seventh value: one message; line 78 (`flds 2.0` at 7,
+`fldd d` at 8) two; from then on the model is at six between statements,
+and every push of every statement reports (`itof` included - `r = r + x + d
+* 4.0;` at 79 twice, `d = 1.5;` once, `e = (d += ++w + ++y) / 2.0;` four
+times: the two increments' loads, the hoisted `+=`'s, d's). The depth goes
+on past six (78's second message). So the model holds six values - v7's c1
+has the PDP-11's six floating registers - and `fp_track()` reports
+"Floating point stack overflow; simplify expression" for a push beyond
+`FP_STACK_MAX`.
+
+| `p53` | statement | messages |
+|---|---|---|
+| `f1` | `half(d = 3.0);` | - (one below the bottom) |
+| `f2` | `d = 1.5;`, `w = 4.0;`, `y = 10.0;` | 38, 39, 40 (lower case - assignments' stores) |
+| `f2` | `x = (d += ++w + ++y) > 2.0;` | 41 twice, UPPER case - the stores of the hoisted `++w` and `++y` (inferred: lower case); then `fstd d` leaves its value, counted (as inferred), so the model is back at the bottom: `fcmp` and everything after it silent |
+
+A compound assignment's or increment's store reports in upper case, as a
+stack-with-stack operator's pop does; an assignment's in lower case
+(`fp_compound`, set around `gen_fp_asop()` and `gen_fp_incdec()`). Whether
+it is the operator or the hoist that decides is an inference - no golden
+has an unhoisted compound store below the bottom; `p57_fltstk8` asks.
+(`p53`'s golden runs under `x86sim.py`: `main()` calls f2 before f1, and
+f2's leftover absorbs f1's double pop - 5.)
+
+**5. Round 14.** Round 12 was to end the series unless it corrected more
+than a handful, and round 13 corrected twelve inferences by seven rules,
+with a silent wrong-code bug (a long variable passed as an argument) and
+the model's top besides. So a fourteenth round asks about the neighbours:
+`p54_long10` (other commutative nodes of a distributed LTOI with an int
+widened, a negation or complement of a region, a long call's result under
+`/`, `%` and a constant, a variable times a quotient, remainder,
+difference or call, shifts of a computed long by a variable - and four
+refusals), `p55_elem11` (`%n,e` with a product, quotient or remainder on
+the left or a product or scaled sum on the right, a call, product,
+quotient or remainder as a dividend, `distrib()` over three calls, with a
+variable, of equal multiples and under a `-`, quotients and remainders
+next to calls and elements under `&`, `|`, `^` - and one refusal),
+`p56_fltinf9` (the value path against `cbranch()` - a leaf right operand,
+`!`, `?:`, `&&`, `while`, an int converted, a comparison's value in a sum
+and stored into a double - and negations of other hoists) and `p57_fltstk8`
+(not a program to run: an unhoisted compound store, an increment's and
+`fdup`'s pushes, below the bottom and at the top).
+
+**Verification.** `make test`: 111 files byte-exact at all four stages
+(62/62 corpus, 48 `fltprobe`, `11_kernel/01_delay`), `p19_open3` in
+category 8, `p21_fltexp`, `p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`,
+`p45_fltstk5`, `p49_fltstk6`, `p52_fltinf8` and `p53_fltstk7` in category
+9 (2, 12, 17, 23, 23, 26, 22 and 5 messages, exit status 1, the `.s`
+byte-exact), 0 mismatches, zero warnings; `mutos_as` 76/76,
+`check_floatdat.sh` 13/13, 127/127 compiler goldens assemble and
+`p19_open3`'s is refused as listed, `mutos_cpp` 5/5. Against the previous
+build (`1b97d3e`) over all 128 golden inputs: identical output but for
+`p50`..`p53`. `fuzz_c.py` against `1b97d3e`: 28,000 programs (seeds 1, 7
+`--scope`, 3 scalars only, 21, 41 `--scope`, 55 scalars only), 0 WRONG, 0
+BAD, no regression, 44 now correct that were refused (a quotient or
+remainder `&`, `|` or `^` an element - its address now pushed first; all
+seven of seed 1's are this), 3 changed and still correct (a remainder as
+the dividend of a computed divisor, now pushed first); 1,500 more (seed
+31) through ASan/UBSan builds: 0 WRONG, 0 BAD, no sanitizer report;
+ASan/UBSan builds over the 128 golden inputs, the four round-14 probes and
+the hand-written programs: no reports, output identical. `x86sim.py`: 50
+of the 57 `fltprobe` goldens run (`p50` 1870, `p51` 434, `p52` 711, `p53`
+5). `make check-libcatof`: 0 differences. Hand-written programs (`h1`..`h3`:
+the neighbours of every new rule - region swaps and negations, long calls
+under every helper, variables times computed longs, shifted sums; every
+new `%n,e` and divisor shape, `distrib()` over calls, quotients and
+remainders with calls and elements; value-comparisons against conditions,
+negated hoists) each give the host C compiler's value (`h1` 639, `h2` 499,
+`h3` 359); the round-14 probes give theirs with their refused statements
+taken out (`p54` 701, `p55` 686; `p56` compiles whole, 179).
+
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
 
 **Status:** not started (no `c2` work has begun). This section currently covers a
