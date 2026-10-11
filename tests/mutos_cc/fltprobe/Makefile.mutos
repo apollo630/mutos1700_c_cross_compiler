@@ -418,7 +418,7 @@ p55_elem11.1: p55_elem11.c
 	$(CPP) -P p55_elem11.c > p55_elem11.i; $(C0) p55_elem11.i p55_elem11.1 p55_elem11.2
 
 p56_fltinf9.s: p56_fltinf9.c
-	$(CC) -S p56_fltinf9.c
+	-$(CC) -S p56_fltinf9.c
 
 p56_fltinf9.1: p56_fltinf9.c
 	$(CPP) -P p56_fltinf9.c > p56_fltinf9.i; $(C0) p56_fltinf9.i p56_fltinf9.1 p56_fltinf9.2
