@@ -1,0 +1,46 @@
+cc -S p54_long10.c
+/lib/cpp -P p54_long10.c > p54_long10.i; /lib/c0 p54_long10.i p54_long10.1 p54_long10.2
+cc -S p55_elem11.c
+/lib/cpp -P p55_elem11.c > p55_elem11.i; /lib/c0 p55_elem11.i p55_elem11.1 p55_elem11.2
+cc -S p56_fltinf9.c
+76: Floating point stack overflow; simplify expression
+78: Floating point stack overflow; simplify expression
+78: Floating point stack overflow; simplify expression
+79: Floating point stack overflow; simplify expression
+80: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+81: Floating point stack overflow; simplify expression
+82: Floating point stack overflow; simplify expression
+83: Floating point stack overflow; simplify expression
+84: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+85: Floating point stack overflow; simplify expression
+86: Floating point stack overflow; simplify expression
+86: Floating point stack overflow; simplify expression
+*** Error code 1 (ignored)
+/lib/cpp -P p56_fltinf9.c > p56_fltinf9.i; /lib/c0 p56_fltinf9.i p56_fltinf9.1 p56_fltinf9.2
+cc -S p57_fltstk8.c
+52: floating point stack underflow
+53: Floating point stack underflow
+54: Floating point stack underflow
+55: Floating point stack underflow
+56: floating point stack underflow
+57: floating point stack underflow
+58: floating point stack underflow
+59: Floating point stack underflow
+60: floating point stack underflow
+61: floating point stack underflow
+62: floating point stack underflow
+65: floating point stack underflow
+65: Floating point stack underflow
+74: floating point stack underflow
+75: floating point stack underflow
+76: floating point stack underflow
+83: Floating point stack overflow; simplify expression
+84: Floating point stack overflow; simplify expression
+*** Error code 1 (ignored)
+/lib/cpp -P p57_fltstk8.c > p57_fltstk8.i; /lib/c0 p57_fltstk8.i p57_fltstk8.1 p57_fltstk8.2
