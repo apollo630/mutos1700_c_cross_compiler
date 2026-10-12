@@ -2112,11 +2112,11 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
    messages, `p53` with five). Left: `fltprobe`'s round 14 (`p54`..`p57`)
    - the neighbours of round 13's twelve corrections (round 12 had been
    planned as the series' last unless it corrected more than a handful;
-   rounds 12 and 13 both did) - prepared, **not run now**: the original
-   `c1` binary is read first (its code tables and the tree optimizer's key
-   functions, see `STATUS.md`'s "Next up"), because shape-by-shape
-   inference does not converge, and what it shows decides whether
-   `c1_gen.c` becomes table-driven. On
+   rounds 12 and 13 both did) - run on the hardware, goldens present, not
+   reproduced by `c1_gen.c`: the original `c1` binary was read first
+   (2026-10-12), because shape-by-shape inference does not converge, and
+   it decided the question - `mutos_c1` becomes a port of the real `c1`
+   (`../../docs/C1_PORT_PLAN.md`), which is to produce round 14 too. On
    the assembler side a non-float constant is no longer blocked
    outright: `mutos_as` re-enacts the real
    assembler's conversion (real-hardware goldens in

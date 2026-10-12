@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-10-10.
+Last updated: 2026-10-12.
 
 ---
 
@@ -95,7 +95,9 @@ producing real MUTOS `a.out` relocatable object files for the 8086/80186/NEC V30
 - **Full regression: 76/76 golden files byte-for-byte identical**, full file compare
   (header + text + data + text-reloc + data-reloc + symtab):
   - `tests/mutos_as/kernel_opt/`: 62/62 clean (includes `mch_insw_outsw.s`, the
-    hardware-parity test for the INSW/OUTSW fix below).
+    hardware-parity test for the INSW/OUTSW fix below - its golden is the real
+    `mch.o`, from `.byte /6d`/`/6f`; the real `as` does not accept `insw`/`outsw`
+    at all, see Milestone 4's "The original binaries").
   - `tests/mutos_as/kernel_nonopt/`: 5/5 clean.
   - `tests/mutos_as/libc_recon/`: 1/1 clean - `ldexp.s`: a source reconstructed
     from the real `libc.a` object `ldexp.o`, which is its golden (see below).
@@ -630,8 +632,10 @@ or a variable times a computed long pushed for `lmul`, a computed long
 shifted in place, a long variable passed in two words, a negation's
 hoists, the floating-stack model's top (six values) and which stores
 report in upper case; a fourteenth round of four probes (`p54`..`p57`),
-for the neighbours of round 13's twelve corrections, waits for real
-hardware. ABI/
+for the neighbours of round 13's twelve corrections, was run on the
+hardware (goldens `148efa3`, `round14.log` `71f0a07`) and is not yet
+handled by `mutos_c1` - left to the port of the real `c1` (see "The
+original binaries" below and "Next up"). ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
@@ -644,6 +648,55 @@ refusal of the other eight diagnosed, none silent), tracked apart from
 the 62/62 figure above - see "Next up" below and `docs/DEVLOG.md`'s
 Milestone 4 section.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### The original binaries: an emulated oracle, `c1`'s tables (verified this session, 2026-10-12)
+
+The original `as`, `c0`, `c1`, `c2`, `cc`, `cpp` and `ld` came from the
+hardware (`mutos_bin/`, commit `e8c7516`; see its `README.md`). They run on
+the modern host under an 8086 emulator - `tests/realbin/` (`make
+check-realbin`, needs the Python module `unicorn`, not part of `make
+test`) - and give the project's goldens back:
+
+- **real `cpp`: 137/137** `.i` goldens (`tests/mutos_cc` and
+  `tests/mutos_cpp/c`); **real `c0`: 132/132** `.1`/`.2` goldens;
+- **real `c1`: 132/132** `.s` goldens, with exactly the messages of
+  `c1_errors.txt` and of `round14.log` (`p56`, `p57`) and exit status 1
+  where it printed any; `p19_open3`'s invalid lines included;
+- **real `as`: 75/76** `.o` goldens - the 76th, `kernel_opt/
+  mch_insw_outsw`, is not the real `as`'s output for its source: the real
+  `as` does not know `insw`/`outsw` and assembles each as an undefined
+  external word, silently; the golden is the real `mch.o` (see Milestone
+  2's table).
+
+Reading the stripped `c1` (`tests/realbin/c1map.txt`, `c1dis.py`): it is
+v7's `c1` ported to the 8086 - 67 functions in v7's source order (v7's
+62 without `oddreg`/`psoct`, plus seven new), v7's data structures, and
+code tables in v7's own `cvopt` encoding with MUTOS assembler text:
+`regtab`, `efftab`, `cctab`, `sptab`, 496 rows and 292 templates, read
+back into v7's `table.s` notation in `tests/realbin/c1_tables.txt`. The
+goldens use 160 of the 496 rows (`check_real.py coverage`). Compared with
+v7 so far: ten functions do what v7's do (`reorder`, `sreorder`, ...),
+seven have small local changes (`main`, `match`, `degree`, `dcalc`,
+`delay`, `acommute`, `optim`), twelve are rewritten for the 8086 and the
+floating-point runtime (`rcexpr`, `cexpr`, `comarg`, `doinit`, ...),
+seven are new; the other 31 are placed, not compared yet. The real `c1`'s own debug traces (options `a`, `b`, `c`,
+`d`, `r`) show its trees before and after `optim()` and every
+`rcexpr`/`cexpr` call; option `s<n>` is the `chkstk` frame threshold.
+Full findings: `docs/DEVLOG.md`'s "The original binaries".
+
+**Decision (2026-10-12): `mutos_c1` becomes a port of the real `c1`**
+(v7's sources, the binary's deltas, the binary's tables generated, not
+typed), built beside `c1_gen.c` and checked against the emulated
+original at four depths - see `docs/C1_PORT_PLAN.md`. Round 14 is left
+to the port.
+
+**`make test` at this commit fails, on round 14 only**: the four
+round-14 goldens are in the tree, `mutos_c1` refuses `p54_long10`,
+`p55_elem11` and `p57_fltstk8` (category 5) and differs on
+`p56_fltinf9` (category 6); everything else as in the round-13 section
+below (111 byte-exact, `p19_open3` in category 8, eight in category 9),
+`mutos_as` 76/76, 131/131 compiler goldens assemble, `mutos_cpp` 5/5.
+Nothing in `src/` changed this session.
 
 ### Real-hardware finding: the real `as` on `p19_open3.s` (2026-10-07)
 
@@ -3817,36 +3870,29 @@ Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
 per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
 is now fully covered (62/62). In order:
 
-1. **The original binaries first; round 14 is not run now** (decided
-   2026-10-10). Rounds 1 to 13 inferred the real compiler's shapes one probe
-   at a time, and the series does not converge: the corrections per round
-   were 7, 7, 3, 11 and 12, round 13 refuted twelve of some sixty
-   inferences and found a silent wrong-code bug no fuzzer run had shown.
-   `c1_gen.c` (~15k lines) is a list of `is_*` predicates, each one a shape
-   seen, not v7's mechanism (`optim()`, `acommute()`, `degree()`,
-   `rcexpr()`/`cexpr()`, the code tables). So the old rule - "a handful or
-   fewer corrections ends the series" - is dropped, and the next step is
-   to get the mechanism from the real compiler itself:
-   1. **Bring the original `c1`** (also `c0`, `as`, `ld`, if possible) from
-      the hardware to the workspace. Nothing of it is in the repo yet.
-   2. **Read it**: the `a.out` header and whether symbols are left;
-      extract the code tables (`efftab`, `regtab`, `cctab`, `sptab`,
-      `instab` and their template strings - data, no disassembly needed;
-      `v7/cc/table.s` is the PDP-11 original to compare the structure
-      with); disassemble the few key functions (`optim`, `acommute`,
-      `degree`, `rcexpr`, `cexpr`, `unoptim`, `fp_track`'s source of the
-      stack messages) and compare them with `v7/cc/c10.c`..`c13.c`. Check
-      the tables against the existing goldens: if they explain them without
-      the `is_*` predicates, the hypothesis holds.
-   3. **Decide with evidence**: a table-driven core replacing or
-      underpinning `c1_gen.c` step by step, or the tables as a reference
-      to correct the predicates by. Either way split `c1_gen.c` into
-      modules (planning, long, floating, int, calls) and add tests for
-      call arguments and `long` arguments - the class of bug round 13 found.
-   4. **Round 14** (for when it is run: `make -f Makefile.mutos round14 2>&1
-      | tee round14.log` in `tests/mutos_cc/fltprobe/`, then `make goldens`
-      in `tests/mutos_cc` - all four kinds of file, and the log). Its files:
-      `p54_long10.c` (other commutative nodes of a
+1. **Port the real `c1`** (decided 2026-10-12 - `docs/C1_PORT_PLAN.md`).
+   Rounds 1 to 13 inferred the real compiler's shapes one probe at a time
+   and did not converge (corrections per round 7, 7, 3, 11, 12; `c1_gen.c`,
+   ~15k lines, a list of `is_*` predicates, each a shape seen). The plan of
+   2026-10-10 - read the original binary first - is carried out:
+   1. **Brought** (`mutos_bin/`, commit `e8c7516`): all seven binaries.
+   2. **Read** (see "The original binaries" above and `docs/DEVLOG.md`):
+      the real `c1` is v7's `c1` ported to the 8086, its code tables are
+      v7's in v7's encoding (`tests/realbin/c1_tables.txt`), and - more
+      than the hypothesis asked - the binary runs under an emulator and
+      reproduces every golden, so it is an oracle for any input.
+   3. **Decided**: a port, steps A to E of the plan - A the reader and
+      the tree printer (checked with the original's option `b`), B the
+      tree optimizer (option `a`), C code generation from the generated
+      tables (options `r`, `c`, `d`, then the `.s`), D differential fuzzing
+      against the emulated original and the nine kernel files, E the
+      switch, `c1_gen.c` deleted. No further work on `c1_gen.c`'s
+      predicates; it stays as it is until E.
+   4. **Round 14 was run** (goldens `148efa3`, `round14.log` `71f0a07`):
+      the emulated original reproduces all four `.s` and both message
+      lists; `mutos_c1` refuses `p54`, `p55` and `p57` and differs on
+      `p56`, so `make test` fails on these four until step C produces
+      them. Its files: `p54_long10.c` (other commutative nodes of a
    distributed LTOI with an int widened, a complement or negation of a
    region, a long call's result divided, modulo or times a constant, a
    variable times a quotient, remainder, difference or call, computed longs
@@ -3864,19 +3910,13 @@ is now fully covered (62/62). In order:
    and of a `+=` under a `*` - all inferred) and `p57_fltstk8.c` (on
    purpose, like `p28`, `p37`, `p41`, `p45`, `p49` and `p53`: unhoisted
    compound stores below the bottom, `fdup` and a call's value at the top
-   - its `cc -S` is expected to report errors, `make` goes on). They are
-      prepared and compile (`p54` 701 and `p55` 686 on the host without
-      their refusals, `p56` 179) but are **not run on the hardware now**; the table analysis answers the same questions
-      mechanically. A hardware run stays useful later as a test of what the
-      tables predict, or if a trip to the machine is made anyway. Rounds 1
-      to 13 are byte-exact (`p19` to line 223, `p21`, `p28`, `p37`, `p41`,
-      `p45`, `p49`, `p52` and `p53` with their messages) - see the sections
-      above and `tests/mutos_cc/fltprobe/README.md`.
-   5. **Meanwhile, no hardware needed**: measure how far the
-      `11_kernel` sources get today (which of the nine fail first, and
-      on what) - items 2, 3 and 6 below take their shapes from the real
-      compiled kernel goldens, which is the work that serves the project's
-      purpose.
+   - its `cc -S` is expected to report errors, `make` goes on).
+   5. **Meanwhile, no hardware needed**: `mutos_c0`'s refusals in
+      `11_kernel` (item 6) - the port can be checked on all nine kernel
+      `.1`/`.2` goldens without them.
+
+   Items 2 to 5 below are `mutos_c1` shapes the port will produce from the
+   real tables; they stay as test cases for it, not as `c1_gen.c` work.
 2. **Int division by a constant** (`x / 4`, `x % 3`): refused today
    ("dividing by an immediate"), although the real kernel goldens show its
    shape - `mov ax,<x>` / `cwd` / `mov cx,*4.` / `idiv cx`
@@ -3970,9 +4010,9 @@ manual/corpus material to check it against.
 | `push #imm16` | `0x68 iw` | implemented — no real corpus sample; cross-checked¹ |
 | `push *imm8` | `0x6A ib` | implemented — no real corpus sample; cross-checked¹ |
 | `insb` | `0x6C` | implemented — no real corpus sample; cross-checked¹ |
-| `insw` | `0x6D` | implemented — **confirmed real** (`mch_insw_outsw.s`) |
+| `insw` | `0x6D` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6d`, `mch_insw_outsw.s`); the real `as` does not accept the mnemonic |
 | `outsb` | `0x6E` | implemented — no real corpus sample; cross-checked¹ |
-| `outsw` | `0x6F` | implemented — **confirmed real** (`mch_insw_outsw.s`) |
+| `outsw` | `0x6F` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6f`, `mch_insw_outsw.s`); the real `as` does not accept the mnemonic |
 | shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹ |
 | `leave` | `0xC9` | implemented — no real corpus sample; cross-checked¹ |
 | `enter framesize,nestlevel` | `0xC8 iw ib` | implemented — no real corpus sample; cross-checked¹ |
@@ -4114,12 +4154,11 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
-   byte-exact): first read the original `c1` binary (its code tables and the
-   key functions of the tree optimizer) instead of probing shape by shape -
-   `fltprobe`'s round 14 (`p54`..`p57`) is prepared but not run now -, then
-   int division by a constant (kernel evidence already in the repo), growing
-   coverage into the `tests/mutos_cc/11_kernel` real-kernel corpus (1/9 so
-   far), and the `mutos_cc` driver - see its "Next up".
+   byte-exact): port the real `c1` (`docs/C1_PORT_PLAN.md` - the original
+   binary is read and runs as an oracle, `tests/realbin/`; round 14's four
+   goldens wait for the port), grow `mutos_c0` into the
+   `tests/mutos_cc/11_kernel` real-kernel corpus (1/9 so far), then the
+   `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string

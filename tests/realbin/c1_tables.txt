@@ -1,0 +1,2866 @@
+/ MUTOS 1700 c1 code tables, read from the original binary
+/ (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py - generated,
+/ do not edit; "make check-realbin" checks it is up to date.
+/
+/ Notation: v7/cc/table.s (the inverse of v7/cc/cvopt.c).
+/   %<left>,<right>: degree class z=0 1=1 c=constant r=register variable
+/   a=addressable e=easy n=any, '*' = must be an indirection; type flag
+/   w b f d l u (word, byte, float, double, long, unsigned).
+/   F, S, H: compute the left operand, the right one, the whole tree
+/   (modifiers: * its operand, S onto the stack, C condition codes only,
+/   1 into R1, ! into this register, d into DX:AX - '!' and 'd' are MUTOS
+/   additions). R, R1: the result register and the second one; R*: the
+/   register used as a base (cexpr moves it to BX unless it is SI or DI).
+/   A1, A2: address of the left/right operand; B1, B2: suffix by type
+/   ('b' char, 's' float, 'd' double); I: instruction from instab (I' its
+/   second form, e.g. inc/dec); #1, #2: offset of an indirection; T: sign
+/   extension (cwd, cbw, sub dx,dx); V: adc/sbb for a long's high word;
+/   X<n>: long relational. MUTOS-only: <U> pushes the compile-time model
+/   of the floating-point stack ("Floating point stack overflow; simplify
+/   expression"), <Q> pops it ("Floating point stack underflow"), <R>
+/   pops it ("floating point stack underflow") and prints 'p' only while
+/   rcexpr's nesting counter (data 000a) is 0; a literal "push"/"pop" in
+/   a template counts nstack.
+
+/ 496 distinct rows, 292 template strings; data offsets:
+/ regtab 334a, efftab 3c9e, cctab 3e66, sptab 40ca
+
+/ ======== regtab (334a)
+/ op 106 load value (list 34a0)
+%a,n		/ row 34a0
+	movB1	R,A1
+%n*,n		/ row 34a6
+	F*
+	movB1	R,#1(R*)
+%al,n		/ row 34ac
+	mov	R+,A1+
+	mov	R,A1
+%nl*,n		/ row 34b2
+	F*
+	mov	R+,#1+2(R*)
+	mov	R,#1(R*)
+%af,n		/ row 34b8
+	lea	ax,A1
+	call	fldB1<U>
+%ad,n		/ row 34be
+	lea	ax,A1
+	call	fldB1<U>
+%nf*,n		/ row 34c4
+	F*
+	lea	ax,#1(R*)
+	call	fldB1<U>
+%nd*,n		/ row 34ca
+	F*
+	lea	ax,#1(R*)
+	call	fldB1<U>
+
+/ op 123 op 123 (list 3498)
+%n,n		/ row 3498
+	F
+	V
+	lea	ax,(R*)
+	call	fldR1<U>
+
+/ op 36 indirect (list 348a)
+%n,n		/ row 348a
+	F
+	V	R+,*2(R*)
+	movR1	R,(R*)
+%n*,n		/ row 3490
+	F*
+	mov	R*,#1(R*)
+	V	R+,*2(R*)
+	movR1	R,(R*)
+
+/ op 30 ++pre (list 34d2)
+%a,1		/ row 34d2
+	I'B1	A1
+	movB1	R,A1
+%a,c		/ row 34d8
+	IB1	A1,A2
+	mov	R,A1
+%e*,1		/ row 34de
+	F*1
+	I'B1	#1(R*1)
+	movB1	R,#1(R*1)
+%n*,1		/ row 34e4
+	F*
+	I'B1	#1(R*)
+	movB1	R,#1(R*)
+%e*,c		/ row 34ea
+	F*1
+	IB1	#1(R*1),A2
+	movB1	R,#1(R*1)
+%n*,c		/ row 34f0
+	F*
+	IB1	#1(R*),A2
+	movB1	R,#1(R*)
+%al,1		/ row 34f6
+	I	A1+,*1
+	V	A1,*0
+	F
+%el*,1		/ row 34fc
+	F*1
+	I	#1+2(R*1),*1
+	V	#1(R*1),*0
+	mov	R+,#1+2(R*1)
+	mov	R,#1(R*1)
+%nl*,1		/ row 3502
+	F*
+	I	#1+2(R*),*1
+	V	#1(R*),*0
+	mov	R+,#1+2(R*)
+	mov	R,#1(R*)
+%af,af		/ row 3508
+	lea	ax,A1
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%ad,ad		/ row 350e
+	lea	ax,A1
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,af		/ row 3514
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1<R>
+%nd*,ad		/ row 351a
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1<R>
+
+/ op 31 --pre: the list of op 30
+/ op 32 ++post (list 3522)
+%a,1		/ row 3522
+	movB1	R,A1
+	I'B1	A1
+%a,c		/ row 3528
+	mov	R,A1
+	IB1	A1,A2
+%e*,1		/ row 352e
+	F*1
+	movB1	R,#1(R*1)
+	I'B1	#1(R*1)
+%n*,1		/ row 3534
+	F*
+	push	#1(R*)
+	I'B1	#1(R*)
+	pop	R
+%e*,c		/ row 353a
+	F*1
+	movB1	R,#1(R*1)
+	IB1	#1(R*1),A2
+%n*,c		/ row 3540
+	F*
+	push	#1(R*)
+	IB1	#1(R*),A2
+	pop	R
+%al,1		/ row 3546
+	F
+	I	A1+,*1
+	V	A1,*0
+%el*,1		/ row 354c
+	F*1
+	mov	R+,#1+2(R*1)
+	mov	R,#1(R*1)
+	I	#1+2(R*1),*1
+	V	#1(R*1),*0
+%nl*,1		/ row 3552
+	F*
+	push	#1+2(R*)
+	push	#1(R*)
+	I	#1+2(R*),*1
+	V	#1(R*),*0
+	pop	R
+	pop	R+
+%af,af		/ row 3558
+	lea	ax,A1
+	call	fldB1<U>
+	call	fdup<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1p<Q>
+%ad,ad		/ row 355e
+	lea	ax,A1
+	call	fldB1<U>
+	call	fdup<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1p<Q>
+%nf*,af		/ row 3564
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	call	fdup<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1p<Q>
+%nd*,ad		/ row 356a
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	call	fdup<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1p<Q>
+
+/ op 33 --post: the list of op 32
+/ op 37 - (list 3572)
+%n,n		/ row 3572
+	F
+	IB1	R
+%nl,n		/ row 3578
+	F
+	I	R
+	I	R+
+	V	R,*0
+%nf,n		/ row 357e
+	F
+	call	fI
+%nd,n		/ row 3584
+	F
+	call	fI
+
+/ op 38 ~: the list of op 37
+/ op 98 call * (list 345a)
+%r,n		/ row 345a
+	call	A1
+%a,n		/ row 3460
+	call	@A1
+%n*,n		/ row 3466
+	F*
+	call	@#1(R*)
+%n,n		/ row 346c
+	F
+	call	R
+
+/ op 99 call2 (list 3452)
+%a,n		/ row 3452
+	call	A1
+
+/ op 80 = (list 358c)
+%a,n		/ row 358c
+	S
+	movB1	A1,R
+%nw*,rw		/ row 3592
+	F*
+	movB1	#1(R*),A2
+	movB1	R,A2
+%nb*,rb		/ row 3598
+	F*
+	movB1	#1(R*),A2
+	movB1	R,A2
+%ew*,nw		/ row 359e
+	S!
+	F*1
+	movB1	#1(R*1),R
+%eb*,nb		/ row 35a4
+	S!
+	F*1
+	movB1	#1(R*1),R
+%nw*,nw		/ row 35aa
+	F*S
+	S
+	pop	bx
+	movB1	#1(bx),R
+%nb*,nb		/ row 35b0
+	F*S
+	S
+	pop	bx
+	movB1	#1(bx),R
+%nb*,nw		/ row 35b6
+	F*S
+	S
+	pop	bx
+	movB1	#1(bx),R
+%al,nl		/ row 35bc
+	S
+	mov	A1+,R+
+	mov	A1,R
+%el*,nl		/ row 35c2
+	S!
+	F*1
+	mov	#1+2(R*1),R+
+	mov	#1(R*1),R
+%nl*,nl		/ row 35c8
+	F*S
+	S
+	pop	bx
+	mov	#1(bx),R
+	mov	#1+2(bx),R+
+%af,nf		/ row 35ce
+	S
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd		/ row 35d4
+	S
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,nf		/ row 35da
+	S
+	F*
+	lea	ax,#1(R*)
+	call	fstB1<R>
+%nd*,nd		/ row 35e0
+	S
+	F*
+	lea	ax,#1(R*)
+	call	fstB1<R>
+
+/ op 40 + (list 35fc)
+%n,z		/ row 35fc
+	F
+%n,1		/ row 3602
+	F
+	I'R1	R
+%nw,c		/ row 3608
+	F
+	IB2	R,A2
+%nb,c		/ row 360e
+	F
+	IB2	R,A2
+%nw,aw		/ row 3614
+	F
+	IB2	R,A2
+%nb,ab		/ row 361a
+	F
+	IB2	R,A2
+%nw,ew*		/ row 3620
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nb,eb*		/ row 3626
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nw,ew		/ row 362c
+	F
+	S1
+	I	R,R1
+%nb,eb		/ row 3632
+	F
+	S1
+	I	R,R1
+%nw,nw*		/ row 3638
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nb,nb*		/ row 363e
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nw,nw		/ row 3644
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nb,nb		/ row 364a
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nl,au		/ row 3650
+	F
+	I	R+,A2
+	V	R,*0
+%nl,eu		/ row 3656
+	F
+	S1
+	I	R+,R1
+	V	R,*0
+%nl,al		/ row 365c
+	F
+	I	R+,A2+
+	V	R,A2
+%nl,el		/ row 3662
+	F
+	S1
+	I	R+,R1+
+	V	R,R1
+%nl,nl		/ row 3668
+	SS
+	F
+	pop	bx
+	pop cx
+	I	R+,cx
+	V	R,bx
+%nf,af		/ row 366e
+	F
+	lea	ax,A2
+	call	fIB2
+%nd,ad		/ row 3674
+	F
+	lea	ax,A2
+	call	fIB2
+%nf,nf*		/ row 367a
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fIB2
+%nd,nd*		/ row 3680
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fIB2
+%nf,nf		/ row 3686
+	F
+	S
+	call	fI<Q>
+%nd,nd		/ row 368c
+	F
+	S
+	call	fI<Q>
+
+/ op 41 -: the list of op 40
+/ op 42 * (list 379c)
+%aw,rw		/ row 379c
+	movB1	ax,A1
+	movB2	cx,A2
+	IBE	cx
+%ab,rb		/ row 37a2
+	movB1	ax,A1
+	movB2	cx,A2
+	IBE	cx
+%nw*,rw		/ row 37a8
+	F*
+	movB1	ax,#1(R*)
+	movB2	cx,A2
+	IBE	cx
+%nb*,rb		/ row 37ae
+	F*
+	movB1	ax,#1(R*)
+	movB2	cx,A2
+	IBE	cx
+%nw,rw		/ row 37b4
+	F
+	movB1	ax,R
+	movB2	cx,A2
+	IBE	cx
+%nb,rb		/ row 37ba
+	F
+	movB1	ax,R
+	movB2	cx,A2
+	IBE	cx
+%aw,aw		/ row 37c0
+	movBE	ax,A1
+	IBE	A2
+%ab,ab		/ row 37c6
+	movBE	ax,A1
+	IBE	A2
+%nw*,aw		/ row 37cc
+	F*
+	movBE	ax,#1(R*)
+	IBE	A2
+%nb*,ab		/ row 37d2
+	F*
+	movBE	ax,#1(R*)
+	IBE	A2
+%nw,aw		/ row 37d8
+	F
+	movBE	ax,R
+	IBE	A2
+%nb,ab		/ row 37de
+	F
+	movBE	ax,R
+	IBE	A2
+%nw,ew*		/ row 37e4
+	F
+	S*1
+	movBE	ax,R
+	IBE	#2(R*1)
+%nb,eb*		/ row 37ea
+	F
+	S*1
+	movBE	ax,R
+	IBE	#2(R*1)
+%nw,nw		/ row 37f0
+	SS
+	F
+	movBE	ax,R
+	pop	cx
+	IBE	cx
+%nb,nb		/ row 37f6
+	SS
+	F
+	movBE	ax,R
+	pop	cx
+	IBE	cx
+%nf,af		/ row 37fc
+	F
+	lea	ax,A2
+	call	fmulB2
+%nd,ad		/ row 3802
+	F
+	lea	ax,A2
+	call	fmulB2
+%nf,nf*		/ row 3808
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fmulB2
+%nd,nd*		/ row 380e
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fmulB2
+%nf,nf		/ row 3814
+	F
+	S
+	call	fmul<Q>
+%nd,nd		/ row 381a
+	F
+	S
+	call	fmul<Q>
+
+/ op 43 / (list 3822)
+%aw,rw		/ row 3822
+	mov	ax,A1
+	T
+	mov	cx,A2
+	I	cx
+%nw*,rw		/ row 3828
+	F*
+	mov	ax,#1(R*)
+	T
+	mov	cx,A2
+	I	cx
+%nw,rw		/ row 382e
+	F
+	mov	ax,R
+	T
+	mov	cx,A2
+	I	cx
+%aw,aw		/ row 3834
+	mov	ax,A1
+	T
+	I	A2
+%nw*,aw		/ row 383a
+	F*
+	mov	ax,#1(R*)
+	T
+	I	A2
+%nw,aw		/ row 3840
+	F
+	mov	ax,R
+	T
+	I	A2
+%nw,ew*		/ row 3846
+	F
+	S*1
+	mov	ax,R
+	T
+	I	#2(R*1)
+%nw,nw		/ row 384c
+	SS
+	F
+	mov	ax,R
+	T
+	pop	cx
+	I	cx
+%nf,af		/ row 3852
+	F
+	lea	ax,A2
+	call	fdivB2
+%nd,ad		/ row 3858
+	F
+	lea	ax,A2
+	call	fdivB2
+%nf,nf*		/ row 385e
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fdivB2
+%nd,nd*		/ row 3864
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fdivB2
+%nf,nf		/ row 386a
+	F
+	S
+	call	fdiv<Q>
+%nd,nd		/ row 3870
+	F
+	S
+	call	fdiv<Q>
+
+/ op 14 ptr->int: the list of op 43
+/ op 44 %: the list of op 43
+/ op 45 >> (list 36f0)
+%n,z		/ row 36f0
+	F
+	| shift of 0 removed
+%n,1		/ row 36f6
+	F
+	IB1	R,*1
+%n,a		/ row 36fc
+	F
+	movB2	cx,A2
+	IB1	R,cl
+%n,e		/ row 3702
+	F
+	S1
+	movB2	cx,R1
+	IB1	R,cl
+%n,ew*		/ row 3708
+	F
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	R,cl
+%n,n		/ row 370e
+	SS
+	F
+	pop	cx
+	IB1	R,cl
+%nl,z		/ row 3714
+	F
+	| shift	0 of long removed
+%nl,1		/ row 371a
+	F
+	I	R,*1
+	I'	R+,*1
+%nl,c		/ row 3720
+	F
+	mov	cx,A2
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+%nl,a		/ row 3726
+	F
+	mov	cx,A2
+	or	cx,cx
+	jz	.+8
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+%nl,e		/ row 372c
+	F
+	S1
+	mov	cx,R1
+	or	cx,cx
+	jz	.+8
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+%nl,ew*		/ row 3732
+	F
+	S*1
+	mov	cx,#2(R*1)
+	or	cx,cx
+	jz	.+8
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+%nl,n		/ row 3738
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+8
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+%nl,nl		/ row 373e
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+8.
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	pop	cx
+
+/ op 46 << (list 3746)
+%n,z		/ row 3746
+	F
+	| shift of 0 removed
+%n,1		/ row 374c
+	F
+	IB1	R,*1
+%n,a		/ row 3752
+	F
+	movB2	cx,A2
+	IB1	R,cl
+%n,e		/ row 3758
+	F
+	S1
+	movB2	cx,R1
+	IB1	R,cl
+%n,e*		/ row 375e
+	F
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	R,cl
+%n,n		/ row 3764
+	SS
+	F
+	pop	cx
+	IB1	R,cl
+%nl,z		/ row 376a
+	F
+	| shift	0 of long removed
+%nl,1		/ row 3770
+	F
+	I	R+,*1
+	I'	R,*1
+%nl,c		/ row 3776
+	F
+	mov	cx,A2
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+%nl,a		/ row 377c
+	F
+	mov	cx,A2
+	or	cx,cx
+	jz	.+8
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+%nl,e		/ row 3782
+	F
+	S1
+	mov	cx,R1
+	or	cx,cx
+	jz	.+8
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+%nl,ew*		/ row 3788
+	F
+	S*1
+	mov	cx,#2(R*1)
+	or	cx,cx
+	jz	.+8
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+%nl,n		/ row 378e
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+8
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+%nl,nl		/ row 3794
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+8.
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	pop	cx
+
+/ op 47 & (list 3694)
+%nw,c		/ row 3694
+	F
+	IB2	R,A2
+%nb,c		/ row 369a
+	F
+	IB2	R,A2
+%nw,aw		/ row 36a0
+	F
+	IB2	R,A2
+%nb,ab		/ row 36a6
+	F
+	IB2	R,A2
+%nw,ew*		/ row 36ac
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nb,eb*		/ row 36b2
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nw,ew		/ row 36b8
+	F
+	S1
+	I	R,R1
+%nb,eb		/ row 36be
+	F
+	S1
+	I	R,R1
+%nw,nw*		/ row 36c4
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nb,nb*		/ row 36ca
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nw,n		/ row 36d0
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nb,n		/ row 36d6
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nl,al		/ row 36dc
+	F
+	I	R+,A2+
+	V	R,A2
+%nl,el		/ row 36e2
+	F
+	S1
+	I	R+,R1+
+	V	R,R1
+%nl,nl		/ row 36e8
+	SS
+	F
+	pop	bx
+	pop cx
+	I	R+,cx
+	V	R,bx
+
+/ op 48 |: the list of op 47
+/ op 49 ^: the list of op 47
+/ op 70 =+ (list 3878)
+%aw,c		/ row 3878
+	IB1	A1,A2
+%ab,c		/ row 387e
+	IB1	A1,A2
+%aw,rw		/ row 3884
+	IBE	A1,A2
+	movBE	R,A1
+%aw,rb		/ row 388a
+	IBE	A1,A2
+	movBE	R,A1
+%ab,rb		/ row 3890
+	IBE	A1,A2
+	movBE	R,A1
+%ab,rw		/ row 3896
+	IBE	A1,A2
+	movBE	R,A1
+%aw,aw		/ row 389c
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%ab,ab		/ row 38a2
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%aw,ab		/ row 38a8
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%ab,aw		/ row 38ae
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%aw,nw		/ row 38b4
+	S
+	IBE	A1,R
+	movBE	R,A1
+%ab,nb		/ row 38ba
+	S
+	IBE	A1,R
+	movBE	R,A1
+%aw,nb		/ row 38c0
+	S
+	IBE	A1,R
+	movBE	R,A1
+%ab,nw		/ row 38c6
+	S
+	IBE	A1,R
+	movBE	R,A1
+%nw*,c		/ row 38cc
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%nb*,c		/ row 38d2
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%nw*,aw		/ row 38d8
+	F*
+	movBE	ax,A2
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,ab		/ row 38de
+	F*
+	movBE	ax,A2
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nw*,ab		/ row 38e4
+	F*
+	movBE	ax,A2
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,aw		/ row 38ea
+	F*
+	movBE	ax,A2
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%ew*,nw		/ row 38f0
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%eb*,nb		/ row 38f6
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%ew*,nb		/ row 38fc
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%eb*,nw		/ row 3902
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%nw*,nw		/ row 3908
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,nb		/ row 390e
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nw*,nb		/ row 3914
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,nw		/ row 391a
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%al,c		/ row 3920
+	I	A1,A2
+	V	A1+,*0.
+%nl*,c		/ row 3926
+	F*
+	I	#1+2(R*),A2
+	V	#1(R*),*0.
+%nl*,nl		/ row 392c
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	pop	ax
+	I	R+,ax
+	V	R,cx
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%af,nf		/ row 3932
+	S
+	lea	ax,A1
+	call	fIB1
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd		/ row 3938
+	S
+	lea	ax,A1
+	call	fIB1
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,nf		/ row 393e
+	S
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fIB1
+	pop	ax
+	call	fstB1<R>
+%nd*,nd		/ row 3944
+	S
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fIB1
+	pop	ax
+	call	fstB1<R>
+
+/ op 71 =- (list 394c)
+%aw,c		/ row 394c
+	IB1	A1,A2
+%ab,c		/ row 3952
+	IB1	A1,A2
+%aw,rw		/ row 3958
+	IBE	A1,A2
+	movBE	R,A1
+%aw,rb		/ row 395e
+	IBE	A1,A2
+	movBE	R,A1
+%ab,rb		/ row 3964
+	IBE	A1,A2
+	movBE	R,A1
+%ab,rw		/ row 396a
+	IBE	A1,A2
+	movBE	R,A1
+%aw,aw		/ row 3970
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%ab,ab		/ row 3976
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%aw,ab		/ row 397c
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%ab,aw		/ row 3982
+	movB1	R,A1
+	IBE	R,A2
+	movB1	A1,R
+%aw,nw		/ row 3988
+	S
+	IBE	A1,R
+	movBE	R,A1
+%ab,nb		/ row 398e
+	S
+	IBE	A1,R
+	movBE	R,A1
+%aw,nb		/ row 3994
+	S
+	IBE	A1,R
+	movBE	R,A1
+%ab,nw		/ row 399a
+	S
+	IBE	A1,R
+	movBE	R,A1
+%nw*,aw		/ row 39a0
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%nb*,ab		/ row 39a6
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%nw*,ab		/ row 39ac
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%nb*,aw		/ row 39b2
+	IBE	#1(R*),A2
+	movBE	R,#1(R*)
+%ew*,nw		/ row 39b8
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%eb*,nb		/ row 39be
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%ew*,nb		/ row 39c4
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%eb*,nw		/ row 39ca
+	S!
+	F*1
+	IBE	#1(R*1),R
+	movBE	R,#1(R*1)
+%nw*,nw		/ row 39d0
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,nb		/ row 39d6
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nw*,nb		/ row 39dc
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%nb*,nw		/ row 39e2
+	SS
+	F*
+	pop	ax
+	IBE	#1(R*),ax
+	movBE	R,#1(R*)
+%al,c		/ row 39e8
+	I	A1,A2
+	V	A1+,*0.
+%nl*,c		/ row 39ee
+	F*
+	I	#1+2(R*),A2
+	V	#1(R*),*0.
+%nl*,nl		/ row 39f4
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	pop	ax
+	I	R+,ax
+	V	R,cx
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%af,af		/ row 39fa
+	F
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%ad,ad		/ row 3a00
+	F
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%af,nf*		/ row 3a06
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd*		/ row 3a0c
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fIB2
+	lea	ax,A1
+	call	fstB1<R>
+%af,nf		/ row 3a12
+	F
+	S
+	call	fI
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd		/ row 3a18
+	F
+	S
+	call	fI
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,nf		/ row 3a1e
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fI<Q>
+	pop	ax
+	call	fstB1<R>
+%nd*,nd		/ row 3a24
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fI<Q>
+	pop	ax
+	call	fstB1<R>
+
+/ op 72 =* (list 3a2c)
+%aw,rw		/ row 3a2c
+	mov	ax,A1
+	mov	cx,A2
+	I	cx
+	mov	A1,ax
+%nw*,rw		/ row 3a32
+	F*
+	mov	ax,#1(R*)
+	mov	cx,A2
+	I	cx
+	mov	#1(R*),ax
+%aw,aw		/ row 3a38
+	mov	ax,A1
+	I	A2
+	mov	A1,ax
+%aw,nw		/ row 3a3e
+	S
+	mov	ax,R
+	I	A1
+	mov	A1,ax
+%nw*,aw		/ row 3a44
+	F*
+	mov	ax,#1(R*)
+	I	A2
+	mov	#1(R*),ax
+%nw*,nw		/ row 3a4a
+	SS
+	F*
+	pop	ax
+	I	#1(R*)
+	mov	#1(R*),ax
+%af,nf		/ row 3a50
+	S
+	lea	ax,A1
+	call	fmulB1
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd		/ row 3a56
+	S
+	lea	ax,A1
+	call	fmulB1
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,nf		/ row 3a5c
+	S
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fmulB1
+	pop	ax
+	call	fstB1<R>
+%nd*,nd		/ row 3a62
+	S
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fmulB1
+	pop	ax
+	call	fstB1<R>
+
+/ op 73 =/ (list 3a6a)
+%aw,rw		/ row 3a6a
+	mov	ax,A1
+	T
+	mov	cx,A2
+	I	cx
+	mov	A1,ax
+%nw*,rw		/ row 3a70
+	F*
+	mov	ax,#1(R*)
+	T
+	mov	cx,A2
+	I	cx
+	mov	#1(R*),ax
+%aw,aw		/ row 3a76
+	mov	ax,A1
+	T
+	I	A2
+	mov	A1,ax
+%aw,nw		/ row 3a7c
+	S
+	mov	cx,R
+	mov	ax,A1
+	T
+	I	cx
+	mov	A1,ax
+%nw*,aw		/ row 3a82
+	F*
+	mov	ax,#1(R*)
+	T
+	I	A2
+	mov	#1(R*),ax
+%nw*,nw		/ row 3a88
+	SS
+	F*
+	mov	ax,#1(R*)
+	T
+	pop	cx
+	I	cx
+	mov	#1(R*),ax
+%af,af		/ row 3a8e
+	F
+	lea	ax,A2
+	call	fdivB2
+	lea	ax,A1
+	call	fstB1<R>
+%ad,ad		/ row 3a94
+	F
+	lea	ax,A2
+	call	fdivB2
+	lea	ax,A1
+	call	fstB1<R>
+%af,nf*		/ row 3a9a
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fdivB2
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd*		/ row 3aa0
+	F
+	S*
+	lea	ax,#2(R*2)
+	call	fdivB2
+	lea	ax,A1
+	call	fstB1<R>
+%af,nf		/ row 3aa6
+	F
+	S
+	call	fdiv
+	lea	ax,A1
+	call	fstB1<R>
+%ad,nd		/ row 3aac
+	F
+	S
+	call	fdiv
+	lea	ax,A1
+	call	fstB1<R>
+%nf*,nf		/ row 3ab2
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fdiv<Q>
+	pop	ax
+	call	fstB1<R>
+%nd*,nd		/ row 3ab8
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fdiv<Q>
+	pop	ax
+	call	fstB1<R>
+
+/ op 74 =% (list 3ac0)
+%aw,rw		/ row 3ac0
+	mov	ax,A1
+	T
+	mov	cx,A2
+	I	cx
+	mov	A1,dx
+%nw*,rw		/ row 3ac6
+	F*
+	mov	ax,#1(R*)
+	T
+	mov	cx,A2
+	I	cx
+	mov	#1(R*),dx
+%aw,aw		/ row 3acc
+	mov	ax,A1
+	T
+	I	A2
+	mov	A1,dx
+%aw,nw		/ row 3ad2
+	S
+	mov	cx,R
+	mov	ax,A1
+	T
+	I	cx
+	mov	A1,dx
+%nw*,aw		/ row 3ad8
+	F*
+	mov	ax,#1(R*)
+	T
+	I	A2
+	mov	#1(R*),dx
+%nw*,nw		/ row 3ade
+	SS
+	F*
+	mov	ax,#1(R*)
+	T
+	pop	cx
+	I	cx
+	mov	#1(R*),dx
+
+/ op 75 =>> (list 3b78)
+%a,z		/ row 3b78
+	|	shift of 0 removed
+	movB1	R,A1
+%n*,z		/ row 3b7e
+	F*
+	|	shift of 0 removed
+	movB1	R,#1(R*)
+%a,1		/ row 3b84
+	IB1	A1,*1
+	movB1	R,A1
+%n*,1		/ row 3b8a
+	F*
+	IB1	#1(R*),*1
+	movB1	R,#1(R*)
+%a,a		/ row 3b90
+	movB2	cx,A2
+	IB1	A1,cl
+	movB1	R,A1
+%a,n*		/ row 3b96
+	S*
+	movB2	cx,#2(R*)
+	IB1	A1,cl
+	movB1	R,A1
+%a,n		/ row 3b9c
+	S
+	movB2	cx,R
+	IB1	A1,cl
+	movB1	R,A1
+%n*,a		/ row 3ba2
+	F*
+	movB2	cx,A2
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,e*		/ row 3ba8
+	F*
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,e		/ row 3bae
+	F*
+	S
+	movB2	cx,R1
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,n		/ row 3bb4
+	SS
+	F*
+	pop	cx
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%al,z		/ row 3bba
+	| shift	0 of long missing
+%nl*,z		/ row 3bc0
+	F*
+	| shift	0 of long missing
+%al,1		/ row 3bc6
+	I	A1,*1
+	I'	A1+,*1
+	mov	R,A1
+	mov	R+,A1+
+%nl*,1		/ row 3bcc
+	F*
+	I	#1(R*),*1
+	I'	#1+2(R*),*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+%al,c		/ row 3bd2
+	F
+	mov	cx,A2
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%al,a		/ row 3bd8
+	F
+	mov	cx,A2
+	or	cx,cx
+	jz	.+16
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%al,n		/ row 3bde
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+16
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%nl*,c		/ row 3be4
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	mov	cx,A2
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%nl*,a		/ row 3bea
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	mov	cx,A2
+	or	cx,cx
+	jz	.+16.
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%nl*,n		/ row 3bf0
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%al,nl		/ row 3bf6
+	SS
+	mov	R,A1
+	mov	R+,A1+
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+	pop	cx
+%nl*,nl		/ row 3bfc
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R,*1
+	I'	R+,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+	pop	cx
+
+/ op 76 =<< (list 3ae6)
+%a,z		/ row 3ae6
+	|	shift of 0 missing
+	movB1	R,A1
+%n*,z		/ row 3aec
+	F*
+	|	shift of 0 missing
+	movB1	R,#1(R*)
+%a,1		/ row 3af2
+	IB1	A1,*1
+	movB1	R,A1
+%n*,1		/ row 3af8
+	F*
+	IB1	#1(R*),*1
+	movB1	R,#1(R*)
+%a,a		/ row 3afe
+	movB2	cx,A2
+	IB1	A1,cl
+	movB1	R,A1
+%a,n*		/ row 3b04
+	S*
+	movB2	cx,#2(R*)
+	IB1	A1,cl
+	movB1	R,A1
+%a,n		/ row 3b0a
+	S
+	movB2	cx,R
+	IB1	A1,cl
+	movB1	R,A1
+%n*,a		/ row 3b10
+	F*
+	movB2	cx,A2
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,e*		/ row 3b16
+	F*
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,e		/ row 3b1c
+	F*
+	S
+	movB2	cx,R1
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%n*,n		/ row 3b22
+	SS
+	F*
+	pop	cx
+	IB1	#1(R*),cl
+	movB1	R,#1(R*)
+%al,z		/ row 3b28
+	| shift 0 of long removed
+%nl,z		/ row 3b2e
+	F*
+	| shift	0 of long missing
+%nl*,z		/ row 3b34
+	F*
+	| shift	0 of long missing
+%al,1		/ row 3b3a
+	I	A1+,*1
+	I'	A1,*1
+	mov	R,A1
+	mov	R+,A1+
+%nl*,1		/ row 3b40
+	F*
+	I	#1+2(R*),*1
+	I'	#1(R*),*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+%al,c		/ row 3b46
+	F
+	mov	cx,A2
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%al,a		/ row 3b4c
+	F
+	mov	cx,A2
+	or	cx,cx
+	jz	.+16
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%al,n		/ row 3b52
+	SS
+	F
+	pop	cx
+	or	cx,cx
+	jz	.+16
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+%nl*,c		/ row 3b58
+	F*1
+	mov	R,#1+2(R*1)
+	mov	R+,#1(R*1)
+	mov	cx,A2
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%nl*,a		/ row 3b5e
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	mov	cx,A2
+	or	cx,cx
+	jz	.+16.
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%nl*,n		/ row 3b64
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+%al,nl		/ row 3b6a
+	SS
+	mov	R,A1
+	mov	R+,A1+
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	A1,R
+	mov	A1+,R+
+	pop	cx
+%nl*,nl		/ row 3b70
+	SS
+	F*1
+	mov	R,#1(R*1)
+	mov	R+,#1+2(R*1)
+	pop	cx
+	or	cx,cx
+	jz	.+16.
+	I	R+,*1
+	I'	R,*1
+	loop	.-4
+	mov	#1(R*1),R
+	mov	#1+2(R*1),R+
+	pop	cx
+
+/ op 77 =&: the list of op 70
+/ op 78 =|: the list of op 70
+/ op 79 =^: the list of op 70
+/ op 102 goto (list 343e)
+%a,n		/ row 343e
+	jmp	A1
+%n,n		/ row 3444
+	F*
+	jmp	@R
+%n*,n		/ row 344a
+	F*
+	jmp	@#1(R*)
+
+/ op 51 int->double (list 3c04)
+%n,n		/ row 3c04
+	F
+	T
+	call	itof<U>
+
+/ op 52 double->int (list 3c0c)
+%nf,n		/ row 3c0c
+	F
+	call	ftoi<Q>
+%nd,n		/ row 3c12
+	F
+	call	ftoi<Q>
+
+/ op 56 double->long (list 3c1a)
+%nf,n		/ row 3c1a
+	F
+	call	ftol<Q>
+%nd,n		/ row 3c20
+	F
+	call	ftol<Q>
+
+/ op 57 long->double (list 3c28)
+%nl,n		/ row 3c28
+	FS
+	call	ltof<U>
+	add	sp,*4
+
+/ op 58 integer->long (list 3c30)
+%nu,n		/ row 3c30
+	F1!
+	sub	R,R
+%n,n		/ row 3c36
+	F1d
+	cwd
+
+/ op 59 long->integer (list 3c3e)
+%al,n		/ row 3c3e
+	mov	R,A1+
+%nl*,n		/ row 3c44
+	F*
+	mov	R,#1+2(R*)
+
+/ op 91 <<: the list of op 45
+/ op 82 * (list 3c4c)
+%nl,nl		/ row 3c4c
+	SS
+	FS
+	call	Id
+	add	sp,*8.
+
+/ op 83 /: the list of op 82
+/ op 84 %: the list of op 82
+/ op 86 =* (list 3c54)
+%n,nl		/ row 3c54
+	SS
+	FS
+	call	Id
+	add	sp,*6.
+
+/ op 87 =/: the list of op 86
+/ op 88 =%: the list of op 86
+/ op 16 field assign (list 35e8)
+%a,n		/ row 35e8
+	S
+	andB1	A1,Z
+	orB1	A1,R
+%e*,n		/ row 35ee
+	S
+	F*1
+	andB1	#1(R*1),Z
+	orB1	#1(R*1),R
+%n*,n		/ row 35f4
+	SS
+	F*
+	andB1	#1(R*),Z
+	pop	bx
+	orB1	#1(R*),bx
+	mov	R,bx
+
+/ op 92 long =<<: the list of op 76
+/ op 17 >>: the list of op 45
+/ op 18 >>: the list of op 75
+/ op 107 char->long (list 3c5c)
+%a,n		/ row 3c5c
+	movb	ax,A1
+	cbw
+	cwd
+%n*,n		/ row 3c62
+	F*
+	movb	ax,#1(R*)
+	cbw
+	cwd
+%n,n		/ row 3c68
+	F
+	mov	ax,R
+	cbw
+	cwd
+
+/ op 108 long->char (list 3c70)
+%al,n		/ row 3c70
+	mov	ax,A1+
+	cbw
+%nl*,n		/ row 3c76
+	F*
+	mov	ax,#1+2(R*)
+	cbw
+%nl,n		/ row 3c7c
+	F
+	mov	ax,R+
+	cbw
+
+/ op 109 int<->char (list 3c84)
+%r,n		/ row 3c84
+	mov	ax,A1
+	T
+%a,n		/ row 3c8a
+	movb	ax,A1
+	cbw
+%n*,n		/ row 3c90
+	F*
+	movb	ax,#1(R*)
+	cbw
+%n,n		/ row 3c96
+	F
+	mov	ax,R
+	cbw
+
+/ op 89 *(x+c) (list 3474)
+%n,c		/ row 3474
+	F
+	V	R+,A2 +2(R*)
+	movR1	R,A2(R*)
+%n*,c		/ row 347a
+	F*
+	mov	R*,#1(R*)
+	V	R+,A2 +2(R*)
+	movR1	R,A2(R*)
+
+/ op 122 op 122 (list 3482)
+%n,c		/ row 3482
+	F
+	V
+	lea	ax,A2(R*)
+	call	fldR1<U>
+
+/ op 117 udiv: the list of op 43
+/ op 118 =udiv: the list of op 73
+/ op 119 umod: the list of op 43
+/ op 120 =umod: the list of op 74
+/ ======== efftab (3c9e)
+/ op 30 ++pre (list 3d5e)
+%a,1		/ row 3d5e
+	I'B1	A1
+%n*,1		/ row 3d64
+	F*
+	I'B1	#1(R*)
+%rw,aw		/ row 3d6a
+	IB1	A1,A2
+%rb,a		/ row 3d70
+	IB1	A1,A2
+%aw,rw		/ row 3d76
+	IB1	A1,A2
+%ab,rb		/ row 3d7c
+	IB1	A1,A2
+%rw,nw*		/ row 3d82
+	S*
+	IB1	A1,#2(R*)
+%rb,n*		/ row 3d88
+	S*
+	IB1	A1,#2(R*)
+%nw*,rw		/ row 3d8e
+	F*
+	IB1	#1(R*),A2
+%nb*,r		/ row 3d94
+	F*
+	IB1	#1(R*),A2
+%aw,nw		/ row 3d9a
+	S
+	IB1	A1,R
+%ab,nb		/ row 3da0
+	S
+	IB1	A1,R
+%ew*,nw		/ row 3da6
+	S!
+	F*1
+	IB1	#1(R*1),R
+%eb*,n		/ row 3dac
+	S!
+	F*1
+	IB1	#1(R*1),R
+%nw*,nw		/ row 3db2
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nb*,n		/ row 3db8
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%al,c		/ row 3dbe
+	I	A1+,A2
+	V	A1,*0
+%al,nl		/ row 3dc4
+	S
+	I	A1+,R+
+	V	A1,R
+%el*,nl		/ row 3dca
+	S!
+	F*1
+	I	#1+2(R*1),R+
+	V	#1(R*1),R
+%nl*,nl		/ row 3dd0
+	SS
+	F*
+	mov	bx,R
+	pop	R
+	pop	R+
+	I	#1+2(bx),R+
+	V	#1(bx),R
+%af,af		/ row 3dd6
+	lea	ax,A1
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1p<Q>
+%ad,ad		/ row 3ddc
+	lea	ax,A1
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	lea	ax,A1
+	call	fstB1p<Q>
+%nf*,af		/ row 3de2
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1p<Q>
+%nd*,ad		/ row 3de8
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	lea	ax,A2
+	call	fIB2
+	pop	ax
+	call	fstB1p<Q>
+%nf*,nf		/ row 3dee
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fI<Q>
+	pop	ax
+	call	fstB1p<Q>
+%nd*,nd		/ row 3df4
+	F*
+	lea	ax,#1(R*)
+	|
+	push	ax
+	call	fldB1<U>
+	S
+	call	fI<Q>
+	pop	ax
+	call	fstB1p<Q>
+
+/ op 31 --pre: the list of op 30
+/ op 32 ++post: the list of op 30
+/ op 33 --post: the list of op 30
+/ op 80 = (list 3cde)
+%rw,aw		/ row 3cde
+	IB1	A1,A2
+%aw,rw		/ row 3ce4
+	IB1	A1,A2
+%ab,r		/ row 3cea
+	IB1	A1,A2
+%rw,nw*		/ row 3cf0
+	S*
+	IB1	A1,#2(R*)
+%rb,n*		/ row 3cf6
+	S*
+	IB1	A1,#2(R*)
+%nw*,rw		/ row 3cfc
+	F*
+	IB1	#1(R*),A2
+%nb*,r		/ row 3d02
+	F*
+	IB1	#1(R*),A2
+%aw,nw		/ row 3d08
+	S
+	IB1	A1,R
+%ab,n		/ row 3d0e
+	S
+	IB1	A1,R
+%ew*,nw		/ row 3d14
+	S!
+	F*1
+	IB1	#1(R*1),R
+%eb*,n		/ row 3d1a
+	S!
+	F*1
+	IB1	#1(R*1),R
+%nw*,nw		/ row 3d20
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nb*,n		/ row 3d26
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%al,z		/ row 3d2c
+	mov	R,A2
+	I	A1,R
+	I	A1+,R
+%al,c		/ row 3d32
+	I	A1+,A2
+	V	A1,*0
+%nl*,c		/ row 3d38
+	F*
+	I	#1(R*),A2
+	I	#1+2(R*),*0
+%al,nu*		/ row 3d3e
+	S*
+	I	A1+,#2(R*)
+	I	A1,*0
+%al,nu		/ row 3d44
+	S
+	I	A1+,R
+	I	A1,*0
+%al,nl		/ row 3d4a
+	S
+	I	A1+,R+
+	V	A1,R
+%el*,nl		/ row 3d50
+	S!
+	F*1
+	I	#1+2(R*1),R+
+	V	#1(R*1),R
+%nl*,nl		/ row 3d56
+	SS
+	F*
+	mov	bx,R
+	pop	R
+	pop	R+
+	I	#1+2(bx),R+
+	V	#1(bx),R
+
+/ op 70 =+: the list of op 30
+/ op 71 =-: the list of op 30
+/ op 77 =&: the list of op 80
+/ op 78 =|: the list of op 80
+/ op 79 =^: the list of op 80
+/ op 75 =>> (list 3dfc)
+%a,z		/ row 3dfc
+	| shift by 0 removed
+%n*,z		/ row 3e02
+	F*
+	| shift by 0 removed
+%a,1		/ row 3e08
+	IB1	A1,*1
+%n*,1		/ row 3e0e
+	F*
+	IB1	#1(R*),*1
+%a,a		/ row 3e14
+	movB2	cx,A2
+	IB1	A1,cl
+%a,n*		/ row 3e1a
+	S*
+	movB2	cx,#2(R*)
+	IB1	A1,cl
+%a,n		/ row 3e20
+	S
+	movB2	cx,R
+	IB1	A1,cl
+%n*,a		/ row 3e26
+	F*
+	movB2	cx,A2
+	IB1	#1(R*),cl
+%n*,e*		/ row 3e2c
+	F*
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	#1(R*),cl
+%n*,e		/ row 3e32
+	F*
+	S
+	movB2	cx,R1
+	IB1	#1(R*),cl
+%n*,n		/ row 3e38
+	SS
+	F*
+	pop	cx
+	IB1	#1(R*),cl
+
+/ op 76 =<<: the list of op 75
+/ op 18 >>: the list of op 75
+/ op 16 field assign (list 3e40)
+%a,r		/ row 3e40
+	andB1	A1,Z
+	orB1	A1,A2
+%a,n		/ row 3e46
+	S
+	andB1	A1,Z
+	orB1	A1,R
+%n*,r		/ row 3e4c
+	F*
+	andB1	#1(R*),Z
+	orB1	#1(R*),A2
+%e*,n		/ row 3e52
+	S
+	F*1
+	andB1	#1(R*1),Z
+	orB1	#1(R*1),R
+%n*,e		/ row 3e58
+	F*
+	S1
+	andB1	#1(R*),Z
+	orB1	#1(R*),R1
+%n*,n		/ row 3e5e
+	SS
+	F*
+	andB1	#1(R*),Z
+	pop	ax
+	orB1	#1(R*),ax
+
+/ op 116  (struct setup) (list 40fe)
+%n,n		/ row 40fe
+	FS
+	SS
+
+/ ======== cctab (3e66)
+/ op 106 load value (list 3ee6)
+%c,n		/ row 3ee6
+	movB1	R,A1
+	testB1	R,R
+%a,n		/ row 3eec
+	cmpB1	A1,*0
+%n*,n		/ row 3ef2
+	F*
+	cmpB1	#1(R*),*0
+%n,n		/ row 3ef8
+	F
+	testB1	R,R
+%nl*,n		/ row 3efe
+	F*
+	cmp	#1(R*),*0
+	X0
+	cmp	#1+2(R*),*0
+	X1
+%nl,n		/ row 3f04
+	F
+	cmp	R,*0
+	X0
+	cmp	R+,*0
+	X1
+%nf,n		/ row 3f0a
+	F
+	call	ftest<Q>
+	sahf
+%nd,n		/ row 3f10
+	F
+	call	ftest<Q>
+	sahf
+
+/ op 30 ++pre (list 4060)
+%a,1		/ row 4060
+	I'B1	A1
+%n*,1		/ row 4066
+	F*
+	I'B1	#1(R*)
+%rw,aw		/ row 406c
+	IB1	A1,A2
+%rb,a		/ row 4072
+	IB1	A1,A2
+%aw,rw		/ row 4078
+	IB1	A1,A2
+%ab,rb		/ row 407e
+	IB1	A1,A2
+%rw,nw*		/ row 4084
+	S*
+	IB1	A1,#2(R*)
+%rb,n*		/ row 408a
+	S*
+	IB1	A1,#2(R*)
+%nw*,rw		/ row 4090
+	F*
+	IB1	#1(R*),A2
+%nb*,r		/ row 4096
+	F*
+	IB1	#1(R*),A2
+%aw,nw		/ row 409c
+	S
+	IB1	A1,R
+%ab,nb		/ row 40a2
+	S
+	IB1	A1,R
+%ew*,nw		/ row 40a8
+	S!
+	F*1
+	IB1	#1(R*1),R
+%eb*,n		/ row 40ae
+	S!
+	F*1
+	IB1	#1(R*1),R
+%nw*,nw		/ row 40b4
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nb*,n		/ row 40ba
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+
+/ op 31 --pre: the list of op 30
+/ op 34 !un (list 40c2)
+%n,n		/ row 40c2
+	H
+
+/ op 37 -: the list of op 34
+/ op 38 ~: the list of op 34
+/ op 40 +: the list of op 34
+/ op 41 -: the list of op 34
+/ op 45 >>: the list of op 34
+/ op 46 <<: the list of op 34
+/ op 47 & (list 3f18)
+%rw,c		/ row 3f18
+	testB1	A1,A2
+%rb,c		/ row 3f1e
+	testB1	A1,A2
+%aw,c		/ row 3f24
+	testB1	A1,A2
+%ab,c		/ row 3f2a
+	testB1	A1,A2
+%n*,c		/ row 3f30
+	F*
+	testB1	#1(R*),A2
+%nb*,c		/ row 3f36
+	F*
+	testB1	#1(R*),A2
+%c,n*		/ row 3f3c
+	S*
+	testB2	#2(R*),A1
+%c,nb*		/ row 3f42
+	S*
+	testB2	#2(R*),A1
+%nw,aw		/ row 3f48
+	F
+	IB2	R,A2
+%nb,ab		/ row 3f4e
+	F
+	IB2	R,A2
+%nw,ew*		/ row 3f54
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nb,eb*		/ row 3f5a
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nw,ew		/ row 3f60
+	F
+	S1
+	I	R,R1
+%nb,eb		/ row 3f66
+	F
+	S1
+	I	R,R1
+%nw,nw*		/ row 3f6c
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nb,nb*		/ row 3f72
+	S*S
+	F
+	pop	bx
+	IB2	R,#2(bx)
+%nw,n		/ row 3f78
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nb,n		/ row 3f7e
+	SS
+	F
+	pop	bx
+	I	R,bx
+
+/ op 48 |: the list of op 34
+/ op 49 ^: the list of op 34
+/ op 60 == (list 3f86)
+%rw,aw		/ row 3f86
+	IB1	A1,A2
+%aw,rw		/ row 3f8c
+	IB1	A1,A2
+%rb,ab		/ row 3f92
+	IB1	A1,A2
+%ab,rb		/ row 3f98
+	IB1	A1,A2
+%r,n*		/ row 3f9e
+	S*
+	IB1	A1,#2(R*)
+%a,n*		/ row 3fa4
+	S*
+	IB1	A1,#2(R*)
+%nw*,rw		/ row 3faa
+	F*
+	IB1	#1(R*),A2
+%nb*,rb		/ row 3fb0
+	F*
+	IB1	#1(R*),A2
+%aw,nw		/ row 3fb6
+	S
+	IB1	A1,R
+%ab,n		/ row 3fbc
+	S
+	IB1	A1,R
+%rw,nw		/ row 3fc2
+	S
+	IB1	A1,R
+%rb,n		/ row 3fc8
+	S
+	IB1	A1,R
+%nw,a		/ row 3fce
+	F
+	IB2	R,A2
+%nb,a		/ row 3fd4
+	F
+	IB2	R,A2
+%nw,r		/ row 3fda
+	F
+	IB2	R,A2
+%nb,r		/ row 3fe0
+	F
+	IB2	R,A2
+%nw,ew*		/ row 3fe6
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nb,eb*		/ row 3fec
+	F
+	S*1
+	IB2	R,#2(R*1)
+%nw,ew		/ row 3ff2
+	F
+	S1
+	I	R,R1
+%nb,eb		/ row 3ff8
+	F
+	S1
+	I	R,R1
+%nw*,nw		/ row 3ffe
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nb*,nb		/ row 4004
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nw,nw		/ row 400a
+	SS
+	F
+	pop	bx
+	I	R,bx
+%nb,nb		/ row 4010
+	SS
+	F
+	pop	bx
+	I	R,bx
+%al,c		/ row 4016
+	I	A1,*0
+	X0
+	I	A1+,A2
+	X1
+%nl*,z		/ row 401c
+	F*
+	I	#1(R*),*0
+	X0
+	I	#1+2(R*),*0
+	X1
+%nl*,c		/ row 4022
+	F*
+	I	#1(R*),*0
+	X0
+	I	#1+2(R*),A2
+	X1
+%nl*,au		/ row 4028
+	F*
+	I	#1(R*),*0
+	X0
+	I	#1+2(R*),A2
+	X1
+%nl,z		/ row 402e
+	F
+	I	R,*0
+	X0
+	I	R+,*0
+	X1
+%nl,c		/ row 4034
+	F
+	I	R,*0
+	X0
+	I	R+,A2
+	X1
+%nl,au		/ row 403a
+	F
+	I	R,*0
+	X0
+	I	R+,A2
+	X1
+%nl,al		/ row 4040
+	F
+	I	R,A2
+	X0
+	I	R+,A2+
+	X1
+%nl,el*		/ row 4046
+	F
+	S*1
+	I	R,#2(R*1)
+	X0
+	I	R+,#2+2(R*1)
+	X1
+%nl,nl		/ row 404c
+	SS
+	F
+	pop	cx
+	pop	bx
+	I	R,cx
+	X0
+	I	R+,bx
+	X1
+%nf,nf		/ row 4052
+	F
+	S
+	call	fcmp<Q><Q>
+	sahf
+%nd,nd		/ row 4058
+	F
+	S
+	call	fcmp<Q><Q>
+	sahf
+
+/ op 61 !=: the list of op 60
+/ op 62 <=: the list of op 60
+/ op 63 <: the list of op 60
+/ op 64 >=: the list of op 60
+/ op 65 >: the list of op 60
+/ op 66 <p: the list of op 60
+/ op 67 <=p: the list of op 60
+/ op 68 >p: the list of op 60
+/ op 69 >=p: the list of op 60
+/ op 70 =+: the list of op 30
+/ op 71 =-: the list of op 30
+/ op 75 =>> (list 3dfc)
+%a,z		/ row 3dfc
+	| shift by 0 removed
+%n*,z		/ row 3e02
+	F*
+	| shift by 0 removed
+%a,1		/ row 3e08
+	IB1	A1,*1
+%n*,1		/ row 3e0e
+	F*
+	IB1	#1(R*),*1
+%a,a		/ row 3e14
+	movB2	cx,A2
+	IB1	A1,cl
+%a,n*		/ row 3e1a
+	S*
+	movB2	cx,#2(R*)
+	IB1	A1,cl
+%a,n		/ row 3e20
+	S
+	movB2	cx,R
+	IB1	A1,cl
+%n*,a		/ row 3e26
+	F*
+	movB2	cx,A2
+	IB1	#1(R*),cl
+%n*,e*		/ row 3e2c
+	F*
+	S*1
+	movB2	cx,#2(R*1)
+	IB1	#1(R*),cl
+%n*,e		/ row 3e32
+	F*
+	S
+	movB2	cx,R1
+	IB1	#1(R*),cl
+%n*,n		/ row 3e38
+	SS
+	F*
+	pop	cx
+	IB1	#1(R*),cl
+
+/ op 76 =<<: the list of op 75
+/ op 18 >>: the list of op 75
+/ op 77 =& (list 3cde)
+%rw,aw		/ row 3cde
+	IB1	A1,A2
+%aw,rw		/ row 3ce4
+	IB1	A1,A2
+%ab,r		/ row 3cea
+	IB1	A1,A2
+%rw,nw*		/ row 3cf0
+	S*
+	IB1	A1,#2(R*)
+%rb,n*		/ row 3cf6
+	S*
+	IB1	A1,#2(R*)
+%nw*,rw		/ row 3cfc
+	F*
+	IB1	#1(R*),A2
+%nb*,r		/ row 3d02
+	F*
+	IB1	#1(R*),A2
+%aw,nw		/ row 3d08
+	S
+	IB1	A1,R
+%ab,n		/ row 3d0e
+	S
+	IB1	A1,R
+%ew*,nw		/ row 3d14
+	S!
+	F*1
+	IB1	#1(R*1),R
+%eb*,n		/ row 3d1a
+	S!
+	F*1
+	IB1	#1(R*1),R
+%nw*,nw		/ row 3d20
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%nb*,n		/ row 3d26
+	F*S
+	S
+	pop	bx
+	IB1	#1(bx),R
+%al,z		/ row 3d2c
+	mov	R,A2
+	I	A1,R
+	I	A1+,R
+%al,c		/ row 3d32
+	I	A1+,A2
+	V	A1,*0
+%nl*,c		/ row 3d38
+	F*
+	I	#1(R*),A2
+	I	#1+2(R*),*0
+%al,nu*		/ row 3d3e
+	S*
+	I	A1+,#2(R*)
+	I	A1,*0
+%al,nu		/ row 3d44
+	S
+	I	A1+,R
+	I	A1,*0
+%al,nl		/ row 3d4a
+	S
+	I	A1+,R+
+	V	A1,R
+%el*,nl		/ row 3d50
+	S!
+	F*1
+	I	#1+2(R*1),R+
+	V	#1(R*1),R
+%nl*,nl		/ row 3d56
+	SS
+	F*
+	mov	bx,R
+	pop	R
+	pop	R+
+	I	#1+2(bx),R+
+	V	#1(bx),R
+
+/ op 78 =|: the list of op 77
+/ op 79 =^: the list of op 77
+/ ======== sptab (40ca)
+/ op 106 load value (list 40d2)
+%c,n		/ row 40d2
+	mov	R,A1
+	push	R
+%al,n		/ row 40d8
+	mov	R,A1+
+	push	R
+	mov	R,A1
+	push	R
+%aw,n		/ row 40de
+	push	A1
+%nw*,n		/ row 40e4
+	F*
+	push	#1(R*)
+%nl*,n		/ row 40ea
+	F*
+	push	#1+2(R*)
+	push	#1(R*)
+%nf,n		/ row 40f0
+	F
+	sub	sp,*8
+	mov	ax,sp
+	call	fstdp<Q>
+%nd,n		/ row 40f6
+	F
+	sub	sp,*8
+	mov	ax,sp
+	call	fstdp<Q>
+
+/ ======== operators: op, opntab[] name, opdope[] (octal)
+/   0 op 0             000000
+/   1 op 1             000000
+/   2 op 2             000000
+/   3 op 3             000000
+/   4 op 4             036000
+/   5 op 5             002000
+/   6 op 6             036000
+/   7 op 7             002000
+/   8 :                014201
+/   9 ,                007001
+/  10 field select     000000
+/  11 op 11            000000
+/  12 op 12            000001
+/  13 int->ptr         000001
+/  14 ptr->int         000001
+/  15 long->ptr        000001
+/  16 field assign     000001
+/  17 >>               000001
+/  18 >>               000001
+/  19 op 19            000000
+/  20 name             000400
+/  21 short constant   000400
+/  22 string           000400
+/  23 float            000400
+/  24 double           000400
+/  25 long constant    000400
+/  26 long constant    000400
+/  27 *r++             000400
+/  28 *--r             000400
+/  29 op 29            000001
+/  30 ++pre            034203
+/  31 --pre            034203
+/  32 ++post           034203
+/  33 --post           034203
+/  34 !un              034220
+/  35 &                034202
+/  36 indirect         034220
+/  37 -                034200
+/  38 ~                034220
+/  39 .                036001
+/  40 +                030101
+/  41 -                030001
+/  42 *                032101
+/  43 /                032001
+/  44 %                032001
+/  45 >>               026061
+/  46 <<               026061
+/  47 &                020161
+/  48 |                016161
+/  49 ^                016161
+/  50 ->               036001
+/  51 int->double      000000
+/  52 double->int      000000
+/  53 &&               000001
+/  54 ||               000001
+/  55 &~               030001
+/  56 double->long     000000
+/  57 long->double     000000
+/  58 integer->long    000000
+/  59 long->integer    000000
+/  60 ==               022005
+/  61 !=               022005
+/  62 <=               024005
+/  63 <                024005
+/  64 >=               024005
+/  65 >                024005
+/  66 <p               024005
+/  67 <=p              024005
+/  68 >p               024005
+/  69 >=p              024005
+/  70 =+               012213
+/  71 =-               012213
+/  72 =*               012213
+/  73 =/               012213
+/  74 =%               012213
+/  75 =>>              012253
+/  76 =<<              012253
+/  77 =&               012253
+/  78 =|               012253
+/  79 =^               012253
+/  80 =                012213
+/  81 & for tests      030001
+/  82 *                032001
+/  83 /                032001
+/  84 %                032001
+/  85 =& ~             012253
+/  86 =*               012213
+/  87 =/               012213
+/  88 =%               012213
+/  89 *(x+c)           000001
+/  90 ?                014201
+/  91 <<               026061
+/  92 long =<<         012253
+/  93 \/               000101
+/  94 \/               000101
+/  95 /\               000101
+/  96 /\               000101
+/  97 ,                000001
+/  98 call *           036001
+/  99 call2            000000
+/ 100 call             036001
+/ 101 op 101           036000
+/ 102 goto             000000
+/ 103 jump cond        000000
+/ 104 init             000000
+/ 105 set nregs        000400
+/ 106 load value       000000
+/ 107 char->long       000000
+/ 108 long->char       000000
+/ 109 int<->char       000000
+/ 110 force register   000000
+/ 111                  000000
+/ 112                  000000
+/ 113                  000000
+/ 114                  000000
+/ 115 = structure      000000
+/ 116  (struct setup)  000001
+/ 117 udiv             032001
+/ 118 =udiv            032001
+/ 119 umod             032001
+/ 120 =umod            032001
+/ 121 char->int        000000
+
+/ ======== instab (0d4c): op, first and second form
+/ 106 load value     mov    ???
+/  80 =              mov    ???
+/  60 ==             cmp    ???
+/  61 !=             cmp    ???
+/  62 <=             cmp    ???
+/  63 <              cmp    ???
+/  64 >=             cmp    ???
+/  65 >              cmp    ???
+/  66 <p             cmp    ???
+/  67 <=p            cmp    ???
+/  68 >p             cmp    ???
+/  69 >=p            cmp    ???
+/  40 +              add    inc
+/  70 =+             add    inc
+/  41 -              sub    dec
+/  71 =-             sub    dec
+/  30 ++pre          add    inc
+/  31 --pre          sub    dec
+/  32 ++post         add    inc
+/  33 --post         sub    dec
+/  42 *              imul   ???
+/  72 =*             imul   ???
+/  43 /              idiv   ???
+/  73 =/             idiv   ???
+/ 117 udiv           div    ???
+/ 118 =udiv          div    ???
+/  44 %              idiv   ???
+/  74 =%             idiv   ???
+/ 119 umod           div    ???
+/ 120 =umod          div    ???
+/  14 ptr->int       idiv   ???
+/  45 >>             sar    rcr
+/  75 =>>            sar    rcr
+/  46 <<             sal    rcl
+/  76 =<<            sal    rcl
+/  47 &              and    ???
+/  77 =&             and    ???
+/  48 |              or     ???
+/  78 =|             or     ???
+/  49 ^              xor    ???
+/  79 =^             xor    ???
+/  37 -              neg    ???
+/  38 ~              not    ???
+/  82 *              lmul   lmul
+/  83 /              ldiv   ldiv
+/  84 %              lrem   lrem
+/  86 =*             almul  almul
+/  87 =/             aldiv  aldiv
+/  88 =%             alrem  alrem
+/  17 >>             shr    rcr
+/  18 >>             shr    rcr
+
+/ ======== branchtab (0e84): op, branch, inverse
+/  60 ==             beq    bne
+/  61 !=             bne    beq
+/  62 <=             ble    bgt
+/  63 <              blt    bge
+/  64 >=             bge    blt
+/  65 >              bgt    ble
+/  66 <p             blos   bhi
+/  67 <=p            blo    bhis
+/  68 >p             bhis   blo
+/  69 >=p            bhi    blos
+/ 260 op 260         beq    bne
+/ 261 op 261         bne    beq
+/ 262 op 262         ble    bgt
+/ 263 op 263         blt    bge
+/ 264 op 264         bge    blt
+/ 265 op 265         bgt    ble
+/ 266 op 266         beq    bne
+/ 267 op 267         |nop   br
+/ 268 op 268         br     |nop
+/ 269 op 269         bne    beq

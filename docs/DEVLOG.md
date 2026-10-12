@@ -443,7 +443,9 @@ against the standard 80186 ISA byte encoding, since neither the manual nor the r
 corpus covers any of them. Corrected a prior wrong inference: `PUSHA`/`POPA` were
 assumed "confirmed real" but a fresh repo-wide grep found zero actual usage anywhere
 — they're unconfirmed like most other 80186 additions; only `INSW`/`OUTSW` carry
-genuine hardware confirmation (via `mch_insw_outsw.s`).
+genuine hardware confirmation (via `mch_insw_outsw.s`). (Narrowed 2026-10-12: the
+real kernel confirms their *encodings*, as `.byte`s; the real `as` does not accept
+the mnemonics at all - see "The original binaries" below.)
 
 ### CLI reference
 
@@ -8628,6 +8630,173 @@ disassembling anything, and the few key functions can be compared with
    the nine kernel files get today needs no hardware and no binary.
 4. **Independent of the outcome**: split `c1_gen.c` into modules and add
    tests for call arguments and `long` arguments.
+
+## The original binaries (2026-10-12)
+
+The binaries came from the hardware in commit `e8c7516` -
+`mutos_bin/<name>.golden.base64.txt` for `as`, `c0`, `c1`, `c2`, `cc`,
+`cpp` and `ld` (headers in `mutos_bin/README.md`): all stripped of
+relocation, all but `cpp` stripped of symbols, all 0411 (separate I&D)
+but `cc` (0407). This section is what reading them showed; the tools are
+in `tests/realbin/` (`make check-realbin`), the consequence is
+`docs/C1_PORT_PLAN.md`.
+
+### They run: an emulated oracle
+
+`tests/realbin/mutosemu.py` loads a MUTOS `a.out` into Unicorn - text in
+one 64K segment, data, BSS and stack in another for 0411 - lays out
+`crt0`'s argument stack and serves the two far-call trampolines `crt0`
+sets up: `Iscadr` is CS:0002, the system call (number in AX, arguments
+in BX, CX, SI, DI as `sys123.o` and `lseek.o` load them, results in AX
+and BX, carry set on error), `Isgadr` CS:0004, `chkstk`'s stack growth
+(see `docs/MUTOS_C_ABI.md` 2.2 - `Iscadr`, data 0006, holds offset 2,
+`Isgadr`, data 0002, offset 4; `crt0` fills in `cs` as their segment). Fourteen system calls are enough for
+the compiler passes and the assembler; `cc` itself needs `fork`/`exec`
+and does not run.
+
+Against the project's goldens (`tests/realbin/check_real.py goldens`):
+
+- the real `cpp`: 137/137 `.i` goldens (`tests/mutos_cc`'s 132 and
+  `tests/mutos_cpp/c`'s five with `run_goldens.sh`'s defines);
+- the real `c0`: 132/132 `.1`/`.2` goldens;
+- the real `c1`: 132/132 `.s` goldens, with exactly the messages of
+  `c1_errors.txt` and of `round14.log` (`p56_fltinf9`, `p57_fltstk8`:
+  eighteen each) and exit status 1 where it printed any - `p19_open3`'s
+  invalid lines included (bytes read past the end of a table, which the
+  data segment, loaded from the file as the kernel loads it, reproduces);
+- the real `as`: 75/76 `.o` goldens, the 76th a finding (below).
+
+So any `.c`, `.i`, `.1`/`.2` or `.s` gets the real toolchain's answer in
+a fraction of a second, without the hardware - including the whole
+`cpp`, `c0`, `c1`, `as` pipeline on `11_kernel/09_amx.c`, byte-exact at
+each stage.
+
+### `c1` is v7's `c1`, ported to the 8086
+
+Mapping the stripped text by the strings each function prints, the
+calls it makes and its position (`tests/realbin/c1map.txt`;
+`libc.a` matched against the text by its objects' code with relocated
+words as wildcards - `tests/realbin/c1dis.py`): `crt0`, then 67
+functions in exactly v7's source order (`c10.c`, `c11.c`, `c12.c`), then
+`libc.a` from text 5b46. v7's `oddreg` (PDP-11 register pairs) and
+`psoct` (octal numbers) are gone; new are a SIGFPE handler, the `%c%d.`
+number printer and its `*`/`#` size test, a tree printer, the FCON→SFCON
+test for the MUTOS floating format, a "register usable as a base"
+(SI/DI/BP) test and `werror`.
+
+The data structures are v7's: `struct tnode` (op, type, degree, tr1,
+tr2), `opdope[]` and `opntab[]` (122 names; new ops 89 `*(x+c)`, 107/108
+char<->long, 117..120 unsigned `/`, `/=`, `%`, `%=`, 121 char->int, and
+122/123, a floating `*(x+c)` and indirection that `cexpr()` uses only
+to look up a table), `instab`, `branchtab`, `maprel`/`notrel`, `isn` =
+10000, `nreg` = 3. The register names are `ax dx si di cx bx bp sp`,
+numbered 0..7 and handed out downwards (`reg1 = reg-1`): a long is in
+DI:SI or DX:AX, a char forced into DX or AX (`reg` at most 1), an auto
+variable becomes OFFS on register 6, BP.
+
+Compared with v7 so far: `reorder()`, `sreorder()` - the hoist order
+rounds 10..13 probed -, `sdelay()`, `ncopy()`, `max()`, `islong()`,
+`isconstant()`, `hardlongs()`, `notcompat()` and `error()` do what v7's
+do. With small, local changes: `match()` (op 89 counts as an indirection
+for a table's `*`), `degree()` (`&x` is -2 only for an extern or static
+`x`; an auto's address has degree 1 - round 3's "its `lea` counts as
+computed"), `dcalc()` (constants 0, 1, -128..127, others: 4, 5, 7, 8;
+`*p` addressable only through an SI/DI/BP register variable, else 24;
+`&extern` like a constant; a strict `<` against the free registers),
+`delay()` (nothing is delayed in a floating expression), `acommute()`
+(no PDP-11 rule for `^`; `& -1` dropped like `* 1`; an `&` with a
+constant up to 0377 makes its char operands op 121) and `optim()` (the
+unsigned ops, ITOL dropped from a shift count). Rewritten for the 8086
+and the floating-point runtime: `rcexpr()`, `cexpr()`, `pname()`,
+`comarg()`, `doinit()`, `cbranch()`, `pswitch()`, `strasg()`. The rest
+(`unoptim()`, `distrib()`, `lvfield()`, `const()`, `lconst()`,
+`insert()`, `getree()`, ...) is placed but not compared yet.
+
+### The code tables: v7's, in v7's encoding
+
+`rcexpr()` compares its table argument with `cctab` and `efftab` and
+hands `regtab` to RFORCE, `comarg()` pushes through `sptab`: data offsets
+3e66, 3c9e, 334a and 40ca. Each is v7's `struct table` list (op, rows),
+each row v7's `struct optab` (degree and type of each operand, template
+pointer), the classes and type flags exactly `v7/cc/cvopt.c`'s numbers
+(z 4, 1 5, c 8, r 9, a 16, e 20, n 63, `*` +0100; w 1, b 3, f 4, d 5,
+l 8, u 9). The templates are `cvopt` output too: no leading tab, no
+newline after `F`/`S`/`H`/`T`/`X`, 0200 for an inner tab, the macro
+letters v7's (`A`/`B` addresses, `C`/`D` type suffixes, `G`/`K`/`H`
+subtrees with `'A'`+flags, `I`/`J` registers, `M` instructions, `#`/`"`
+offsets, `T`, `V`, `X`, `Z`, `L`, `P`). `tests/realbin/c1tables.py`
+inverts that and gives back a `table.s` in v7's notation -
+`tests/realbin/c1_tables.txt`: 496 rows, 292 templates, line for line
+v7's table with Intel operand order, `(R*)` for a base register and calls
+into the floating-point runtime. Two examples, both rules the probe
+rounds needed a correction to find:
+
+```
+/ op 43 / (and % - the same list)       / op 40 + (and - - the same list)
+%nw,nw                                  %nw,ew
+	SS                                      F
+	F                                       S1
+	mov	ax,R                            I	R,R1
+	T
+	pop	cx
+	I	cx
+```
+
+- every computed divisor pushed first (round 12), and `%n,e`: the left
+operand into DI, the right one into SI (round 12).
+`check_real.py coverage` hooks `match()`'s return over every golden
+run: 12,926 matches use 160 of the 496 rows (`regtab` 99 of 345,
+`efftab` 29 of 65, `cctab` 28 of 79, `sptab` 4 of 7). The other 336 rows
+are code shapes no golden has shown, fixed all the same.
+
+`cexpr()`'s interpreter (a hashed switch on the character, `c % 7`) has
+v7's letters but `-` and `)` (PDP-11 auto-decrement and increment), and
+these additions: `<U>` pushes the compile-time model of the
+floating-point stack (counter at data 431a, "Floating point stack
+overflow; simplify expression" past 7), `<Q>` pops it ("Floating point
+stack underflow"), `<R>` pops it ("floating point stack underflow") and
+prints `p` only while a nesting counter `rcexpr()` keeps (data 000a) is
+0 - so a compound assignment's store, which uses `<Q>`, reports in upper
+case and an assignment's, `<R>`, in lower case, as round 13 found -; a
+literal `push`/`pop` in a template counts `nstack`; `R*` moves the
+register to BX unless it is SI or DI; `F!` forces the register and `Fd`
+puts a long result into DX:AX. Before matching, a floating STAR or op
+89 is looked up as op 123 or 122.
+
+### Options and traces
+
+`main()` reads options after the three file names: `s<n>` sets the frame
+size from which a function calls `chkstk` (data 04a6, default 100 - the
+`(98,100]` threshold round 8 settled), and `a`, `b`, `c`, `d`, `r`
+switch on debug traces written into the `.s`: `b` each expression tree
+as read, `a` the same tree after `optim()`, `r` each `rcexpr()` call
+with its tree, `c` each `cexpr()` call, the op and type after every line
+it emits and the register it returns, `d` each `delay()` call. Run under
+the emulator they show the real compiler's intermediate states - the
+basis of the port's verification (`docs/C1_PORT_PLAN.md`, section 2).
+
+### The real `as` and `insw`/`outsw`
+
+`tests/mutos_as/kernel_opt/mch_insw_outsw.s` is `mch.s` with its two
+`.byte /6d` and `.byte /6f` replaced by `insw` and `outsw`; its
+`.o.golden` is the real `mch.o`, assembled from the `.byte`s. The real
+`as` does not know those 80186 mnemonics: it assembles each, without a
+message, as an undefined external word - two more text bytes and two
+more symbols (`insw`, `outsw`) than the golden, exactly what `mutos_as`
+did before its dispatch entries were added. So the encodings 0x6D/0x6F
+are confirmed (by the real kernel's bytes and Intel's tables), but not
+that the real assembler accepts the mnemonics; `mutos_as` accepting
+them is an extension, like its other 80186 opcodes. `check_real.py`
+lists the file apart.
+
+### Round 14, through the binary
+
+The round-14 goldens (commit `148efa3`) and `round14.log` (`71f0a07`)
+came back while the binaries were being read. The emulated `c1` gives
+all four `.s` and both message lists (`p56_fltinf9`, `p57_fltstk8`,
+eighteen each) exactly. `mutos_c1` does not yet (`make test`: `p54`,
+`p55`, `p57` refused, `p56` mismatched); they are left to the port,
+which has to produce them like every other golden.
 
 ## Recurring process lessons
 

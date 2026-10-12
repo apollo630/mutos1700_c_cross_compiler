@@ -1,0 +1,123 @@
+# c1map.txt - a map of the real MUTOS 1700 c1 (mutos_bin/c1.golden.base64.txt)
+#
+# The binary is stripped (no symbol table). Names come from the strings each
+# function prints, its calls, and its position: the functions follow
+# v7/cc/c10.c, c11.c and c12.c in source order, as v7's makefile links them
+# (c10.o c11.o c12.o c13.o table.o), then libc.a. c1dis.py reads this file;
+# the libc.a functions (text 5b46 on) it names itself, by matching libc.a's
+# objects (tests/mutos1700_libc) against the text.
+#
+# Format: "T <text offset> <name> <status> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/cc): same       - compared, does what v7's does
+#                         delta      - compared, v7's code with the noted changes
+#                         x86        - read, rewritten for the 8086 / MUTOS syntax
+#                         new        - no v7 counterpart
+#                         unread     - placed by order and strings, not compared yet
+# v7 functions with no counterpart here: oddreg (no PDP-11 register pairs),
+# psoct (numbers are printed in decimal, "%d.").
+#
+# ---- c10.c
+T 0000 start    crt0     crt0.o (byte-identical up to relocation)
+T 00b6 fpeintr  new      SIGFPE handler: error("floating point over or under flow"), longjmp
+T 00d6 main     delta    options after argv[3]: a b c d r = debug traces, s<n> = chkstk threshold; signal(8, fpeintr); ".data" only, not v7's ".globl"
+T 02c2 match    delta    op 89 (*(x+c)) counts as STAR for the 0100 degree flag; no lsptab->sptab mapping
+T 0498 rcexpr   x86      v7's structure; floating values (fac, fstdp, fldd), push of arguments, "or r,r" for cctab, fp stack model
+T 0a82 cexpr    x86      v7's macro interpreter extended: U Q R (fp stack model), push/pop counting, R* via BX, F!/Fd, '#' for op 89; STAR/op 89 of a float matched as op 123/122
+T 18d2 reorder  same
+T 1980 sreorder same
+T 1bd0 delay    delta    returns 0 for a float or double tree
+T 1c94 sdelay   same
+T 1cfe ncopy    same
+T 1d40 chkleaf  unread
+T 1d8a comarg   x86      pushes; a double argument by "sub sp,*8 / mov ax,sp / call fstdp"; structures by a push loop
+T 1eea strfunc  unread
+T 1f1e doinit   x86      .float/.double "%.17e", ".word /%x,/%x" for a long; conversions through libc's dtoi/itod/fstsp/ftol/ltof
+T 211c movreg   x86      "mov %s,%s" by register name, pairs for long
+# ---- c11.c
+T 21b4 max      same
+T 21ce degree   delta    &x is -2 only for an extern or static x (an auto's address has degree 1)
+T 2278 pname    x86      MUTOS operand syntax ("L%d", "%d.+", "(%s)", register names)
+T 23d6 regerr   unread
+T 23e8 pbase    unread
+T 244e pnum     new      printf("%c%d.", ssize(n), n)
+T 246c ssize    new      '*' for -128..127, '#' otherwise
+T 248c xdcalc   unread
+T 24a6 dcalc    delta    CON: 0->4 1->5 -128..127->7 else 8; &extern/&static 8; *p 12 only through an SI/DI/BP register variable at offset 0, else 24; degree < nrleft (not <=) for 20
+T 2588 notcompat same
+T 262e prins    unread
+T 267a collcon  unread
+T 26c4 isfloat  unread
+T 270a arlength unread
+T 274c pswitch  x86      jump tables "seg cs / jmp @L%d(bx)", hashed switches by "div bx"
+T 29cc breq     x86
+T 2a16 sort     unread
+T 2a98 ispow2   unread
+T 2ad0 pow2     unread
+T 2bba cbranch  x86      floating comparisons "call ftest / sahf"
+T 2e32 branch   unread
+T 2e6a longrel  x86
+T 2fc4 xlongrel unread
+T 307a label    unread
+T 3090 popstk   x86      "add sp,%c%d."
+T 30bc error    same
+T 311e getree   unread   calls setjmp (the SIGFPE handler's longjmp lands here)
+T 3924 geti     unread
+T 3978 outname  unread
+T 39ca strasg   x86      structure assignment through "repz / movs"
+T 3b42 setype   unread
+T 3b8a decref   unread
+T 3bbe incref   unread
+T 3bdc tprint   new      debug: prints a tree (op, type, degree; a name's class in octal, regno, offset, nloc)
+# ---- c12.c
+T 3e3c optim    delta    auto names become OFFS on bp (regno 6); ITOL stripped from shift counts; unsigned / % /= %= >> >>= become ops 117 119 118 120 17 18; first switch read only
+T 4746 unoptim  unread
+T 4dd6 lvfield  unread
+T 4f0a acommute delta    no PDP-11 '^' rule; AND with -1 like TIMES by 1; AND with a constant <= 0377 turns ITOC operands into op 121; "+0" returns the operand as is; long TIMES through hardlongs
+T 5254 distrib  unread
+T 53fc squash   unread
+T 5416 const    unread
+T 5538 lconst   unread
+T 579a insert   unread
+T 593a tnode    unread
+T 5980 tconst   unread
+T 59a6 getblk   unread
+T 59f8 islong   same
+T 5a10 isconstant same
+T 5a3a fconchk  new      FCON: SFCON/FLOAT if its low 32 bits are 0 (MUTOS floating format), else FCON/DOUBLE
+T 5a68 hardlongs same
+T 5aba isregptr new      a REG name in SI, DI or BP (an 8086 base register)
+T 5aec werror   new      "%d: Warning: "
+#
+# ---- data (offsets in the data segment)
+D 0000 crt0data   crt0.o's data; Isgadr at 0002, Iscadr at 0006
+D 000a fpkeep     rcexpr's nesting counter: <R> prints 'p' only while it is 0
+D 000c maprel
+D 0016 notrel
+D 0020 regname    char *[8]: ax dx si di cx bx bp sp - register numbers 0..7
+D 0030 czero
+D 0036 cone
+D 003c sfuncr
+D 0046 nreg       3
+D 0048 isn        10000
+D 04a6 stkthresh  100: frames from this size call chkstk (option s<n>)
+D 0aa2 opdope
+D 0b9a opntab     122 entries
+D 0d4c instab
+D 0e84 branchtab
+D 334a regtab
+D 3c9e efftab
+D 3e66 cctab
+D 40ca sptab
+D 415e _iob       stdin, stdout 4166, stderr 416e
+D 4312 line
+D 4314 nerror
+D 4316 nstack
+D 4318 nfloat
+D 431a fpdepth    the floating-point stack model (cexpr's U, Q, R)
+D 433e dflag_c    option c: cexpr trace
+D 4340 dflag_r    option r: rcexpr trace
+D 4342 dflag_a    option a: each expression tree after optim() (getree)
+D 4344 dflag_b    option b: each expression tree as read, before optim() (getree)
+D 4346 dflag_d    option d: delay trace
+D 4348 cregtab

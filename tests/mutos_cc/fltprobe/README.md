@@ -243,9 +243,11 @@ not compared), and skips the others.
   (`mov di,l+2` / `push di` / `mov di,l` / `push di`) - `mutos_c1` had
   pushed its high word alone, silently wrong code no golden had shown. See
   `../../../docs/DEVLOG.md`'s "The round-13 fltprobe goldens".
-- **Round 14** (`p54`..`p57`, goldens pending - **not run for now**, decided
-  2026-10-10: the corrections per round do not fall, so the original `c1`
-  binary is read first, see `../../../STATUS.md`'s "Next up"): round 13
+- **Round 14** (`p54`..`p57`, run 2026-10-12: goldens and `round14.log`
+  here; not yet handled by `mutos_c1` - the original `c1` binary, read
+  first because the corrections per round do not fall, is to be ported and
+  produce them, see `../../../STATUS.md`'s "Next up"; the emulated original
+  already gives all four, `../../realbin/`): round 13
   corrected more than a handful too (twelve, by seven rules), so a
   fourteenth round asks about their neighbours: `long` (`p54_long10`), int (`p55_elem11`) and floating
   (`p56_fltinf9`) shapes, and, not a program to run, the stack model's top
@@ -358,8 +360,9 @@ the host's value when the refused ones are taken out (`p54` 701, `p55`
 
 ## Generating the goldens
 
-(Round 14 is prepared but not to be run for now - see above. The
-instructions stay for when it is.)
+(Round 14 has been run - see above. The instructions stay for a next
+round; the real compiler's answer for a new probe is also available
+without the hardware, from the emulated binaries in `../../realbin/`.)
 
 On MUTOS 1700, from inside this directory:
 
