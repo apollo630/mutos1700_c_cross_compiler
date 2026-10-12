@@ -35,13 +35,18 @@
 #                   # an 8086 emulator (needs the
 #                   # Python module "unicorn"; see
 #                   # tests/mutos_as/float_coverage/libcatof.py)
+#   make check-realbin # the original MUTOS c0 and c1 (mutos_bin/), run under
+#                   # an 8086 emulator, against every tests/mutos_cc
+#                   # golden, and tests/realbin/c1_tables.txt against
+#                   # the c1 binary (needs the Python module "unicorn";
+#                   # see tests/realbin/README.md)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
 
 CC     = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-.PHONY: all ld as cpp cc clean test fuzz check-docs check-libcatof install-hooks
+.PHONY: all ld as cpp cc clean test fuzz check-docs check-libcatof check-realbin install-hooks
 
 all: ld as cpp cc
 
@@ -129,6 +134,18 @@ check-libcatof: as ld cc
 	@python3 tests/mutos_as/float_coverage/libcatof.py ops
 	@python3 tests/mutos_as/float_coverage/libcatof.py ecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
 	@python3 tests/mutos_as/float_coverage/libcatof.py fecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
+
+# The original MUTOS 1700 binaries as an oracle: the real c0 and c1 from
+# mutos_bin/, run under an 8086 emulator (tests/realbin/mutosemu.py), must
+# give back every tests/mutos_cc golden byte for byte - c1's messages and
+# exit status included - and tests/realbin/c1_tables.txt must be what
+# c1tables.py reads from the c1 binary; then the share of c1's code-table
+# rows the goldens use. Separate from "test" because it needs the Python
+# module "unicorn" (pip install unicorn). See tests/realbin/README.md.
+check-realbin:
+	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
+	@python3 tests/realbin/check_real.py goldens
+	@python3 tests/realbin/check_real.py coverage
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

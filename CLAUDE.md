@@ -147,8 +147,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   compiler's own invalid output, `p21_fltexp`, `p28_fltstk`,
   `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`,
   `p52_fltinf8` and `p53_fltstk7` together with the real compiler's own
-  `c1` error messages, see below), round 14's four (`p54`..`p57`) prepared
-  but not run on the hardware for now (see `STATUS.md`'s "Next up"). It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  `c1` error messages, see below), round 14's four (`p54`..`p57`) run on
+  the hardware (goldens and `round14.log` present) but not yet handled by
+  `mutos_c1` - left to the port of the real `c1` (see `STATUS.md`'s "Next
+  up"). It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -188,12 +190,23 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
   include. Run via `/tests/mutos_cpp/run_goldens.sh`.
+* `/tests/realbin/`: The original MUTOS 1700 binaries (`/mutos_bin/`) run on the modern
+  host under an 8086 emulator (`mutosemu.py`, Python + `unicorn`): the real `cpp`, `c0`,
+  `c1` and `as` reproduce the project's goldens there (`check_real.py`, `make
+  check-realbin`, not part of `make test`), which makes them an oracle for any input.
+  Also `c1`'s code tables read back into v7 `table.s` notation (`c1tables.py`,
+  `c1_tables.txt`), a map of the stripped `c1` (`c1map.txt`) and an annotated
+  disassembler (`c1dis.py`). See its `README.md` and `docs/C1_PORT_PLAN.md`.
 * `/tests/mutos_ld/`: Golden Master and integration tests for the linker. **Currently missing
   from this checkout** — the golden reference binaries (`myhello`/`idhello`) this
   milestone's verification depends on are absent, so Milestone 1 cannot be re-verified
   until they're restored. See `STATUS.md`'s Open Items.
 
-### 📜 Legacy & Reference (`/v7` & Documentation)
+### 📜 Legacy & Reference (`/v7`, `/mutos_bin` & Documentation)
+* `/mutos_bin/`: The original MUTOS 1700 toolchain binaries (`as`, `c0`, `c1`, `c2`, `cc`,
+  `cpp`, `ld`) from the hardware, as base64 text (`*.golden.base64.txt`) - reference data
+  under the Golden Master Integrity rule (Workflow Guideline 2): never regenerate,
+  re-encode or alter them. See its `README.md`; `/tests/realbin/` runs them.
 * `/v7/cc/`: Reference source code from Research Unix Version 7 C compiler.
 * `/v7/cpp/`: Reference source code for the fast V7 C preprocessor (John F. Reiser, 1978)
   that `mutos_cpp` re-implements the observable behavior of.
@@ -753,13 +766,18 @@ scope and intent, not a snapshot of what's done.
     wrong - and the stack model's top (six values: `p52_fltinf8`'s
     twenty-two "Floating point stack overflow; simplify expression") -
     see "The round-13 fltprobe goldens". That is more than a handful
-    again. Round 14 (`p54`..`p57`) is prepared, but **not run now**
-    (decided 2026-10-10): the corrections per round do not fall (7, 7, 3,
-    11, 12) and `c1_gen.c` has become a list of shapes, not v7's
-    mechanism. The first "Next up" in `STATUS.md` is therefore to read the
-    original `c1` binary - its code tables and the tree optimizer's key
-    functions - and to decide from that whether `c1_gen.c` becomes
-    table-driven; then growing coverage into `11_kernel`.
+    again. The corrections per round do not fall (7, 7, 3, 11, 12) and
+    `c1_gen.c` has become a list of shapes, not v7's mechanism, so the
+    original binaries were brought and read first (2026-10-12, see
+    `docs/DEVLOG.md`'s "The original binaries"): the real `c1` is v7's
+    `c1` ported to the 8086, its code tables v7's in v7's encoding, and
+    under an emulator (`tests/realbin/`) the real `cpp`, `c0` and `c1`
+    reproduce every golden. **Decided: `mutos_c1` becomes a port of the
+    real `c1`** - v7's sources, the binary's deltas, its tables generated
+    - checked against the emulated original at four depths
+    (`docs/C1_PORT_PLAN.md`); round 14 (`p54`..`p57`, run, goldens
+    present) is left to it. `11_kernel` grows on the `mutos_c0` side
+    meanwhile.
   * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
     category by category — see
     `src/mutos_cc/README.md`'s "Next steps" for the concrete

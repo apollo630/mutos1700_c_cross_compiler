@@ -111,8 +111,9 @@ byte-exact (they stay here rather than joining `08_float`; `p21_fltexp`,
 `p49_fltstk6`, `p52_fltinf8` and `p53_fltstk7` together with the real
 compiler's own error messages, see below) but `p19_open3`, whose
 `.s.golden` ends in the real compiler's own invalid output (see below),
-and a fourteenth round of four (`p54`..`p57`) whose goldens are still to
-be generated. Unlike `fuzz/`, it
+and a fourteenth round of four (`p54`..`p57`) whose goldens `mutos_c1`
+does not reproduce yet (left to the port of the real `c1`, see
+`../../docs/C1_PORT_PLAN.md`). Unlike `fuzz/`, it
 does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
 category, and `run_goldens.sh` skips each file until it has goldens - one
 with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
