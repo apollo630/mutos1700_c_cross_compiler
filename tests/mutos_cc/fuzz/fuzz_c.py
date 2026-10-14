@@ -45,6 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import x86sim  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
+MUTOSEMU = ROOT / "tests/realbin/mutosemu.py"
+MAX_INSNS = 400_000_000
 TOOLS = {
     "cpp": os.environ.get("MUTOS_CPP", str(ROOT / "src/mutos_cpp/mutos_cpp")),
     "c0": os.environ.get("MUTOS_C0", str(ROOT / "src/mutos_cc/mutos_c0")),
@@ -419,9 +421,14 @@ def run_build(wd, tag, c0, c1, env, ret, g):
     if p.returncode:
         return "refused", "c0: " + reason_of(p.stderr), ""
     p = subprocess.run([c1, str(one), str(two), str(s_file)], capture_output=True, text=True)
-    if p.returncode not in (0, 1) or any(m in p.stderr.replace("internal limit", "") for m in BUG_MARKERS):
+    (wd / f"{tag}.c1err").write_text(p.stderr, encoding="latin1")
+    (wd / f"{tag}.c1st").write_text(str(p.returncode))
+    if p.returncode not in (0, 1, 2) or any(m in p.stderr.replace("internal limit", "") for m in BUG_MARKERS):
         return "bad", f"mutos_c1 crashed or reported an internal error: {p.stderr.strip()[-300:]}", ""
     if p.returncode:
+        # 1: c1's own error messages (the .s written whole, as the real
+        # c1's); 2: refused - the real c1 traps or reads state the port
+        # does not model there
         return "refused", "c1: " + reason_of(p.stderr), ""
     text = s_file.read_text()
     p = subprocess.run([TOOLS["as"], "-o", str(wd / f"{tag}.o"), str(s_file)],
@@ -477,6 +484,62 @@ def state_diffs(r, env, g):
     return diffs
 
 
+def emulated(wd, tool, *argv):
+    """The original MUTOS tool under tests/realbin/mutosemu.py: (status,
+    stderr); 125 if it did not finish (see mutosemu.py)."""
+    p = subprocess.run([sys.executable, str(MUTOSEMU), "--cwd", str(wd),
+                        "--max-insns", str(MAX_INSNS), tool, *argv],
+                       capture_output=True)
+    return p.returncode, p.stderr.decode("latin1")
+
+
+def against_real(wd, tag, res):
+    """The oracle: the build's .1/.2 against the emulated real c0's, its
+    .s, messages and exit status against the emulated real c1's (run on
+    the real c0's .1/.2 - the same input, once they agree). Returns
+    (outcome, detail): res's where the two agree, "bad" where they differ,
+    and "as-real" where the build's code is wrong, cannot be checked, or
+    has c1's error messages - exactly as the real compiler's."""
+    st0 = (wd / "real.c0").read_text()
+    one, two, s_file = wd / f"{tag}.1", wd / f"{tag}.2", wd / f"{tag}.s"
+    if res[0] == "refused" and res[1].startswith("c0: "):
+        return res[0], res[1]
+    if not (wd / f"{tag}.c1st").exists():
+        return res[0], res[1]           # mutos_c0 crashed
+    if st0 != "0":
+        return "bad", f"mutos_c0 accepts what the real c0 rejects ({st0})"
+    if one.read_bytes() != (wd / "real.1").read_bytes() or \
+            two.read_bytes() != (wd / "real.2").read_bytes():
+        return "bad", "mutos_c0's .1/.2 differ from the real c0's"
+    st1, err1 = (wd / "real.c1").read_text(encoding="latin1").split("\n", 1)
+    real_s = (wd / "real.s").read_bytes() if (wd / "real.s").exists() else b""
+    mine = s_file.read_bytes() if s_file.exists() else b""
+    my_st = (wd / f"{tag}.c1st").read_text()
+    my_err = (wd / f"{tag}.c1err").read_text(encoding="latin1")
+    if my_st == "2":
+        # refused on purpose: what it wrote before must be the real c1's
+        if not real_s.startswith(mine):
+            return "bad", "mutos_c1 refused, but its .s before that differs from the real c1's"
+        return res[0], res[1]
+    if st1 == "125":
+        return "bad", "the real c1 does not finish (" + err1.strip()[-150:] + "), mutos_c1 does"
+    if mine != real_s:
+        ol, ml = real_s.split(b"\n"), mine.split(b"\n")
+        for i, (x, y) in enumerate(zip(ol, ml)):
+            if x != y:
+                return "bad", (f"mutos_c1's .s differs from the real c1's at line {i + 1}: "
+                               f"{y.decode('latin1')!r}, real {x.decode('latin1')!r}")
+        return "bad", f"mutos_c1's .s has {len(ml)} lines, the real c1's {len(ol)}"
+    if my_err != err1 or my_st != st1:
+        return "bad", (f"mutos_c1's messages or exit status ({my_st}) differ from the real "
+                       f"c1's ({st1}): {my_err[-120:]!r}, real {err1[-120:]!r}")
+    if res[0] in ("wrong", "bad"):
+        return "as-real", res[0] + ": " + res[1]
+    if res[0] == "refused":
+        return "as-real", "c1's error messages: " + res[1][4:]
+    return res[0], res[1]
+
+
 def run_one(job):
     idx, src, env, ret, g, args, workroot = job
     wd = Path(workroot) / f"p{idx}"
@@ -486,7 +549,15 @@ def run_one(job):
                        capture_output=True, text=True)
     if p.returncode:
         return idx, ("bad", "mutos_cpp failed: " + p.stderr.strip()[-200:], ""), None
+    if args.oracle == "real":
+        st, err = emulated(wd, "c0", "p.i", "real.1", "real.2")
+        (wd / "real.c0").write_text(str(st) if st == 0 else f"{st}: {err.strip()[-200:]}")
+        if st == 0:
+            st, err = emulated(wd, "c1", "real.1", "real.2", "real.s")
+            (wd / "real.c1").write_text(f"{st}\n{err}", encoding="latin1")
     new = run_build(wd, "new", TOOLS["c0"], TOOLS["c1"], env, ret, g)
+    if args.oracle == "real":
+        new = (*against_real(wd, "new", new), new[2])
     old = None
     if args.baseline:
         old = run_build(wd, "old", str(Path(args.baseline) / "mutos_c0"),
@@ -509,7 +580,17 @@ def main():
                     "(default: a new directory under /tmp)")
     ap.add_argument("--reasons", action="store_true",
                     help="list every refusal reason with its count")
+    ap.add_argument("--oracle", choices=("real", "none"), default="real",
+                    help="real (the default): every program also through the original "
+                    "c0 and c1 under tests/realbin/mutosemu.py, whose output the "
+                    "build must give byte for byte; none: the semantic check alone")
     args = ap.parse_args()
+    if args.oracle == "real":
+        try:
+            import unicorn  # noqa: F401
+        except ImportError:
+            sys.exit("fuzz_c: the oracle needs the Python module unicorn (pip "
+                     "install unicorn); --oracle none runs the semantic check alone")
 
     for name, path in TOOLS.items():
         if not os.access(path, os.X_OK):
@@ -530,6 +611,9 @@ def main():
             reasons[new[1]] = reasons.get(new[1], 0) + 1
         if new[0] in ("bad", "wrong"):
             bad.append((idx, "new build: " + new[0], new[1], src))
+        if new[0] == "as-real":
+            reasons["as the real compiler: " + re.sub(r"-?\d+", "N", new[1])[:90]] = \
+                reasons.get("as the real compiler: " + re.sub(r"-?\d+", "N", new[1])[:90], 0) + 1
         if old:
             if old[0] == "ok" and new[0] != "ok":
                 bad.append((idx, "REGRESSION", f"baseline correct, now {new[0]}: {new[1]}", src))
@@ -548,9 +632,12 @@ def main():
     n = args.count
     print(f"fuzz_c: {n} programs, seed {args.seed}"
           f"{', scalars only' if args.no_arrays else ''}"
-          f"{', file scope' if args.scope else ''}")
+          f"{', file scope' if args.scope else ''}"
+          f"{', against the real c0 and c1' if args.oracle == 'real' else ''}")
     print(f"  correct {counts.get('ok', 0)}, refused {counts.get('refused', 0)}, "
-          f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}")
+          f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}"
+          + (f", as the real compiler {counts.get('as-real', 0)}"
+             if args.oracle == "real" else ""))
     if args.baseline:
         print("  vs baseline: " + ", ".join(f"{v} {k}" for k, v in sorted(cmp.items())))
     if args.reasons:

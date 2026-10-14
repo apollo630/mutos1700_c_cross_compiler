@@ -44,10 +44,11 @@ def read_map():
         for line in f:
             if line.startswith('#') or not line.strip():
                 continue
-            parts = line.split(None, 4)
+            parts = line.split(None, 5)
             if parts[0] == 'T':
                 funcs[int(parts[1], 16)] = (parts[2], parts[3],
-                                            parts[4].strip() if len(parts) > 4 else '')
+                                            parts[5].strip() if len(parts) > 5 else '',
+                                            parts[4])
             elif parts[0] == 'D':
                 data[int(parts[1], 16)] = parts[2]
     return funcs, data
@@ -151,8 +152,8 @@ def main(argv):
     starts = sorted(funcs) + [min(a for a in names if a not in funcs and a > max(funcs))]
     if argv[:1] == ['--functions']:
         for a, b in zip(starts, starts[1:]):
-            n, status, note = funcs[a]
-            print('%04x %5d %-10s %-7s %s' % (a, b - a, n, status, note))
+            n, status, note, port = funcs[a]
+            print('%04x %5d %-10s %-7s %-7s %s' % (a, b - a, n, status, port, note))
         return 0
     if len(argv) == 1:
         by_name = {v[0]: a for a, v in funcs.items()}

@@ -18,10 +18,15 @@
 # after a computed '*'): the real c1 writes 118 bytes of libc's _ctype_
 # table as the name of the register after AX ("mov <garbage>,ax" / "sub
 # ax,ax" / "push <garbage>" / "push ax" / "call ltof") - its code table asks
-# for a register pair starting at AX. Golden lines 224 on are that
-# statement and the rest of the function. See docs/DEVLOG.md's "The
-# round-5 fltprobe goldens". The real assembler refuses it too (real
-# hardware, 2026-10-07): "***ERROR*** syntax error, line 229" (four times),
-# "..., line 231" (twice), "p19_open3.s: 3 errors.", exit status 2, a
-# 0-byte object - fltprobe/p19_as.log.
-fltprobe/p19_open3 223
+# for a register pair starting at AX, and registers are handed out
+# downwards: the one after AX is number -1, and regname[-1], the word
+# before the table, points into _ctype_. Golden lines 224 on are that
+# statement and the rest of the function; lines 224 to 228 are its valid
+# start (the product, the unsigned loaded into AX), line 229 the first
+# garbage name. mutos_c1, the port of the real c1, writes everything up
+# to there and refuses at the register name (its rname()). See
+# docs/DEVLOG.md's "The round-5 fltprobe goldens". The real assembler
+# refuses it too (real hardware, 2026-10-07): "***ERROR*** syntax error,
+# line 229" (four times), "..., line 231" (twice), "p19_open3.s: 3
+# errors.", exit status 2, a 0-byte object - fltprobe/p19_as.log.
+fltprobe/p19_open3 228

@@ -22,6 +22,12 @@ Usage:
     c1tables.py                 print the reconstruction
     c1tables.py --check FILE    exit 1 unless FILE is exactly what this
                                 script prints (keeps c1_tables.txt honest)
+    c1tables.py --c             print the same tables as C source for the
+                                c1 port (src/mutos_cc/c1port/c1tab.c):
+                                the template strings byte for byte, 0200
+                                bits included
+    c1tables.py --check-c FILE  exit 1 unless FILE is exactly what --c
+                                prints
     c1tables.py --rows          one line per distinct optab row (offset,
                                 table, op, classes) - for check_real.py's
                                 coverage report
@@ -240,7 +246,118 @@ def reconstruct():
     return '\n'.join(out) + '\n'
 
 
+MAPREL, NOTREL, REGNAME, NOPDOPE, LRTAB = 0x000c, 0x0016, 0x0020, 124, 0x0536
+
+C_HEADER = """\
+/*
+ * c1tab.c - the real MUTOS 1700 c1's tables, read from the original binary
+ * (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py --c.
+ * GENERATED - do not edit; "make check-realbin" checks it is up to date.
+ *
+ * The code tables (regtab, efftab, cctab, sptab) are v7's struct table
+ * lists of struct optab rows, as v7's cvopt compiled them from a table
+ * source in v7's notation with MUTOS assembler text - readable in
+ * tests/realbin/c1_tables.txt. Every template string is the binary's,
+ * byte for byte (a 0200 bit asks cexpr() for a tab). Each list and
+ * string is named by its data-segment offset in the binary.
+ */
+#include "c1.h"
+"""
+
+
+def cstring(raw):
+    out = '"'
+    for c in raw:
+        if c == 0o11:
+            out += '\\t'
+        elif c == 0o12:
+            out += '\\n'
+        elif c in (0x22, 0x5c, 0x3f):
+            out += '\\' + chr(c)
+        elif 0x20 <= c < 0x7f:
+            out += chr(c)
+        else:
+            out += '\\%03o' % c
+    return out + '"'
+
+
+def c_source():
+    out = [C_HEADER]
+    out.append('char maprel[] = {%s};' % ', '.join(str(D[MAPREL + i]) for i in range(10)))
+    out.append('char notrel[] = {%s};' % ', '.join(str(D[NOTREL + i]) for i in range(10)))
+    out.append('char *regname[8] = {%s};' % ', '.join(
+        cstring(rawstr(word(REGNAME + 2 * i))) for i in range(8)))
+    out.append('')
+    out.append('/* xlongrel()\'s branches for a long relation (v7\'s lrtab) */')
+    out.append('char lrtab[2][3][6] = {')
+    for z in range(2):
+        out.append('\t{' + ', '.join('{%s}' % ', '.join(str(D[LRTAB + z * 18 + r * 6 + i])
+                                                       for i in range(6))
+                                     for r in range(3)) + '},')
+    out.append('};')
+    out.append('')
+    out.append('int16_t opdope[%d] = {' % NOPDOPE)
+    for op in range(NOPDOPE):
+        out.append('\t%07o,\t/* %3d %s */' % (word(OPDOPE + 2 * op), op,
+                                             opname(op) if op < NOPNAMES else '(table lookup only)'))
+    out.append('};')
+    out.append('')
+    out.append('char *opntab[%d] = {' % NOPNAMES)
+    for op in range(NOPNAMES):
+        out.append('\t%s,\t/* %3d */' % (cstring(rawstr(word(OPNTAB + 2 * op))), op))
+    out.append('};')
+    out.append('')
+    for name, addr in (('instab', INSTAB), ('branchtab', BRANCHTAB)):
+        out.append('struct instab %s[] = {' % name)
+        a = addr
+        while word(a):
+            out.append('\t{%3d, %s, %s},' % (word(a), cstring(rawstr(word(a + 2))),
+                                            cstring(rawstr(word(a + 4)))))
+            a += 6
+        out.append('\t{0, 0, 0}')
+        out.append('};')
+        out.append('')
+    strings = sorted({r[5] for n, addr in TABLES for op, p in table(addr)
+                      for r in optab(p)})
+    out.append('/* template strings */')
+    for sp in strings:
+        out.append('static char s%04x[] = %s;' % (sp, cstring(rawstr(sp))))
+    out.append('')
+    done = set()
+    for n, addr in TABLES:
+        for op, p in table(addr):
+            if p in done:
+                continue
+            done.add(p)
+            out.append('static struct optab l%04x[] = {' % p)
+            for off, d1, t1, d2, t2, sp in optab(p):
+                out.append('\t{0%o, %d, 0%o, %d, s%04x},\t/* %%%s,%s */'
+                           % (d1, t1, d2, t2, sp, cls(d1, t1), cls(d2, t2)))
+            out.append('\t{0}')
+            out.append('};')
+    out.append('')
+    for n, addr in TABLES:
+        out.append('struct table %s[] = {' % n)
+        for op, p in table(addr):
+            out.append('\t{%3d, l%04x},\t/* %s */' % (op, p, opname(op)))
+        out.append('\t{0, 0}')
+        out.append('};')
+        out.append('')
+    return '\n'.join(out)
+
+
 def main(argv):
+    if argv[:1] == ['--c']:
+        sys.stdout.write(c_source())
+        return 0
+    if argv[:1] == ['--check-c']:
+        with open(argv[1]) as f:
+            if f.read() != c_source():
+                print('%s is not what c1tables.py --c reads from the binary - '
+                      'regenerate it' % argv[1])
+                return 1
+        print('c1 tables: %s up to date' % os.path.basename(argv[1]))
+        return 0
     if argv[:1] == ['--rows']:
         for off, name, op, d1, t1, d2, t2 in all_rows():
             print('%04x %-6s %3d %-14s %%%s,%s' % (off, name, op, opname(op),

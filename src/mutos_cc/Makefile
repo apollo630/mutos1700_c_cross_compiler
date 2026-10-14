@@ -4,14 +4,21 @@
 # Builds on a Linux host, matching mutos_as/mutos_cpp/mutos_ld's
 # style/tooling: plain C11, gcc/clang, no external build system.
 #
-# mutos_c0 (lex/parse/typecheck -> temp1/temp2 intermediate code) and
-# mutos_c1 (temp1/temp2 -> mutos_as-syntax assembly text) are a
+# mutos_c0 (lex/parse/typecheck -> temp1/temp2 intermediate code) is a
 # from-scratch, modern-C11 reimplementation - not a literal port of
-# v7/cc's pointer-arithmetic K&R source - validated byte-for-byte
-# against real-hardware golden output, matching this project's
-# established approach for mutos_as/mutos_cpp/mutos_ld. See README.md
-# for current grammar/opcode coverage and STATUS.md for the
-# currently-verified golden-diff results.
+# v7/cc's K&R source - validated byte-for-byte against real-hardware
+# golden output, matching this project's established approach for
+# mutos_as/mutos_cpp/mutos_ld.
+#
+# mutos_c1 (temp1/temp2 -> mutos_as-syntax assembly text) is a port of
+# the original MUTOS 1700 c1 - v7's c1, ported to the 8086 by hand -
+# read from its binary (c1port/, docs/C1_PORT_PLAN.md) and checked
+# against the original run under an 8086 emulator ("make check-realbin",
+# tests/realbin/). c1port/c1tab.c, its code tables, is generated from the
+# binary by tests/realbin/c1tables.py --c and checked in, so that a build
+# needs no Python.
+#
+# See README.md and STATUS.md for the currently-verified results.
 #
 # mutos_cc (the driver that runs cpp|c0|c1|as|ld in sequence) and
 # mutos_c2 (the peephole optimizer, Milestone 5) are not yet part of
@@ -24,9 +31,11 @@ C0_SRCS = c0_lex.c c0_diag.c c0_outcode.c c0_sym.c c0_parser.c c0_main.c
 C0_OBJS = $(C0_SRCS:.c=.o)
 C0_TARGET = mutos_c0
 
-C1_SRCS = c1_stream.c c1_gen.c c1_main.c c1_fltdec.c
-# mutos_as's floating-constant conversion (libc.a's atof(), exactly) -
-# compiled into mutos_c1 as it is; see c1_fltdec.c.
+C1_PORT = c1port/c10.c c1port/c11.c c1port/c12.c c1port/c1tab.c c1port/c1lib.c
+# c1_fltdec.c: libc.a's ecvt() for c1's "%.17e"; mutos_as's
+# floating-constant conversion (libc.a's atof(), exactly) compiled in as
+# it is - see c1port/c1lib.c.
+C1_SRCS = $(C1_PORT) c1_fltdec.c
 FLTCONST = ../mutos_as/fltconst.c
 C1_OBJS = $(C1_SRCS:.c=.o) c1_fltconst.o
 C1_TARGET = mutos_c1
@@ -42,10 +51,10 @@ $(FLTDEC_TEST): fltdec_test.o c1_fltdec.o c1_fltconst.o
 	$(CC) -o $@ fltdec_test.o c1_fltdec.o c1_fltconst.o
 
 $(C0_TARGET): $(C0_OBJS)
-	$(CC) -o $@ $(C0_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(C0_OBJS)
 
 $(C1_TARGET): $(C1_OBJS)
-	$(CC) -o $@ $(C1_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(C1_OBJS)
 
 c0_lex.o: c0_lex.c c0_lex.h c0_diag.h mutos_cc.h
 c0_diag.o: c0_diag.c c0_diag.h
@@ -54,9 +63,8 @@ c0_sym.o: c0_sym.c c0_sym.h mutos_cc.h
 c0_parser.o: c0_parser.c c0_parser.h c0_lex.h c0_diag.h c0_outcode.h c0_sym.h mutos_cc.h
 c0_main.o: c0_main.c c0_parser.h c0_diag.h
 
-c1_stream.o: c1_stream.c c1_stream.h
-c1_gen.o: c1_gen.c c1_gen.h c1_stream.h c1_fltdec.h mutos_cc.h
-c1_main.o: c1_main.c c1_gen.h
+$(C1_PORT:.c=.o): c1port/c1.h
+c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
 c1_fltdec.o: c1_fltdec.c c1_fltdec.h ../mutos_as/fltconst.h
 fltdec_test.o: fltdec_test.c c1_fltdec.h
 c1_fltconst.o: $(FLTCONST) ../mutos_as/fltconst.h

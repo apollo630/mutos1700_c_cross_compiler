@@ -8,11 +8,12 @@
 # matching this project's established golden-diff methodology
 # (tests/mutos_cpp/run_goldens.sh, tests/mutos_as/'s golden suite).
 #
-# mutos_c0/mutos_c1's grammar/opcode coverage is currently limited to
-# the 00_smoke subset (see src/mutos_cc/README.md) - files outside
-# that coverage are expected to fail at the "c0" stage with a clear
+# mutos_c0's grammar coverage is limited (see src/mutos_cc/README.md) -
+# files outside it are expected to fail at the "c0" stage with a clear
 # "not yet supported" diagnostic, not silently produce wrong output.
-# This script reports those as a distinct category from a genuine
+# mutos_c1 is the port of the real c1 (docs/C1_PORT_PLAN.md) and refuses
+# only where the original traps or reads state the port does not model.
+# This script reports those as distinct categories from a genuine
 # byte-mismatch, so the pass count is always an honest measure of
 # verified coverage, never inflated or deflated by unrelated
 # failures.
@@ -40,9 +41,14 @@
 # nonzero status, print exactly the listed messages on stderr and write
 # exactly the golden's .s - listed apart (category 9), not a failure.
 #
-# Exit status: 0 if every file with goldens produced a byte-exact
-# match at every stage, 1 otherwise (this is expected/normal until
-# grammar coverage grows well beyond 00_smoke - see README.md).
+# A file mutos_c0 refuses (category 3) is still checked at mutos_c1:
+# from its .1/.2 goldens - the real c0's output - mutos_c1 must write
+# exactly its .s golden (category 10; a difference is a category 6
+# failure).
+#
+# Exit status: 0 if nothing is in the "genuine mismatch" categories (2,
+# 4, 6), 1 otherwise; "not yet supported" (3) and refused (5) do not
+# fail the run.
 
 set -u
 
@@ -86,6 +92,7 @@ pass=()
 pass_c1err=()
 pass_invalid=()
 pass_no_i=()
+pass_c1only=()
 cpp_mismatch=()
 c0_unsupported=()
 c0_mismatch=()
@@ -123,6 +130,18 @@ for cat in */; do
 
         if ! "$MUTOS_C0" "$out_i" "$out_1" "$out_2" 2>"$WORK/err"; then
             c0_unsupported+=("$cat/$name: $(tail -1 "$WORK/err")")
+            # mutos_c1 on its own, from the .1/.2 goldens (category 10)
+            if [ -f "$cat/$name.1.golden" ] && [ -f "$cat/$name.2.golden" ] &&
+               [ -f "$cat/$name.s.golden" ] &&
+               [ -z "${invalid_lines[$cat/$name]:-}" ] && [ -z "${c1_errors[$cat/$name]:-}" ]; then
+                if ! "$MUTOS_C1" "$cat/$name.1.golden" "$cat/$name.2.golden" "$out_s" 2>"$WORK/err"; then
+                    c1_mismatch+=("$cat/$name (from the .1/.2 goldens: $(tail -1 "$WORK/err" | cut -c1-90))")
+                elif ! diff -q "$out_s" "$cat/$name.s.golden" >/dev/null 2>&1; then
+                    c1_mismatch+=("$cat/$name (from the .1/.2 goldens: .s differs from golden)")
+                else
+                    pass_c1only+=("$cat/$name")
+                fi
+            fi
             continue
         fi
         golden_1="$cat/$name.1.golden"
@@ -196,7 +215,8 @@ if [ ${#c0_mismatch[@]} -eq 0 ]; then echo "  (none)"; fi
 for f in "${c0_mismatch[@]}"; do echo "  $f"; done
 
 echo
-echo "5. mutos_c1: opcode not yet supported (${#c1_unsupported[@]})"
+echo "5. mutos_c1: refused - where the real c1 traps or reads state the port"
+echo "   does not model (${#c1_unsupported[@]})"
 for f in "${c1_unsupported[@]}"; do echo "  $f"; done
 
 echo
@@ -218,6 +238,11 @@ echo
 echo "9. Byte-exact, with the real compiler's own c1 errors reproduced - see"
 echo "   c1_errors.txt (${#pass_c1err[@]})"
 for f in "${pass_c1err[@]}"; do echo "  $f"; done
+
+echo
+echo "10. mutos_c1 byte-exact on its own, from the .1/.2 goldens of a file"
+echo "    mutos_c0 refuses (category 3) (${#pass_c1only[@]})"
+for f in "${pass_c1only[@]}"; do echo "  $f"; done
 echo "=================================================================="
 
 # Success means: nothing in the "genuine mismatch" categories (2, 4, 6).

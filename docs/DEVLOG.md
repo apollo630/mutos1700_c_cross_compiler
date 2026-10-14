@@ -8798,6 +8798,151 @@ eighteen each) exactly. `mutos_c1` does not yet (`make test`: `p54`,
 `p55`, `p57` refused, `p56` mismatched); they are left to the port,
 which has to produce them like every other golden.
 
+## The port of `c1` (2026-10-13)
+
+`docs/C1_PORT_PLAN.md`'s five steps, in one session; `mutos_c1` is now
+`src/mutos_cc/c1port/` and `c1_gen.c` is gone. The plan's section 8 is
+the summary; this is how the steps went and what the binary held.
+
+### Steps A to C: from the disassembly, checked by the traces
+
+Every function was decompiled from `tests/realbin/c1dis.py`'s listing
+with v7's source beside it, the binary winning where they differ (each
+such place commented with its text offset). One host `struct tnode`
+keeps the original's overlays - degree, then at byte offsets 4..15 the
+value or class and register number, offset, name, an 8-byte floating
+value, a bit-field mask, a long's two words - so that the code reads
+like the original's while the tree pointers are host pointers. The
+tables come from `c1tables.py --c`, never typed. The switch statements
+of the binary are hashed (`op % N` into a jump table) or jump tables;
+their cases were read off the tables, not guessed.
+
+The four depths did what section 2 of the plan said: the `b` trees
+checked the reader (depth 1, 132/132), the `a` trees the optimizer
+(depth 2, 132/132), the `r`/`c`/`d` traces put each code-generation
+difference at the function that made it (depth 3), and the `.s` with its
+messages and exit status closed it (depth 4: 131/132, `p19_open3`
+refused where it must be). What the binary does that v7 does not, and
+the port keeps:
+
+- `itod`'s store loop writes AX, which still holds BL, into the two
+  words below the double's top: bytes 1 and 3 are the low mantissa
+  byte, not 0 - so an int constant with more than eight significant
+  bits converted to floating point is a double, not a float, constant.
+- `longrel()`, when the table fails and it tests the register pair word
+  by word, stores its new label in the variable holding the saved
+  `xzero` (text 2f83): `xzero` comes back as a label number, which a
+  later `xlongrel()` would use as an index into `lrtab[]` - refused when
+  it would.
+- `lconst()` shifts a long `>>` by the count's high word and `<<` by its
+  low word, and with that word 0 both jump into the middle of an
+  instruction - refused (the fuzzer found the original crashing or
+  looping there).
+- `cexpr()`'s `T` for an ITOC tests the type of the node at address 0,
+  which is `crt0`'s data word 4 - never INT, so never a `cbw`.
+- `printf`'s `%c` of 0 writes nothing (settled with a program built by
+  the real toolchain under the emulator); a zero is printed unsigned.
+- A STRASG's degree is never set by `getree()`: the original's trace
+  shows whatever word the block held before. The only place
+  uninitialized memory shows (plan question 5.3), and only in a trace.
+- `fpeintr()` is installed once; v7's kernel resets a caught signal, so
+  a second floating overflow kills `c1` and leaves its `.s` cut to whole
+  512-byte buffers. `mutosemu.py` now delivers signals (`kill()` of the
+  process itself, as `libc.a` raises SIGFPE), which settled it.
+
+### Step D: breadth
+
+`tests/realbin/c1fuzz.py` runs random programs through `mutos_cpp`, the
+emulated real `c0` and then both `c1`s, at depth 4 by default. Its
+findings, all fixed in the port: the `itod` bytes above; the `lconst()`
+shifts and `xlongrel()`'s stale index (refusals); and last `libc.a`'s
+`aldiv`, through which `lconst()` folds a long `/`. `0x7fffffffL /
+0177777` folds to -65535 in the original: `aldiv`'s short path is
+taken when the divisor's high word equals the low word's sign extension
+- with the sign word -1 negated to 1 first, so a divisor of 0x18000 to
+0x1ffff is divided by its low word alone and a negative one-word divisor
+goes the long way -, and the long way does sixteen shift-and-subtract
+steps (enough when the divisor has a high word) and clears the
+quotient's high word. `alrem` has the same long way. Both are
+re-enacted on 16-bit words in `c1lib.c`; `c1fuzz.py --gen lconst`
+(long constants at the edges of those paths) found the old port
+different on 232 of 300 programs, the new one on none.
+
+The port's refusals are checked too: what it wrote before refusing must
+be what the original wrote, and where the original does not finish
+(jumped into data, looping), the port must have refused - every such
+case so far was a `lconst()` shift. One run showed that a jump into an
+instruction can also change what the original still holds in its stdio
+buffer (its first byte became a NUL, and the run ended in "Arg count"),
+so after that refusal only what the original had written out is
+compared.
+
+The corpus at the end (2026-10-14, the final build, depth 4): 6,000
+programs of `c1fuzz.py`'s own generator (seeds 1 to 6), 1,500 of
+`fuzz_c.py`'s, 1,000 of long constants, 500 more through an ASan/UBSan
+build - no difference; 694 + 59 refusals, each checked against what the
+original wrote, and 16 programs on which the original does not finish
+(all refused by the port). The ASan/UBSan build is clean on every golden
+at every depth as well.
+
+### The originals' bugs, collected
+
+Everything above that is a bug of the original - in `c1`, in the
+`libc.a` routines it and `as` link, and the earlier findings about `as`
+and `c0` - is listed in `docs/MUTOS_ORIGINAL_BUGS.md` (2026-10-14, a rule
+since: `CLAUDE.md`'s Workflow Guideline 9), each with a minimal trigger
+where one is known. Writing the triggers made two of them sharper than the
+fuzzer had: `lconst()`'s right shift takes the count's high word, so the
+original `c1` cannot fold `L >> n` for any constant count (`0x12345678L
+>> 4` stops it at a wild address, `100000L >> 1` ends in "Missing temp
+file"), and `itod`'s stray bytes change values, not only constant sizes
+(`double d = 1001;` is `.double 1.00100001525902189e+03`).
+
+### Step E: the switch
+
+`mutos_c1` is built from `c1port/` by `src/mutos_cc/Makefile`;
+`c1_gen.c`, `c1_gen.h`, `c1_main.c`, `c1_stream.c`, `c1_stream.h` and
+`c1port/Makefile` are deleted. `invalid_goldens.txt` gives `p19_open3`
+228 lines (the port writes the statement's valid start - the product,
+the unsigned loaded into AX - and refuses at the register name, where
+`c1_gen.c` refused at the statement); `c1_errors.txt` has `round14.log`'s
+messages for `p56_fltinf9` and `p57_fltstk8`. `run_goldens.sh` got a
+category 10 - `mutos_c1` on the `.1`/`.2` goldens of a file `mutos_c0`
+refuses: all eight remaining kernel files byte-exact.
+
+`fuzz_c.py`'s default oracle is the emulated original: `mutos_c0`'s and
+`mutos_c1`'s output must be the real `c0`'s and `c1`'s byte for byte,
+and a program wrong or unexecutable exactly as the real compiler's
+output is counted apart, not as a failure. Its first runs showed
+`x86sim.py` stopping on 7 of 40 programs: the port branches on the flags
+of `add`, `sar`, `test` (the real compiler's code), where `c1_gen.c`
+always compared first. `x86sim.py` now models ZF, SF, OF and CF as the
+8086 sets them (OF unknown after a shift by more than one, all flags
+after `imul`/`idiv`/a call), with the same result as before on every
+golden; the next 200 programs were all correct.
+
+The larger runs then showed what the oracle is for. In 14 of 4,000
+programs `mutos_c0`'s `.1` differed from the real `c0`'s: it folded `!`,
+`&&` and `||` of constants, which v7's `fold()` (c01.c) does not - the
+real `c0` writes `CON 1 / EXCLA` for `!(12 >> 3)` and `CON 4 / CON 0 /
+LOGOR` for `4 || 0`, leaving them to `c1`'s `optim()`. Semantically the
+same, so the semantic check alone had never noticed. Fixed; the next
+5,000 programs had no `c0` difference.
+
+And about 0.9% of the programs come out wrong - identically - from the
+real compiler and from `mutos_c1`: the original's code tables keep
+PDP-11 assumptions. On the PDP-11 `com` and `mov` set the condition
+codes; on the 8086 `not` and `mov` set no flags. So `s = (~a[k][j] ||
+n++);` is `... add di,si / mov di,(di) / not di / bne L`, the branch
+taken on the flags of the `add` (`n++` lost), and `y = (!y >= 0);`
+branches after `mov di,*1.` on the flags of the `cmp _y,*0` before it;
+after an `imul` (flags undefined) the checker cannot even tell. Also
+`(u = 4, x) * 0` drops the assignment (`acommute()` returns the 0 of
+`e * 0` or `e & 0` without looking for side effects - v7's own code,
+c12.c). `fuzz_c.py` counts such a program apart ("as the
+real compiler"), since `mutos_c1` must reproduce it; `x86sim.py` finds
+it because `not` and `mov` leave its flags alone, as on the 8086.
+
 ## Recurring process lessons
 
 These apply to *every* milestone, not just the one where they were first learned:
@@ -8902,6 +9047,14 @@ These apply to *every* milestone, not just the one where they were first learned
   for as long as statics existed, found only when file-scope variables
   joined that kind (`07_scope`). When a new kind of value joins an old one,
   re-read every test of the old kind by name.
+- **The library is part of the program.** The original `c1`'s output
+  passes through `libc.a` - `atof`, `printf`, `itod`, `aldiv` - and two
+  of those are not what C computes (`itod`'s stray bytes, `aldiv`'s
+  sixteen steps). A port that calls the host's arithmetic instead is
+  wrong exactly where the routine is, and nothing short of running the
+  original on inputs at the routine's own path boundaries shows it: the
+  general fuzzer met the `aldiv` case once in thousands of programs, a
+  generator aimed at the routine's paths in most of 300.
 - **Corpus-driven validation catches real bugs that a "looks correct" review
   wouldn't** — nearly every bug in this log's Bug-fix History sections was found by
   diffing against a real golden file, not by code review.

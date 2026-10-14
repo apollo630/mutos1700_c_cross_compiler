@@ -12,7 +12,13 @@ directly, on random programs:
 - `fuzz_c.py` generates random K&R programs inside `mutos_c0`'s grammar,
   computes what each one must do under C semantics on a 16-bit `int`,
   runs it through the real pipeline (`mutos_cpp -P`, `mutos_c0`,
-  `mutos_c1`, `mutos_as`) and executes the result.
+  `mutos_c1`, `mutos_as`) and executes the result. By default each
+  program also goes through the original `c0` and `c1` under
+  `tests/realbin/mutosemu.py` (the oracle, since 2026-10-13, when
+  `mutos_c1` became a port of the real `c1`): `mutos_c0`'s `.1`/`.2` and
+  `mutos_c1`'s `.s`, messages and exit status must be the original's
+  byte for byte. `--oracle none` runs the semantic check alone (no
+  `unicorn` needed).
 - `x86sim.py` is the executor: an interpreter for the subset of 8086
   code `mutos_c1` emits - `main()` plus calls of other functions in the
   same file (with the shared `cret` epilogue and the `chkstk` large-frame
@@ -23,14 +29,16 @@ directly, on random programs:
   literal's `L4:.byte ...`, an element addressed `_text(bx)` or
   `#_text(bx)`). It reports `main()`'s return value and every local's
   final value (found through `c1`'s own `| _name=-N.` frame comments).
-  Anything outside its subset - a libc or indirect call, a branch on
-  flags not set by a `cmp`, a `cmpb`, an `and`/`or`/`xor` (flags from the
-  result, as `cmp <result>,0` - `or r,r` is `mutos_c1`'s truth test of a
-  register, `and dx,*12.` / `beq` an AND tested directly) or an `orb
-  r,r`, an `adc`/`sbb` not right after the `add`/`sub` whose carry it
-  takes - stops it with an error, never a guess. The unsigned branches
-  `blo`, `blos`, `bhi`, `bhis` read the last `cmp` as unsigned (a `long`
-  comparison's low words).
+  The flags a branch reads (ZF, SF, OF, CF) are modelled as the 8086
+  sets them - by `cmp`/`sub`, `add`, `adc`/`sbb`, `inc`/`dec` (CF kept),
+  `neg`, `and`/`or`/`xor`/`test`, `cmpb`/`orb` and the shifts (since
+  2026-10-13: the port of the real `c1` branches on the flags of an
+  arithmetic result, where `c1_gen.c` always compared first). Anything
+  outside its subset - a libc or indirect call, a branch on a flag the
+  8086 leaves undefined (OF after a shift by more than 1, anything after
+  `imul`, `idiv` or a call), an `adc`/`sbb` not right after the
+  `add`/`sub` whose carry it takes - stops it with an error, never a
+  guess.
 
 `x86sim.py` is validated on real hardware-compiled code: every
 `tests/mutos_cc` `.s.golden` it can execute (56 of the 62; the others
@@ -98,7 +106,8 @@ tests/mutos_cc/fuzz/fuzz_c.py --baseline /tmp/base   # compare with an earlier b
 | `--baseline DIR` | also run the `mutos_c0`/`mutos_c1` found in `DIR` (an earlier build) and compare |
 | `--no-arrays` | scalars only |
 | `--scope` | some of `x`/`y`/`s`/`t` become file-scope variables (plain, `static`, or `extern` before `main()` and defined after it), and some statements become nested blocks declaring a local that shadows one - checked at the globals' fixed addresses |
-| `--reasons` | list every refusal reason with its count - a map of what `c1` does not support yet |
+| `--reasons` | list every refusal reason (and every "as the real compiler" kind) with its count |
+| `--oracle real\|none` | `real` (default): also through the emulated original `c0` and `c1`, whose output must be matched byte for byte (needs `unicorn`); `none`: the semantic check alone |
 | `--keep DIR` | where to save problem programs (default: a new directory under `/tmp`) |
 
 The tools are taken from `src/` (build first, `make`), or from
@@ -106,12 +115,25 @@ The tools are taken from `src/` (build first, `make`), or from
 
 ## What counts as a problem
 
-Each program ends in one of: **correct**; **refused** - `mutos_c0` or
-`mutos_c1` stopped with an explicit "not yet supported" diagnostic, which
-is the compiler working as designed; **WRONG** - it compiled, but some
-variable at some point, or the return value, differs from C semantics;
-or **BAD** - a crash, a sanitizer report or an `internal:` diagnostic,
-output `mutos_as` rejects, or output `x86sim.py` cannot execute.
+Each program ends in one of: **correct**; **refused** - `mutos_c0`
+stopped with an explicit "not yet supported" diagnostic, or `mutos_c1`
+refused where the real `c1` traps or reads state the port does not model
+(exit status 2) - the compiler working as designed; **WRONG** - it
+compiled, but some variable at some point, or the return value, differs
+from C semantics; or **BAD** - a crash, a sanitizer report or an
+`internal:` diagnostic, output `mutos_as` rejects, output `x86sim.py`
+cannot execute, or (with the oracle) any byte of `.1`, `.2` or `.s`, a
+message or the exit status different from the original's, or a refusal
+whose output before it differs. With the oracle, a program whose code is
+wrong, cannot be executed, or comes with `c1`'s own error messages
+**exactly as the real compiler's** is counted apart ("as the real
+compiler") and is not a failure: the port reproduces the original, bugs
+included. About 0.9% of the programs are such (2026-10-14): the real
+`c1`'s code tables keep PDP-11 assumptions - `com` and `mov` set the
+condition codes there, the 8086's `not` and `mov` set no flags - so `~x
+|| y` or `!y >= 0` branches on stale flags, and `e * 0` loses `e`'s side
+effects (v7's `acommute()`); see `docs/DEVLOG.md`'s "The port of
+`c1`".
 
 The check is not only on the final state: the generator puts a marker
 statement `m = 101;`, `m = 102;`, ... before every top-level statement,
@@ -161,14 +183,14 @@ keeps its value across the block. Globals are compared at their fixed
 addresses at every statement marker; the block's local is out of scope
 there and not compared.
 
-Some choices only raise the share of programs `c1` accepts (a single
-refused statement discards the whole program): no constant in a truth
-context (`if (4)`, `x && 3`), no constant divisor or constant multiplier
-of 0 or a power of two, no `x = y;`, a right operand that is usually
-simple (`c1` cannot spill yet - two compound operands mostly collide in
-its registers), and frames of at most 80 bytes (92-98 is `c1`'s
-unconfirmed `chkstk` gap). About 30% of programs compile with arrays,
-about 60% without.
+Some choices were made to raise the share of programs `c1_gen.c`, the
+generator `mutos_c1` was until 2026-10-13, accepted (a single refused
+statement discarded the whole program): no constant in a truth context
+(`if (4)`, `x && 3`), no constant divisor or constant multiplier of 0 or
+a power of two, no `x = y;`, a right operand that is usually simple, and
+frames of at most 80 bytes. The port refuses none of these; the shapes
+the generator leaves out are covered by `tests/realbin/c1fuzz.py`'s own
+generator, which has no such limits.
 
 ## Formerly known `mutos_c1` bugs
 

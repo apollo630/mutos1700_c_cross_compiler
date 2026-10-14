@@ -5,7 +5,9 @@ hardware (`as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, as base64 text - see
 its `README.md`). This directory runs them on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
-emulator run away.
+emulator run away. It is also where `mutos_c1` - since 2026-10-13 a port
+of the real `c1` (`src/mutos_cc/c1port/`, `docs/C1_PORT_PLAN.md`) - is
+checked against the original, on every golden and on random programs.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
@@ -21,13 +23,20 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 | `c1_tables.txt` | Its output, kept in the tree as the readable reference (generated - `make check-realbin` checks it is current). |
 | `c1map.txt` | A map of the stripped `c1`: every function's text offset, its `v7/cc` counterpart and how far it has been compared (`same`, `delta`, `x86`, `new`, `unread`), and the data offsets of the tables and globals. |
 | `c1dis.py` | An annotated disassembly of `c1` - by function name from `c1map.txt` or by text range - naming calls, data and strings; the `libc.a` functions it names by matching `libc.a`'s objects against the text. |
+| `c1tables.py --c` | The same tables as C for the port: `src/mutos_cc/c1port/c1tab.c` (generated, checked in; `--check-c` checks it is current). |
+| `c1trees.py` | `mutos_c1` against the original on `.1`/`.2` pairs (default: every golden) at four depths: 1 the expression trees as read, 2 also after `optim()` (both taken out of the emulated memory and the port's `C1PORT_TREES` dump), 3 the `.s` with all of the original's traces on (`rcdab`), 4 the `.s`, the messages and the exit status. A refusal `invalid_goldens.txt` specifies counts apart. |
+| `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
 
 ## Running
 
 ```sh
-make check-realbin            # from the repo root: tables, goldens, coverage
+make check-realbin            # from the repo root: tables, goldens, coverage,
+                              # mutos_c1 at depths 2-4 and a fuzz run
 python3 tests/realbin/check_real.py goldens
 python3 tests/realbin/check_real.py coverage --unused
+python3 tests/realbin/c1trees.py --depth 4 --show 1
+python3 tests/realbin/c1fuzz.py -n 1000 -s 7 --keep /tmp/c1diff
+python3 tests/realbin/c1fuzz.py --gen lconst -n 300
 ```
 
 The real pipeline on any file, the way `cc` runs it (`cc` itself cannot
@@ -71,12 +80,32 @@ operator and type, and the register returned, `d`: every `delay()` call;
   496 rows. See `docs/DEVLOG.md`'s "The original binaries" and
   `docs/C1_PORT_PLAN.md`.
 
+## The port against it (2026-10-13)
+
+- Every golden `.1`/`.2` pair: depth 1, 2, 3 and 4 identical on 131 of
+  132; `fltprobe/p19_open3` refused after its 228 valid lines, as
+  `invalid_goldens.txt` specifies (the original writes bytes past
+  `regname[]` there). At depth 3 a STRASG's degree is compared as `#`:
+  `getree()` never sets it, so the original's trace shows a leftover
+  word.
+- Differential fuzzing at depth 4: see `STATUS.md` for the current
+  corpus; every difference found was fixed in the port (the last one a
+  library routine, `libc.a`'s `aldiv`, which is not C's division -
+  `src/mutos_cc/c1port/c1lib.c`).
+
 ## Limits of the emulator
 
 - System calls served: `exit`, `read`, `write`, `open`, `close`, `creat`,
   `unlink`, `break`, `lseek`, `getpid`, `access`, `kill`, `signal`,
   `ioctl` (always "not a tty"); anything else gets `EINVAL` and a
-  warning. No `fork`/`exec`/`wait`, no signals delivered.
+  warning. No `fork`/`exec`/`wait`. A signal is delivered when the
+  program `kill()`s itself (libc.a raises SIGFPE that way): a caught one
+  through its handler, which is then reset to the default, as v7's
+  kernel does; a default one ends the program (status 128 + the
+  signal). CPU exceptions (a divide fault) are not turned into signals:
+  the run stops with an error.
+- On the command line, a program that stops without `exit()` (or runs
+  past `--max-insns`) gives status 125 and a `mutosemu:` message.
 - `break` is accepted as asked; the memory is the 64K data segment.
 - Only `0407` and `0411` files; the binaries in `mutos_bin/` are all one
   or the other (`cc` is `0407`, the rest `0411`).

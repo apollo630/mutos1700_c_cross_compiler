@@ -3402,8 +3402,10 @@ static ExprVal parse_unary(Parser *p, FILE *t1)
         int line = p->cur.line;
         advance(p);
         ExprVal v = parse_unary(p, t1);
-        if (v.is_const)
-            return ev_const(v.value == 0 ? 1 : 0);
+        /* Not folded, not even for a constant: v7's c0 fold() has no
+         * EXCLA (c01.c), and the real c0 writes "CON 1 / EXCLA" for
+         * "!(12 >> 3)" - found by fuzz_c.py's oracle, the emulated real
+         * c0 (2026-10-14). c1's optim() folds it. */
         (void)char_nonobj_refused(v, line, "the operand of '!'");
         emit_materialize(t1, v); /* no-op, same as COMPL above */
         outcode(t1, "BN", OP_EXCLA, TY_INT);
@@ -3995,10 +3997,9 @@ static ExprVal parse_logand(Parser *p, FILE *t1)
         ExprVal r = parse_bitor(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
         (void)char_nonobj_refused(r, p->cur.line, "an operand of '&&'/'||'");
-        if (v.is_const && r.is_const) {
-            v = ev_const((v.value != 0) && (r.value != 0));
-            continue;
-        }
+        /* Two constants are not folded either: v7's c0 builds every
+         * LOGAND/LOGOR node as it is (build(), c01.c), and so does the
+         * real c0 ("CON 4 / CON 0 / LOGOR" for "4 || 0"). */
         emit_materialize(t1, v);
         emit_materialize(t1, r);
         outcode(t1, "BN", OP_LOGAND, TY_INT);
@@ -4017,10 +4018,7 @@ static ExprVal parse_logor(Parser *p, FILE *t1)
         ExprVal r = parse_logand(p, rhs_begin(&cap, p, t1, v));
         v = rhs_end(&cap, p, t1, v, r);
         (void)char_nonobj_refused(r, p->cur.line, "an operand of '&&'/'||'");
-        if (v.is_const && r.is_const) {
-            v = ev_const((v.value != 0) || (r.value != 0));
-            continue;
-        }
+        /* not folded - see parse_logand() */
         emit_materialize(t1, v);
         emit_materialize(t1, r);
         outcode(t1, "BN", OP_LOGOR, TY_INT);
