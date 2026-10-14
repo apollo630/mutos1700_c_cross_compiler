@@ -1,14 +1,25 @@
 # mutos_c0 / mutos_c1 - MUTOS 1700 Cross C Compiler (Milestone 4)
 
 `mutos_c0` (front end: lex/parse/typecheck, emits the `temp1`/`temp2`
-intermediate-code stream) and `mutos_c1` (back end: reads
-`temp1`/`temp2`, emits `mutos_as`-syntax assembly text) are a
-from-scratch, modern-C11 reimplementation - not a literal port of
-`v7/cc`'s pointer-arithmetic K&R source - matching this project's
-established approach for `mutos_as`/`mutos_cpp`/`mutos_ld`: validated
-byte-for-byte against real-hardware golden output, with `/v7/cc/`
-used strictly as an algorithmic/structural reference (CLAUDE.md
-Workflow Guideline 3), not copied wholesale.
+intermediate-code stream) is a from-scratch, modern-C11
+reimplementation - not a literal port of `v7/cc`'s pointer-arithmetic
+K&R source - matching this project's established approach for
+`mutos_as`/`mutos_cpp`/`mutos_ld`: validated byte-for-byte against
+real-hardware golden output, with `/v7/cc/` used strictly as an
+algorithmic/structural reference (CLAUDE.md Workflow Guideline 3).
+
+`mutos_c1` (back end: reads `temp1`/`temp2`, emits `mutos_as`-syntax
+assembly text) is, since 2026-10-13, a **port of the original MUTOS 1700
+`c1`** - v7's `c1`, ported to the 8086 by hand - read from its binary
+(`c1port/`, `../../docs/C1_PORT_PLAN.md`): v7's functions with the
+binary's deltas, its code tables generated from the binary, and the
+library routines its output passes through re-enacted. It is checked
+against the original itself, run under an 8086 emulator
+(`../../tests/realbin/`), on every golden and on random programs - see
+"The port of the real `c1`" below. Until then `mutos_c1` was `c1_gen.c`,
+a generator of the shapes the goldens had shown (its last version is in
+the git history, commit `e36c67f`); the code-generation explanations in
+"Current scope" come from that time.
 
 **Status: verified byte-exact, end-to-end (`.c` → real `mutos_cpp` →
 `mutos_c0` → `mutos_c1` → `.s`), for 62/62 of the full corpus - every
@@ -30,19 +41,21 @@ scope), plus all 9 of `06_struct` (structs, unions, bit-fields, enums,
 typedefs), plus all 5 of `10_integ`: `01_wordcount.c`, `02_bubsort.c`,
 `03_linklist.c`, `04_strrev.c` and `05_matmul.c`, plus both of
 `08_float`: `01_floatbas.c` and `02_dblconv.c` (floating point - see
-"Floating point" under "Current scope") - and, beyond the corpus, 56 of the
-57 probes of `tests/mutos_cc/fltprobe/`'s first thirteen rounds with their
-own real-hardware goldens (`p21_fltexp`, `p28_fltstk`, `p37_fltstk3`,
-`p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`, `p52_fltinf8` and
-`p53_fltstk7` together with the real compiler's own `c1` error messages,
-two, twelve, seventeen, twenty-three, twenty-three, twenty-six,
-twenty-two and five of them - `tests/mutos_cc/c1_errors.txt`), the 57th
-(`p19_open3`) up to the real compiler's own invalid output, which
-`mutos_c1` refuses on purpose (see "Floating point beyond the corpus" and
-`tests/mutos_cc/invalid_goldens.txt`), and the first of the nine
-`tests/mutos_cc/11_kernel` files, `01_delay.c`. See
-STATUS.md
-for the currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
+"Floating point" under "Current scope") - and, beyond the corpus, all 61
+probes of `tests/mutos_cc/fltprobe/`'s fourteen rounds with their own
+real-hardware goldens: 50 byte-exact, ten more together with the real
+compiler's own `c1` error messages (`p21_fltexp`, `p28_fltstk`,
+`p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`,
+`p52_fltinf8`, `p53_fltstk7`, `p56_fltinf9` and `p57_fltstk8` - two,
+twelve, seventeen, twenty-three, twenty-three, twenty-six, twenty-two,
+five, eighteen and eighteen of them, `tests/mutos_cc/c1_errors.txt`),
+and `p19_open3` up to the real compiler's own invalid output, which
+`mutos_c1` refuses on purpose (`tests/mutos_cc/invalid_goldens.txt`) -
+and the first of the nine `tests/mutos_cc/11_kernel` files, `01_delay.c`.
+`mutos_c0` refuses the other eight kernel files; from the real `c0`'s
+`.1`/`.2` (their goldens) `mutos_c1` gives all eight `.s` goldens byte
+for byte too (`run_goldens.sh`'s category 10). See STATUS.md for the
+currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
 full-corpus run (which reports every uncovered file as a clear,
 expected "not yet supported" diagnostic - see "Current scope" below -
 never a silent wrong-output mismatch).
@@ -55,8 +68,9 @@ stream V7's own `cc` pipeline comment documents (`v7/cc/cc.c`:
 `docs/DEVLOG.md`'s Milestone 4 "`c0`/`c1` process split" section for
 why this project deliberately keeps that boundary. The format itself
 (transcribed from `v7/cc/c04.c`'s `outcode()`, reimplemented
-type-safely with `stdarg.h` in `c0_outcode.c`/`c1_stream.c` instead of
-the original's raw varargs-pointer-walk):
+type-safely with `stdarg.h` in `c0_outcode.c` instead of the
+original's raw varargs-pointer-walk; `mutos_c1` reads it with the real
+`c1`'s own `getree()`, `c1port/c11.c`):
 
 | Tag | Meaning | Bytes written |
 |---|---|---|
@@ -139,7 +153,8 @@ c;` plus assignments and `+ - * / %`):
   example using plain `sub sp,N`: `N=76`). The `09_abiprobe` goldens
   and the `fltprobe/p27_frame`/`p29_frame2` goldens have since confirmed
   both shapes and settled the threshold of the `chkstk` call, `(98,100]` -
-  see the `SETSTK` paragraph further below.
+  the real `c1`'s option `s<n>`, default 100 (`docs/DEVLOG.md`'s "The
+  original binaries").
 - **Per-operator instruction shapes** (`c1_gen.c`, confirmed against
   `01_intarith.s.golden`): `+`/`-` both load the left operand into
   `DI` then `add`/`sub` the right operand in place (`DI` is evidently
@@ -201,6 +216,16 @@ upper bound, is not yet independently confirmed by a golden with a
 negative large-magnitude constant.
 
 ## Current scope
+
+This section grew with `mutos_c0`'s grammar and with `c1_gen.c`, the
+shape-by-shape generator that was `mutos_c1` until 2026-10-13. What it
+says about the real compiler's output - which code each construct gets,
+as the goldens show it - still holds: `mutos_c1` now produces that
+output by the original's own mechanism. What it says about `c1_gen.c`
+itself (its functions, tables and refusals: `Val`, `gen_call()`,
+`render_operand()`, ...) is history; the port refuses only where the
+original traps or reads state it does not model (see "The port of the
+real `c1`").
 
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus all of
@@ -285,7 +310,10 @@ a constant condition included - is a real `QUEST` tree, its parts in
 source order (`c1` refuses a constant condition: no golden shows its
 shape). A comma list is never folded either (v7 never folds `SEQNC`):
 each item, a constant last one included, is written before the `SEQNC`
-that consumes it. A parenthesized comma-list's embedded `IDENT '=' expr`
+that consumes it. Nor are `!`, `&&` and `||` of constants (v7's
+`fold()` has no EXCLA, LOGAND or LOGOR, and the real `c0` writes `CON 1
+/ EXCLA` for `!(12 >> 3)` - `mutos_c0` folded them until 2026-10-14,
+when `fuzz_c.py`'s comparison with the emulated real `c0` showed it). A parenthesized comma-list's embedded `IDENT '=' expr`
 items are never constants (an assignment always has a side effect, so
 it is always emitted for real, exactly like `assign-stmt`'s own
 handling).
@@ -1161,8 +1189,8 @@ value equal to the mask as `or <word>,<value>`, anything else as `and
 <word>,` + the complemented mask in hex (`*/fff3`, `#/ff0f`) + `or
 <word>,<value << bitoffs>` - `07_bitfield.s.golden`. Member offsets end up
 as one displacement (`rp->botright.y` -> `*6.(di)`), and a store through
-a pointer plus a non-zero offset computes its right-hand side first - see
-"Stores through a pointer plus an offset" below. Refused: file-scope
+a pointer plus a non-zero offset computes its right-hand side first (see
+`docs/DEVLOG.md`'s `06_struct` section, part 3). Refused: file-scope
 struct/union/unsigned variables, a function returning a struct or union
 (or a pointer to one), a struct parameter by value, `unsigned` parameters,
 `register`, pointer or array ones (a plain `unsigned` local is accepted),
@@ -1859,300 +1887,102 @@ a negated long constant (`l = -65536;` stored 0 - `mutos_c0` truncated
 `-` of a long constant to an int; now LCON, NEG(LONG), which `mutos_c1`
 folds, as v7's `unoptim()` does).
 
-## `SETSTK` / local-frame handling
+## The port of the real `c1`
 
-`c1_gen.c`'s `SETSTK` handler computes `extra = value - 4` (4 = the
-bytes the `SAVE` prologue's own `push di`/`push si` already reserve).
-`extra == 0` (no real locals, every `00_smoke` golden) needs no
-additional instruction - confirmed via `tests/mutos_cc/00_smoke/
-*.s.golden`'s `L1:jmp L2` with nothing in between. `extra > 0` up to
-76 bytes emits a plain `"sub sp,*N."` - confirmed against
-`01_intarith.s.golden`'s `extra = 6` case, and consistent with
-`docs/MUTOS_C_ABI.md` sect. 1.9's real-hardware bound (largest
-`libc.a` example using plain `sub sp,N`: `N=76`). The `09_abiprobe`
-goldens pin both shapes down: up to `extra = 80` emits a plain `"sub
-sp,N"` (`02_frame080.s.golden`: `"sub\tsp,*80."`), and from `extra =
-128` up `"mov ax,N / call chkstk"` (`03_frame128` … `07_frame300`, e.g.
-`"mov\tax,#300."`) - `N` rendered as an ordinary immediate either way.
-Round 7's `fltprobe/p27_frame` narrowed the gap between them: 82 and 90
-bytes are `"sub\tsp,*82."` / `"sub\tsp,*90."`, 100 to 126 bytes `"mov\tax,*100."`
-... `"mov\tax,*126."` / `"call\tchkstk"` (the `*` marker up to 127, like any
-immediate), and a 127-byte array rounds the frame to 128 (`"mov\tax,#128."`).
-Round 8's `fltprobe/p29_frame2` closed it: 92, 94, 96 and 98 bytes are all
-`"sub\tsp,N"`. A frame is always even, so every size is settled -
-`MCC_CHKSTK_MIN` is 100, below it `"sub sp,N"`, from it the guarded form,
-and nothing is refused (see `docs/DEVLOG.md`'s Milestone 4 "Open item").
+`c1port/` holds it, in v7's file split (`../../docs/C1_PORT_PLAN.md`;
+`tests/realbin/c1map.txt` lists all 67 functions with their text offsets
+in the original and what changed against v7):
 
-**Register-occupancy guard.** `c1` has no register allocator: each
-operator loads into its golden-confirmed working register (`DI`, `AX`,
-`CX`, `DX`, ...). Every emitted instruction's register effects are looked
-up in `c1_gen.c`'s `INSN_FX` table, and a still-pending value (on the
-value stack, or popped by a handler but not yet used) whose register an
-instruction would overwrite makes `c1` stop with an explicit "not yet
-supported" diagnostic - so shapes like `f(a) + a * b`, `v[a + 1]` or
-`if (a + b < c)`, which need a spill or a different evaluation order, are
-refused rather than silently miscompiled. The same guard keeps a
-`register` local's register (`DI`/`SI`) from being used as scratch, except
-while computing that variable's own new value. See `docs/DEVLOG.md`'s
-Milestone 4 "`c1_gen.c` review" section.
+- `c1.h` - v7's `c1.h` with the MUTOS ops (89 `*(x+c)`, the char/long
+  and unsigned ops, 121..123), the 8086 registers (`ax dx si di cx bx bp
+  sp`, numbered 0..7 and handed out downwards, `reg1 = reg-1`), and one
+  host `struct tnode` whose union keeps the original's field overlays at
+  their byte offsets; the 8086's 16-bit arithmetic as explicit helpers
+  (unmasked shift counts, a divide fault refused).
+- `c10.c` - `main` (options after the three file names: `a b c d r`
+  traces into the `.s`, `s<n>` the `chkstk` frame threshold), the SIGFPE
+  handler, `match`, `rcexpr`, `cexpr` (v7's macro interpreter with the
+  MUTOS additions - the floating-point stack model `U`/`Q`/`R` and its
+  messages, push/pop counting, `R*` through BX, `F!`, `Fd`), `reorder`,
+  `sreorder`, `delay`, `sdelay`, `ncopy`, `chkleaf`, `comarg`,
+  `strfunc`, `doinit`, `movreg`.
+- `c11.c` - `degree`, `pname`, `pbase`, the `%c%d.` number printer,
+  `dcalc`/`xdcalc`/`notcompat` with the base-register test, `prins`,
+  `collcon`, `pswitch` (direct and hashed switches), `cbranch`,
+  `branch`, `longrel`/`xlongrel`, `label`, `popstk`, `error`/`werror`,
+  `getree` (the `temp1`/`temp2` reader), `strasg`, the tree printer of the
+  traces.
+- `c12.c` - the tree optimizer: `optim`, `unoptim`, `lvfield`,
+  `acommute`, `distrib`, `squash`, `const`, `lconst`, `insert`, `tnode`,
+  `getblk`, `fconchk` (the FCON→SFCON test in the MUTOS floating format),
+  `hardlongs`, `isregptr`.
+- `c1tab.c` - generated from the binary by `tests/realbin/c1tables.py
+  --c` and checked in (`make check-realbin` checks it is current): the
+  code tables `regtab`, `efftab`, `cctab`, `sptab` - 496 rows, 292
+  template strings byte for byte, 0200 bits included -, `opdope[]`,
+  `opntab[]`, `instab`, `branchtab`, `maprel`, `notrel`, `lrtab`,
+  `regname`.
+- `c1lib.c` - the library routines the output passes through, as
+  `libc.a` has them, not as C would compute: `atof` (through
+  `../mutos_as/fltconst.c`), `printf`'s `%.17e` (through
+  `c1_fltdec.c`'s `ecvt()`) and its `%c` of 0 (nothing), `itod` (its
+  store loop leaves the low mantissa byte in bytes 1 and 3), `ltof`,
+  `dtoi`, `ftol`, `fneg`, and `aldiv`/`alrem` for `lconst()`'s long `/`
+  and `%` (sixteen shift-and-subtract steps, not a full division).
 
-**Evaluation order.** `c1` reads temp1 in postfix (left-operand-first)
-order, but the real compiler sometimes evaluates the right operand first -
-`v7/cc/table.s`'s `*` template `%n,n` computes it onto the stack before
-the left one. At the start of every expression `plan_expression()`
-pre-scans it (with `scan_op_args()`, the arity table `scan_consumer()`
-uses too); when an operator must go right operand first it builds a plan
-that replays temp1's subtrees in that order through the ordinary opcode
-handlers, with a spill (`push`, value kind `VK_STACKED`) and a swap in
-between. Only the golden-confirmed decision is taken: int `*` of two
-complete 2-D element reads with plain-variable subscripts
-(`10_integ/05_matmul.s.golden`'s `... / push di` ... `mov ax,di` / `pop
-cx` / `imul cx`). Every other expression gets no plan and streams exactly
-as before; shapes that would need a different order and have no golden -
-`f(a) + a * b`, ... - are still refused by the guard above. A product of
-two elements whose right one is at offset 0 is spilled the same way
-(`fltprobe/p14_axint`'s `a[i] * b[j]`), with an offset it is not
-(`p10_elem`'s `ps[i].c * qs[i].g`: the left loaded into DI, the right
-one's address into SI); for `+`, `-`, `&`, `|`, `^` such a right
-element's ADDRESS is pushed (`ORD_PUSHADDR`), for a comparison of two the
-LEFT one's (`ORD_PUSHLEFT`) - see "Integer shapes from the round-3 to
-round-5 goldens".
-Full derivation in `docs/DEVLOG.md`'s "Evaluation order - implemented"
-section.
+**Refusals.** Where the original traps, jumps into the middle of an
+instruction or reads memory whose contents depend on state the port does
+not model, `mutos_c1` stops with "...; refused" and exit status 2 after
+writing everything before that point (`c1trap()`): the register name
+outside `regname[]` (`p19_open3`: -1, the register after AX), a long constant shifted by a count whose
+tested word is 0, `xlongrel()` reading past `lrtab[]`, `ltof` of 0, the
+overflows of `dtoi`/`ftol` and `dtoi` from 2\*\*15. A second floating
+overflow in one file ends it as SIGFPE ends the original - its `.s` cut
+to whole 512-byte buffers. Error messages (`Floating point stack
+overflow; simplify expression`, `Divide check`, ...) and the exit status
+are the original's. The original's bugs - the refused cases and the wrong
+code it is faithful to - are listed in `../../docs/MUTOS_ORIGINAL_BUGS.md`.
 
-**Conditional evaluation.** The same plan mechanism generates every
-expression containing `&&`, `||`, `?:` or the comma operator, in v7's
-order: `plan_value()` transcribes `c10.c`'s `cexpr()` (a value-context
-`&&`/`||`/`!` is a condition branching to a true label plus `mov
-di,*0.` / `jmp` / `mov di,*1.`; `c ? a : b` is a branch-if-false on `c`,
-the true arm, `jmp`, the false arm), and `plan_cbranch()` transcribes
-`c11.c`'s `cbranch()` - jumping code for `&&`/`||`/`!` in an
-`if`/`while`/`for` condition, as `10_integ/01_wordcount.s.golden` shows
-for `||`. Each operand's temp1 range is replayed at its place in that
-structure, so its code runs exactly when C evaluates it. A postfix
-`++`/`--` fixup is done at the end of the conditionally evaluated region
-it belongs to - a condition (after the operand's load, before the
-compare), a `?:` arm, a comma's left operand - or before a `call`; a
-postfix operand tested for truth or against 0 gets `or di,di` (the real
-compiler's shape, from `tests/mutos_as/kernel_nonopt/`: `mov di,n / dec
-n / or di,di / beq L`). The streaming `LOGAND`/`LOGOR`/`COLON`/`QUEST`/
-`SEQNC` handlers are gone. Full derivation in `docs/DEVLOG.md`'s
-"Conditional evaluation" section.
-
-**A constant operand goes to the right.** Before choosing code, v7's
-`c1` moves a constant operand of a commutative operator (`+ * & | ^`)
-to the right (`c12.c`'s `acommute()` sorts operands by `degree()`, a
-constant's being the lowest) and exchanges a relational's operands when
-the left one is a constant, mirroring the operator (`optim()`'s
-`maprel[]`: `7 < x` is `x > 7`). `mutos_c1` does the same
-(`constant_to_right()`, the `mirror` column of `RELOPS`); since a
-constant emits no code, exchanging the two values in the operator's
-handler is exactly equivalent to receiving them the other way round.
-For a non-commutative operator (`7 - x`, `7 / x`, `7 << x`) there is
-nothing to exchange; when the right operand is itself compound, such a
-shape is refused (no golden shows v7's register choice for it).
-
-**Two non-constant comparison operands.** The same `optim()` rule
-exchanges a relational's operands when `degree(left) < degree(right)`, or
-when the degrees are equal and the left one is a NAME and the right one
-is not - a NAME's degree is 0, and so is that of anything computed with
-one register (`n - 1`, `*p`). So a variable compared with something
-computed ends up on the right: `i < n - 1` -> `mov di,*6.(bp)` / `dec di`
-/ `cmp di,*-6.(bp)` / `ble` (`10_integ/02_bubsort.s.golden`). The NAME has
-no code, so only the comparison's direction changes. A left operand in a
-register is compared with a memory right operand directly (no `mov
-di,<mem>` first); a dereference on the left is loaded in place (`mov
-di,(di)`) - at the `STAR` already when the right operand has code of its
-own, which then takes SI (`a[j] > a[j + 1]` -> ... `mov di,(di)` / `mov
-si,*-8.(bp)` / `sal si,*1` / `add si,*4.(bp)` / `cmp di,*2.(si)`) - except
-against a constant, which is compared with the memory operand directly
-(`cmp *16.(di),*0` in the kernel output).
-
-**`a[j + 1]`: the constant in the displacement.** v7's `distrib()`
-rewrites `(j + 1) * 2` as `j * 2 + 2`, so the index `j + 1` is never
-computed: its `PLUS` stays symbolic when an `ITOP` consumes it
-(`VK_IDXOFF`), the `ITOP` scales the variable into DI or SI and carries
-the `+ 2` (`VK_REGOFF`), the pointer `PLUS` adds the pointer variable,
-and the dereference makes `+ 2` its displacement (`*2.(si)`); the
-element's address (`&a[j + 1]`) adds it last (`add di,*2.`). On an array
-base v7 would fold the constant into the `lea` instead - refused, no
-golden.
-
-**Call arguments, right to left.** v7's `comarg()` compiles a call's
-arguments from the last to the first, each pushed as soon as it is
-computed. A call with two or more arguments, any but the last of which
-has code of its own, is therefore generated through the plan
-(`plan_call()`): the callee's NAME, each argument from the last to the
-first with a push step after it (`push_call_arg()`), then the call
-(`finish_call()`) - `reverse(s, lo + 1, hi - 1)` -> `mov di,*8.(bp)` /
-`dec di` / `push di` / `mov di,*6.(bp)` / `inc di` / `push di` / `push
-*4.(bp)` / `call _reverse` (`10_integ/04_strrev.s.golden`). Any other
-call streams as before; pushing its arguments right to left afterwards
-gives the same bytes. A comparison used as an argument is materialized
-first (0/1 in DI, `push di`).
-
-**Stores through a pointer plus an offset, `x - *p`, and reordered `+`
-chains.** Three more plan decisions, all read off the struct goldens (see
-`docs/DEVLOG.md`'s `06_struct` section, part 3). A store through a pointer
-plus a non-zero constant (`cur->next = head;`) computes its right-hand
-side first, into a register, and the pointer after it (`is_disp_store()`:
-`mov di,*-6.(bp)` / `mov si,*-8.(bp)` / `mov *2.(si),di`); with offset 0
-the target is pushed first as before (`push *-8.(bp)` ... `pop bx` / `mov
-(bx),di`) - on the PDP-11 `*p` is an addressable operand, `*(p + 2)` is
-not. An int `x - *p` with a computed left operand pushes the pointer
-first (`is_deferred_ptr()`: `push *4.(bp)` / ... / `pop bx` / `sub
-di,(bx)`). An int `+` chain is reordered like v7's `acommute()`, a
-computed term ahead of a variable (`acommute_order()`: `sum + pts[i].x +
-pts[i].y` adds `sum` last) - only where that changes the order, for
-three or more side-effect-free terms without constants. Registers are
-handed out in order: an address or pointer takes DI, or SI while DI holds
-a pending value (`pick_addr_reg()`), a subscript index DI, SI, then DX; a
-dereference on the left of an int `+`/`-`/`*` whose right operand has code
-is loaded first (`load_now()` - `mov di,*6.(di)` / `mov si,*4.(bp)` / `sub
-di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
-*12.(si)`).
+**How it is checked.** `tests/realbin/c1trees.py` compares it with the
+emulated original at four depths - the trees as read, the trees after
+`optim()`, the `.s` with all of the original's traces on, and the `.s`
+with messages and exit status - and `tests/realbin/c1fuzz.py` does the
+same on random programs (see `../../tests/realbin/README.md`); `make
+check-realbin` runs both. The tree dump for depths 1 and 2 goes to the
+file the environment variable `C1PORT_TREES` names.
 
 ## Next steps (roughly in dependency order)
 
-1. **All of `01_expr` and `03_ctrlflow` are now done.**
-   `03_rellogic` (relational/logical `< <= > >= == != && || !`),
-   `04_shift` (`<< >>`, both variable-count-via-`CL` and
-   constant-count-via-repeated-single-bit-shift - for a count of up to 2;
-   from 3 up also via `CL`), `05_incdec`
-   (`++`/`--`, pointer-scaled where applicable, plus the pointer/array
-   groundwork it pulled in), `06_compasgn` (all ten
-   compound-assignment operators, with a genuine `*=`-by-power-of-two
-   strength reduction to a shift), `07_ternary` (`?:` with a new
-   inverted-condition-branches-to-false-label codegen shape, and the
-   `,` comma operator, which emits no code of its own), and
-   `08_castsize` (`char`/`long` locals, casts between `int`/`char`/
-   `long` via three confirmed conversion opcodes including the
-   MUTOS-specific `CTOL`, and `sizeof` folded entirely at parse time)
-   are now done -
-   see the `VK_COND`
-   design, the `LSHIFT`/`RSHIFT` handling, the increment/decrement/
-   pointer/array derivation, the compound-assignment derivation, the
-   ternary/comma-operator derivation, and the char/long/cast/sizeof
-   derivation
-   above. `03_ctrlflow`'s `if`/`else`, `while`, `do`/`while`, `for`,
-   nested `break`/`continue`, `switch`/`case`/`default` (a genuine
-   jump table), and `goto`/labels are done too - a real recursive-
-   descent statement dispatcher replaced the prior flat assign/
-   return-only loop; see "Current scope" above for the full
-   derivation.
-2. **`02_long` arithmetic, function parameters/calls (`04_funcs`),
-   local `static` variables, function pointers, `long`-returning
-   functions, and real `register`-variable allocation are now ALL done -
-   `02_long` (4/4) and `04_funcs` (7/7) are both fully covered.**
-   `long` `*`/`/`/`%` (via the `lmul`/`ldiv`/`lrem` runtime helper calls -
-   see `docs/MUTOS_C_ABI.md` sect. 1.8, though the real confirmed calling
-   shape turned out simpler than that section's own prose - see "Current
-   scope" above), `long` `+`/`-`, an implicit `int`->`long` widening
-   conversion, and a `long`-vs-constant relational comparison were done
-   in an earlier session (`long` *locals*, casts, and constants already
-   existed, from `08_castsize` - see above); K&R-style parameters,
-   direct/indirect calls, local `static` variables, and function
-   pointers (`04_funcs`) were done in a later session; `02_long/
-   03_retval.c` (a `long`-returning function's `DX:AX` return-value
-   convention) and `04_funcs/06_regclass.c` (real `register`-variable
-   allocation) are done this session - see "Current scope" above for
-   the full derivation of all of it, and `docs/DEVLOG.md`'s Milestone 4
-   section for the byte-level detail behind the last two.
-3. **`05_arrptr`/`06_struct`**: array subscripting (one or two dimensions),
-   multi-level pointers, general `&`/`*`, and pointer/array-parameter
-   equivalence are now done (5 of 7 files - `01_arrbasic`/`02_array2d`/
-   `03_ptrbasic`/`04_ptrarreq`/`06_ptrptr` - see "Current scope" above and
-   `docs/DEVLOG.md`'s Milestone 4 section for the full derivation).
-   String literals (`05_arrofptr.c`/`07_strlibc.c`) are done too, with
-   `char`/`long` arrays and pointers, pointer-returning prototypes and call
-   statements (see the `temp2` paragraph above and `docs/DEVLOG.md`) - so
-   all 7 of `05_arrptr` pass. **`06_struct` is done too** (all 9 - see
-   "Structs, unions, bit-fields, enums and typedefs" above); its refused
-   shapes (file-scope struct variables, functions returning structs or
-   struct pointers, block copies, computed bit-field stores, ...) each
-   wait for evidence of the real compiler's shape.
-4. **Evaluation order**: done for `10_integ/05_matmul` (see "Evaluation
-   order" above), for call arguments (right to left) and for
-   `02_bubsort`'s comparisons (v7's `optim()` swapping a relational's
-   operands by `degree()` - see "Two non-constant comparison operands"),
-   and for the struct goldens' three shapes - `03_linklist`'s right-hand-
-   side-first store, `x - *p` and `acommute()`'s reordered `+` chain (see
-   "Stores through a pointer plus an offset" above). `&&`/`||`/`?:`/`,` are done
-   too (see "Conditional evaluation"); one shape difference remains
-   there: a tested call
-   result is `cmp ax,*0` where the real compiler has `or ax,ax`
-   (`kernel_nonopt/sys1.s`, four instances), v7's `tst r` fallback that
-   `c1` now emits only for a postfix operand.
-5. **`char` element access and `09_abiprobe/frame*`: done** (see
-   "Current scope"); with call arguments right to left and the degree
-   swap of a comparison's operands, `10_integ/04_strrev` and `02_bubsort`
-   pass too. **`07_scope`: done** (file-scope variables and block scope -
-   see "Current scope"). **`10_integ/01_wordcount`: done** (a file-scope
-   char array with a string initializer, character constants, a char
-   compared with a constant - see "Current scope"). **The further `char`
-   shapes are done** (a char with one int operand, char call arguments
-   and conditions, a store into a file-scope array element - see "More
-   `char`"), and so is `10_integ/03_linklist`. **`08_float`: done** (see
-   "Floating point" under "Current scope") - all 62 of 62; `mutos_as`
-   assembles the floating output too. `tests/mutos_cc/fltprobe/`'s nine
-   round-1, four round-2, four round-3 and three round-4 goldens are
-   byte-exact too (v7's operand order, constants of any value and their
-   degree, globals and their initializers, pointers, elements, calls,
-   conversions, the register an int is converted in, a floating zero - see
-   "Floating point beyond the corpus"), and so are round 5's `p17` and
-   `p18` (`p19` up to the real compiler's own invalid output), all
-   four of round 6 (`p21` with the real compiler's own `c1` error
-   messages) and all five of round 7 (`p28` with the real compiler's
-   twelve messages) and all five of round 8 (every frame size, which store
-   an assignment under a call gets, round 7's inferences) and all four of
-   round 9 (`p37` with the real compiler's seventeen messages) and all
-   four of round 10 (`p41` with twenty-three) and all four of round 11
-   (`p45` with twenty-three) and all four of round 12 (`p49` with
-   twenty-six) and all four of round 13 (`p52` with twenty-two overflow
-   messages, `p53` with five). Left: `fltprobe`'s round 14 (`p54`..`p57`)
-   - the neighbours of round 13's twelve corrections (round 12 had been
-   planned as the series' last unless it corrected more than a handful;
-   rounds 12 and 13 both did) - run on the hardware, goldens present, not
-   reproduced by `c1_gen.c`: the original `c1` binary was read first
-   (2026-10-12), because shape-by-shape inference does not converge, and
-   it decided the question - `mutos_c1` becomes a port of the real `c1`
-   (`../../docs/C1_PORT_PLAN.md`), which is to produce round 14 too. On
-   the assembler side a non-float constant is no longer blocked
-   outright: `mutos_as` re-enacts the real
-   assembler's conversion (real-hardware goldens in
-   `tests/mutos_as/float_coverage/`) - the `%.17e` zero and `ecvt.o`'s
-   `.03` come out as the real bytes. For the zero that settles the text
-   too (among `%.17e` zeros, only the one with exponent 0 gives
-   `bc a2 31 00`); for a non-float constant many texts give the same
-   bytes, so the real
-   compiler's text for one is in no golden yet. `mutos_as` accepts every
-   `%.17e` constant `mutos_c1` writes from `e-37` up (`e-38` when the
-   real `atof` drops the 18th digit): the real conversion is settled,
-   rounding and multiplication included
-   (`tests/mutos_as/float_coverage/fltmode.s`, `fltmul.s`). Below that the
-   conversion's 5\*\*55 overflows: the real assembler aborts there
-   ("floating point over/under flow- assembly aborted",
-   `tests/mutos_as/float_open/fltsig.s`), and `mutos_as` refuses the
-   constant with the reason - `mutos_c1` itself still writes it, as the
-   real compiler would, so a program with such a constant fails at the
-   assembler step either way.
-6. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
-   files, `01_delay.c` … `09_amx.c`, real-hardware-verified goldens
-   already present, currently 1/9): a second, separate golden corpus
-   alongside the 62-file table above. `01_delay.c` is byte-exact since a
-   bare expression-statement (`i++;`) is accepted and done in place (`inc
-   *-6.(bp)`). Seven of the other eight stop first at the same header
-   line, `typedef struct { unsigned short off; ... } segadr;` - an
-   `unsigned short` member, which `mutos_c0` misreports as "an unnamed
-   filler field" -, `09_amx.c` at a `long` struct member; each reports
-   more after that. See `docs/DEVLOG.md`'s Milestone 4 section for the
-   initial per-file breakdown.
-7. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
+1. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
+   files, `01_delay.c` … `09_amx.c`): `mutos_c1` does all nine from the
+   real `c0`'s output; `mutos_c0` does `01_delay.c` and refuses the other
+   eight - seven of them first at the same header line, `typedef struct
+   { unsigned short off; ... } segadr;` (an `unsigned short` member, which
+   `mutos_c0` misreports as "an unnamed filler field"), `09_amx.c` at a
+   `long` struct member; each reports more after that. The method that
+   made `mutos_c1` exact applies to `c0` too: the real `c0` reproduces all
+   132 `.1`/`.2` goldens under the emulator, and v7's `c00.c`..`c05.c`
+   are its skeleton (`../../docs/C1_PORT_PLAN.md`, section 7).
+2. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
    `tests/mutos_cc/run_goldens.sh`). The `-P`/`-S` interaction
    CLAUDE.md flagged as "undecided... revisit once `mutos_cc`'s
    driver is actually being written" is still open.
+3. **`mutos_c2`** (Milestone 5): the same way again - v7's `c20.c`/`c21.c`,
+   the real `c2` in `mutos_bin/`, `tests/mutos_as/kernel_opt/` as `cc -O`
+   output.
+
+On the assembler side, `mutos_as` accepts every `%.17e` constant
+`mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the
+18th digit): the real conversion is settled, rounding and multiplication
+included (`tests/mutos_as/float_coverage/fltmode.s`, `fltmul.s`). Below
+that the conversion's 5\*\*55 overflows: the real assembler aborts
+there ("floating point over/under flow- assembly aborted",
+`tests/mutos_as/float_open/fltsig.s`), and `mutos_as` refuses the
+constant with the reason - `mutos_c1` itself still writes it, as the
+real compiler does, so a program with such a constant fails at the
+assembler step either way.
 
 ## Source layout
 
@@ -2172,16 +2002,11 @@ di,*2.(si)`; `p10_elem`'s `mov di,*4.(di)` / ... / `mov ax,di` / `imul
   scope above).
 - `c0_main.c` - CLI entry point (`mutos_c0 source temp1 temp2 [-P]`,
   matching `v7/cc/cc.c`'s own invocation shape).
-- `c1_stream.h`/`c1_stream.c` - the `temp1`/`temp2` stream reader
-  (byte-level inverse of `c0_outcode.c`).
-- `c1_gen.h`/`c1_gen.c` - code generator (current opcode scope
-  above), including its `Val`/value-stack operand-kind tracking, the
-  emission layer every line of assembly text goes through (typed `Opnd`
-  operands, `ins0()`/`ins1()`/`ins2()`, `put_label()`/`put_line()`, the
-  `RELOPS`/`ALUOPS` tables and `SEQ_*` fixed idioms), the
-  register-occupancy guard, and the evaluation-order planner (both see
-  above).
-- `c1_main.c` - CLI entry point (`mutos_c1 temp1 temp2 output.s`).
+- `c1port/` - `mutos_c1`, the port of the real `c1` (see "The port of
+  the real `c1`"); invoked as v7's `cc` invokes `c1`: `mutos_c1 temp1
+  temp2 output.s [options]`.
+- `c1_fltdec.h`/`c1_fltdec.c` - `libc.a`'s `ecvt()` on the MUTOS double,
+  for `mutos_c1`'s `%.17e` (and `fltdec_test`, below).
 
 ## Testing
 
@@ -2193,20 +2018,28 @@ above) so the exit status stays a meaningful signal as coverage
 grows. A file whose goldens lack the `.i` is checked from `mutos_c0` on
 and listed apart (its category 7).
 
+A file `mutos_c0` refuses is still checked at `mutos_c1`, from its
+`.1`/`.2` goldens (category 10). `tests/realbin/` (`make check-realbin`,
+needs `unicorn`) checks `mutos_c1` against the emulated original `c1` at
+four depths on every golden and on random programs.
+
 `tests/mutos_cc/fuzz/` (`make fuzz`) complements that with random
 programs: `fuzz_c.py` computes what each one must do under C semantics,
-runs it through the real pipeline, and executes the output with
-`x86sim.py`, comparing every variable at every statement boundary; with
-`--baseline` it also classifies every difference against an earlier
-build. It found the constant-left-operand bug and two `mutos_c1`
-wrong-code bugs (all three fixed) - see its README. With `--scope` it
-also makes some variables file-scope ones and wraps statements in
-blocks that shadow them. The generator produces neither chars nor
-calls nor floating code; `x86sim.py` itself executes all three (byte
-moves, calls of functions in the same file, `chkstk`, and the floating-
-point runtime's entry points against a model of it) and fixed-address
-variables, so hand-written programs of that kind can be checked the same
-way.
+runs it through the real pipeline, executes the output with `x86sim.py`,
+comparing every variable at every statement boundary, and - by default -
+requires `mutos_c0`'s and `mutos_c1`'s output to be the emulated
+original `c0`'s and `c1`'s byte for byte; with `--baseline` it also
+classifies every difference against an earlier build. It found the
+constant-left-operand bug and two wrong-code bugs of `c1_gen.c` (all
+three fixed) - see its README. With `--scope` it also makes some
+variables file-scope ones and wraps statements in blocks that shadow
+them. The generator produces neither chars nor calls nor floating code;
+`x86sim.py` itself executes all three (byte moves, calls of functions in
+the same file, `chkstk`, and the floating-point runtime's entry points
+against a model of it) and fixed-address variables, so hand-written
+programs of that kind can be checked the same way;
+`tests/realbin/c1fuzz.py`'s generator covers every type against the
+original.
 
 ## Tooling
 

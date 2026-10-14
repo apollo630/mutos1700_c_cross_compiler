@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-10-12.
+Last updated: 2026-10-14.
 
 ---
 
@@ -563,7 +563,9 @@ the real MUTOS kernel source this project validates against.
 ## Milestone 4 — `mutos_cc`/`mutos_c0`/`mutos_c1` (C compiler) [CURRENT FOCUS]
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
-byte-exact, end-to-end, for 62/62 of the full corpus - every file: `tests/mutos_cc/
+byte-exact, end-to-end, for 62/62 of the full corpus; since 2026-10-13
+`mutos_c1` is a port of the original `c1`, checked against the original
+itself (see the next section) - every file: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -633,21 +635,121 @@ shifted in place, a long variable passed in two words, a negation's
 hoists, the floating-stack model's top (six values) and which stores
 report in upper case; a fourteenth round of four probes (`p54`..`p57`),
 for the neighbours of round 13's twelve corrections, was run on the
-hardware (goldens `148efa3`, `round14.log` `71f0a07`) and is not yet
-handled by `mutos_c1` - left to the port of the real `c1` (see "The
-original binaries" below and "Next up"). ABI/
+hardware (goldens `148efa3`, `round14.log` `71f0a07`) and is reproduced
+by the port - `p56_fltinf9` and `p57_fltstk8` with all eighteen of the
+real compiler's `c1` messages each. ABI/
 calling-convention research is done, the `c0`/`c1` process split is
 confirmed as a deliberate design decision, the K&R test corpus now
 has full-corpus goldens (all 62 files across all 11 categories) present in
 this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end. A further, separate golden corpus - `11_kernel/`, nine
 real MUTOS kernel driver source files with their own real-hardware-verified
-goldens already present - was added in an earlier session; `mutos_c0`/
-`mutos_c1` coverage against it is 1/9 (`01_delay` byte-exact; each
-refusal of the other eight diagnosed, none silent), tracked apart from
-the 62/62 figure above - see "Next up" below and `docs/DEVLOG.md`'s
-Milestone 4 section.**
+goldens already present - was added in an earlier session; end-to-end
+coverage against it is 1/9 (`01_delay` byte-exact; `mutos_c0` refuses
+the other eight, each refusal diagnosed, none silent), and `mutos_c1`
+gives all nine `.s` goldens from the real `c0`'s `.1`/`.2` - tracked
+apart from the 62/62 figure above - see "Next up" below and
+`docs/DEVLOG.md`'s Milestone 4 section.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c1` is the port of the real `c1` (verified this session, 2026-10-14)
+
+`docs/C1_PORT_PLAN.md`'s steps A to E are done: `mutos_c1` is built from
+`src/mutos_cc/c1port/` - the original `c1`'s 67 functions decompiled from
+the binary with v7's `c10.c`..`c12.c` as the skeleton (each function's
+text offset and its changes against v7 in `tests/realbin/c1map.txt`), its
+code tables and op data generated from the binary (`c1tab.c`,
+`c1tables.py --c`), and the `libc.a` routines its output passes through
+re-enacted as the binary has them (`c1lib.c`). `c1_gen.c` (15,143 lines),
+`c1_main.c` and `c1_stream.c` are deleted. Verified this session:
+
+- **`make test`**: 113 files byte-exact at all four stages (62/62 corpus,
+  50 `fltprobe` files - round 14's `p54_long10` and `p55_elem11` among
+  them - and `11_kernel/01_delay`), `p19_open3` in category 8 (now 228
+  lines: the port writes the statement's valid start and refuses at the
+  register name outside `regname[]`), ten files in category 9 with all of
+  the real compiler's `c1` messages and exit status 1 (`p56_fltinf9` and
+  `p57_fltstk8` new, eighteen messages each, from `round14.log` into
+  `c1_errors.txt`), and a new category 10: `mutos_c1` alone, from the
+  `.1`/`.2` goldens of a file `mutos_c0` refuses - all eight other
+  `11_kernel` files byte-exact; 0 mismatches. `mutos_as` 76/76, 131/131
+  compiler goldens assemble (`p19_open3` refused as listed), `mutos_cpp`
+  5/5.
+- **`make check-realbin`** (now with the port): on all 132 golden
+  `.1`/`.2` pairs, depth 2 (the trees as read and after `optim()`), depth
+  3 (the `.s` with all of the original's traces on) and depth 4 (the
+  `.s`, the messages and the exit status) identical on 131, `p19_open3`
+  refused after 228 identical lines as `invalid_goldens.txt` specifies;
+  then a 200-program fuzz run at depth 4.
+- **Differential fuzzing** against the emulated original
+  (`tests/realbin/c1fuzz.py`, depth 4, with the final build, run
+  2026-10-14): 6,000 programs of its own generator (seeds 1 to 6: char
+  to double, pointers, a structure with bit-fields, register variables,
+  calls, switches) - 5,151 identical, **none different**, 694 refused by
+  the port on purpose, each refusal checked against the original (634 the
+  register "after" AX, `p19_open3`'s case; 22 `ltof` of 0; 20
+  `xlongrel()`; 17 a long constant shift; 1 `regname[8]`), 16 where the
+  original does not finish and the port refused, 139 the real `c0`
+  rejects (the generator's own errors); 1,500 programs of `fuzz_c.py`'s
+  generator - all identical; 1,000 of long constant arithmetic (`--gen
+  lconst`) - 929 identical, the rest rejected by the real `c0` (its own
+  divide checks).
+- **ASan/UBSan** builds of the port: no report on any golden at any depth
+  nor on 500 more fuzz programs (seed 7: 426 identical, 59 refused as
+  above, none different).
+- **Found by the fuzzer and fixed in the port**: `libc.a`'s `aldiv`,
+  through which `lconst()` folds a long constant `/`, is not C's division
+  - its short path divides by the low word alone when the high word is 0
+  and the low word positive or 1 and the low word negative, its long path
+  does sixteen shift-and-subtract steps and clears the quotient's high
+  word (`0x7fffffffL / 0177777` is -65535); `alrem`'s long path is the
+  same sixteen steps. Both re-enacted on 16-bit words; a generator for
+  long constants at those edges (`--gen lconst`) found the old port
+  different on 232 of 300 programs, the new one on none.
+- **Refused on purpose** (exit status 2, everything before written; the
+  fuzzer checks that the original wrote the same up to there, or did not
+  finish): a register name outside `regname[]`, a long constant shifted
+  by a count whose tested word is 0 (`lconst()` jumps into an
+  instruction), `xlongrel()` reading past `lrtab[]`, `ltof` of 0, `dtoi`
+  and `ftol` overflows and `dtoi` from 2\*\*15.
+- **`tests/mutos_cc/fuzz/fuzz_c.py`**: its default oracle is now the
+  emulated original - `mutos_c0`'s `.1`/`.2` and `mutos_c1`'s `.s`,
+  messages and exit status must be the real `c0`'s and `c1`'s byte for
+  byte -, `x86sim.py` stays the semantic check, and now models the
+  8086's flags as the 8086 sets them (the port branches on the flags of
+  `add`, `sar`, `test`, ..., which `c1_gen.c` never did); same results on
+  every golden as before. 5,000 programs (seeds 1 to 4, with and without
+  arrays and file scope): 4,957 correct, 0 WRONG, 0 BAD, 43 wrong or not
+  checkable exactly as the real compiler's own code (next item).
+- **The real `c1` miscompiles** some expressions, and `mutos_c1` with it
+  (counted apart by `fuzz_c.py`, not a failure - about 0.9% of its
+  programs): its code tables keep PDP-11 assumptions where the 8086
+  differs. On the PDP-11 `com` and `mov` set the condition codes, on the
+  8086 `not` and `mov` set no flags - so `s = (~a[k][j] || n++);` is
+  `not di` / `bne`, branching on the flags of the `add` before it (`n++`
+  is lost), and `y = (!y >= 0);` branches after a `mov`; `(u = 4, x) * 0`
+  drops the assignment (v7's own `acommute()` returns the 0 of `e * 0`
+  or `e & 0` without looking for side effects). `x86sim.py` finds these
+  because it models `not` and `mov` as leaving the flags alone.
+- **`mutos_c0` fixed** (found by the same oracle in 14 of the first 4,000
+  programs): it folded `!c`, `c1 && c2` and `c1 || c2` of constants;
+  v7's `fold()` has no EXCLA, LOGAND or LOGOR, and the real `c0` writes
+  `CON 1 / EXCLA` for `!(12 >> 3)`. Now it does too; `make test`
+  unchanged, the 5,000 programs above have no `c0` difference.
+- **The originals' bugs in one place**: `docs/MUTOS_ORIGINAL_BUGS.md`
+  (new, kept current by `CLAUDE.md`'s Workflow Guideline 9) lists every
+  bug found so far in `c0`, `c1`, `as` and `libc.a` - eleven in `c1`,
+  seven in `libc.a`, three in `as`, one in `c0`, none known in `cpp` or
+  `ld` - with trigger, mechanism, evidence, what this project's tools do
+  with it, and a fix idea. Found while writing it: the original `c1`
+  cannot fold a long constant `>>` at all (`0x12345678L >> 4` crashes
+  it - C1-07), and `libc.a`'s `itod` makes `double d = 1001;`
+  `1.00100001525902189e+03` (L-01).
+- Constructs `c1_gen.c` refused that `mutos_c0` accepts - an int divided
+  by a constant, `++`/`--` and compound assignment on a global, a member
+  of a file-scope struct, a call's value tested - now compile through
+  `mutos_c0` and `mutos_c1` exactly as through the real `c0` and `c1`
+  (checked under the emulator); the remaining refusals are `mutos_c0`'s.
 
 ### The original binaries: an emulated oracle, `c1`'s tables (verified this session, 2026-10-12)
 
@@ -690,13 +792,10 @@ typed), built beside `c1_gen.c` and checked against the emulated
 original at four depths - see `docs/C1_PORT_PLAN.md`. Round 14 is left
 to the port.
 
-**`make test` at this commit fails, on round 14 only**: the four
-round-14 goldens are in the tree, `mutos_c1` refuses `p54_long10`,
-`p55_elem11` and `p57_fltstk8` (category 5) and differs on
-`p56_fltinf9` (category 6); everything else as in the round-13 section
-below (111 byte-exact, `p19_open3` in category 8, eight in category 9),
-`mutos_as` 76/76, 131/131 compiler goldens assemble, `mutos_cpp` 5/5.
-Nothing in `src/` changed this session.
+**`make test` at that commit failed, on round 14 only** (the four
+round-14 goldens in the tree, `c1_gen.c` refusing `p54_long10`,
+`p55_elem11` and `p57_fltstk8` and differing on `p56_fltinf9`) - until
+the port, see the section above.
 
 ### Real-hardware finding: the real `as` on `p19_open3.s` (2026-10-07)
 
@@ -3866,107 +3965,33 @@ section; headline findings:
 
 ### Next up
 
-Grow `mutos_c0`/`mutos_c1`'s grammar/opcode coverage category by category,
-per `tests/mutos_cc/`'s own increasing-difficulty ordering — every category
-is now fully covered (62/62). In order:
+1. **The port of the real `c1` is done** (2026-10-13, see "`mutos_c1` is
+   the port of the real `c1`" above). The `c1` items this list held -
+   int division by a constant, globals beyond `07_scope`, a call's value
+   tested as a condition (`or ax,ax`), a postfix call argument, the
+   struct shapes, the register-occupancy guard's refusals - were
+   `c1_gen.c`'s gaps; the port produces each as the original does.
+2. **`mutos_c0` in `11_kernel`**: it refuses eight of the nine kernel
+   files (`mutos_c1` does all nine from the real `c0`'s output). The
+   first error in seven of them is the same header line, `typedef struct
+   { unsigned short off; ... } segadr;` (`unsigned short` - `mutos_c0`
+   misreports it as "an unnamed filler field"), in `09_amx` a `long`
+   struct member; `mutos_c0` reports more after each, and it refuses
+   file-scope arrays and pointers in general. The method that made
+   `mutos_c1` exact applies: the real `c0` reproduces all 132 `.1`/`.2`
+   goldens under the emulator, so a port of it (v7's `c00.c`..`c05.c`,
+   the binary's deltas - `docs/C1_PORT_PLAN.md`, section 7) can be
+   checked against it the same way; `fuzz_c.py` already compares
+   `mutos_c0`'s output with the real `c0`'s.
+3. **`fuzz_c.py`'s generator**: the limits it kept for `c1_gen.c`'s sake
+   (no constant divisor, no `x = y;`, simple right operands, small
+   frames) can go.
+4. **The `mutos_cc` driver itself.**
+5. **`mutos_c2`** (Milestone 5), by the same method: v7's `c20.c`/`c21.c`,
+   the real `c2` in `mutos_bin/`, `tests/mutos_as/kernel_opt/` as `cc -O`
+   output.
 
-1. **Port the real `c1`** (decided 2026-10-12 - `docs/C1_PORT_PLAN.md`).
-   Rounds 1 to 13 inferred the real compiler's shapes one probe at a time
-   and did not converge (corrections per round 7, 7, 3, 11, 12; `c1_gen.c`,
-   ~15k lines, a list of `is_*` predicates, each a shape seen). The plan of
-   2026-10-10 - read the original binary first - is carried out:
-   1. **Brought** (`mutos_bin/`, commit `e8c7516`): all seven binaries.
-   2. **Read** (see "The original binaries" above and `docs/DEVLOG.md`):
-      the real `c1` is v7's `c1` ported to the 8086, its code tables are
-      v7's in v7's encoding (`tests/realbin/c1_tables.txt`), and - more
-      than the hypothesis asked - the binary runs under an emulator and
-      reproduces every golden, so it is an oracle for any input.
-   3. **Decided**: a port, steps A to E of the plan - A the reader and
-      the tree printer (checked with the original's option `b`), B the
-      tree optimizer (option `a`), C code generation from the generated
-      tables (options `r`, `c`, `d`, then the `.s`), D differential fuzzing
-      against the emulated original and the nine kernel files, E the
-      switch, `c1_gen.c` deleted. No further work on `c1_gen.c`'s
-      predicates; it stays as it is until E.
-   4. **Round 14 was run** (goldens `148efa3`, `round14.log` `71f0a07`):
-      the emulated original reproduces all four `.s` and both message
-      lists; `mutos_c1` refuses `p54`, `p55` and `p57` and differs on
-      `p56`, so `make test` fails on these four until step C produces
-      them. Its files: `p54_long10.c` (other commutative nodes of a
-   distributed LTOI with an int widened, a complement or negation of a
-   region, a long call's result divided, modulo or times a constant, a
-   variable times a quotient, remainder, difference or call, computed longs
-   shifted by a variable, a call's result minus a variable - inferred; `3 *
-   (l + m)`, two long calls summed, `(int) (l & (m | i))`, `(int) (l ^ (m +
-   i))` - refused), `p55_elem11.c` (`%n,e` with a product, quotient or
-   remainder on the left or a product or scaled sum on the right, a call,
-   product, quotient or remainder over a computed divisor, `distrib()` over
-   three calls, with a plain call, with a variable, of equal multiples and
-   under a `-`, quotients and remainders next to calls and elements under
-   `&`, `|`, `^` - inferred; `c % d * 4 + f(1)` - refused),
-   `p56_fltinf9.c` (the value path against `cbranch()`: a leaf right
-   operand, `!`, `?:`, `&&`, `while`, an int converted, a comparison's
-   value in a sum and stored into a double; negations of `++`, `--`, `-=`
-   and of a `+=` under a `*` - all inferred) and `p57_fltstk8.c` (on
-   purpose, like `p28`, `p37`, `p41`, `p45`, `p49` and `p53`: unhoisted
-   compound stores below the bottom, `fdup` and a call's value at the top
-   - its `cc -S` is expected to report errors, `make` goes on).
-   5. **Meanwhile, no hardware needed**: `mutos_c0`'s refusals in
-      `11_kernel` (item 6) - the port can be checked on all nine kernel
-      `.1`/`.2` goldens without them.
-
-   Items 2 to 5 below are `mutos_c1` shapes the port will produce from the
-   real tables; they stay as test cases for it, not as `c1_gen.c` work.
-2. **Int division by a constant** (`x / 4`, `x % 3`): refused today
-   ("dividing by an immediate"), although the real kernel goldens show its
-   shape - `mov ax,<x>` / `cwd` / `mov cx,*4.` / `idiv cx`
-   (`tests/mutos_cc/11_kernel/09_amx.s.golden`'s two, `kernel_nonopt/
-   lp_AC.s`'s `% 8`), as the golden `y %= 3` (`06_compasgn`) already does.
-   `fuzz_c.py` avoids constant divisors for this reason; it should
-   generate them once this is in.
-3. **Globals beyond `07_scope`**, each with kernel evidence (see
-   `docs/DEVLOG.md`'s `07_scope` section): `++`/`--` and compound
-   assignment on a global or local static (`inc _amxslee`, `orb
-   _amxscd(bx),*4.` in `kernel_nonopt/amx.s`); `x = y;` between two
-   memory operands goes through DI now (`03_linklist`'s `head = cur;`),
-   but in a function with a register variable in DI the kernel uses DX
-   (`mov dx,*-6.(bp)` / `mov _cfreeli,dx`, a function with two) - which
-   register with one still needs a golden.
-4. **Two shape follow-ups from the conditional-evaluation work** (both
-   currently correct code, just not the real compiler's bytes; see
-   `docs/DEVLOG.md`'s "Conditional evaluation" section): a call result
-   tested as a condition is `cmp ax,*0` where `kernel_nonopt/sys1.s`
-   (four instances) has `or ax,ax` - v7's `tst r` fallback, which `c1`
-   emits so far only for a postfix operand; and a postfix call argument is
-   `mov di,a / push di / inc a` where the kernel pushes the memory operand
-   directly (`push *-56.(bp) / inc *-56.(bp) / call _clearse`).
-5. **Struct shapes still refused** (see `src/mutos_cc/README.md`'s
-   "Structs, unions, bit-fields, enums and typedefs"): an int member of a
-   file-scope struct and an element of a file-scope int array (`mutos_c0`
-   accepts the declarations now - `p3_global` needed them for floats -
-   `mutos_c1` refuses the access), functions returning a struct or a struct
-   pointer, block
-   copies, a computed value stored into a bit-field, a struct size that is
-   not a power of two in a subscript - each needs evidence of the real
-   compiler's shape first.
-6. **`tests/mutos_cc/11_kernel`** (9 real kernel driver files, currently
-   1/9 - `01_delay.c` byte-exact since its bare `i++;` statement is
-   accepted): grow coverage into it once the categories above are done.
-   The first error in seven of the other eight is the same header line,
-   `typedef struct { unsigned short off; ... } segadr;` (`unsigned short`
-   - `mutos_c0` misreports it as "an unnamed filler field"), in `09_amx` a
-   `long` struct member; `mutos_c0` reports more after each. See
-   `docs/DEVLOG.md`'s Milestone 4 section for the initial per-file
-   breakdown.
-7. **The `mutos_cc` driver itself.**
-
-The register-occupancy guard's refusals (see the `c1_gen.c` review section
-above) mark where further spill/reordering codegen - and an SI-scratch
-generalization for functions with a `register` local - will be needed; each
-needs its own golden before it can be implemented. The largest group in the
-fuzzer's refusals is now a 2-D subscript while DI holds another value
-(`x + m[i][j]`), which needs the base address in a register other than DI.
-See `src/mutos_cc/README.md`'s "Next steps" for the full plan.
+See `src/mutos_cc/README.md`'s "Next steps".
 
 ---
 

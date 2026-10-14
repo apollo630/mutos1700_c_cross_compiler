@@ -244,15 +244,16 @@ not compared), and skips the others.
   pushed its high word alone, silently wrong code no golden had shown. See
   `../../../docs/DEVLOG.md`'s "The round-13 fltprobe goldens".
 - **Round 14** (`p54`..`p57`, run 2026-10-12: goldens and `round14.log`
-  here; not yet handled by `mutos_c1` - the original `c1` binary, read
-  first because the corrections per round do not fall, is to be ported and
-  produce them, see `../../../STATUS.md`'s "Next up"; the emulated original
-  already gives all four, `../../realbin/`): round 13
+  here; reproduced by `mutos_c1` since 2026-10-13, when it became a port
+  of the original `c1` binary - read first because the corrections per
+  round did not fall, see `../../../docs/C1_PORT_PLAN.md` -, `p56_fltinf9`
+  and `p57_fltstk8` with all eighteen of the real compiler's messages
+  each, `../c1_errors.txt`): round 13
   corrected more than a handful too (twelve, by seven rules), so a
   fourteenth round asks about their neighbours: `long` (`p54_long10`), int (`p55_elem11`) and floating
   (`p56_fltinf9`) shapes, and, not a program to run, the stack model's top
   and which stores report in upper case (`p57_fltstk8`). Run them with
-  `make -f Makefile.mutos round14`. See `../../../STATUS.md`'s "Next up".
+  `make -f Makefile.mutos round14`.
 
 ## Why these, and not goldens alone
 

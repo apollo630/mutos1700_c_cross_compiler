@@ -30,7 +30,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/src/mutos_cpp/`: Source code for the Mutos C Preprocessor. See `src/mutos_cpp/README.md`
   for its full behavioral specification.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end)
-  and `mutos_c1` (back end), both implemented and verified byte-exact end-to-end against
+  and `mutos_c1` (back end - since 2026-10-13 a port of the original MUTOS 1700 `c1`
+  read from its binary, `src/mutos_cc/c1port/`, see `docs/C1_PORT_PLAN.md`), both
+  implemented and verified byte-exact end-to-end against
   62/62 of `tests/mutos_cc/`'s goldens - all of them (`00_smoke` plus all of `01_expr`:
   `01_intarith`,
   `02_bitwise`, `03_rellogic`, `04_shift`, `05_incdec`, `06_compasgn`, `07_ternary` and
@@ -136,9 +138,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   fuzzing (`make fuzz`, see `tests/mutos_cc/fuzz/README.md`) - `fuzz_c.py`
   computes what each generated program must do under C semantics and
   checks every variable at every statement boundary by executing
-  `mutos_c1`'s output with `x86sim.py`; `--baseline` classifies every
-  difference against an earlier build. It holds no `.c` files, so nothing
-  that walks the corpus sees it.
+  `mutos_c1`'s output with `x86sim.py`, and by default requires
+  `mutos_c0`'s and `mutos_c1`'s output to be the emulated original `c0`'s
+  and `c1`'s byte for byte (`tests/realbin/`); `--baseline` classifies
+  every difference against an earlier build. It holds no `.c` files, so
+  nothing that walks the corpus sees it.
   `fltprobe/` is the other non-corpus directory: floating-point probe
   programs with their own `Makefile.mutos` and real-hardware goldens (see
   its `README.md`) - round 1's nine files, the four each of rounds 2, 3,
@@ -147,10 +151,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   compiler's own invalid output, `p21_fltexp`, `p28_fltstk`,
   `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`,
   `p52_fltinf8` and `p53_fltstk7` together with the real compiler's own
-  `c1` error messages, see below), round 14's four (`p54`..`p57`) run on
-  the hardware (goldens and `round14.log` present) but not yet handled by
-  `mutos_c1` - left to the port of the real `c1` (see `STATUS.md`'s "Next
-  up"). It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
+  `c1` error messages, see below), and round 14's four (`p54`..`p57`,
+  `p56_fltinf9` and `p57_fltstk8` with the messages of `round14.log`) since
+  `mutos_c1` is the port of the real `c1`. It does hold `.c` files, so `run_goldens.sh`, `gen_mutos.sh` and
   the Makefiles do walk it - `run_goldens.sh` skips a file with no goldens
   and checks one with a `.1.golden` but no `.i.golden` from `mutos_c0` on,
   listed apart (a set brought back without its `.i` files) - and it is not
@@ -161,7 +164,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   where a register name belongs - the real `as` refuses those lines too,
   `***ERROR*** syntax error`, see `fltprobe/p19_as.log`). `run_goldens.sh` requires `mutos_c1` to
   refuse such a file and to have written exactly the golden's lines
-  before that point (its category 8).
+  before that point (its category 8; 228 for `p19_open3`, where the port
+  refuses at the register name).
   `c1_errors.txt` lists every golden for which the real compiler's `c1`
   reported errors - and still wrote the whole `.s`, which is the golden,
   never edited (at present `fltprobe/p21_fltexp`: "56: floating point
@@ -172,7 +176,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   and five messages, the same wrong code on purpose, and
   `fltprobe/p52_fltinf8`, twenty-two "Floating point stack overflow;
   simplify expression" - its own `fstd`s pile up past the model's six
-  values). `run_goldens.sh` requires
+  values - and round 14's `p56_fltinf9` and `p57_fltstk8`, eighteen each,
+  from `fltprobe/round14.log`). `run_goldens.sh` requires
   `mutos_c1` to print exactly those messages, exit with a nonzero status
   and write exactly the golden `.s` (its category 9).
   `11_kernel/` is a second, separate golden corpus alongside the 62-file
@@ -183,9 +188,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   goldens (`.s`/`.i`/`.1`/`.2` plus base64 companions) and `Makefile.mutos`
   are already present in this checkout; `mutos_c0`/`mutos_c1` coverage
   against it is tracked apart from the 62-file corpus's own N/62 pass
-  fraction: 1/9 (`01_delay` byte-exact since 2026-10-04; the other eight
-  refuse at the front end, each with a diagnosed reason, never silent
-  wrong output) — see `STATUS.md`'s "Next up" and `docs/DEVLOG.md`'s
+  fraction: 1/9 end-to-end (`01_delay` byte-exact since 2026-10-04; the
+  other eight refuse at the front end, `mutos_c0`, each with a diagnosed
+  reason, never silent wrong output), and `mutos_c1` on its own gives all
+  nine `.s` goldens from their `.1`/`.2` goldens (`run_goldens.sh`'s
+  category 10) — see `STATUS.md`'s "Next up" and `docs/DEVLOG.md`'s
   Milestone 4 section.
 * `/tests/mutos_cpp/c/`: Golden Master test cases for the preprocessor (5 real MUTOS kernel
   `.c` files with their `.i.golden` reference output) plus the full `h/` header tree they
@@ -195,8 +202,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `c1` and `as` reproduce the project's goldens there (`check_real.py`, `make
   check-realbin`, not part of `make test`), which makes them an oracle for any input.
   Also `c1`'s code tables read back into v7 `table.s` notation (`c1tables.py`,
-  `c1_tables.txt`), a map of the stripped `c1` (`c1map.txt`) and an annotated
-  disassembler (`c1dis.py`). See its `README.md` and `docs/C1_PORT_PLAN.md`.
+  `c1_tables.txt`) and as C for the port (`c1tables.py --c`), a map of the
+  stripped `c1` (`c1map.txt`), an annotated disassembler (`c1dis.py`), and the
+  checks of `mutos_c1` - the port - against the emulated original: `c1trees.py`
+  (every golden at four depths: trees as read, trees after `optim()`, the `.s`
+  with the original's traces, the `.s` with messages and exit status) and
+  `c1fuzz.py` (differential fuzzing). See its `README.md` and
+  `docs/C1_PORT_PLAN.md`.
 * `/tests/mutos_ld/`: Golden Master and integration tests for the linker. **Currently missing
   from this checkout** — the golden reference binaries (`myhello`/`idhello`) this
   milestone's verification depends on are absent, so Milestone 1 cannot be re-verified
@@ -219,6 +231,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     (project-scoped, sync-delayed, capped at 30 entries). `STATUS.md` remains the
     authoritative *current-state* tracker; `DEVLOG.md` is the *why/how-we-found-out*
     behind it and is not re-verified every session the way `STATUS.md` is.
+  * **`docs/MUTOS_ORIGINAL_BUGS.md`**: Every bug found in the original MUTOS 1700
+    binaries (`c0`, `c1`, `as`, `ld`, `cpp`, `libc.a`) in one place - symptom, trigger,
+    mechanism with its offset in the binary, evidence, what this project's tool does
+    with it (reproduced / refused / modelled) and a fix idea - for fixing them later.
+    Kept current by Workflow Guideline 9.
   * **`docs/MUTOS_C_ABI.md`**: The real MUTOS 1700 C function calling convention and
     C-runtime startup/cleanup behavior (stack frame layout, register save rules,
     `long`-splitting, `crt0`/`exit()` sequence), reverse-engineered byte-for-byte from
@@ -439,6 +456,17 @@ You act as an expert systems programmer, compiler architect, and operating syste
    message that should now be decodable. A new opcode `mutos_c0` does not yet emit
    (still future grammar/opcode scope) does not need an entry — `dump_temp.py` is
    meant to stop cleanly there, per its own header comment, rather than guess.
+9. **Bugs of the MUTOS originals (mandatory)**: every bug found in an original MUTOS
+   1700 tool - `c0`, `c1`, `as`, `ld`, `cpp`, `libc.a` (and `c2` once it is read) -
+   goes into `docs/MUTOS_ORIGINAL_BUGS.md` in the same change that finds it, so that
+   it can be fixed later: an ID, the symptom with a minimal trigger where one is
+   known, the mechanism (text or data offset in the binary), the evidence (golden,
+   emulator run, or code reading only), what this project's tool does with it
+   (reproduces it, refuses there, or models it), and a fix idea. The project's tools
+   stay faithful to the original - bugs included - until a fix is decided; the list
+   is where such a fix starts. A bug found by a test (`fuzz_c.py`'s "as the real
+   compiler" programs, a refusal of `mutos_c1`, a real-hardware run) is not done until
+   its entry is there.
 
 ---
 
@@ -776,18 +804,19 @@ scope and intent, not a snapshot of what's done.
     real `c1`** - v7's sources, the binary's deltas, its tables generated
     - checked against the emulated original at four depths
     (`docs/C1_PORT_PLAN.md`); round 14 (`p54`..`p57`, run, goldens
-    present) is left to it. `11_kernel` grows on the `mutos_c0` side
-    meanwhile.
-  * **Beyond those**: expand `mutos_c0`/`mutos_c1`'s grammar/opcode coverage
-    category by category — see
-    `src/mutos_cc/README.md`'s "Next steps" for the concrete
-    dependency-ordered list: the floating shapes still refused (see
-    `tests/mutos_cc/fltprobe/README.md`), then growing coverage
-    into `tests/mutos_cc/11_kernel`'s real kernel driver sources (currently
-    1/9 — see that directory's own paragraph above and `docs/DEVLOG.md`'s
-    Milestone 4 section for the initial assessment), then the `mutos_cc`
-    driver itself; the shapes still refused (see `src/mutos_cc/README.md`'s
-    "Current scope") each wait for evidence of the real compiler's output.
+    present) is left to it. **Done 2026-10-13**: `mutos_c1` is the port
+    (`src/mutos_cc/c1port/`), `c1_gen.c` is deleted, every golden
+    identical to the original at all four depths (`p19_open3` refused as
+    specified), round 14 included, and differential fuzzing against the
+    original without a difference - see `STATUS.md`'s "`mutos_c1` is the
+    port of the real `c1`" and `docs/DEVLOG.md`'s "The port of `c1`".
+  * **Beyond those**: `mutos_c0`'s coverage of
+    `tests/mutos_cc/11_kernel`'s real kernel driver sources (end-to-end
+    1/9; `mutos_c1` does all nine from the real `c0`'s output) - by the
+    method that made `mutos_c1` exact, a port of the real `c0` checked
+    against it under the emulator (`docs/C1_PORT_PLAN.md`, section 7) -,
+    then the `mutos_cc` driver itself; see `src/mutos_cc/README.md`'s
+    "Next steps" and `STATUS.md`'s "Next up".
 
 ### Milestone 5: Optimizer (`c2`) & NEC V30
 * Enhancing the V7 peephole optimizer for x86 and activating the `-mv30` compiler flag switch.

@@ -105,15 +105,15 @@ this corpus (`run_goldens.sh`, `gen_mutos.sh`, the Makefiles) sees it.
 with their own `Makefile.mutos` and real-hardware goldens (see
 `fltprobe/README.md`) - a first round of nine, a second, a third, a
 sixth, a ninth, a tenth, an eleventh, a twelfth and a thirteenth of
-four, a fourth and a fifth of three, a seventh and an eighth of five, all
-byte-exact (they stay here rather than joining `08_float`; `p21_fltexp`,
-`p28_fltstk`, `p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`,
-`p49_fltstk6`, `p52_fltinf8` and `p53_fltstk7` together with the real
-compiler's own error messages, see below) but `p19_open3`, whose
-`.s.golden` ends in the real compiler's own invalid output (see below),
-and a fourteenth round of four (`p54`..`p57`) whose goldens `mutos_c1`
-does not reproduce yet (left to the port of the real `c1`, see
-`../../docs/C1_PORT_PLAN.md`). Unlike `fuzz/`, it
+four, a fourth and a fifth of three, a seventh and an eighth of five,
+and a fourteenth of four (`p54`..`p57`), all byte-exact (they stay here
+rather than joining `08_float`; `p21_fltexp`, `p28_fltstk`,
+`p37_fltstk3`, `p41_fltstk4`, `p45_fltstk5`, `p49_fltstk6`,
+`p52_fltinf8`, `p53_fltstk7`, `p56_fltinf9` and `p57_fltstk8` together
+with the real compiler's own error messages, see below) but `p19_open3`,
+whose `.s.golden` ends in the real compiler's own invalid output (see
+below). Round 14 is reproduced since `mutos_c1` became a port of the
+real `c1` (2026-10-13, `../../docs/C1_PORT_PLAN.md`). Unlike `fuzz/`, it
 does hold `.c` files: `gen_mutos.sh` and the Makefiles walk it like a
 category, and `run_goldens.sh` skips each file until it has goldens - one
 with a `.1.golden` but no `.i.golden` (a set brought back without its `.i`
@@ -134,7 +134,7 @@ to the refusal to be exactly the golden's leading valid lines (category
 
 `c1_errors.txt` lists the goldens for which the real compiler's `c1`
 reported errors - and wrote the whole `.s` all the same (`cc -S` keeps
-it; `c1` exits with status 1). At present eight: `fltprobe/p21_fltexp`,
+it; `c1` exits with status 1). At present ten: `fltprobe/p21_fltexp`,
 whose `f = half(d = 3.0)` the real compiler compiles into code that pops
 the floating-point stack twice, and whose `c1` says so - "56: floating
 point stack underflow", "57: Floating point stack underflow" - and
@@ -143,7 +143,9 @@ point stack underflow", "57: Floating point stack underflow" - and
 seventeen, twenty-three, twenty-three, twenty-six and five messages from a
 model of that stack which is never reset, and `fltprobe/p52_fltinf8`,
 twenty-two "Floating point stack overflow; simplify expression" - the
-values its own `fstd`s leave pile up past the model's six.
+values its own `fstd`s leave pile up past the model's six -, and round
+14's `fltprobe/p56_fltinf9` and `p57_fltstk8`, eighteen each (from
+`fltprobe/round14.log`).
 For a
 listed file `run_goldens.sh` requires `mutos_c1` to exit with a nonzero
 status, to print exactly the listed messages and to write exactly the
@@ -186,8 +188,11 @@ the same header line, `typedef struct { unsigned short off; ... }
 segadr;` (an `unsigned short` member, which `mutos_c0` misreports as "an
 unnamed filler field"), `09_amx.c` at a `long` struct member, and each
 reports more after that (the last error `run_goldens.sh` shows is often
-the generic "external definition syntax"). See `docs/DEVLOG.md`'s
-Milestone 4 section for the initial per-file breakdown and
+the generic "external definition syntax"). `mutos_c1` itself - the port
+of the real `c1` since 2026-10-13 - gives all nine `.s` goldens from
+their `.1`/`.2` goldens, the real `c0`'s output (`run_goldens.sh`'s
+category 10). See `docs/DEVLOG.md`'s Milestone 4 section for the initial
+per-file breakdown and
 `src/mutos_cc/README.md`'s "Next steps" for where this sits in the
 project's roadmap.
 

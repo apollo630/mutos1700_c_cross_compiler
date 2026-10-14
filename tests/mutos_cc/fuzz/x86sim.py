@@ -31,9 +31,9 @@ also CX times ("loop .-4" back over the pair) or by a variable count
 .+16" past the stores of a compound assignment too, when they are
 four-byte ones), and
 "neg". It is a checker, not an emulator: anything outside the subset
-(a libc or indirect call, a branch on flags not set by a cmp, a cmpb, an
-"and"/"or"/"xor" or an "orb r,r", ...) stops it with exit status 2 and a
-message, never with a guess.
+(a libc or indirect call, a
+branch on a flag the 8086 leaves undefined, ...) stops it with exit
+status 2 and a message, never with a guess.
 
 Validated against real hardware-compiled output: every tests/mutos_cc
 .s.golden it can execute (56 of the 62 - the rest call libc, or use a
@@ -64,19 +64,48 @@ SP0 = 0xF000          # initial stack pointer; the frame lives below it
 DATA0 = 0x1000        # where fixed-address variables (.blkb, .comm) start
 STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 
-# Instructions that change the flags. A conditional branch is only
-# accepted while the flags still come from the most recent cmp - or
-# from a logical operation, "and"/"or"/"xor", which clears CF and OF and
-# sets ZF/SF from its result, exactly the flags of "cmp <result>,0"
-# ("or r,r" - same register twice - is mutos_c1's truth test of a
-# register value; "and dx,*12." / "beq" an AND tested directly) - or from
-# the byte forms, "cmpb" and "orb dx,dx" (a char loaded into DL and
-# tested).
+# Instructions that change the flags. The flags a conditional branch
+# reads - ZF, SF, OF, CF - are modelled as the 8086 sets them: by "cmp"
+# and "sub" (of a - b), "add", "adc", "sbb", "inc" and "dec" (CF kept),
+# "neg", the logical operations "and"/"or"/"xor"/"test" (OF and CF
+# cleared, ZF/SF from the result - "or r,r" is c1's truth test of a
+# register), the byte forms "cmpb" and "orb dx,dx" (a char loaded into
+# DL and tested), and the shifts (OF only for a count of 1). A flag the
+# 8086 leaves undefined (OF after a longer shift, all of them after
+# "imul", "idiv", "rcl", "rcr" or a call) is unknown, and a branch that
+# reads an unknown flag stops the checker.
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
                 "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb",
-                "rcl", "rcr"}
+                "rcl", "rcr", "test"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi", "blo",
             "bhis"}
+# which flags (z, s, o, c) each branch reads, and its condition
+BRANCH_READS = {"blt": "so", "ble": "zso", "bgt": "zso", "bge": "so",
+                "beq": "z", "bne": "z", "blos": "zc", "bhi": "zc",
+                "blo": "c", "bhis": "c"}
+
+
+def sub_flags(a, b, borrow=0):
+    """(ZF, SF, OF, CF) of a - b - borrow, 16 bits: cmp, sub, sbb."""
+    a, b = a & M16, b & M16
+    r = (a - b - borrow) & M16
+    return (r == 0, bool(r & 0x8000), bool((a ^ b) & (a ^ r) & 0x8000),
+            a < b + borrow)
+
+
+def add_flags(a, b, carry=0):
+    """(ZF, SF, OF, CF) of a + b + carry, 16 bits: add, adc."""
+    a, b = a & M16, b & M16
+    t = a + b + carry
+    r = t & M16
+    return (r == 0, bool(r & 0x8000), bool(~(a ^ b) & (a ^ r) & 0x8000),
+            t > M16)
+
+
+def logic_flags(r):
+    """(ZF, SF, OF, CF) of a logical operation's result."""
+    r &= M16
+    return (r == 0, bool(r & 0x8000), False, False)
 
 
 class SimError(Exception):
@@ -209,7 +238,8 @@ class Sim:
         self.regs = {r: 0 for r in self.REGS}
         self.regs["sp"] = SP0
         self.mem = {}
-        self.cmp = None            # (a, b) of the last cmp, or None
+        self.cmp = None            # the flags (ZF, SF, OF, CF), None if
+                                   # unknown (each of them may be None)
         self.carry = None          # CF of the instruction just executed,
         self.carry_next = None     # when an add/sub (see "adc"/"sbb")
         self.prog = []             # (mnemonic, [operands])
@@ -503,6 +533,7 @@ class Sim:
                 raise SimError("ran off the end of the code")
             mnem, ops = self.prog[pc]
             pc += 1
+            prev = self.cmp
             if mnem in FLAG_WRITERS:
                 self.cmp = None
             # CF of an "add"/"sub", for the "adc"/"sbb" right after it only
@@ -531,15 +562,17 @@ class Sim:
                     raise SimError(f"jump target '{ops[0]}' not supported")
                 pc = self.labels[ops[0]]
             elif mnem in BRANCHES:
-                if self.cmp is None:
-                    raise SimError(f"'{mnem}' on flags not set by a cmp, a "
-                                   "cmpb, an and/or/xor or an 'orb r,r'")
-                a, b = self.cmp
-                take = {"blt": s16(a) < s16(b), "ble": s16(a) <= s16(b),
-                        "bgt": s16(a) > s16(b), "bge": s16(a) >= s16(b),
-                        "beq": a == b, "bne": a != b,
-                        "blos": a <= b, "bhi": a > b,
-                        "blo": a < b, "bhis": a >= b}[mnem]
+                f = self.cmp
+                if f is None or any(f["zsoc".index(k)] is None
+                                    for k in BRANCH_READS[mnem]):
+                    raise SimError(f"'{mnem}' on flags the checker does not "
+                                   "know (see FLAG_WRITERS)")
+                zf, sf, of, cf = f
+                take = {"blt": sf != of, "ble": zf or sf != of,
+                        "bgt": not zf and sf == of, "bge": sf == of,
+                        "beq": zf, "bne": not zf,
+                        "blos": cf or zf, "bhi": not cf and not zf,
+                        "blo": cf, "bhis": not cf}[mnem]
                 if take:
                     pc = self.labels[ops[0]]
             elif mnem == "sahf":
@@ -548,22 +581,23 @@ class Sim:
                 # exactly like "cmp <sign>,0"
                 if self.fflags is None:
                     raise SimError("'sahf' not right after 'call fcmp'")
-                self.cmp = (self.fflags & M16, 0)
+                self.cmp = sub_flags(self.fflags & M16, 0)
                 self.fflags = None
             elif mnem == "cmp":
-                self.cmp = (self.get(ops[0]), self.get(ops[1]))
+                self.cmp = sub_flags(self.get(ops[0]), self.get(ops[1]))
+            elif mnem == "test":
+                self.cmp = logic_flags(self.get(ops[0]) & self.get(ops[1]))
             elif mnem == "cmpb":
                 # A byte compare: both bytes sign-extended, which keeps
                 # the signed order and (0x80.. -> 0xff80..) the unsigned
                 # one too, so the branches read it like a word "cmp".
-                self.cmp = (sx8(self.get_byte(ops[0])), sx8(self.get_byte(ops[1])))
+                self.cmp = sub_flags(sx8(self.get_byte(ops[0])), sx8(self.get_byte(ops[1])))
             elif mnem == "orb":
                 a, b = self.get_byte(ops[0]), self.get_byte(ops[1])
                 self.put_byte(ops[0], a | b)
-                if ops[0] == ops[1] and ops[0] in self.BYTE_REGS:
-                    # "orb dx,dx": mutos_c1's test of a byte loaded into DL
-                    # - OF/CF cleared, SF/ZF from the byte: "cmpb dl,0"
-                    self.cmp = (sx8(a), 0)
+                # OF/CF cleared, SF/ZF from the byte ("orb dx,dx": c1's
+                # test of a byte loaded into DL)
+                self.cmp = logic_flags(sx8(a | b))
             elif mnem == "mov":
                 self.put(ops[0], self.get(ops[1]))
             elif mnem == "lea":
@@ -580,6 +614,8 @@ class Sim:
                     raise SimError(f"'{mnem}' not right after an add/sub")
                 a, b = self.get(ops[0]), self.get(ops[1])
                 res = a + b + self.carry if mnem == "adc" else a - b - self.carry
+                self.cmp = add_flags(a, b, self.carry) if mnem == "adc" else \
+                    sub_flags(a, b, self.carry)
                 self.put(ops[0], res & M16)
                 self.carry = None
             elif mnem in ("add", "sub", "and", "or", "xor"):
@@ -590,35 +626,46 @@ class Sim:
                     self.carry_next = 1 if res & ~M16 else 0
                 res &= M16
                 self.put(ops[0], res)
-                if mnem in ("and", "or", "xor"):
-                    # OF/CF cleared, SF/ZF from the result: exactly the
-                    # flags of "cmp <result>,0" - "or r,r" (mutos_c1's truth
-                    # test of a register) and an AND tested directly ("and
-                    # dx,*12." / "beq" - a masked char, see Val's flagsv in
-                    # c1_gen.c)
-                    self.cmp = (res, 0)
-            elif mnem == "inc":
-                self.put(ops[0], self.get(ops[0]) + 1)
-            elif mnem == "dec":
-                self.put(ops[0], self.get(ops[0]) - 1)
+                self.cmp = add_flags(a, b) if mnem == "add" else \
+                    sub_flags(a, b) if mnem == "sub" else logic_flags(res)
+            elif mnem in ("inc", "dec"):
+                a = self.get(ops[0])
+                self.put(ops[0], a + 1 if mnem == "inc" else a - 1)
+                f = add_flags(a, 1) if mnem == "inc" else sub_flags(a, 1)
+                self.cmp = (*f[:3], prev[3] if prev else None)
             elif mnem == "not":
                 self.put(ops[0], ~self.get(ops[0]))
             elif mnem == "neg":
                 a = self.get(ops[0])
                 self.put(ops[0], -a)
+                self.cmp = sub_flags(0, a)
                 # CF set unless the operand was 0 - for a 'long' negated,
                 # "neg di" / "neg si" / "sbb di,*0" (fltprobe/p25_long3)
                 self.carry_next = 1 if a & M16 else 0
             elif mnem in ("sal", "shl"):
                 a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
-                self.put(ops[0], a << n)
+                r = (a << n) & M16
+                self.put(ops[0], r)
                 if n == 1:              # CF, for an "rcl" right after it
                     self.carry_next = (a >> 15) & 1
+                if n == 0:
+                    self.cmp = prev
+                else:
+                    cf = bool((a << n) & 0x10000) if n <= 16 else False
+                    self.cmp = (r == 0, bool(r & 0x8000),
+                                (bool(r & 0x8000) != cf) if n == 1 else None, cf)
             elif mnem == "sar":
                 a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
-                self.put(ops[0], s16(a) >> n)
+                r = (s16(a) >> n) & M16
+                self.put(ops[0], r)
                 if n == 1:              # CF, for an "rcr" right after it
                     self.carry_next = a & 1
+                if n == 0:
+                    self.cmp = prev
+                else:
+                    cf = bool((s16(a) >> (n - 1)) & 1)
+                    self.cmp = (r == 0, bool(r & 0x8000),
+                                False if n == 1 else None, cf)
             elif mnem == "jz":
                 # "jz .+8": past a long shift's one-bit pair and its "loop
                 # .-4" (two bytes each) when the count in CX is 0 - the only
@@ -636,10 +683,10 @@ class Sim:
                 ok16 = ops == [".+16"] and None not in nxt and \
                     nxt[2][0] == "loop" and nxt[3][0] == "mov" and \
                     nxt[4][0] == "mov"
-                if not (ok8 or ok16) or self.cmp is None or self.cmp[1] != 0:
+                if not (ok8 or ok16) or self.cmp is None or self.cmp[0] is None:
                     raise SimError("'jz' other than past a long shift's loop "
                                    "after 'or cx,cx'")
-                if self.cmp[0] == 0:
+                if self.cmp[0]:
                     if ok8:
                         pc += 3
                     elif any(nxt[k][1][0].startswith("*") for k in (3, 4)):

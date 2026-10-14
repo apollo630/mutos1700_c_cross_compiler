@@ -6,6 +6,9 @@ original binaries"). This is the plan for step 3 of `STATUS.md`'s "Next
 up" item 1: replace `src/mutos_cc/c1_gen.c` - a list of shapes inferred
 from goldens - by a port of the mechanism that produced the goldens.
 
+**Status (2026-10-13): done - `mutos_c1` is the port**, steps A to E
+below all carried out (section 8 says how they went); `c1_gen.c` is gone.
+
 ## 1. What is being ported
 
 The real `c1` is v7's `c1` (`v7/cc/c10.c`..`c13.c` plus a code table)
@@ -156,3 +159,75 @@ already reproduces all 132 `.1`/`.2` goldens under the emulator, and
 (Milestone 5: v7's `c20.c`/`c21.c`, the real `c2` in `mutos_bin/`, and
 `tests/mutos_as/kernel_opt/`'s sources as `cc -O` output). Neither is
 part of this plan.
+
+## 8. How it went (2026-10-13)
+
+All five steps were done in one session, in the order of section 4; the
+sources are `src/mutos_cc/c1port/` (`c10.c`, `c11.c`, `c12.c` in v7's
+file split, `c1.h`, `c1tab.c` generated, `c1lib.c` for the library
+routines), every function's status in `tests/realbin/c1map.txt`.
+
+| Step | Result |
+|---|---|
+| A | depth 1: 132/132 |
+| B | depth 2: 132/132 |
+| C | depth 3 and 4: 131/132 identical, `p19_open3` refused where `invalid_goldens.txt` says - after 228 identical lines, at the register name outside `regname[]` (rule 5.2); round 14 included |
+| D | differential fuzzing at depth 4 (`tests/realbin/c1fuzz.py`, three generators - its own over every type, `fuzz_c.py`'s, and long constants at the edges of `lconst()`'s library paths): no difference left (numbers in `STATUS.md`); ASan/UBSan builds clean on every golden at every depth and on the fuzz corpus; the nine kernel files at depth 4 |
+| E | `mutos_c1` built from `c1port/`; `c1_gen.c`, `c1_main.c`, `c1_stream.c` removed; `make test` clean; `make check-realbin` checks depths 2, 3 and 4 on every golden and a fixed-seed fuzz run; `fuzz_c.py`'s default oracle is the emulated original (`x86sim.py` stays as the semantic check, its 8086 flags now complete) |
+
+The questions of section 5:
+
+1. **`%c` of 0** writes nothing: `printf("[%c%d.]", 0, 160)` in a program
+   built with the real toolchain gives `[160.]` under the emulator. The
+   port's `pnum0()`.
+2. **The register-name overrun** stays refused (`rname()`), after
+   everything before it - `invalid_goldens.txt` now says 228 lines, not
+   `c1_gen.c`'s 223 (it refused at the statement's start).
+3. **Uninitialized memory** shows in exactly one place: a STRASG's
+   degree, which `getree()` never sets and only the `b`/`a` traces print
+   (`06_struct/04_stassign` at depth 3; `c1trees.py` compares it as `#`).
+   Nothing in any `.s` depends on it.
+4. **Overflow during reading**: the first `atof` overflow gives the
+   message and the `longjmp()`; the handler is not re-armed and v7's
+   kernel resets a caught signal, so a second one kills `c1`, leaving the
+   `.s` cut to whole 512-byte buffers - the port does the same and exits
+   with 128 + SIGFPE (`mutosemu.py` now delivers signals, which settled
+   it).
+
+What the binary held beyond v7, and the port keeps (every bug of the
+original among it is in `docs/MUTOS_ORIGINAL_BUGS.md`, with a trigger and
+a fix idea):
+
+- **Library routines that are not C.** `libc.a`'s `itod` writes the low
+  mantissa byte into bytes 1 and 3 of the double (an int with more than
+  eight significant bits becomes a double, not a float, constant); its
+  `aldiv` divides by the low word alone when the high word is 0 and the
+  low word positive - or 1 and the low word negative (it negates the
+  sign word -1 to 1 before comparing) -, and otherwise does sixteen
+  shift-and-subtract steps and clears the quotient's high word, so
+  `0x7fffffffL / 0177777` folds to -65535; `alrem`'s long path is the
+  same sixteen steps. Both are re-enacted on 16-bit words in `c1lib.c`. The fuzzer found the second:
+  a whole generator for long constants (`c1fuzz.py --gen lconst`) took
+  the old port from 232 of 300 programs different to none.
+- **The original's own faults, refused rather than modelled:** a long
+  shift folded by `lconst()` with a count of 0 jumps into the middle of
+  an instruction (`>>` tests the count's high word, `<<` its low word);
+  `xlongrel()` reading past `lrtab[]` with a stale operand; `ltof` of 0,
+  whose low six bytes are left over in the floating-point stack; `dtoi`
+  from 2\*\*15 (it compares with the word at address 8000) and the
+  overflows of `dtoi`/`ftol`; a register name outside `regname[]`. Each
+  stops the port with exit status 2 and "refused" (`c1trap()`); the
+  fuzzer checks that what was written before is the original's, and
+  that where the original does not finish at all, the port refused.
+- **The original's wrong code**, which a faithful port has to keep: code
+  table rows that still assume PDP-11 condition codes (`com` and `mov`
+  set them, the 8086's `not` and `mov` do not - `~x || y` branches on
+  stale flags), and v7's `acommute()` returning the 0 of `e * 0` without
+  `e`'s side effects. `fuzz_c.py` finds these with `x86sim.py` and counts
+  them apart, since `mutos_c1` must produce them.
+- **Messages and status as the original's**: `printf`'s zero as
+  unsigned, the floating-point stack model's messages in both cases, a
+  second SIGFPE's truncated file.
+
+The method held: the binary decided every question, and the traces put
+each difference at the function that made it.

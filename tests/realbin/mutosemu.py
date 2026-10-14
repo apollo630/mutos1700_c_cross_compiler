@@ -21,6 +21,12 @@ kernel would, far enough for the compiler passes and the assembler:
 
 System calls served: exit, read, write, open, close, creat, unlink,
 break, lseek, getpid, access, kill, signal, ioctl (always "not a tty").
+Signals: signal() records the handler (libc.a's per-signal trampoline);
+kill() of the process itself delivers the signal as v7's kernel does -
+a caught one through an interrupt frame into its trampoline, the handler
+then reset to the default; a default one kills the process (run()
+returns 128 + the signal number, emu.killed holds the signal); an
+ignored one does nothing.
 Anything else is answered with EINVAL and a warning on stderr. There is
 no fork/exec, so "cc" itself cannot run; its passes (cpp, c0, c1, as)
 are run one by one instead, as cc would run them.
@@ -38,7 +44,9 @@ Usage:
         (/usr/include/stdio.h) under --root if given, else as they are.
         getpid() is the host's, so the real as's scratch file /tmp/AS<pid>
         differs between runs side by side. The program's
-        stdout/stderr go to ours; the exit status is the program's.
+        stdout/stderr go to ours; the exit status is the program's - 125
+        (and a "mutosemu:" message) if it stopped without an exit, ran
+        past --max-insns or made the emulator fail.
 
 As a module:
     emu = Emu(image_bytes, ['c1', 't1', 't2', 'out.s'], cwd=dir)
@@ -143,6 +151,9 @@ class Emu:
                     2: stderr if stderr is not None else sys.stderr.buffer}
         self.owned = set()
         self.text_hooks = {}
+        self.handlers = {}
+        self.killed = None
+        self.pid = (os.getpid() & 0x7FFF) or 1
         uc.hook_add(UC_HOOK_CODE, self._trampoline,
                     begin=self.cbase + SYSCALL_OFF,
                     end=self.cbase + STKGROW_OFF)
@@ -195,6 +206,26 @@ class Emu:
             self._syscall()
         elif off == STKGROW_OFF:
             self._return_far(self.reg('bx'))
+
+    def _deliver(self, sig):
+        """kill() of the process itself: v7's delivery of signal sig."""
+        h = self.handlers.get(sig, 0)
+        if h == 1:                                   # ignored
+            return self._return_far(0)
+        if h == 0:                                   # default: killed
+            self.killed = sig
+            self.status = 128 + sig
+            self.uc.emu_stop()
+            raise _Exit()
+        self._return_far(0)
+        if sig not in (4, 5):                        # SIGILL, SIGTRAP stay
+            self.handlers[sig] = 0
+        sp = self.reg('sp') - 6
+        fl = self.uc.reg_read(UC_X86_REG_EFLAGS) & 0xFFFF
+        self.uc.mem_write((self.reg('ss') << 4) + sp,
+                          struct.pack('<3H', self.reg('ip'), self.reg('cs'), fl))
+        self.set_reg('sp', sp)
+        self.uc.reg_write(UC_X86_REG_IP, h)
 
     def _path(self, name):
         if os.path.isabs(name):
@@ -280,12 +311,18 @@ class Emu:
         if n == 20:                                  # getpid: the host's,
             # so that scratch names built from it (the real as's
             # /tmp/AS<pid>) differ between runs side by side
-            return ret((os.getpid() & 0x7FFF) or 1)
+            return ret(self.pid)
         if n == 33:                                  # access(name, mode)
             if os.path.exists(self._path(self.cstr(bx))):
                 return ret(0)
             return ret(ENOENT, error=True)
-        if n in (37, 48):                            # kill, signal
+        if n == 48:                                  # signal(sig, func)
+            old = self.handlers.get(bx, 0)
+            self.handlers[bx] = cx
+            return ret(old)
+        if n == 37:                                  # kill(pid, sig)
+            if cx and bx in (0, self.pid):
+                return self._deliver(cx)
             return ret(0)
         if n == 54:                                  # ioctl: not a tty
             return ret(ENOTTY, error=True)
@@ -347,7 +384,12 @@ def main(argv):
     tool = argv[0]
     emu = Emu(load_image(tool), [os.path.basename(tool)] + argv[1:], cwd=cwd,
               root=root)
-    status = emu.run(max_insns)
+    try:
+        status = emu.run(max_insns)
+    except RuntimeError as e:
+        sys.stdout.flush()
+        sys.stderr.write('mutosemu: %s\n' % e)
+        return 125
     sys.stdout.flush()
     return status
 

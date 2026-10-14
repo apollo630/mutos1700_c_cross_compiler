@@ -227,3 +227,52 @@ fltprobe/p53_fltstk7 39: floating point stack underflow
 fltprobe/p53_fltstk7 40: floating point stack underflow
 fltprobe/p53_fltstk7 41: Floating point stack underflow
 fltprobe/p53_fltstk7 41: Floating point stack underflow
+#
+# fltprobe/p56_fltinf9 (round 14, run 2026-10-12 - fltprobe/round14.log):
+# the value path against cbranch() and negations of hoists. From line 76
+# on, the real c1's model of the floating-point stack (never reset - see
+# p28 above) is at its top: eighteen "Floating point stack overflow;
+# simplify expression" messages, the .s written whole. Reproduced by
+# mutos_c1, the port of the real c1, whose model is the original's.
+fltprobe/p56_fltinf9 76: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 78: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 78: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 79: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 80: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 81: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 81: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 81: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 82: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 83: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 84: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 85: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 85: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 85: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 85: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 85: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 86: Floating point stack overflow; simplify expression
+fltprobe/p56_fltinf9 86: Floating point stack overflow; simplify expression
+#
+# fltprobe/p57_fltstk8 (round 14, on purpose, as round 7's p28): an
+# unhoisted compound store, an increment's and fdup's pushes, below the
+# bottom of the model and at its top - sixteen underflows (upper case for
+# a compound assignment's or an increment's store, lower case for an
+# assignment's) and two overflows, the .s written whole.
+fltprobe/p57_fltstk8 52: floating point stack underflow
+fltprobe/p57_fltstk8 53: Floating point stack underflow
+fltprobe/p57_fltstk8 54: Floating point stack underflow
+fltprobe/p57_fltstk8 55: Floating point stack underflow
+fltprobe/p57_fltstk8 56: floating point stack underflow
+fltprobe/p57_fltstk8 57: floating point stack underflow
+fltprobe/p57_fltstk8 58: floating point stack underflow
+fltprobe/p57_fltstk8 59: Floating point stack underflow
+fltprobe/p57_fltstk8 60: floating point stack underflow
+fltprobe/p57_fltstk8 61: floating point stack underflow
+fltprobe/p57_fltstk8 62: floating point stack underflow
+fltprobe/p57_fltstk8 65: floating point stack underflow
+fltprobe/p57_fltstk8 65: Floating point stack underflow
+fltprobe/p57_fltstk8 74: floating point stack underflow
+fltprobe/p57_fltstk8 75: floating point stack underflow
+fltprobe/p57_fltstk8 76: floating point stack underflow
+fltprobe/p57_fltstk8 83: Floating point stack overflow; simplify expression
+fltprobe/p57_fltstk8 84: Floating point stack overflow; simplify expression
