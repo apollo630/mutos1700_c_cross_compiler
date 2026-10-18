@@ -1,0 +1,139 @@
+# c0map.txt - a map of the real MUTOS 1700 c0 (mutos_bin/c0.golden.base64.txt)
+#
+# The binary is stripped (no symbol table). Names come from the strings each
+# function prints, its calls, and its position: the functions follow
+# v7/cc/c00.c .. c04.c in source order, as v7's makefile links them
+# (c00.o c01.o c02.o c03.o c04.o c05.o), then libc.a from text 4a1e. c0dis.py
+# reads this file; the libc.a functions it names itself, by matching libc.a's
+# objects (tests/mutos1700_libc) against the text.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/cc): same       - compared, does what v7's does
+#                         delta      - compared, v7's code with the noted changes
+#                         new        - no v7 counterpart
+# Port (docs/C0_PORT_PLAN.md): ported - in src/mutos_cc/c0port/, decompiled
+#                                       from the text at that offset
+#
+# The switch statements are hashed (value % N into a jump table of chains
+# comparing the quotient) or plain jump tables; their cases were read off the
+# tables. Every function was compared instruction by instruction.
+#
+# ---- c00.c
+T 0000 start       crt0       -       crt0.o (stores CS into data words 4 and 8: the trampolines' segments)
+T 00b6 main        same       ported  keywords marked in hshtab by sum % HSHSIZ; HSHSIZ is 500 (v7: 400)
+T 01f8 lookup      same       ported
+T 0300 findkw      same       ported
+T 035e symbol      same       ported  hashed switch on ctab[c] % 5
+T 0852 getnum      same       ported
+T 0b12 subseq      same       ported
+T 0b32 putstr      same       ported
+T 0bda getcc       same       ported
+T 0c3e mapch       same       ported  hashed switch on the escape character % 3
+T 0df8 tree        same       ported  hashed switches on the token % 7 and the stacked operator % 2
+T 1364 xprtype     same       ported  passes &sc (a stack address) as decl1's storage class, as v7 does
+T 13d4 copnum      same       ported
+# ---- c01.c
+T 140e build       delta      ported  a relational with a CON in -128..127 against a char makes the CON a char (both CHAR); + - * / % convert a char operand by ITOC (109, type INT); QUEST and SEQNC keep p2's subsp/strp; cvtab 5x5 words, codes 5 bits (XX 16); "dope & LVALUE" where v7 tests ASSGOP; no t==CHAR -> INT
+T 1bfe convert     delta      ported  cvntab 14 and 15 are pseudo ops 122 (FTOI then ITOC) and 123 (ITOC then ITOF)
+T 1c94 setype      same       ported
+T 1cea chkfun      delta      ported  returns a null tree as is
+T 1d2a disarray    delta      ported  returns a null tree as is
+T 1d94 chkw        same       ported
+T 1dc6 lintyp      delta      ported  five classes: CHAR 0, INT/UNSIGN 1, FLOAT/DOUBLE 2, LONG 3, else 4
+T 1e08 error       same       ported
+T 1e6c werror      new        ported  "%s:" "%d: WARNING, " message - never called
+T 1ecc block       same       ported
+T 1f1a nblock      same       ported
+T 1f3a cblock      same       ported
+T 1f6a fblock      same       ported
+T 1f9a gblock      same       ported
+T 1fe2 chklval     same       ported
+T 200a fold        same       ported  jump table on op-NEG (29 entries)
+T 21ce conexp      same       ported  returns t->value even for a null tree: the word at data 8, crt0's code segment
+# ---- c02.c
+T 2202 extdef      delta      ported  a static external: "BBSBN" BSS NLABEL name SSPACE size (no SYMDEF "")
+T 2482 cfunc       delta      ported  PROG EVEN RLABEL name; regvar 4; STAUTO -4; LABEL retlab RETRN <function type>
+T 2592 cinit       same       ported
+T 288a strinit     same       ported
+T 297e setinit     same       ported
+T 29a6 statement   same       ported  jump tables on cval-20 (12 and 9 entries)
+T 2e82 forstmt     same       ported
+T 2f94 pexpr       same       ported
+T 2fce pswitch     same       ported
+T 3082 funchead    delta      ported  SETREG regvar first, before the parameters (v7: after them)
+T 317e blockhead   delta      ported  no SETREG (goodreg writes one per register)
+T 3194 blkend      same       ported
+T 32ac prste       same       ported  jump table on hclass-AUTO
+T 32f6 errflush    same       ported
+# ---- c03.c
+T 3312 declist     same       ported
+T 335a getkeywords same       ported  jump table on cval (33 entries)
+T 3564 strdec      same       ported  an enum's elsize is never set: the caller's DI, getkeywords' skw
+T 37b6 declare     same       ported
+T 3882 decl1       delta      ported  clears getype's name flag first; returns an uninitialized elsize after redec()
+T 3df0 pushdecl    same       ported
+T 3e36 cpysymb     same       ported
+T 3e72 getype      delta      ported  a parameter list is read only right after the declarator's name (flag at data 40c2, set by NAME, cleared by '[' and after the list)
+T 405a typov       same       ported
+T 406c align       same       ported
+T 4140 decsyn      same       ported
+T 415c redec       same       ported
+T 4176 goodreg     delta      ported  no char registers; writes SETREG for every register it hands out
+# ---- c04.c
+T 41ec decref      same       ported
+T 4220 incref      same       ported
+T 423e cbranch     same       ported
+T 426a rcexpr      same       ported
+T 42d6 treeout     same       ported
+T 44c0 branch      same       ported
+T 44da label       same       ported
+T 44f4 plength     same       ported
+T 453e length      same       ported  jump table on t&TYPE; n long, multiplied through libc's almul
+T 4646 rlength     same       ported
+T 465c simplegoto  same       ported
+T 46cc nextchar    same       ported
+T 46e8 spnextchar  same       ported
+T 4754 chconbrk    same       ported
+T 476c dogoto      same       ported
+T 47ba doret       same       ported
+T 484e outcode     same       ported
+#
+# ---- data (c05.c and the globals; the initialized data is the binary's,
+#      src/mutos_cc/c0port/c0data.c, generated by c0tables.py --c)
+D 000a isn          1
+D 000c peeksym      -1
+D 000e line         1
+D 0010 funcblk      struct tnode {NAME, 0, ...}
+D 001c kwtab        29 entries {name, value}; "short" is INT
+D 03ba hreg         struct hshtab {REG, ...} (funchead)
+D 03d0 areg         struct tnode {NAME, 0, NULL, NULL, &hreg} (funchead)
+D 08ec opdope       111 words; v7's but EXCLA has LWORD (020) and op 29 is BINARY
+D 09ca cvtab        5x5 words, (leftc << 5) | cvn
+D 09fc cvntab       16 bytes; 10 ITOC (109), 11 LTOC (108), 12 CTOL (107), 13 op 29, 14 pseudo 122, 15 pseudo 123
+D 0a0c ctab         128 bytes, v7's
+D 0a94 _iob         libc.a's FILEs: stdin, stdout, stderr, then the one fopen() gives temp2
+D 0b40 filename     64 bytes
+D 0b80 symbuf       10 bytes
+D 0b8a hshused
+D 0b8c hshtab       500 entries of 22 bytes (v7's struct hshtab)
+D 3684 cp
+D 3686 swtab        230 entries
+D 3a1e swp
+D 3a20 contlab      then brklab retlab deflab autolen maxauto peekc eof funcbase curbase coremax maxdecl defsym funcsym proflg csym cval lcval(4, high word first) nchstr nerror paraml parame strflg mosflg initflg inhdr - v7's c0.h order
+D 3a56 sbuf         512 bytes, temp2's buffer
+D 3c56 sbufp
+D 3c58 regvar
+D 3c5a bitoffs
+D 3c5c numbuf       64 bytes
+D 3c9c memlist
+D 3c9e nmems
+D 3ca0 structhole   struct hshtab
+D 3cb6 blklev
+D 3cb8 mossym
+D 3cba _sobuf       libc.a: stdout's buffer; stdin's at 3ebc
+D 40be mpeek        mapch()'s static
+D 40c0 zerloc       strinit()'s static
+D 40c2 getype_name  getype()'s name flag (MUTOS)
+D 40c4 argtype      getype()'s static struct hshtab
+D 418a end          the initial break: the heap starts here

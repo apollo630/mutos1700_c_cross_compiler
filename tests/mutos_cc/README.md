@@ -180,21 +180,15 @@ discovers them with no script change needed.
 
 **`mutos_c0`/`mutos_c1` coverage of them is tracked apart** from the
 62-file corpus's own N/62 pass fraction used throughout this project's
-docs: 1/9. `01_delay.c` is byte-exact at every stage since 2026-10-04 (its
-bare `i++;` statement - first found here - is accepted and done in place,
-`inc *-6.(bp)`). The other eight are refused at the front-end stage, each
-with a diagnosed error, never a silent wrong compile: seven stop first at
-the same header line, `typedef struct { unsigned short off; ... }
-segadr;` (an `unsigned short` member, which `mutos_c0` misreports as "an
-unnamed filler field"), `09_amx.c` at a `long` struct member, and each
-reports more after that (the last error `run_goldens.sh` shows is often
-the generic "external definition syntax"). `mutos_c1` itself - the port
-of the real `c1` since 2026-10-13 - gives all nine `.s` goldens from
-their `.1`/`.2` goldens, the real `c0`'s output (`run_goldens.sh`'s
-category 10). See `docs/DEVLOG.md`'s Milestone 4 section for the initial
-per-file breakdown and
-`src/mutos_cc/README.md`'s "Next steps" for where this sits in the
-project's roadmap.
+docs: 9/9, every file byte-exact at every stage, since `mutos_c0` became
+the port of the real `c0` (2026-10-18; `mutos_c1` is the port of the real
+`c1` since 2026-10-13). Until then `01_delay.c` alone was (since
+2026-10-04), and the old front end refused the other eight - seven first
+at `typedef struct { unsigned short off; ... } segadr;`, `09_amx.c` at a
+`long` struct member. `run_goldens.sh`'s category 10 - `mutos_c1` alone,
+from the `.1`/`.2` goldens of a file `mutos_c0` refuses - held those
+eight and is empty now. See `docs/DEVLOG.md`'s Milestone 4 section for
+the initial per-file breakdown and "The port of `c0`".
 
 ### `09_abiprobe` — resolving a documented open question
 

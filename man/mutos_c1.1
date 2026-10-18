@@ -9,6 +9,7 @@ mutos_c1 \- MUTOS 1700 cross C compiler, second pass (code generator)
 .I temp1
 .I temp2
 .I assembly.s
+.RI [ options ]
 .SH DESCRIPTION
 .B mutos_c1
 is the second of the two passes that make up the MUTOS 1700 cross C
@@ -25,25 +26,27 @@ and writes
 assembly text to
 .IR assembly.s .
 .PP
-This is a from-scratch, modern-C11 reimplementation, byte-for-byte
-verified against real MUTOS 1700 hardware output, not a literal port
-of the original Version 7 Unix
-.BR cc (1) 's
-second pass; see
-.I src/mutos_cc/README.md
-in the toolchain source tree for the confirmed
-.IR temp1 / temp2
-wire format and the exact opcode coverage this pass currently
-implements.
-.SH "CURRENT SCOPE"
-.B mutos_c1
-implements exactly the opcodes
-.BR mutos_c0 (1)
-can currently produce; the list is kept at the top of
-.I src/mutos_cc/c1_gen.c
-and, with the byte-level evidence for every instruction shape, in
+It is a port of the original MUTOS 1700
+.IR /lib/c1 ,
+read from its binary: Version 7 Unix's
+.B c1
+ported to the 8086 \(en v7's functions with the changes the binary
+shows, its code tables (v7's, with MUTOS assembler text) generated from
+the binary, and the
+.I libc.a
+routines its output passes through (the floating-constant conversion and
+printing, the long division used for folding) as
+.I libc.a
+has them. It is checked against the original run under an 8086
+emulator, on every golden at four depths (the trees as read, after
+optimization, the output with the original's traces, the output with
+its messages and exit status) and on random programs; see
+.I docs/C1_PORT_PLAN.md
+and
 .I src/mutos_cc/README.md
 in the toolchain source tree.
+.SH OUTPUT
+The code is the original compiler's; in outline:
 .PP
 Every compiled function gets the fixed MUTOS 1700 C calling-convention
 prologue
@@ -63,8 +66,7 @@ one of 100 bytes or more with
 as the real compiler does (a frame is always even, so no size lies
 in between).
 .PP
-There is no general register allocator: each operator uses the working
-register the real compiler's output confirms (DI for most integer
+The registers: DI for most integer
 arithmetic, AX/DX for multiply, divide and return values, SI as a
 secondary index register, DI and SI for
 .B register
@@ -84,7 +86,7 @@ into DL and tested with
 an element of a file-scope
 .B char
 array has the index in BX and the array's symbol as its displacement,
-.BR _text(bx) ).
+.BR _text(bx) .
 A local
 .B static
 variable is addressed by its label, a file-scope one by its symbol
@@ -242,16 +244,15 @@ is computed first, while
 .B \-=
 and
 .B /=
-load their target first. A few shapes are inferred from the goldens'
-rules (see the source's
-.IR README.md ),
-and the shapes no real-hardware golden has shown are refused. An
+load their target first. An
 .B unsigned
 value converted to floating after a computed
 .BR * ,
 .B /
-or call is refused for good: the original compiler's own output there
-names a register that does not exist. An integer
+or call makes the original name a register that does not exist
+(see
+.BR DIAGNOSTICS ).
+An integer
 .B "+ 0"
 is dropped, as the original
 .B acommute
@@ -311,16 +312,16 @@ variable call
 and
 .B alrem
 with the right operand pushed and the target's address on top.
-An expression whose evaluation would overwrite a
-register still holding a pending value \(en which the real compiler
-handles by spilling or reordering in ways not yet reverse-engineered
-\(en is refused by a built-in register-occupancy check, never emitted
-with a clobbered value.
-.PP
-Any
-.I temp1
-opcode or operand shape outside the confirmed scope is reported,
-never silently misassembled.
+Where the original's code is wrong \(en its tables assume the PDP-11's
+condition codes after
+.B not
+and
+.BR mov ,
+for one \(en
+.B mutos_c1
+writes the same code; see
+.I docs/MUTOS_ORIGINAL_BUGS.md
+in the source tree.
 .SH OPTIONS
 .TP
 .I temp1
@@ -333,25 +334,53 @@ Input path for the string-literal side stream, read after
 and rendered as
 .B .byte
 lines after the code's
-.BR .data .
+.BR .data ;
+.B \-
+for none.
 .TP
 .I assembly.s
 Output path for the generated
 .BR mutos_as (1)-syntax
 assembly text.
+.TP
+.I options
+Letters, in one or more arguments after the three file names, as the
+original takes them:
+.B a
+and
+.B b
+write each expression tree after and before optimization into the
+output,
+.B r
+and
+.B c
+every code-generation call with its tree,
+.B d
+every delayed side effect (the original's debug traces);
+.BI s n
+sets the frame size from which a function calls
+.B chkstk
+(default 100).
 .SH DIAGNOSTICS
-A malformed or unsupported
-.I temp1
-/
-.I temp2
-stream (an unrecognized opcode, a missing tag-byte marker, a
-truncated stream, or an opcode this pass does not yet implement) is
-reported to standard error and causes a non-zero exit status
-immediately \(en
+Messages are the original's, on standard error, as
+.RI \(dq line ": " message \(dq;
+the exit status is 1 if any was an error, else 0. A second floating
+overflow in one compilation ends
 .B mutos_c1
-does not attempt to produce best-effort assembly output for input it
-cannot fully handle (what it wrote before the refusal is left in the
-output file, unfinished).
+as SIGFPE ends the original (its handler is set only once): the output
+cut to whole 512-byte buffers, exit status 128 + 8.
+.PP
+Where the original traps, jumps into the middle of an instruction or
+reads memory whose contents depend on state the port does not model
+(a register number outside its register-name table, a long constant
+shifted by a count of 0 in the word it tests, a long comparison reading
+past its table, a conversion routine of
+.I libc.a
+on a value it mishandles),
+.B mutos_c1
+writes everything before that point, prints
+.RI \(dq line ": c1: " reason " ... refused\(dq"
+and exits with status 2.
 .PP
 The original compiler counts its floating-point stack at compile time
 and reports a value popped below the bottom \(en

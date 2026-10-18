@@ -36,11 +36,20 @@ def _aout(path):
 
 
 TEXT, DATA = _aout(os.path.join(ROOT, 'mutos_bin', 'c1.golden.base64.txt'))
+MAP = 'c1map.txt'
+
+
+def use(binary):
+    """Switch to another binary of mutos_bin/ and its map, <binary>map.txt
+    (c0dis.py uses this for c0)."""
+    global TEXT, DATA, MAP
+    TEXT, DATA = _aout(os.path.join(ROOT, 'mutos_bin', binary + '.golden.base64.txt'))
+    MAP = binary + 'map.txt'
 
 
 def read_map():
     funcs, data = {}, {}
-    with open(os.path.join(HERE, 'c1map.txt')) as f:
+    with open(os.path.join(HERE, MAP)) as f:
         for line in f:
             if line.startswith('#') or not line.strip():
                 continue
@@ -147,7 +156,9 @@ def disassemble(start, end, names, dnames):
 
 def main(argv):
     funcs, dnames = read_map()
-    names = libc_names()
+    # a libc.a object can match by chance inside the program's own code
+    # (c0's getcc ends in the bytes of mount.o); libc.a is linked last
+    names = {a: n for a, n in libc_names().items() if a > max(funcs)}
     names.update({a: v[0] for a, v in funcs.items()})
     starts = sorted(funcs) + [min(a for a in names if a not in funcs and a > max(funcs))]
     if argv[:1] == ['--functions']:
@@ -158,7 +169,7 @@ def main(argv):
     if len(argv) == 1:
         by_name = {v[0]: a for a, v in funcs.items()}
         if argv[0] not in by_name:
-            sys.exit('c1dis: no function %s in c1map.txt' % argv[0])
+            sys.exit('%s: no function %s in %s' % (os.path.basename(sys.argv[0]), argv[0], MAP))
         a = by_name[argv[0]]
         print(disassemble(a, starts[starts.index(a) + 1], names, dnames))
         return 0

@@ -3,8 +3,9 @@
 dump_temp.py - human-readable dump of a mutos_cc temp1/temp2 file.
 
 temp1/temp2 are the tagged intermediate-code byte streams mutos_c0
-writes and mutos_c1 reads (see c0_outcode.h's wire format, and
-src/mutos_cc/README.md's "The temp1/temp2 wire format" section). This
+writes and mutos_c1 reads (see outcode() in src/mutos_cc/c0port/c04.c -
+the original c0's, v7's format - and src/mutos_cc/README.md's "The
+temp1/temp2 wire format" section). This
 is a standalone reader, not a mode of mutos_c0 itself, so it works on
 ANY .1/.2 file - one mutos_c0 just generated, or a real-hardware
 *.1.golden/*.2.golden reference - which a dump mode built into mutos_c0
@@ -14,10 +15,10 @@ flags as useful for checking front-end output "before any x86 code
 generator exists", implemented as an external tool instead so it can
 read goldens too.
 
-Wire format (see c0_outcode.c/c0_outcode.h):
+Wire format (outcode()'s letters):
     B  - one opcode byte, followed by a fixed 0xFE marker byte (2 bytes)
     N  - one 16-bit little-endian value, sign-extended when printed (2 bytes)
-    S  - a symbol: '_' + up to MCC_NCPS name bytes + a NUL terminator
+    S  - a symbol: '_' + up to NCPS (8) name bytes + a NUL terminator
          (present only when the name is non-empty; c0 always writes
          non-empty names here, so this reader always expects '_' first)
     F  - a floating constant's source text: its characters + a NUL
@@ -28,20 +29,20 @@ Wire format (see c0_outcode.c/c0_outcode.h):
     1  - two bytes, value 1 low-byte-first (the "another byte follows"
          word of a BDATA run's (1, value) pairs)
 
-temp2 holds only string literals (c0_parser.c's putstr()): LABEL <n>,
-then one or more BDATA runs - BDATA, (1, byte)..., 0 - see OPCODES. The
-same runs, without the LABEL, initialize a file-scope char array in
-temp1 (DATA, NLABEL, BDATA...).
+temp2 holds only string literals (putstr()): LABEL <n>, then one or
+more BDATA runs - BDATA, (1, byte)..., 0 - see OPCODES. The same runs,
+without the LABEL, initialize a char array in temp1 (DATA, NLABEL,
+BDATA...).
 
 Each opcode's own argument shape (how many N/S fields follow the B)
 is fixed and is transcribed below directly from every outcode() call
-site in c0_parser.c/c0_main.c - see OPCODES. An opcode that never
-actually appears in mutos_c0's own output (listed in ALL_OPCODE_NAMES
-for display purposes only) has no known argument shape, so hitting one
-stops the dump cleanly with a clear message rather than guessing and
-silently desyncing the rest of the file - the same "explicit not yet
-supported, never silently wrong" rule this project applies everywhere
-else.
+site of the c0 port (src/mutos_cc/c0port/c0*.c, which has the original
+c0's own call sites) - see OPCODES. An opcode with no entry there
+(listed in ALL_OPCODE_NAMES for display purposes only) has no known
+argument shape, so hitting one stops the dump cleanly with a clear
+message rather than guessing and silently desyncing the rest of the
+file - the same "never silently wrong" rule this project applies
+everywhere else.
 
 Usage:
     ./dump_temp.py FILE [FILE ...]
@@ -56,8 +57,8 @@ about the file's byte layout is inferred from its name or extension.
 import sys
 
 # ---------------------------------------------------------------------------
-# Opcode numbers (mutos_cc.h) and argument shapes (c0_parser.c/c0_main.c's
-# actual outcode() call sites - every opcode mutos_c0 ever writes).
+# Opcode numbers (v7/cc/c0.h, src/mutos_cc/c0port/c0.h) and argument
+# shapes (the c0 port's outcode() call sites - every opcode it can write).
 #
 # Each entry: name -> list of ('N', label, decoder) | ('S', label) fields
 # that follow the opcode byte. `decoder` is an optional function applied
@@ -82,13 +83,12 @@ def decode_type(v):
     array of int". This is v7/cc's incref() encoding (v7/cc/c0.h): the
     base type in the low 3 bits (TYPE), then one 2-bit degree tag per
     level (PTR=1, FUNC=2, ARRAY=3), the OUTERMOST in bits 3-4 (XTYPE)
-    and each further one 2 bits higher - see c0_parser.c's
-    ty_incref_tag()/ty_decref(). Note this bit layout is not fully
-    unambiguous on its own: TY_UNION (a flat value of 8) and "pointer
-    to int" decode identically here - mutos_c0 does not emit TY_UNION
-    today, so this always resolves the more useful way for its actual
-    output, but a hypothetical future union-typed value would print as
-    a pointer instead."""
+    and each further one 2 bits higher - see incref()/decref() in
+    c0port/c04.c. Note this bit layout is not fully unambiguous on its
+    own: TY_UNION (a flat value of 8) and "pointer to int" decode
+    identically here - c0 never writes TY_UNION (getkeywords() makes a
+    union's type STRUCT), so this always resolves the right way for its
+    output."""
     name = TY_BASE_NAMES.get(v & 7, "TY_?%d" % (v & 7))
     tags = []
     t = (v & 0xFFFF) >> 3
@@ -171,7 +171,7 @@ OPCODES = {
                                                  # SC_REG=14).
 
     # -- file-scope variables (07_scope - v7/cc/c02.c's extdef() for a
-    # non-function declarator; c0_parser.c's parse_global_var()):
+    # non-function declarator, c0port/c02.c):
     # "int counter;" is CSPACE("_counter", 2); "static int hidden;" is
     # BSS, NLABEL("_hidden"), SSPACE(2) - no SYMDEF("") in front, unlike
     # v7 - confirmed byte-for-byte against 07_scope/01_globstat.1.golden
@@ -184,7 +184,7 @@ OPCODES = {
                                                  # initialized array's DATA
                                                  # block (below)
     # "char text[] = \"...\";" (10_integ/01_wordcount - v7's extdef() for
-    # a declarator followed by '='; c0_parser.c's parse_global_chararray())
+    # a declarator followed by '=', and cinit())
     # is SYMDEF("_text") (none for 'static'), DATA, NLABEL("_text"), the
     # string's BDATA runs (putstr()'s label-less form, here in temp1), and
     # EVEN when the size is odd - confirmed byte-for-byte against
@@ -200,7 +200,7 @@ OPCODES = {
     20:  ("NAME", "special"),  # hclass, type, then EITHER a symbol name
                                # (hclass == SC_EXTERN - a called function's
                                # own name, a bare function name used as a
-                               # value, per parse_call()/parse_primary(),
+                               # value,
                                # or a file-scope variable - 07_scope)
                                # OR a numeric offset (hclass == SC_AUTO, a
                                # bp-relative stack offset, OR hclass ==
@@ -216,8 +216,8 @@ OPCODES = {
     59:  ("LTOI", [N("type", decode_type)]),
     107: ("CTOL", [N("type", decode_type)]),
     109: ("ITOC", [N("type", decode_type)]),
-    # -- floating point (08_float - c0_parser.c's "Floating point"
-    # section); confirmed byte-for-byte against 08_float/01_floatbas.
+    # -- floating point (08_float - build()'s conversions, c0port/c01.c);
+    # confirmed byte-for-byte against 08_float/01_floatbas.
     # 1.golden and 02_dblconv.1.golden (LTOF has the same unary "BN"
     # shape, written for a long converted to float/double; no golden
     # has one): --
@@ -303,8 +303,8 @@ OPCODES = {
                                                 # argument tree (NULLOP,
                                                 # a lone expression, or a
                                                 # COMMA chain)
-    # -- string literals (temp2 - c0_parser.c's putstr(), v7/cc/c00.c's
-    # function of the same name); confirmed byte-for-byte against
+    # -- string literals (temp2 - putstr(), c0port/c00.c, v7/cc/c00.c's);
+    # confirmed byte-for-byte against
     # 05_arrptr/05_arrofptr.2.golden, 07_strlibc.2.golden and
     # 10_integ/04_strrev.2.golden; and a char array's string
     # initializer (temp1, no LABEL - 10_integ/01_wordcount.1.golden): --
@@ -319,8 +319,8 @@ OPCODES = {
                                                 # treeout(NULL) shape - a
                                                 # zero-argument call's
                                                 # empty argument tree
-    # -- structs (06_struct, 10_integ/03_linklist - c0_parser.c's "Member
-    # and subscript chains" and parse_struct_assign()); confirmed byte-for-
+    # -- structs (06_struct, 10_integ/03_linklist - build()'s member
+    # chains and its STRASG, c0port/c01.c); confirmed byte-for-
     # byte against 06_struct/04_stassign.1.golden and 07_bitfield.1.golden: --
     115: ("STRASG", [N("type", decode_type), N("size")]),
                                                 # after a struct-typed
@@ -333,10 +333,31 @@ OPCODES = {
                                                 # lives in - treeout()'s
                                                 # "BNNN", FSEL, type,
                                                 # bitoffs, flen
+
+    # -- the rest of what the original c0 can write (since 2026-10-14
+    # mutos_c0 is its port, src/mutos_cc/c0port/, and writes all of it):
+    # every operator build() and convert() can put into a tree, written by
+    # treeout()'s default case ("BN", op, type, after the operands), and
+    # the two remaining driver tags --
+    14:  ("PTOI", [N("type", decode_type)]),   # pointer difference / size
+    15:  ("LTOP", [N("type", decode_type)]),   # long subscript (x size)
+    66:  ("LESSEQP", [N("type", decode_type)]),  # unsigned/pointer
+    67:  ("LESSP", [N("type", decode_type)]),    # comparisons
+    68:  ("GREATQP", [N("type", decode_type)]),
+    69:  ("GREATP", [N("type", decode_type)]),
+    93:  ("MAX", [N("type", decode_type)]),     # "\/", "/\" (v7's
+    94:  ("MAXP", [N("type", decode_type)]),    # MIN/MAX operators)
+    95:  ("MIN", [N("type", decode_type)]),
+    96:  ("MINP", [N("type", decode_type)]),
+    102: ("JUMP", [N("type", decode_type)]),   # dogoto(): goto <expression>
+    108: ("LTOC", [N("type", decode_type)]),   # long -> char (MUTOS)
+    212: ("PROFIL", [N("label")]),             # cfunc() with c0's 4th
+                                                # (profiling) argument
+    220: ("SINIT", [N("value")]),              # rcexpr()'s int initializer
 }
 
 
-# Every opcode name mutos_cc.h defines, for display purposes only when a
+# Every opcode name v7/cc/c0.h defines (c0port/c0.h), for display only when a
 # byte matches a number this script has no confirmed argument shape for
 # (see the "known but unhandled" case below) - never used to guess a shape.
 ALL_OPCODE_NAMES = {
@@ -356,7 +377,8 @@ ALL_OPCODE_NAMES = {
     76: "ASLSH", 77: "ASSAND", 78: "ASOR", 79: "ASXOR", 80: "ASSIGN",
     90: "QUEST", 91: "SIZEOF", 93: "MAX", 94: "MAXP", 95: "MIN",
     96: "MINP", 97: "SEQNC", 100: "CALL", 101: "MCALL", 102: "JUMP",
-    103: "CBRANCH", 104: "INIT", 105: "SETREG", 107: "CTOL", 109: "ITOC",
+    103: "CBRANCH", 104: "INIT", 105: "SETREG", 107: "CTOL", 108: "LTOC",
+    109: "ITOC",
     110: "RFORCE", 111: "BRANCH", 112: "LABEL", 113: "NLABEL",
     114: "RLABEL", 115: "STRASG", 200: "BDATA/SEOF", 201: "WDATA",
     202: "PROG", 203: "DATA", 204: "BSS", 205: "CSPACE", 206: "SSPACE",
@@ -414,7 +436,7 @@ class Reader:
         return "".join(chars)
 
     def read_s(self):
-        """Reads one S field: '_' + up to MCC_NCPS bytes + NUL."""
+        """Reads one S field: '_' + up to NCPS (8) bytes + NUL."""
         start = self.pos
         if self.eof():
             raise DecodeError("unexpected end of file reading a symbol")
@@ -451,7 +473,7 @@ def dump(path):
         op = r.read_byte()
 
         # An opcode byte is always immediately followed by the 0xFE
-        # marker (c0_outcode.c's 'B' case). OP_SWIT's own trailing
+        # marker (outcode()'s 'B' case). OP_SWIT's own trailing
         # table (a run of (label, value) N-pairs, terminated by one
         # lone zero N word - never an opcode-shaped byte pair) is
         # fully consumed by its own loop below, so this dispatch never

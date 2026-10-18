@@ -8,7 +8,7 @@ either **verified this session** (rebuilt and diffed against goldens as part of 
 this document) or **carried from prior session records** (not re-checked here — treat
 with the same skepticism the project applies to any unverified claim).
 
-Last updated: 2026-10-14.
+Last updated: 2026-10-18.
 
 ---
 
@@ -564,8 +564,9 @@ the real MUTOS kernel source this project validates against.
 
 **Status: IN PROGRESS — `mutos_c0`/`mutos_c1` exist and are verified
 byte-exact, end-to-end, for 62/62 of the full corpus; since 2026-10-13
-`mutos_c1` is a port of the original `c1`, checked against the original
-itself (see the next section) - every file: `tests/mutos_cc/
+`mutos_c1` and since 2026-10-18 `mutos_c0` are ports of the original `c1`
+and `c0`, checked against the originals themselves (see the next two
+sections) - every file: `tests/mutos_cc/
 00_smoke`'s 3 files plus all of `tests/mutos_cc/01_expr`: `01_intarith.c`,
 `02_bitwise.c`, `03_rellogic.c`, `04_shift.c`, `05_incdec.c`,
 `06_compasgn.c`, `07_ternary.c` and `08_castsize.c`, plus all 4 of
@@ -645,12 +646,92 @@ this checkout, and its real-hardware golden-generation pipeline is confirmed
 working end-to-end. A further, separate golden corpus - `11_kernel/`, nine
 real MUTOS kernel driver source files with their own real-hardware-verified
 goldens already present - was added in an earlier session; end-to-end
-coverage against it is 1/9 (`01_delay` byte-exact; `mutos_c0` refuses
-the other eight, each refusal diagnosed, none silent), and `mutos_c1`
-gives all nine `.s` goldens from the real `c0`'s `.1`/`.2` - tracked
-apart from the 62/62 figure above - see "Next up" below and
-`docs/DEVLOG.md`'s Milestone 4 section.**
+coverage against it is 9/9 since `mutos_c0` is the port of the real `c0`
+(2026-10-18; `01_delay` alone before) - tracked apart from the 62/62
+figure above - see "Next up" below and `docs/DEVLOG.md`'s Milestone 4
+section.**
 `src/mutos_cc/` now exists — see `src/mutos_cc/README.md` for full detail.
+
+### `mutos_c0` is the port of the real `c0` (verified this session, 2026-10-18)
+
+`docs/C0_PORT_PLAN.md` is done: `mutos_c0` is built from
+`src/mutos_cc/c0port/` - the original `c0`'s 73 functions decompiled from
+the binary with v7's `c00.c`..`c04.c` as the skeleton
+(`tests/realbin/c0map.txt`: 60 as v7's, 12 with local MUTOS deltas,
+`werror()` new), running on an image of the original's 64K data segment
+whose initialized part is generated from the binary (`c0data.c`,
+`c0tables.py --c`). The from-scratch front end (`c0_lex.c`, `c0_diag.c`,
+`c0_outcode.c`, `c0_sym.c`, `c0_parser.c`, `c0_main.c`, their headers and
+`mutos_cc.h`, 8,189 lines) is deleted. The port was written in the session
+of 2026-10-14 and left uncommitted, its plan already saying "done"; this
+session built it in, checked it, corrected the emulator and switched.
+Verified this session, with the final build:
+
+- **`make test`**: 121 files byte-exact at all four stages - the 62-file
+  corpus, 50 `fltprobe` files and all nine `11_kernel` files (`02_prim`
+  to `09_amx` end-to-end for the first time) -, `p19_open3` in category
+  8 (228 lines), ten files in category 9 with all of the real `c1`'s
+  messages; category 3 (now "`mutos_c0`: refused"; any other failure of
+  `mutos_c0` counts as a mismatch, since the real `c0` wrote every
+  golden) and category 10 empty; 0 mismatches. `mutos_as` 76/76, 131/131
+  compiler goldens assemble (`p19_open3` refused as listed), `mutos_cpp`
+  5/5.
+- **`make check-realbin`** (with the new `c0` steps): the real `cpp`,
+  `c0`, `c1`, `as` against the goldens as before (137/137, 132/132,
+  132/132, 75 of 76); `mutos_c1` at depths 2, 3 and 4 131/132 identical,
+  `p19_open3` refused as specified, its 200-program fuzz run without a
+  difference; `c0data.c` current; `mutos_c0` on all 137 `.i` goldens
+  identical to the original - `.1`, `.2`, messages, exit status -; its two
+  200-program fuzz runs without a difference.
+- **Differential fuzzing** of `mutos_c0` against the emulated original
+  (`tests/realbin/c0fuzz.py`, final build and emulator): 5,800 programs
+  - 2,000 of its own declaration-heavy generator (seed 21), 2,000 of them
+  mutated at the token level (seed 22), 600 each of `c1fuzz.py`'s and
+  `fuzz_c.py`'s generators (seeds 23, 24) and 600 of `c1fuzz.py`'s
+  mutated (seed 25) - 5,723 identical (`.1`, `.2`, messages and exit
+  status), **none different**, 22 refused by the port, each checked
+  against what the original wrote up to there (12 a member redeclared in
+  a structure's list, C0-04; 10 a `goto` after a syntax error, C0-06),
+  and 55 on which the original does not finish, all refused by the port
+  (33 reading past the end of the file, C0-02; 22 an initialized array
+  of zero-length elements, C0-03). Earlier in the session, with the
+  emulator's shifts fixed but not yet its division, 11,800 more programs
+  (seeds 100 to 500, 9 and 10: 10,000 of its own generator, 1,200 of
+  `c1fuzz.py`'s, 600 of `fuzz_c.py`'s, 5,600 of all of them mutated) and
+  1,000 through an ASan/UBSan build - no difference either.
+- **ASan/UBSan** build of the port: no report on the 137 goldens nor on
+  1,000 fuzz programs (seeds 31 and 32, half of them mutated: 976
+  identical, 7 refused, 17 on which the original does not finish).
+- **The emulator was an 80386.** Unicorn masks a shift count to CL's
+  low five bits and lets a signed quotient of -32768 through; the 8086
+  and the V30 do neither (the AP-186 note; the V20/V30 manual: "temp <-
+  CL, while temp != 0", the most negative quotient -32,767). So the
+  emulated `c0` folded `1 << 40` to 256 (the hardware: 0) and `-32768 /
+  1` to -32768 (the hardware: a divide error). `tests/realbin/mutosemu.py`
+  now does the 8086's shift and the 8086's divide error itself (hooks on
+  those instructions that can reach the cases); the real binaries give
+  every golden as before, `mutos_c1` is unchanged at every depth. The
+  first port's refusal of large shift counts - which rested on the
+  emulator - is gone (`c0port/c01.c` shifts as the 8086, as
+  `c1port/c1.h` did); `-32768 / 1` and `% 1` are refused by both ports.
+- **The originals' bugs**: `docs/MUTOS_ORIGINAL_BUGS.md` has C0-02 to
+  C0-12 (new, each with a minimal trigger run under the emulator) and
+  C0-01 extended to `-32768 / 1` - now eleven in `c1`, seven in `libc.a`,
+  three in `as`, twelve in `c0`. Among them: a structure with enough
+  alignment holes overruns `strdec()`'s member list and frame (the
+  original ends in `main()`'s "Arg count"), input bytes 0200..0377 index
+  `ctab[]` past its end (0200 acts as `+`, from 0250 on as EOFC), and
+  whether a redefined enum tag is reported depends on its storage class.
+- **`tests/mutos_cc/fuzz/fuzz_c.py`** accepts the port's refusals (exit
+  status 2) and counts a `mutos_c0` rejection of a program the real `c0`
+  accepts as BAD; `make fuzz` (500 programs against the real `c0` and
+  `c1`): 499 correct, 1 wrong exactly as the real compiler, 0 WRONG, 0
+  BAD. `c1fuzz.py --gen lconst` (300) without a difference; its real `c0`
+  now stops on a `-32768 / 1` it folds, as the 8086 does.
+- **`dump_temp.py`**: every one of the 264 golden `.1`/`.2` files decodes;
+  its comments point to the port. The man pages `mutos_c0.1` (rewritten)
+  and `mutos_c1.1` (its description of `c1_gen.c` replaced by the port's)
+  describe the ports.
 
 ### `mutos_c1` is the port of the real `c1` (verified this session, 2026-10-14)
 
@@ -3971,18 +4052,11 @@ section; headline findings:
    tested as a condition (`or ax,ax`), a postfix call argument, the
    struct shapes, the register-occupancy guard's refusals - were
    `c1_gen.c`'s gaps; the port produces each as the original does.
-2. **`mutos_c0` in `11_kernel`**: it refuses eight of the nine kernel
-   files (`mutos_c1` does all nine from the real `c0`'s output). The
-   first error in seven of them is the same header line, `typedef struct
-   { unsigned short off; ... } segadr;` (`unsigned short` - `mutos_c0`
-   misreports it as "an unnamed filler field"), in `09_amx` a `long`
-   struct member; `mutos_c0` reports more after each, and it refuses
-   file-scope arrays and pointers in general. The method that made
-   `mutos_c1` exact applies: the real `c0` reproduces all 132 `.1`/`.2`
-   goldens under the emulator, so a port of it (v7's `c00.c`..`c05.c`,
-   the binary's deltas - `docs/C1_PORT_PLAN.md`, section 7) can be
-   checked against it the same way; `fuzz_c.py` already compares
-   `mutos_c0`'s output with the real `c0`'s.
+2. **The port of the real `c0` is done** (2026-10-18, see "`mutos_c0` is
+   the port of the real `c0`" above): all nine `11_kernel` files
+   end-to-end. The gaps this item listed - `unsigned short` members,
+   `long` members, file-scope arrays and pointers - were the old front
+   end's; the port compiles everything the original does.
 3. **`fuzz_c.py`'s generator**: the limits it kept for `c1_gen.c`'s sake
    (no constant divisor, no `x = y;`, simple right operands, small
    frames) can go.
@@ -4179,11 +4253,9 @@ far.
    are the three remaining 8086-level gaps with enough information in
    `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
-   byte-exact): port the real `c1` (`docs/C1_PORT_PLAN.md` - the original
-   binary is read and runs as an oracle, `tests/realbin/`; round 14's four
-   goldens wait for the port), grow `mutos_c0` into the
-   `tests/mutos_cc/11_kernel` real-kernel corpus (1/9 so far), then the
-   `mutos_cc` driver - see its "Next up".
+   byte-exact, `tests/mutos_cc/11_kernel` 9/9): `mutos_c1` and `mutos_c0`
+   are ports of the real `c1` and `c0` (`docs/C1_PORT_PLAN.md`,
+   `docs/C0_PORT_PLAN.md`); next the `mutos_cc` driver - see its "Next up".
    `v7/cc/` is the reference source tree.
 5. If a real MUTOS source file ever surfaces that exercises one of `mutos_cpp`'s
    documented simplifications (a formal parameter embedded in a macro-body string
