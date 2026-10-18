@@ -450,7 +450,9 @@ void	treedump(const char *, struct tnode *);
  * The 8086's integer arithmetic, as the original's code does it: a
  * shift count is the low byte of the count and is not masked (from 16 on
  * a 16-bit shl gives 0, a sar the sign); idiv and div trap on a zero
- * divisor and on a quotient that does not fit (c1trap()).
+ * divisor and on a quotient that does not fit (c1trap()) - for idiv on
+ * the 8086 and the V30 that includes -32768 (-32768 / 1), which the
+ * 80186 and the 80386 allow.
  */
 static inline uint16_t shl16(uint16_t x, int n)
 {
@@ -466,14 +468,14 @@ static inline int16_t sar16(int16_t x, int n)
 
 static inline int16_t div16(int16_t a, int16_t b)
 {
-	if (b == 0 || (a == INT16_MIN && b == -1))
+	if (b == 0 || (a == INT16_MIN && (b == -1 || b == 1)))
 		c1trap("idiv");
 	return (int16_t)(a / b);
 }
 
 static inline int16_t rem16(int16_t a, int16_t b)
 {
-	if (b == 0 || (a == INT16_MIN && b == -1))
+	if (b == 0 || (a == INT16_MIN && (b == -1 || b == 1)))
 		c1trap("idiv");
 	return (int16_t)(a % b);
 }

@@ -12,8 +12,8 @@
 #   mutos_as   - cross-assembler     (src/mutos_as/)
 #   mutos_cpp  - C preprocessor      (src/mutos_cpp/)
 #   mutos_cc   - C compiler          (src/mutos_cc/, produces
-#                                      mutos_c0/mutos_c1 - mutos_c1 a
-#                                      port of the original c1; the
+#                                      mutos_c0/mutos_c1 - ports of the
+#                                      original c0 and c1; the
 #                                      mutos_cc driver itself, and
 #                                      mutos_c2, are not yet written;
 #                                      see src/mutos_cc/README.md)
@@ -39,8 +39,8 @@
 #   make check-realbin # the original MUTOS c0 and c1 (mutos_bin/), run under
 #                   # an 8086 emulator, against every tests/mutos_cc
 #                   # golden, tests/realbin/c1_tables.txt against the c1
-#                   # binary, and mutos_c1 (the port of c1) against the
-#                   # emulated original (needs the Python module
+#                   # binary, and mutos_c1 and mutos_c0 (the ports of c1
+#                   # and c0) against the emulated originals (needs the Python module
 #                   # "unicorn"; see tests/realbin/README.md)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
@@ -149,10 +149,16 @@ check-libcatof: as ld cc
 # with all of the original's traces on (depth 3) and its .s, messages
 # and exit status (depth 4) identical - p19_open3 refused where
 # tests/mutos_cc/invalid_goldens.txt says; then a fixed-seed differential
-# fuzz run against the original (tests/realbin/c1fuzz.py, depth 4). Separate
+# fuzz run against the original (tests/realbin/c1fuzz.py, depth 4); then
+# mutos_c0, the port of c0 (src/mutos_cc/c0port/): its generated data
+# segment (c0data.c) current, its .1, .2, messages and exit status the
+# original's on every .i golden (tests/realbin/c0cmp.py), and two
+# fixed-seed differential fuzz runs, one with mutated programs
+# (tests/realbin/c0fuzz.py). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
+REALBIN_C0FUZZ_ARGS = -n 200 -s 1
 check-realbin: cc cpp
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -162,6 +168,10 @@ check-realbin: cc cpp
 	@python3 tests/realbin/c1trees.py --depth 3
 	@python3 tests/realbin/c1trees.py --depth 4
 	@python3 tests/realbin/c1fuzz.py $(REALBIN_FUZZ_ARGS)
+	@python3 tests/realbin/c0tables.py --check-c src/mutos_cc/c0port/c0data.c
+	@python3 tests/realbin/c0cmp.py goldens
+	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS)
+	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS) --mutate 0.7
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

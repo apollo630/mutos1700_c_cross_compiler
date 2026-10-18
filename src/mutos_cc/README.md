@@ -1,12 +1,17 @@
 # mutos_c0 / mutos_c1 - MUTOS 1700 Cross C Compiler (Milestone 4)
 
 `mutos_c0` (front end: lex/parse/typecheck, emits the `temp1`/`temp2`
-intermediate-code stream) is a from-scratch, modern-C11
-reimplementation - not a literal port of `v7/cc`'s pointer-arithmetic
-K&R source - matching this project's established approach for
-`mutos_as`/`mutos_cpp`/`mutos_ld`: validated byte-for-byte against
-real-hardware golden output, with `/v7/cc/` used strictly as an
-algorithmic/structural reference (CLAUDE.md Workflow Guideline 3).
+intermediate-code stream) is, since 2026-10-18, a **port of the original
+MUTOS 1700 `c0`** - v7's `c0`, ported to the 8086 - read from its binary
+(`c0port/`, `../../docs/C0_PORT_PLAN.md`): v7's functions with the
+binary's deltas, run on an image of the original's data segment, its
+initialized data generated from the binary. It is checked against the
+original itself, run under an 8086 emulator (`../../tests/realbin/`), on
+every golden and on random programs - see "The port of the real `c0`"
+below. Until then `mutos_c0` was a from-scratch C11 front end
+(`c0_parser.c` and its companions - their last version is in the git
+history, commit `ff1e589`); the grammar and wire-format explanations in
+"Current scope" come from that time.
 
 `mutos_c1` (back end: reads `temp1`/`temp2`, emits `mutos_as`-syntax
 assembly text) is, since 2026-10-13, a **port of the original MUTOS 1700
@@ -51,14 +56,12 @@ twelve, seventeen, twenty-three, twenty-three, twenty-six, twenty-two,
 five, eighteen and eighteen of them, `tests/mutos_cc/c1_errors.txt`),
 and `p19_open3` up to the real compiler's own invalid output, which
 `mutos_c1` refuses on purpose (`tests/mutos_cc/invalid_goldens.txt`) -
-and the first of the nine `tests/mutos_cc/11_kernel` files, `01_delay.c`.
-`mutos_c0` refuses the other eight kernel files; from the real `c0`'s
-`.1`/`.2` (their goldens) `mutos_c1` gives all eight `.s` goldens byte
-for byte too (`run_goldens.sh`'s category 10). See STATUS.md for the
-currently-verified details and `tests/mutos_cc/run_goldens.sh` for a
-full-corpus run (which reports every uncovered file as a clear,
-expected "not yet supported" diagnostic - see "Current scope" below -
-never a silent wrong-output mismatch).
+and all nine real kernel driver files of `tests/mutos_cc/11_kernel`,
+`01_delay.c` to `09_amx.c`. See STATUS.md for the currently-verified
+details and `tests/mutos_cc/run_goldens.sh` for a full-corpus run (which
+reports a refusal of either port - where the original traps or reads
+state the port does not model - apart from a mismatch, never as a
+silent wrong output).
 
 ## The `temp1`/`temp2` wire format
 
@@ -67,16 +70,16 @@ stream V7's own `cc` pipeline comment documents (`v7/cc/cc.c`:
 `c0 source temp1 temp2` / `c1 temp1 temp2 assembly.s`) - see
 `docs/DEVLOG.md`'s Milestone 4 "`c0`/`c1` process split" section for
 why this project deliberately keeps that boundary. The format itself
-(transcribed from `v7/cc/c04.c`'s `outcode()`, reimplemented
-type-safely with `stdarg.h` in `c0_outcode.c` instead of the
-original's raw varargs-pointer-walk; `mutos_c1` reads it with the real
-`c1`'s own `getree()`, `c1port/c11.c`):
+(`v7/cc/c04.c`'s `outcode()`, which `mutos_c0` writes with the real
+`c0`'s own, `c0port/c04.c` - with `stdarg.h` instead of the original's
+varargs-pointer walk; `mutos_c1` reads it with the real `c1`'s own
+`getree()`, `c1port/c11.c`):
 
 | Tag | Meaning | Bytes written |
 |---|---|---|
 | `B` | one opcode/operator tag | `(value & 0xFF, 0xFE)` - `0xFE` (octal `0376`) marks "this is a tag", never a data word |
 | `N` | one 16-bit word | little-endian `(low, high)` |
-| `S` | one symbol name | `'_'` (iff non-empty) + up to `MCC_NCPS` (8) significant chars, 7-bit-masked + a terminating `NUL` |
+| `S` | one symbol name | `'_'` (iff non-empty) + up to `NCPS` (8) significant chars, 7-bit-masked + a terminating `NUL` |
 | `1` / `0` | the literal word 1 / 0 | shorthand constants |
 | `F` | a floating constant's text (`FCON` only) | up to 1000 characters, 7-bit-masked, then a `NUL` - no `_` |
 
@@ -94,10 +97,9 @@ without the `LABEL`, initialize a file-scope `char name[] = "..."` - in
 `temp1`, where the declaration is, after `DATA` and `NLABEL`
 (`10_integ/01_wordcount`, see "Current scope").
 
-All opcode/type/storage-class values are transcribed verbatim from
-`v7/cc/c0.h` into `mutos_cc.h` - they are load-bearing wire-format
-tag values, not "mixed-in V7 logic" in the sense CLAUDE.md's Workflow
-Guideline 3 warns against.
+All opcode/type/storage-class values are v7's (`v7/cc/c0.h`), with the
+MUTOS additions, in `c0port/c0.h` and `c1port/c1.h` - load-bearing
+wire-format tag values, which both ports take from the binaries.
 
 ### Confirmed MUTOS-1700-specific deltas from vanilla V7 `cc`
 
@@ -217,15 +219,17 @@ negative large-magnitude constant.
 
 ## Current scope
 
-This section grew with `mutos_c0`'s grammar and with `c1_gen.c`, the
+This section grew with the old `mutos_c0`'s grammar (`c0_parser.c`, the
+from-scratch front end until 2026-10-18) and with `c1_gen.c`, the
 shape-by-shape generator that was `mutos_c1` until 2026-10-13. What it
-says about the real compiler's output - which code each construct gets,
-as the goldens show it - still holds: `mutos_c1` now produces that
-output by the original's own mechanism. What it says about `c1_gen.c`
-itself (its functions, tables and refusals: `Val`, `gen_call()`,
-`render_operand()`, ...) is history; the port refuses only where the
-original traps or reads state it does not model (see "The port of the
-real `c1`").
+says about the real compiler's output - the `temp1`/`temp2` stream and
+the code each construct gets, as the goldens show them - still holds:
+`mutos_c0` and `mutos_c1` now produce that output by the original's own
+mechanism. What it says about `c0_parser.c` and `c1_gen.c` themselves
+(their grammar subsets, functions, tables and refusals: `parse_expr()`,
+`Val`, `gen_call()`, ...) is history; the ports refuse only where the
+original traps or reads state they do not model (see "The port of the
+real `c0`" and "The port of the real `c1`").
 
 `mutos_c0`'s grammar coverage (`c0_parser.c`) is deliberately narrow -
 exactly `tests/mutos_cc/00_smoke`'s three programs plus all of
@@ -1887,6 +1891,60 @@ a negated long constant (`l = -65536;` stored 0 - `mutos_c0` truncated
 `-` of a long constant to an int; now LCON, NEG(LONG), which `mutos_c1`
 folds, as v7's `unoptim()` does).
 
+## The port of the real `c0`
+
+`c0port/` holds it, in v7's file split (`../../docs/C0_PORT_PLAN.md`;
+`tests/realbin/c0map.txt` lists all 73 functions with their text offsets
+in the original and what changed against v7):
+
+- `c0.h` - the memory image and its accessors (a word as `WI()`/`WU()`,
+  a byte as `B()`, a structure field at its byte offset: `OP(p)`,
+  `HCLASS(p)`, ...), every global at its address in the original, v7's
+  `c0.h` constants with the MUTOS values (`HSHSIZ` 500, the five-bit
+  conversion codes, the char conversions 107..109 and the pseudo
+  conversions 122/123).
+- `c00.c` - `main`, the lexer (`lookup`, `findkw`, `symbol`, `getnum`,
+  `subseq`, `putstr`, `getcc`, `mapch`) and the expression parser
+  (`tree`, `xprtype`, `copnum`).
+- `c01.c` - `build` (the MUTOS char rules), `convert`, `setype`,
+  `chkfun`, `disarray`, `chkw`, `lintyp` (five classes), `error`,
+  `werror`, the block allocators, `chklval`, `fold` (the 8086's shifts
+  and divisions) and `conexp`.
+- `c02.c` - `extdef`, `cfunc`, the initializers (`cinit`, `strinit`,
+  `setinit`), the statements (`statement`, `forstmt`, `pexpr`,
+  `pswitch`), `funchead`, `blockhead`, `blkend`, `prste`, `errflush`.
+- `c03.c` - the declarations: `declist`, `getkeywords`, `strdec`,
+  `declare`, `decl1`, `pushdecl`, `cpysymb`, `getype`, `typov`,
+  `align`, `decsyn`, `redec`, `goodreg`.
+- `c04.c` - `decref`, `incref`, `cbranch`, `rcexpr`, `treeout`,
+  `branch`, `label`, the length functions, `simplegoto`, `nextchar`,
+  `spnextchar`, `chconbrk`, `dogoto`, `doret` and `outcode` (the
+  `temp1`/`temp2` writer).
+- `c0data.c` - generated from the binary by `tests/realbin/c0tables.py
+  --c` and checked in (`make check-realbin` checks it is current): the
+  original's initialized data segment, 2,878 bytes - the keyword table,
+  `opdope[]`, `cvtab[]`, `cvntab[]`, `ctab[]`, the message texts.
+- `c0lib.c` - the machine around the program: the image's start
+  (`crt0`'s segment words), the input, `sbrk()`, the stack area for the
+  locals whose address the original passes on, `libc.a`'s `printf` for
+  the messages, `exit()`, and the refusals (`c0trap()`).
+
+**Refusals.** Where the original traps, reads past the end of its input
+for ever, or reads memory whose contents depend on state the port does
+not model (`libc.a`'s stdio buffers and FILE structures), `mutos_c0`
+stops with "c0: ...; refused" and exit status 2 after writing
+everything before that point - see `../../docs/C0_PORT_PLAN.md`,
+section 4. Everything else the original does with its own memory, bugs
+included, it reproduces; the bugs are listed in
+`../../docs/MUTOS_ORIGINAL_BUGS.md` (C0-01 .. C0-12).
+
+**How it is checked.** `tests/realbin/c0cmp.py` compares its `.1`, `.2`,
+messages and exit status with the emulated original's on every `.i`
+golden, and `tests/realbin/c0fuzz.py` does the same on random and
+mutated programs (see `../../tests/realbin/README.md`); `make
+check-realbin` runs both. It is invoked as v7's `cc` invokes `c0`:
+`mutos_c0 source.i temp1 temp2 [profileflag]`.
+
 ## The port of the real `c1`
 
 `c1port/` holds it, in v7's file split (`../../docs/C1_PORT_PLAN.md`;
@@ -1953,23 +2011,13 @@ file the environment variable `C1PORT_TREES` names.
 
 ## Next steps (roughly in dependency order)
 
-1. **`tests/mutos_cc/11_kernel`** (9 real MUTOS kernel driver source
-   files, `01_delay.c` … `09_amx.c`): `mutos_c1` does all nine from the
-   real `c0`'s output; `mutos_c0` does `01_delay.c` and refuses the other
-   eight - seven of them first at the same header line, `typedef struct
-   { unsigned short off; ... } segadr;` (an `unsigned short` member, which
-   `mutos_c0` misreports as "an unnamed filler field"), `09_amx.c` at a
-   `long` struct member; each reports more after that. The method that
-   made `mutos_c1` exact applies to `c0` too: the real `c0` reproduces all
-   132 `.1`/`.2` goldens under the emulator, and v7's `c00.c`..`c05.c`
-   are its skeleton (`../../docs/C1_PORT_PLAN.md`, section 7).
-2. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
+1. **`mutos_cc` driver**: chains `mutos_cpp | mutos_c0 | mutos_c1 |
    mutos_as | mutos_ld` the way `v7/cc/cc.c` does - not yet written;
    today's pipeline is exercised by invoking each tool directly (see
    `tests/mutos_cc/run_goldens.sh`). The `-P`/`-S` interaction
    CLAUDE.md flagged as "undecided... revisit once `mutos_cc`'s
    driver is actually being written" is still open.
-3. **`mutos_c2`** (Milestone 5): the same way again - v7's `c20.c`/`c21.c`,
+2. **`mutos_c2`** (Milestone 5): the same way again - v7's `c20.c`/`c21.c`,
    the real `c2` in `mutos_bin/`, `tests/mutos_as/kernel_opt/` as `cc -O`
    output.
 
@@ -1986,22 +2034,9 @@ assembler step either way.
 
 ## Source layout
 
-- `mutos_cc.h` - opcode/type/storage-class constants shared by both
-  passes (transcribed from `v7/cc/c0.h`), plus the confirmed MUTOS
-  deltas documented above.
-- `c0_lex.h`/`c0_lex.c` - tokenizer.
-- `c0_diag.h`/`c0_diag.c` - error/warning reporting.
-- `c0_outcode.h`/`c0_outcode.c` - the `temp1`/`temp2` stream writer.
-- `c0_sym.h`/`c0_sym.c` - symbol tables: a function's (parameters and
-  locals, name → {storage class, type, `bp`-relative offset / label /
-  register slot}, block-structured - `symtab_block_enter()`/
-  `symtab_block_exit()`) and the file's (file-scope variables,
-  `SC_EXTERN`), with `MCC_NCPS`-truncated name comparison and
-  `v7/cc/c03.c`-matching offset assignment.
-- `c0_parser.h`/`c0_parser.c` - front-end driver (current grammar
-  scope above).
-- `c0_main.c` - CLI entry point (`mutos_c0 source temp1 temp2 [-P]`,
-  matching `v7/cc/cc.c`'s own invocation shape).
+- `c0port/` - `mutos_c0`, the port of the real `c0` (see "The port of
+  the real `c0`"); invoked as v7's `cc` invokes `c0`: `mutos_c0
+  source.i temp1 temp2 [profileflag]`.
 - `c1port/` - `mutos_c1`, the port of the real `c1` (see "The port of
   the real `c1`"); invoked as v7's `cc` invokes `c1`: `mutos_c1 temp1
   temp2 output.s [options]`.
@@ -2018,10 +2053,11 @@ above) so the exit status stays a meaningful signal as coverage
 grows. A file whose goldens lack the `.i` is checked from `mutos_c0` on
 and listed apart (its category 7).
 
-A file `mutos_c0` refuses is still checked at `mutos_c1`, from its
-`.1`/`.2` goldens (category 10). `tests/realbin/` (`make check-realbin`,
-needs `unicorn`) checks `mutos_c1` against the emulated original `c1` at
-four depths on every golden and on random programs.
+A file `mutos_c0` refuses would still be checked at `mutos_c1`, from
+its `.1`/`.2` goldens (category 10; none at present). `tests/realbin/`
+(`make check-realbin`, needs `unicorn`) checks `mutos_c1` against the
+emulated original `c1` at four depths, and `mutos_c0` against the
+emulated original `c0`, on every golden and on random programs.
 
 `tests/mutos_cc/fuzz/` (`make fuzz`) complements that with random
 programs: `fuzz_c.py` computes what each one must do under C semantics,
@@ -2063,13 +2099,12 @@ derived type as its full chain, outermost degree first, e.g.
 `type=PTR.FUNC.TY_INT(72)` - and
 handling `OP_SWIT`'s variable-length case table and `OP_NAME`'s
 `SC_EXTERN`-vs-otherwise conditional shape (a symbol name vs. a
-numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. An
-opcode it has no confirmed argument shape for (a construct outside
-`mutos_c0`'s current grammar/opcode scope, e.g. the `LESSEQP` pointer
-comparison in `11_kernel/02_prim.1.golden`) stops the dump cleanly with a clear message rather than
-guessing and silently desyncing the rest of the file - the same
-"explicit not yet supported, never silently wrong" rule this project
-applies everywhere else.
+numeric offset - see `v7/cc/c04.c`'s `treeout()`) correctly. It has a
+shape for every opcode the original `c0` can write (the port's
+`outcode()` call sites); an opcode it has no shape for stops the dump
+cleanly with a clear message rather than guessing and silently
+desyncing the rest of the file - the same "never silently wrong" rule
+this project applies everywhere else.
 
 `dump_temp.py`'s own `OPCODES` table is a hand-transcribed copy of
 every `outcode()` call site's argument shape, not something derived

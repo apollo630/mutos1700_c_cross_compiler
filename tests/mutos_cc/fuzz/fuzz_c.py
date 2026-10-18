@@ -416,7 +416,11 @@ def run_build(wd, tag, c0, c1, env, ret, g):
     """Outcome of one build: ('ok'|'wrong'|'refused'|'bad', detail, .s)"""
     i_file, one, two, s_file = wd / "p.i", wd / f"{tag}.1", wd / f"{tag}.2", wd / f"{tag}.s"
     p = subprocess.run([c0, str(i_file), str(one), str(two)], capture_output=True, text=True)
-    if p.returncode not in (0, 1) or any(m in p.stderr for m in BUG_MARKERS):
+    (wd / f"{tag}.c0st").write_text(str(p.returncode))
+    # 1: the original's own error messages; 2: refused - the port of c0
+    # stops where the real c0 traps or reads state it does not model
+    if p.returncode not in (0, 1, 2) or any(m in p.stderr for m in BUG_MARKERS) \
+            or (p.returncode == 2 and not p.stderr.rstrip().endswith("refused")):
         return "bad", f"mutos_c0 crashed or reported an internal error: {p.stderr.strip()[-300:]}", ""
     if p.returncode:
         return "refused", "c0: " + reason_of(p.stderr), ""
@@ -503,6 +507,8 @@ def against_real(wd, tag, res):
     st0 = (wd / "real.c0").read_text()
     one, two, s_file = wd / f"{tag}.1", wd / f"{tag}.2", wd / f"{tag}.s"
     if res[0] == "refused" and res[1].startswith("c0: "):
+        if (wd / f"{tag}.c0st").read_text() == "1" and st0 == "0":
+            return "bad", "mutos_c0 rejects what the real c0 accepts"
         return res[0], res[1]
     if not (wd / f"{tag}.c1st").exists():
         return res[0], res[1]           # mutos_c0 crashed

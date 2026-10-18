@@ -15,338 +15,135 @@ mutos_c0 \- MUTOS 1700 cross C compiler, first pass (front end)
 is the first of the two passes that make up the MUTOS 1700 cross C
 compiler (the second is
 .BR mutos_c1 (1)).
-It lexes and parses
+It reads
 .IR source ,
-which is normally the already macro-expanded output of
-.BR mutos_cpp (1)
-rather than raw C source, and writes a tagged intermediate-code
-byte stream to
+normally the output of
+.BR mutos_cpp (1),
+parses and type-checks it, and writes the tagged intermediate-code
+byte stream of the original compiler to
 .I temp1
-(with any string-literal text routed through
+and
 .I temp2
-instead \(en see
+(see
 .BR OUTPUT ).
 .PP
-This is a from-scratch, modern-C11 reimplementation of the observable
-behavior of the original MUTOS 1700 / Version 7 Unix
-.BR cc (1)
-compiler's first pass, not a literal port of that pointer-arithmetic
-K&R source; see
+It is a port of the original MUTOS 1700
+.IR /lib/c0 ,
+read from its binary: Version 7 Unix's
+.B c0
+as MUTOS 1700 has it, ported to the 8086 \(en v7's functions, in v7's
+source order, with the changes the binary shows (its
+.B char
+conversions, its five-bit conversion codes, its function header and
+register handling, a 500-entry symbol table). It runs on an image of
+the original's 64K data segment \(en the binary's own initialized data,
+every variable at its original address, the heap in the original's
+block sizes \(en so that it does what the original does with its memory,
+including the original's bugs. It is checked against the original run
+under an 8086 emulator, on every golden and on random programs; see
+.I docs/C0_PORT_PLAN.md
+and
 .I src/mutos_cc/README.md
-in the toolchain source tree for the confirmed
-.IR temp1 / temp2
-wire format (reverse-engineered byte-for-byte from real MUTOS 1700
-hardware output) and the exact grammar this pass currently accepts.
-.SH "CURRENT SCOPE"
-.B mutos_c0
-does not yet implement the full K&R C grammar. The exact constructs it
-accepts, and the byte-level evidence behind each, are listed in
-.I src/mutos_cc/README.md
-(\(lqCurrent scope\(rq); in outline:
-.IP \(bu 2
-function definitions with K&R-style parameter declarations
-.RB ( int ,
-pointer,
-.BR long ,
-array and function-pointer parameters);
-.IP \(bu 2
-local declarations without initializers:
-.BR int ,
-.BR char ,
-.BR long ,
-pointers of any degree, one-dimensional arrays, two-dimensional
-.B int
-arrays, function pointers
-.RB ( "int (*f)()" ),
-and
-.B static
-and
-.B register
-locals; a nested block may declare its own locals, which shadow an
-outer declaration of the same name until the block's closing brace;
-.IP \(bu 2
-file-scope
-.BR int ,
-.B char
-and
-.B long
-variables without initializers \(en plain (a common block),
-.B static
-(a block of the file's own) or
-.B extern
-(a declaration only), a compatible redeclaration included
-.RB ( mutos_c1 (1)
-does not yet generate code that uses a
-.B long
-one), and a
-.B char
-array with a string-literal initializer and no size,
-.BR "char text[] = \(dq...\(dq;" ,
-plain or
-.BR static ;
-.IP \(bu 2
-assignment statements (\(oq=\(cq and the ten compound-assignment
-operators, including subscripted and dereferenced targets),
-.BR if / else ,
-.BR while ,
-.BR do / while ,
-.BR for ,
-.BR switch / case / default ,
-.BR break ,
-.BR continue ,
-.BR goto /labels,
-and
-.BR return ;
-.IP \(bu 2
-expressions over those types: arithmetic, bitwise, shift, relational,
-logical and conditional operators, the comma operator, prefix and
-postfix
-.BR ++ / \-\- ,
-unary
-.B &
-(of a variable or of an array element) and
-.BR * ,
-array subscripts, string literals, character constants, direct and
-indirect function calls,
-a narrow set of casts, and
-.B sizeof
-(folded at compile time);
-.IP \(bu 2
-.B char
-values, with the explicit conversions the MUTOS 1700 front end writes
-(opcode 109 in both directions, its type argument the result type): a
-.B char
-operand of an arithmetic, shift, bitwise, relational or equality
-operator is widened to
-.BR int ,
-and an assignment or
-.B return
-converts its value to the target's type \(en except that a
-.B char
-variable, element or dereference compared with a constant from 0 to
-127 is not widened: the constant is typed
-.B char
-instead; where the real compiler converts nothing (a condition, a call
-argument, an operand of
-.BR && ,
-.B ||
-or
-.BR ! )
-a
-.B char
-variable, element or dereference is passed on unconverted;
-.IP \(bu 2
-structures and unions (laid out as the real compiler does: members on a
-word boundary except
-.BR char ,
-.B int
-and
-.B unsigned
-bit-fields packed into words, union members at offset 0), members
-reached with
-.B .
-and
-.B \->
-(written as the real front end retypes them), arrays of structures,
-nested structures, assignment of a whole structure of 2 or 4 bytes,
-enumerations (their constants plain
-.B int
-constants),
-.B typedef
-names, and pointer casts of a call such as
-.BR "(struct node *) malloc(n)" ;
-.IP \(bu 2
-plain
-.B unsigned
-locals, with the operators an unsigned bit-field value has, and octal
-or hexadecimal constants up to 0177777 as
-.B int
-constants (larger ones, and decimal ones above 32767, are
-.BR long );
-.IP \(bu 2
-a
-.B long
-combined with an
-.B int
-or
-.B unsigned
-operand, which is converted with
-.B ITOL
-right after its own code, a variable and a constant alike, as the real
-front end does
-.RB ( "l + i" ,
-.BR "i + l" ,
-.BR "l > i" ,
-.BR "m & 255" ,
-.BR "l += i" ,
-.BR "l = u" );
-a
-.B long
-value or constant assigned to an
-.B int
-or
-.B unsigned
-.RB ( LTOI ),
-a parenthesized
-.B long
-expression cast to
-.BR int ,
-and a negated
-.B long
-constant
-.RB ( LCON ,
-.BR NEG );
-.IP \(bu 2
-floating point:
-.B float
-and
-.B double
-local variables, parameters (a
-.B float
-parameter is a
-.BR double ),
-arrays, pointers, structure members and local
-.B static
-variables, and file-scope floating variables, arrays and pointers,
-initialized with a constant (a floating literal or an
-.B int
-constant, either negated) or not,
-floating constants (written with their source text, never folded),
-.BR + ,
-.BR \- ,
-.B *
-and
-.B /
-(always computed in
-.BR double ),
-unary
-.BR \- ,
-comparisons (the node typed
-.BR int ),
-assignment,
-.BR *= ,
-.BR /= ,
-.B +=
-and
-.B \-=
-into a floating variable (also inside parentheses, its value used),
-.BR *= ,
-.BR /= ,
-.B +=
-and
-.B \-=
-into an
-.B int
-(the floating right operand converted first, as the real front end does),
-casts (of a variable, or of a parenthesized floating expression or a
-floating constant to an integer),
-.BR return ,
-floating call arguments and functions returning a
-.B float
-or a
-.BR double ,
-with the real front end's conversions between
-.BR char ,
-.BR int ,
-.B long
-and the floating types.
+in the toolchain source tree.
 .PP
-A constant subexpression stays folded for as long as every operand
-feeding it is constant, matching the real compiler's own front-end
-constant folding. File-scope structures are accepted (an
-.B int
-member's access is refused by
-.BR mutos_c1 (1)).
-Not yet supported, among others: other file-scope
-pointers, arrays and initializers,
-.B static
-functions, a function returning a structure or a pointer to one, a
-structure passed by value,
-.BR register ,
-pointer or array
-.B unsigned
-variables and
-.B unsigned
-parameters, a
-.B long
-combined with a
-.BR char ,
-a shift of a
-.BR long ,
-.B ~
-on a
-.B long
-variable, a
-.B long
-result of
-.BR ?: ,
-a floating value tested for truth (which the real compiler
-cannot compile either), other operators on a floating value
-.RB ( % ,
-.BR ++ ,
-\&...), arrays of three or more dimensions, pointer
-subtraction, an ordered comparison of pointers, division, a right shift
-or an ordered comparison of an
-.B unsigned
-value, and a
-.B char
-value that is not a variable, element or dereference (a cast's, an
-assignment's) used as a condition or a call argument.
+It accepts the C the original accepts: the K&R language of Version 7
+Unix \(en structures, unions, bit-fields, enumerations,
+.BR typedef ,
+initializers of any kind, the old
+.B =+
+assignment operators (with a warning where they are ambiguous) and the
+.B \e/
+and
+.B /\e
+operators \(en with
+.B short
+the same as
+.BR int .
 .PP
-Anything outside the supported scope is rejected with a clear
-diagnostic and a non-zero exit status, never silently miscompiled.
+The input may contain comments, lines of the form
+\fB#\fR \fIline\fR \fB\(dq\fR\fIfile\fR\fB\(dq\fR
+(which set the line number and the file name of the messages) and SOH
+bytes (\e001), after which the next newline is not counted as a
+line.
 .SH OUTPUT
 .I temp1
-receives the bulk of the intermediate code: a sequence of tagged
-items, each either a single-byte operator code (immediately followed
-by the fixed sentinel byte 0xFE), a little-endian 16-bit data word, or
-a NUL-terminated symbol name.
+receives the intermediate code: a sequence of tagged items, each either
+an operator code (one byte, followed by the fixed byte 0376), a
+little-endian 16-bit word, a NUL-terminated symbol name or a floating
+constant's text.
 .I temp2
-receives only string-literal data: one labelled block of byte values
-per literal, then its own terminating marker (a
+receives the string literals: one labelled block of byte values per
+literal (a
 .B char
-array's initializer is written into
+array's string initializer is written into
 .I temp1
-instead, unlabelled, where the declaration is). This exactly mirrors the real MUTOS 1700
-compiler's own
-.IR /lib/c0 ,
-which
-.BR mutos_cc (1)
-(once written \(en see
-.BR BUGS )
-will invoke in the same way.
+instead, unlabelled, where the declaration is). Both end with an EOFC
+item. This is the original
+.IR /lib/c0 's
+format, byte for byte; it is what
+.BR mutos_c1 (1)
+reads. The source tree's
+.I src/mutos_cc/dump_temp.py
+prints either file in readable form.
 .SH OPTIONS
 .TP
 .I source
-Path to the input file (normally
-.BR mutos_cpp (1) 's
-output). Read directly if given a raw
-.B .c
-file instead \(en the lexer tolerates comments and whitespace itself
-\(en which is convenient for manual testing but not how the real
-pipeline invokes this pass.
+The input file.
 .TP
 .I temp1
-Output path for the primary intermediate-code stream.
+The output file for the intermediate code.
 .TP
 .I temp2
-Output path for the string-literal side stream.
+The output file for the string literals.
 .TP
 .B \-P
-Accepted for command-line compatibility with the real MUTOS 1700
-.IR /lib/c0 's
-profiling-flag position (see
-.IR v7/cc/cc.c ).
-Not yet acted upon.
+Any fourth argument (v7's
+.BR cc (1)
+passes
+.B \-P
+for
+.BR "cc \-p" )
+switches on profiling: each function's code starts with a PROFIL item
+for its call counter.
 .SH DIAGNOSTICS
-Errors are printed to standard error as
-.RI \(dq file : line ": error: " message \(dq
-and cause a non-zero exit status; processing continues to the end of
-input so that further problems in the same source can be reported in
-one pass, matching
-.BR mutos_cpp (1) 's
-diagnostic convention.
+Messages are the original's, on standard error, as
+.RI \(dq line ": " message \(dq,
+or
+.RI \(dq file : line ": " message \(dq
+once a
+.B #
+line has named a file; parsing continues after an error. Warnings
+(\(lqWarning: =- operator assumed\(rq, \(lq(Warning only)\(rq, ...)
+do not count as errors. The exit status is 0, or 1 if an error was
+reported (or the arguments or files were wrong: \(lqArg count\(rq,
+\(lqCan't find\(rq, \(lqCan't create temp\(rq).
+.PP
+Where the original traps, reads past the end of its input for ever, or
+reads memory whose contents depend on state the port does not model
+(the stdio buffers and FILE structures of the original's
+.IR libc.a ),
+.B mutos_c0
+writes everything before that point, prints
+.RI \(dq line ": c0: " reason " ... refused\(dq"
+and exits with status 2. These are bugs of the original: a name, a
+comment or a
+.B #
+line that runs into the end of the file; a constant division whose
+quotient does not fit (the 8086 divide fault); an initialized array of
+zero-length elements; a structure member redeclared with another type;
+more alignment holes in a structure than the original's member list
+holds; a
+.B goto
+expression whose tree the original stores over live data or builds
+from a dead stack frame's word;
+an input byte 0210..0247 outside a string; a number of more than 94
+characters. See
+.I docs/MUTOS_ORIGINAL_BUGS.md
+in the source tree for each, with what the original does.
 .SH BUGS
+The original's bugs are reproduced, not fixed (see
+.BR DIAGNOSTICS ).
+.PP
 .B mutos_cc,
 the driver that would normally chain
 .BR mutos_cpp (1),

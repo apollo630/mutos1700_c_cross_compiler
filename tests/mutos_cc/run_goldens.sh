@@ -8,12 +8,11 @@
 # matching this project's established golden-diff methodology
 # (tests/mutos_cpp/run_goldens.sh, tests/mutos_as/'s golden suite).
 #
-# mutos_c0's grammar coverage is limited (see src/mutos_cc/README.md) -
-# files outside it are expected to fail at the "c0" stage with a clear
-# "not yet supported" diagnostic, not silently produce wrong output.
-# mutos_c1 is the port of the real c1 (docs/C1_PORT_PLAN.md) and refuses
-# only where the original traps or reads state the port does not model.
-# This script reports those as distinct categories from a genuine
+# mutos_c0 and mutos_c1 are ports of the real c0 and c1
+# (docs/C0_PORT_PLAN.md, docs/C1_PORT_PLAN.md) and refuse (exit status
+# 2, "...; refused") only where the original traps or reads state the
+# port does not model. Any other failure of either is a mismatch.
+# This script reports refusals as distinct categories from a genuine
 # byte-mismatch, so the pass count is always an honest measure of
 # verified coverage, never inflated or deflated by unrelated
 # failures.
@@ -41,14 +40,14 @@
 # nonzero status, print exactly the listed messages on stderr and write
 # exactly the golden's .s - listed apart (category 9), not a failure.
 #
-# A file mutos_c0 refuses (category 3) is still checked at mutos_c1:
+# A file mutos_c0 refuses (category 3; none at present) is still checked
+# at mutos_c1:
 # from its .1/.2 goldens - the real c0's output - mutos_c1 must write
 # exactly its .s golden (category 10; a difference is a category 6
 # failure).
 #
 # Exit status: 0 if nothing is in the "genuine mismatch" categories (2,
-# 4, 6), 1 otherwise; "not yet supported" (3) and refused (5) do not
-# fail the run.
+# 4, 6), 1 otherwise; a refusal (3, 5) does not fail the run.
 
 set -u
 
@@ -128,7 +127,15 @@ for cat in */; do
             continue
         fi
 
-        if ! "$MUTOS_C0" "$out_i" "$out_1" "$out_2" 2>"$WORK/err"; then
+        "$MUTOS_C0" "$out_i" "$out_1" "$out_2" 2>"$WORK/err"
+        c0_status=$?
+        if [ "$c0_status" -ne 0 ] && ! { [ "$c0_status" -eq 2 ] &&
+                tail -1 "$WORK/err" | grep -q 'refused$'; }; then
+            # the real c0 wrote the golden: any other failure is a mismatch
+            c0_mismatch+=("$cat/$name (exit status $c0_status: $(tail -1 "$WORK/err" | cut -c1-90))")
+            continue
+        fi
+        if [ "$c0_status" -ne 0 ]; then
             c0_unsupported+=("$cat/$name: $(tail -1 "$WORK/err")")
             # mutos_c1 on its own, from the .1/.2 goldens (category 10)
             if [ -f "$cat/$name.1.golden" ] && [ -f "$cat/$name.2.golden" ] &&
@@ -205,8 +212,8 @@ echo "2. mutos_cpp stage mismatch/failure (${#cpp_mismatch[@]})"
 for f in "${cpp_mismatch[@]}"; do echo "  $f"; done
 
 echo
-echo "3. mutos_c0: grammar/opcode not yet supported (${#c0_unsupported[@]})"
-echo "   (expected for anything outside 00_smoke - see README.md)"
+echo "3. mutos_c0: refused - where the real c0 traps or reads state the port"
+echo "   does not model (${#c0_unsupported[@]})"
 for f in "${c0_unsupported[@]}"; do echo "  $f"; done
 
 echo
@@ -246,6 +253,6 @@ for f in "${pass_c1only[@]}"; do echo "  $f"; done
 echo "=================================================================="
 
 # Success means: nothing in the "genuine mismatch" categories (2, 4, 6).
-# Category 3/5 ("not yet supported") is expected and does not fail the
-# run - it is exactly the honest coverage gap README.md documents.
+# A refusal (category 3 or 5) does not fail the run - it is where the
+# original's own behaviour cannot be reproduced, listed as such.
 [ ${#cpp_mismatch[@]} -eq 0 ] && [ ${#c0_mismatch[@]} -eq 0 ] && [ ${#c1_mismatch[@]} -eq 0 ]

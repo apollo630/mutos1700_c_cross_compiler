@@ -615,9 +615,11 @@ it; the note says so where that's the case.
 
 (Since 2026-10-13 `mutos_c1` is a port of the original `c1`
 (`src/mutos_cc/c1port/`, `docs/C1_PORT_PLAN.md`), which produces every
-item below by the original's own code tables; the `c1_gen.c` functions
-named in the notes are those of the generator it replaced, kept here as
-the record of how each convention was first confirmed.)
+item below by the original's own code tables, and since 2026-10-18
+`mutos_c0` a port of the original `c0` (`src/mutos_cc/c0port/`,
+`docs/C0_PORT_PLAN.md`); the `c1_gen.c` and `c0_sym.c` functions named in
+the notes are those of the code they replaced, kept here as the record of
+how each convention was first confirmed.)
 
 - [x] Every function: `push bp / mov bp,sp / push di / push si` prologue,
       unconditionally (§1.2). Implemented and verified in every passing

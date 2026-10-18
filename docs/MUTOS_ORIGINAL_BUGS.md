@@ -11,7 +11,8 @@ the change that finds a bug.
 
 Each entry says what goes wrong (with a minimal trigger where one is
 known), why (the mechanism, with the text or data offset in the binary as
-`tests/realbin/c1map.txt` and `c1dis.py` give them), how it was
+`tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
+and `c0dis.py` for `c0`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -21,7 +22,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-14.
+Last updated: 2026-10-18.
 
 ## Overview
 
@@ -48,7 +49,18 @@ Last updated: 2026-10-14.
 | AS-01 | `as` | `-L` documented, not implemented ("Unknown option L ignored") | real hardware | not reproduced (`mutos_as` has no `-L` either way) |
 | AS-02 | `as` | unknown mnemonics (`insw`, `outsw`) assembled silently as undefined externals | emulator | not reproduced (`mutos_as` knows them) |
 | AS-03 | `as` | the floating-overflow abort message prints garbage where a file name belongs | real hardware | not reproduced |
-| C0-01 | `c0` | folding `-32768 / -1` or `-32768 % -1` faults (8086 divide error) | emulator | `mutos_c0`: see entry |
+| C0-01 | `c0` | folding `-32768 / -1`, `-32768 / 1` (or `%`) faults (8086 divide error) | emulator | refused |
+| C0-02 | `c0` | reads past the end of the file for ever: a name, a comment or a `#` line that runs into it | emulator, fuzzing | refused |
+| C0-03 | `c0` | an initialized array of zero-length elements divides by 0 | emulator, fuzzing | refused |
+| C0-04 | `c0` | a member redeclared with another type: its offset and the size come from an uninitialized word | emulator, fuzzing | refused |
+| C0-05 | `c0` | structure holes are not counted against `mems[128]`: the list runs over `strdec()`'s frame | emulator | refused |
+| C0-06 | `c0` | `goto <expression>` stores the tree through the `cp` of before `tree()` | emulator, fuzzing | reproduced; refused where it hits live data |
+| C0-07 | `c0` | an input byte 0200..0377 outside strings indexes `ctab[]` past its end | emulator | reproduced; refused for 0210..0247 |
+| C0-08 | `c0` | a number longer than 64 characters runs over `numbuf` | emulator | reproduced up to 94 characters, refused beyond |
+| C0-09 | `c0` | a `# line` file name longer than 63 characters runs over `filename` into `symbuf` | emulator | reproduced |
+| C0-10 | `c0` | `conexp()` after a syntax error returns the word at data 8 (the code segment) | emulator | reproduced (the emulator's segment) |
+| C0-11 | `c0` | "undefined; func." before the first function prints bytes from data 000d | emulator | reproduced |
+| C0-12 | `c0` | an enum's size is a stale register: whether a redefined enum tag is reported depends on the storage class | emulator | reproduced |
 
 `cpp` and `ld`: no bug known (see the sections below).
 
@@ -395,14 +407,214 @@ up in the output, and into every MUTOS program. The text offsets are
 - **Symptom.** `x = 0x8000 % 0xffff;` and `x = 0100000 / 0177777;`
   (-32768 % -1, -32768 / -1 in 16-bit ints) stop the real `c0` with an
   8086 divide error (under the emulator: a CPU exception at text 20fe
-  and 20db). On the hardware that is a SIGFPE, and v7's `c0` sets no
-  handler - not run on the hardware.
-- **Mechanism.** `fold()` (v7's `c01.c`) checks only for a divisor of 0
-  before `idiv`.
-- **Evidence.** Emulator (`c1fuzz.py --gen lconst`'s programs).
-- **This project.** `mutos_c0` folds such a division (16-bit
-  truncation) - not the original's behaviour, which is a crash.
-- **Fix idea.** Check for -32768 / -1 as well.
+  and 20db), and so do `x = 0100000 / 1;` and `x = 0100000 % 1;`. On the
+  hardware that is a SIGFPE, and v7's `c0` sets no handler - not run on
+  the hardware.
+- **Mechanism.** `fold()` (text 200a, v7's `c01.c`) checks only for a
+  divisor of 0 before `cwd` / `idiv`. The 8086 faults whenever the
+  quotient's absolute value exceeds 7FFFH (the AP-186 note), the V30
+  below -32,767 (its manual) - so -32768 / 1 too, which the 80186 and the
+  80386 allow (Unicorn, the emulator, did not fault there until
+  `mutosemu.py` modelled it, 2026-10-18). On the PDP-11 an overflowing
+  `div` sets the V bit and does not trap; on the 8086 it is interrupt 0.
+- **Evidence.** Emulator (`c1fuzz.py --gen lconst`'s programs; the
+  triggers above, -32768 / 1 with `mutosemu.py`'s 8086 division).
+- **This project.** Refused since `mutos_c0` is the port (2026-10-18;
+  the earlier front end folded it with 16-bit truncation).
+- **Fix idea.** Do not fold a division of -32768 by -1 or 1 (or fold it
+  by hand: -32768 / 1 is -32768, -32768 % +-1 is 0).
+
+### C0-02 Reading past the end of the file for ever
+
+- **Symptom.** `c0` never ends - it reads the end of its input again and
+  again - on a file that ends in the middle of a name (`int x` without
+  a newline), inside a comment (`/* no end`) or in a `#` line that is
+  not `# <number> "<name>"` (`# 5 "a.c" junk` without a newline).
+- **Mechanism.** EOF is -1 to `getc()` and `c0`'s tokens end at EOFC,
+  0. The name loop (text 06e7) tests `ctab[c]` for LETTER or DIGIT, and
+  `ctab[-1]` is the byte before the table, `cvntab[15]` - 123, LETTER.
+  The comment loop (text 0680) runs until `spnextchar()` returns 0,
+  never -1. The "Illegal #" skip loop (text 0493) runs until a newline or
+  `eof`, which only `symbol()` sets. v7 has the same three loops.
+- **Evidence.** Emulator (the triggers; `mutosemu.py`'s `eof_limit`
+  stops the run after 1,000 reads of nothing); `c0fuzz.py --mutate`: 26
+  of 2,000 programs.
+- **This project.** Refused ("a name ends the file", "a comment ends the
+  file", "a '#' line ends the file"), after everything before. Through
+  `cc` none of the three is reached: `cpp` removes comments and its
+  output ends with a newline.
+- **Fix idea.** Test for -1 in the three loops (`eof++` and stop).
+
+### C0-03 An initialized array of zero-length elements divides by 0
+
+- **Symptom.** `int a[][0] = {1};` or `int a[2][0] = {1};` (after "0-length
+  row") stops `c0` with an 8086 divide error (under the emulator: a CPU
+  exception at text 264b).
+- **Mechanism.** `cinit()` (text 2592) computes the number of elements
+  as the array's size divided by the element's (`div word ptr
+  [bp-0xc]`, v7's `ldiv(0, width, o)`) without testing the element's
+  size for 0. On the PDP-11 a `div` by 0 sets the C bit and does not trap.
+- **Evidence.** Emulator; `c0fuzz.py`: 5 + 9 of 4,000 programs.
+- **This project.** Refused ("an array of 0-length elements initialized").
+- **Fix idea.** Report "0-length row" for the element as well and skip
+  the division.
+
+### C0-04 A redeclared member's offset and the size come from an uninitialized word
+
+- **Symptom.** `struct s { int a; char a; int b; };` reports "a
+  redeclared" and then lays `b` out at an offset - and gives the
+  structure a size - taken from a stack word (the emulated original makes
+  `sizeof (struct s)` 6 here; it depends on what earlier calls left).
+- **Mechanism.** `decl1()` (text 3882) on a redeclaration with another
+  type calls `redec()` (text 3b3a) and returns `elsize` (text 3de8:
+  `mov dx,[bp-0x14]`) before anything has set it. In a member list that
+  value is added to the offset of what follows. A redeclared member with
+  the same type is checked (`chkoff`) and not affected. v7 too.
+- **Evidence.** Emulator (the trigger); `c0fuzz.py`: 13 of 4,000
+  programs.
+- **This project.** Refused inside a structure's, union's or enum's
+  list; elsewhere (a block's declarations, the parameters) the value is
+  dropped by the caller and the port reproduces the original.
+- **Fix idea.** `elsize = 0` before the redeclaration test.
+
+### C0-05 Structure holes are not counted against `mems[128]`
+
+- **Symptom.** A structure of 63 `char a<n>; int b<n>;` pairs and one
+  more `char` - 127 members, 63 alignment holes - makes the original
+  report "Too many structure members" at its end, then " redeclared",
+  "Illegal storage class" and "Arg count" (the message `main()` gives
+  for too few arguments - control has left `strdec()` through its
+  overwritten frame) and exit with status 1, no output.
+- **Mechanism.** `strdec()` (text 3564) collects the members in
+  `mems[NMEMS]` (256 bytes at `bp-0x110`) through `memlist`; `decl1()`
+  puts `&structhole` into the list for every alignment gap but counts
+  only the members against NMEMS ("Too many structure members" moves
+  `memlist` back by NMEMS/2 when they reach it). With enough holes the
+  list runs past `mems[]` over `strdec()`'s locals, the saved registers
+  and its return address. v7 too.
+- **Evidence.** Emulator (the trigger).
+- **This project.** Refused at the first store past `mems[]` ("a member
+  list past the end of strdec()'s mems[]").
+- **Fix idea.** Count the holes, or test `memlist` against the end of
+  `mems[]`.
+
+### C0-06 `goto <expression>` stores its tree through a stale `cp`
+
+- **Symptom.** `goto (;` (an expression with a syntax error after
+  `goto`) gives "Expression syntax", then "Illegal indirection" and
+  "Illegal type of operand" from a tree that was never parsed; a goto
+  expression as the first statement of a function with register
+  parameters (`f(p) register int *p; { goto *p; }`) stores its tree over
+  a saved register.
+- **Mechanism.** `dogoto()` (text 476c) is v7's `*cp++ = tree();`, and
+  the binary pushes `cp` before calling `tree()` (text 4771: `push word
+  ptr [0x3684]`, after the call `pop bx` / `mov [bx],ax`): the tree goes
+  where `cp` pointed before - into the operand stack of the last
+  `tree()`'s frame, mostly dead stack by then -, and `build(STAR)` then
+  works on what `tree()` left at its own `cp`. After a syntax error
+  `tree()` returns 0 and `build()` takes a dead frame's word; after
+  `funchead()` `cp` points at a saved register of the frame above.
+- **Evidence.** Emulator (the triggers); `c0fuzz.py --mutate`: 8 of
+  2,000 programs.
+- **This project.** Reproduced where the store lands in dead stack (the
+  usual case: `goto *p;`, `goto p;` with `p` not a label); refused after
+  a syntax error, right after `funchead()`, and for a goto nested five
+  or more statements below the last expression (where the old frame may
+  lie under live ones).
+- **Fix idea.** `t = tree(); *cp++ = t;`.
+
+### C0-07 Input bytes 0200..0377 index `ctab[]` past its end
+
+- **Symptom.** A byte 0200..0377 outside a string, character constant or
+  comment is not "Unknown character": 0200 acts as `+` (`\200 int y;` at
+  file level is "External definition syntax"), 0205 as `-` (`x = 1 \205
+  2;` compiles), a byte from 0250 on as EOFC - skipped at file level
+  (`int x;\n\344int y;` compiles both declarations without a message),
+  "Unexpected EOF" in a function -, and 0210..0247 as whatever the stdio
+  buffers' state makes them.
+- **Mechanism.** `symbol()` (text 035e) indexes the 128-byte `ctab[]`
+  (data 0a0c) with the byte as it is (text 03d5: `mov al,[di+0xa0c]`):
+  0200..0207 read `libc.a`'s "(null)" string after the table, 0210..0247
+  the FILE structures of stdin, stdout, stderr and temp2 (their buffer
+  pointers and counts), and from 0250 on unused FILE structures, zero -
+  EOFC.
+- **Evidence.** Emulator (the triggers).
+- **This project.** Reproduced for 0200..0207 and 0250..0377; refused
+  for 0210..0247 (the port does not model `libc.a`'s stdio state).
+- **Fix idea.** `c & 0177`, or "Unknown character" for any byte from 0200
+  on.
+
+### C0-08 A number longer than 64 characters runs over `numbuf`
+
+- **Symptom.** `int x = 0000...0001;` with 80 zeros compiles (the
+  digits overwrite `c0`'s member-list state and block level); with 100
+  the digits reach stdout's stdio buffer.
+- **Mechanism.** `getnum()` (text 0852) stores every character of a
+  number into `numbuf[64]` (data 3c5c) without a bound: after it lie
+  `memlist`, `nmems`, `structhole`, `blklev` and `mossym`, then from data
+  3cba `libc.a`'s buffer of stdout - the `.1` not yet written out. v7
+  too.
+- **Evidence.** Emulator (80 and 100 zeros).
+- **This project.** Reproduced up to 94 characters (the image holds
+  those variables); refused beyond, where the original overwrites its own
+  pending output.
+- **Fix idea.** Stop storing at `numbuf + 63` (only a floating constant
+  needs the text).
+
+### C0-09 A long `# line` file name runs over `filename`
+
+- **Symptom.** `# 1 "<70 a's>"` makes every later message start with
+  the 64 a's and the name `symbuf` holds at the time
+  (`aaa...az:2: z undefined; func. y`).
+- **Mechanism.** `symbol()`'s `#` case (text 0440) copies the name into
+  `filename[64]` (data 0b40) without a bound; after it lie `symbuf`,
+  `hshused` and the first entries of `hshtab`. v7 too.
+- **Evidence.** Emulator (the trigger).
+- **This project.** Reproduced.
+- **Fix idea.** Stop at `filename + 63`.
+
+### C0-10 `conexp()` after a syntax error reads the null tree
+
+- **Symptom.** `struct s { int a : (; };` gives "Expression syntax" and
+  then "Field too long": the field's width after the syntax error is a
+  value from nowhere.
+- **Mechanism.** `conexp()` (text 21ce) returns `t->value` even when
+  `tree()` returned 0 (text 21fb: `mov ax,[di+8]`, DI 0): the word at
+  data 8, where `crt0` stored the code segment (the far pointers of
+  `docs/MUTOS_C_ABI.md` 2.2). Under the emulator that is 0x1000; on the
+  hardware wherever the kernel loaded the text. v7 reads address 8 too.
+- **Evidence.** Emulator (the trigger).
+- **This project.** Reproduced with the emulator's 0x1000 (`c0lib.c`'s
+  `c0_init()`); after an error the exit status is 1 either way.
+- **Fix idea.** Return 0 for a null tree.
+
+### C0-11 "undefined; func." before the first function
+
+- **Symptom.** `int a[y];` at the start of a file reports `y undefined;
+  func. ÿ^A` (the bytes 0377, 001), then "(Warning only)" and "Constant
+  required".
+- **Mechanism.** `tree()` (text 0e9c..0eb5) prints the name of `funcsym`,
+  13 bytes into it; before the first function definition `funcsym` is 0
+  and the name is read from data 000d - the high byte of `peeksym` (-1)
+  and `line`. v7 too.
+- **Evidence.** Emulator (the trigger).
+- **This project.** Reproduced.
+- **Fix idea.** Print the function's name only when `funcsym` is set.
+
+### C0-12 An enum's size is a stale register
+
+- **Symptom.** `enum e { A }; enum e { B };` gives no message, `static
+  enum e { A }; static enum e { B };` gives "e redeclared".
+- **Mechanism.** `strdec()` (text 3564) sets `elsize` only from a
+  structure's or union's member list; for an enum the register that holds
+  it (DI) still has the caller's value, `getkeywords()`'s storage class,
+  and that becomes the enum's `ssize` - 0 for none, 13 for `static`.
+  "%.8s redeclared" tests `ssize` when the tag gets a second body. v7
+  does not set `elsize` for an enum either.
+- **Evidence.** Emulator (the triggers).
+- **This project.** Reproduced (the port passes `getkeywords()`'s
+  storage class in, as the register does).
+- **Fix idea.** `elsize = 0` for an enum.
 
 ## `cpp`
 
@@ -424,9 +636,10 @@ No bug known; the real `ld` has not been run under the emulator yet
   address 0 (DX, the hashed switch's remainder, is 0 there) - `crt0`'s
   data word 4, never INT - so the `cbw` it was written for never comes
   from there. The char conversions tried get their `cbw` elsewhere.
-- **`c1`, an int division that overflows in `const()`** (-32768 / -1,
-  should `c1` itself fold one): the 8086 divide error would be a SIGFPE,
-  which `fpeintr()` reports as "floating point over or under flow" before
-  its `longjmp()` into `getree()`. Code reading; `mutos_c1` refuses.
+- **`c1`, an int division that overflows in `const()`** (-32768 / -1 or
+  / 1, should `c1` itself fold one - text 5492: `cwd` / `idiv di`): the
+  8086 divide error would be a SIGFPE, which `fpeintr()` reports as
+  "floating point over or under flow" before its `longjmp()` into
+  `getree()`. Code reading; `mutos_c1` refuses.
 - **`c1`, a STRASG's degree** is never set by `getree()`: the `a`/`b`
   traces print a leftover word. Only in the traces.

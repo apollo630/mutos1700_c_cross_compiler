@@ -19,6 +19,11 @@ kernel would, far enough for the compiler passes and the assembler:
     error with the error number in AX), CS:0004 grows the stack (chkstk:
     the request is granted as asked).
 
+Unicorn executes x86 code as an 80386; where that differs from the 8086
+in what these binaries compute - a shift or rotate by CL of 32 or more,
+a signed division whose quotient is -32768 - the instructions get hooks
+that do what the 8086 (and the V30) does (Emu._hook_8086()).
+
 System calls served: exit, read, write, open, close, creat, unlink,
 break, lseek, getpid, access, kill, signal, ioctl (always "not a tty").
 Signals: signal() records the handler (libc.a's per-signal trampoline);
@@ -104,7 +109,7 @@ class Emu:
     """One process: a loaded a.out image, its arguments and open files."""
 
     def __init__(self, image, args, cwd='.', stdin=None, stdout=None,
-                 stderr=None, root=None):
+                 stderr=None, root=None, eof_limit=None):
         magic, tsize, dsize, bsize = struct.unpack_from('<4H', image, 0)
         if magic not in (0o407, 0o411):
             raise ValueError('not a 0407/0411 a.out (magic %o)' % magic)
@@ -112,6 +117,12 @@ class Emu:
         self.data = image[16 + tsize:16 + tsize + dsize]
         self.cwd = cwd
         self.root = root
+        # eof_limit: stop the run after that many reads in a row that
+        # return nothing (a program reading past the end of a file for
+        # ever - c0 at some ends of file; each read is a system call
+        # here, so --max-insns would take minutes to stop it)
+        self.eof_limit = eof_limit
+        self.eof_reads = 0
         self.status = None
         self.insns = 0
         uc = Uc(UC_ARCH_X86, UC_MODE_16)
@@ -157,6 +168,7 @@ class Emu:
         uc.hook_add(UC_HOOK_CODE, self._trampoline,
                     begin=self.cbase + SYSCALL_OFF,
                     end=self.cbase + STKGROW_OFF)
+        self._hook_8086()
 
     # -- register and memory access, offsets within the data segment ----
     def reg(self, name):
@@ -184,6 +196,183 @@ class Emu:
         about to run (analysis hooks: function entries, return points)."""
         self.uc.hook_add(UC_HOOK_CODE, lambda uc, a, s, u: fn(self),
                          begin=self.cbase + off, end=self.cbase + off)
+
+    # -- the 8086 where Unicorn's 80386 differs ---------------------------
+    def _hook_8086(self):
+        """Unicorn executes x86 code as an 80386 does. Two of its
+        differences from the 8086 (and its clone K1810WM86,
+        docs/MUTOS1700_Assembler_as.pdf) and the V30 change what the
+        MUTOS binaries compute, so the instructions concerned get code
+        hooks that do what the 8086 does (a hook on an opcode byte inside
+        another instruction never fires - it never starts an instruction):
+
+        * a shift or rotate by CL (D2/D3) uses CL's low five bits on the
+          80386 (and the 80186), all of CL on the 8086 and the V30 ("temp
+          <- CL, while temp != 0" in the V20/V30 manual; the AP-186 note:
+          "the 8086 does not do this") - 1 << 40 is 256 under Unicorn, 0
+          on the hardware. _shift_cl() does nothing for CL < 32 and does
+          the 8086's shift for a register operand; a memory operand with
+          CL >= 32 is not modelled and stops the run;
+        * a signed division (F6/F7 /7) whose quotient is -32768 (-128 for a
+          byte) is a divide error on the 8086 (AP-186: "whenever the
+          absolute value of the quotient is greater than 7FFFH") and the
+          V30 (its manual: the most negative quotient is -32,767), not on
+          the 80186 and the 80386 - -32768 / 1. _idiv() stops the run with
+          a divide error there, as Unicorn does for the other faults.
+
+        Most such instructions cannot reach those cases and run often (c0
+        and c1 run some 20,000 shifts per kernel file): a shift right
+        after "mov cx,<n>" or "mov cl,<n>" with n < 32, and "cwd / mov
+        cx,<n> / idiv cx" with |n| >= 2, get no hook - unless something
+        could jump straight to the instruction: a relative jump or call in
+        the text with it as target, or a word in the text or data equal to
+        its offset (a jump table). The test may keep a hook needlessly,
+        never drop one wrongly."""
+        t = self.text
+        shifts = [i for i in range(len(t) - 1)
+                  if t[i] in (0xD2, 0xD3) and (t[i + 1] >> 3) & 7 != 6]
+        idivs = [i for i in range(len(t) - 1)
+                 if t[i] in (0xF6, 0xF7) and (t[i + 1] >> 3) & 7 == 7]
+        if not shifts and not idivs:
+            return
+        targets = set()
+        for i, b in enumerate(t):
+            if (0x70 <= b <= 0x7F or 0xE0 <= b <= 0xE3 or b == 0xEB) \
+                    and i + 1 < len(t):
+                targets.add((i + 2 + struct.unpack_from('<b', t, i + 1)[0])
+                            & 0xFFFF)
+            elif b in (0xE8, 0xE9) and i + 2 < len(t):
+                targets.add((i + 3 + struct.unpack_from('<H', t, i + 1)[0])
+                            & 0xFFFF)
+        for blob in (t, self.data):
+            for i in range(len(blob) - 1):
+                targets.add(struct.unpack_from('<H', blob, i)[0])
+        for i in shifts:
+            safe = ((i >= 3 and t[i - 3] == 0xB9
+                     and struct.unpack_from('<H', t, i - 2)[0] < 32)
+                    or (i >= 2 and t[i - 2] == 0xB1 and t[i - 1] < 32))
+            if not (safe and i not in targets):
+                self.uc.hook_add(UC_HOOK_CODE, self._shift_cl,
+                                 begin=self.cbase + i, end=self.cbase + i)
+        for i in idivs:
+            safe = (i >= 4 and t[i - 4] == 0x99 and t[i - 3] == 0xB9
+                    and t[i] == 0xF7 and t[i + 1] == 0xF9
+                    and abs(struct.unpack_from('<h', t, i - 2)[0]) >= 2
+                    and i - 3 not in targets)
+            if not (safe and i not in targets):
+                self.uc.hook_add(UC_HOOK_CODE, self._idiv,
+                                 begin=self.cbase + i, end=self.cbase + i)
+
+    def _ea(self, off):
+        """The data-segment offset of the memory operand of the instruction
+        whose ModRM byte is at text offset off + 1 (16-bit addressing; DS,
+        SS and ES are one segment in these binaries)."""
+        modrm = self.text[off + 1]
+        mod, rm = modrm >> 6, modrm & 7
+        if mod == 0 and rm == 6:
+            return struct.unpack_from('<H', self.text, off + 2)[0]
+        r = self.reg
+        base = (r('bx') + r('si'), r('bx') + r('di'), r('bp') + r('si'),
+                r('bp') + r('di'), r('si'), r('di'), r('bp'), r('bx'))[rm]
+        disp = (0 if mod == 0 else
+                struct.unpack_from('<b', self.text, off + 2)[0] if mod == 1
+                else struct.unpack_from('<H', self.text, off + 2)[0])
+        return (base + disp) & 0xFFFF
+
+    def _idiv(self, uc, addr, size, user):
+        off = addr - self.cbase
+        op, modrm = self.text[off], self.text[off + 1]
+        rm = modrm & 7
+        word = op & 1
+        if modrm >> 6 == 3:
+            if word:
+                d = self.reg(self._REG16[rm])
+            else:
+                w = self.reg(self._REG16[rm & 3])
+                d = (w >> 8) & 0xFF if rm & 4 else w & 0xFF
+        else:
+            a = self._ea(off)
+            d = self.word(a) if word else self.byte(a)
+        if word:
+            divisor = d - 0x10000 if d & 0x8000 else d
+            n = (self.reg('dx') << 16) | self.reg('ax')
+            dividend = n - (1 << 32) if n & 0x80000000 else n
+            least = -32768
+        else:
+            divisor = d - 0x100 if d & 0x80 else d
+            n = self.reg('ax')
+            dividend = n - 0x10000 if n & 0x8000 else n
+            least = -128
+        if divisor == 0:
+            return                          # Unicorn faults itself
+        q = abs(dividend) // abs(divisor)
+        if (dividend < 0) != (divisor < 0):
+            q = -q
+        if q == least:
+            uc.emu_stop()
+            raise RuntimeError('emulation stopped: an 8086 divide error at '
+                               '%04x:%04x (quotient %d - the 80386 Unicorn '
+                               'emulates does not fault there)'
+                               % (self.reg('cs'), off, q))
+
+    _REG16 = ('ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di')
+
+    def _shift_cl(self, uc, addr, size, user):
+        n = self.reg('cx') & 0xFF
+        if n < 32:
+            return
+        off = addr - self.cbase
+        op, modrm = self.text[off], self.text[off + 1]
+        kind, rm = (modrm >> 3) & 7, modrm & 7
+        if modrm >> 6 != 3:
+            uc.emu_stop()
+            raise RuntimeError('a shift of memory by CL = %d at %04x (the '
+                               '8086 uses all of CL, the emulator its low '
+                               'five bits; not modelled)' % (n, off))
+        bits = 16 if op & 1 else 8
+        if bits == 16:
+            name = self._REG16[rm]
+            v = self.reg(name)
+        else:
+            name = self._REG16[rm & 3]
+            w = self.reg(name)
+            v = (w >> 8) & 0xFF if rm & 4 else w & 0xFF
+        mask, top = (1 << bits) - 1, 1 << (bits - 1)
+        fl = uc.reg_read(UC_X86_REG_EFLAGS)
+        cf = fl & 1
+        for _ in range(n):                  # one bit at a time, as the 8086
+            last = v
+            if kind in (4, 0, 2):           # shl, rol, rcl
+                out = 1 if v & top else 0
+                v = ((v << 1) & mask) | (cf if kind == 2 else
+                                          out if kind == 0 else 0)
+            else:                           # shr, sar, ror, rcr
+                out = v & 1
+                v = (v >> 1) | (top if (kind == 7 and v & top)
+                                or (kind == 1 and out)
+                                or (kind == 3 and cf) else 0)
+            cf = out
+        if kind in (4, 0, 2):
+            of = (1 if v & top else 0) ^ cf
+        elif kind == 5:
+            of = 1 if last & top else 0
+        elif kind == 7:
+            of = 0
+        else:
+            of = (1 if v & top else 0) ^ (1 if v & (top >> 1) else 0)
+        fl = (fl & ~0x0801) | cf | (of << 11)
+        if kind >= 4:                       # shifts set SF, ZF, PF
+            fl &= ~0x00C4
+            fl |= (0x80 if v & top else 0) | (0x40 if v == 0 else 0)
+            fl |= 0x04 if bin(v & 0xFF).count('1') % 2 == 0 else 0
+        uc.reg_write(UC_X86_REG_EFLAGS, fl)
+        if bits == 16:
+            self.set_reg(name, v)
+        else:
+            w = self.reg(name)
+            self.set_reg(name, (w & 0x00FF) | (v << 8) if rm & 4
+                         else (w & 0xFF00) | v)
+        self.set_reg('ip', off + 2)
 
     # -- the kernel side ----------------------------------------------
     def _return_far(self, ax, bx=None, error=False):
@@ -258,6 +447,15 @@ class Emu:
                 return ret(EBADF, error=True)
             data = f.read(si) or b''
             self.uc.mem_write(self.dbase + cx, data)
+            if data:
+                self.eof_reads = 0
+            else:
+                self.eof_reads += 1
+                if self.eof_limit and self.eof_reads > self.eof_limit:
+                    self.status = None
+                    self.eof_stop = True
+                    self.uc.emu_stop()
+                    raise _Exit()
             return ret(len(data))
         if n == 4:                                   # write(fd, buf, n)
             f = self.fds.get(bx)
@@ -348,17 +546,21 @@ class Emu:
             except (OSError, ValueError):
                 pass
         if self.status is None:
+            if getattr(self, 'eof_stop', False):
+                raise RuntimeError('program reads past the end of a file for '
+                                   'ever (%d reads of nothing)' % self.eof_limit)
             raise RuntimeError('program stopped without exit at %04x'
                                % self.reg('ip'))
         return self.status
 
 
-def run_tool(tool, args, cwd='.', stdin=b'', max_insns=0, root=None):
+def run_tool(tool, args, cwd='.', stdin=b'', max_insns=0, root=None,
+             eof_limit=None):
     """Run a tool with captured output: (status, stdout, stderr)."""
     out, err = io.BytesIO(), io.BytesIO()
     emu = Emu(load_image(tool), [os.path.basename(tool)] + list(args),
               cwd=cwd, stdin=io.BytesIO(stdin), stdout=out, stderr=err,
-              root=root)
+              root=root, eof_limit=eof_limit)
     st = emu.run(max_insns)
     return st, out.getvalue(), err.getvalue()
 

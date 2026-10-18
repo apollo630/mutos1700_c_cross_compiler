@@ -15,7 +15,8 @@ directly, on random programs:
   `mutos_c1`, `mutos_as`) and executes the result. By default each
   program also goes through the original `c0` and `c1` under
   `tests/realbin/mutosemu.py` (the oracle, since 2026-10-13, when
-  `mutos_c1` became a port of the real `c1`): `mutos_c0`'s `.1`/`.2` and
+  `mutos_c1` became a port of the real `c1`; `mutos_c0` is the port of
+  the real `c0` since 2026-10-18): `mutos_c0`'s `.1`/`.2` and
   `mutos_c1`'s `.s`, messages and exit status must be the original's
   byte for byte. `--oracle none` runs the semantic check alone (no
   `unicorn` needed).
@@ -115,10 +116,9 @@ The tools are taken from `src/` (build first, `make`), or from
 
 ## What counts as a problem
 
-Each program ends in one of: **correct**; **refused** - `mutos_c0`
-stopped with an explicit "not yet supported" diagnostic, or `mutos_c1`
-refused where the real `c1` traps or reads state the port does not model
-(exit status 2) - the compiler working as designed; **WRONG** - it
+Each program ends in one of: **correct**; **refused** - `mutos_c0` or
+`mutos_c1` refused where the real `c0` or `c1` traps or reads state the
+port does not model (exit status 2) - the compiler working as designed; **WRONG** - it
 compiled, but some variable at some point, or the return value, differs
 from C semantics; or **BAD** - a crash, a sanitizer report or an
 `internal:` diagnostic, output `mutos_as` rejects, output `x86sim.py`
