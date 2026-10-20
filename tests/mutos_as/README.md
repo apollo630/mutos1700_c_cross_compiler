@@ -1,8 +1,9 @@
 # `tests/mutos_as/` — the "-L" real-hardware experiment (concluded)
 
 `kernel_opt/` and `kernel_nonopt/` each hold a real-hardware-linked
-`<name>.o.golden` per `<name>.s` (real, non-optimized and optimized MUTOS
-1700 `c1` kernel output — see each `.s`'s own header). Every one of those
+`<name>.o.golden` per `<name>.s` (real MUTOS 1700 kernel sources: the
+compiler's non-optimized and optimized - `c2`'s - output, and hand-written
+assembler such as `mch.s` — see each `.s`'s own header). Every one of those
 already-committed goldens carries compiler-internal `L`-number labels in
 its symbol table. `as.1`'s documented default **excludes** those labels
 unless `-L` is given (`docs/MUTOS1700_Assembler_as.pdf` sect. 3.1); `mutos_as`
@@ -67,8 +68,9 @@ to assemble every real kernel `*.s` already in that directory with the
 - `make -f Makefile.mutos noL` → `<name>.o`, assembled *without* `-L`.
 - `make -f Makefile.mutos L` → `<name>.oL`, assembled *with* `-L`.
 
-Both use a genuine two-suffix rule (`.s.o:` / `.s.oL:`, confirmed real-
-`make(1)`-compatible — see `tests/mutos_cc/Makefile.mutos`'s own header)
+Both use a genuine two-suffix rule (`.s.o:` / `.s.oL:` - two-suffix rules
+are what the real `make(1)` manpage documents, see `docs/devlog/m4_foundations.md`'s
+"MUTOS 1700 host-tooling findings")
 instead of one explicit target per file, so the file itself stays tiny no
 matter how many `*.s` files exist; `kernel_opt`'s 61 automated files (62
 minus the `mch_insw_outsw.s` exception below) would otherwise risk the
@@ -118,3 +120,10 @@ Master Integrity rule, since these were always "candidates" pending a
 diff, never confirmed goldens). It was smoke-tested locally and never
 exercised for real, since no `.o`/`.oL` pair was ever produced. It is kept
 for the same reason as the `Makefile.mutos` files above.
+
+## Later finding (2026-10-20)
+
+Run under the emulator (`../realbin/`), the original `as` turned out to
+lack the manual's `-W`, `-D` and `-T` as well (each "Unknown option ...
+ignored."), and to know `-e`, `-g`, `-C` and `-l` instead - see
+`docs/MUTOS_ORIGINAL_BUGS.md`, AS-01.

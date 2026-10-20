@@ -9,7 +9,8 @@ missing from the corpus (no corpus file has a constant left operand -
 assembles looks just like right code. These two scripts check that
 directly, on random programs:
 
-- `fuzz_c.py` generates random K&R programs inside `mutos_c0`'s grammar,
+- `fuzz_c.py` generates random K&R programs inside the subset `x86sim.py`
+  executes (the grammar the old, hand-written `mutos_c0` accepted),
   computes what each one must do under C semantics on a 16-bit `int`,
   runs it through the real pipeline (`mutos_cpp -P`, `mutos_c0`,
   `mutos_c1`, `mutos_as`) and executes the result. By default each
@@ -132,7 +133,7 @@ included. About 0.9% of the programs are such (2026-10-14): the real
 `c1`'s code tables keep PDP-11 assumptions - `com` and `mov` set the
 condition codes there, the 8086's `not` and `mov` set no flags - so `~x
 || y` or `!y >= 0` branches on stale flags, and `e * 0` loses `e`'s side
-effects (v7's `acommute()`); see `docs/DEVLOG.md`'s "The port of
+effects (v7's `acommute()`); see `docs/devlog/originals_and_ports.md`'s "The port of
 `c1`".
 
 The check is not only on the final state: the generator puts a marker
@@ -150,10 +151,11 @@ right by luck - most often a wrong value that is only truth-tested
 (`if (7 - x)` is non-zero exactly when `x - 7` is) or that happens to
 coincide (`0 - a` and `a - 0` when `a` is 0). When `mutos_c0` stopped
 reversing constant left operands, 6000 programs showed 4 such
-"regressions": three were exactly these masked wrong results, now
-refused because `c1` has no confirmed shape for `const - expression`,
-and one was a constant `?:` condition, which `c0` now emits as v7's real
-`QUEST` tree and `c1` refuses (see `docs/DEVLOG.md`).
+"regressions": three were exactly these masked wrong results, then
+refused because `c1_gen.c` had no confirmed shape for `const - expression`,
+and one was a constant `?:` condition, which `c0` then emitted as v7's real
+`QUEST` tree and `c1_gen.c` refused (see `docs/DEVLOG.md`; both passes are
+ports of the originals now and compile all of these).
 
 ## What is generated, and why it is shaped this way
 
@@ -198,7 +200,7 @@ The first runs found two `mutos_c1` wrong-code bugs, which the generator
 then avoided behind opt-in flags: side effects in an operand C does not
 evaluate were executed anyway (`z = x ? y++ : 4;` always incremented
 `y`), and a postfix `++`/`--` in an `if`/`while` condition happened only
-on the true path. Both were fixed on 2026-09-24 (see `docs/DEVLOG.md`'s
+on the true path. Both were fixed on 2026-09-24 (see `docs/devlog/m4_handwritten.md`'s
 "Conditional evaluation" section); the flags are gone and the default
 run generates both constructs.
 

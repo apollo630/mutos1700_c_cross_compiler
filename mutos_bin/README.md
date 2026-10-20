@@ -23,5 +23,16 @@ data space: the text in one 64K segment, data, BSS and stack in another.
 
 `tests/realbin/` runs them under an 8086 emulator: the real `cpp`, `c0`,
 `c1` and `as` reproduce the project's goldens there (see its
-`README.md`), which makes them an oracle for any input. `c1`'s code
-tables, read from its data segment, are in `tests/realbin/c1_tables.txt`.
+`README.md`), which makes them an oracle for any input; `c2` gives the
+optimized kernel sources of `tests/mutos_as/kernel_opt/` from the
+`11_kernel` goldens, and `ld` and `cc` run too (`cc` with `fork`/`exec`
+faked - 2026-10-20). `c1`'s code tables, read from its data segment, are
+in `tests/realbin/c1_tables.txt`. `c0`, `c1` are ported
+(`src/mutos_cc/`), `cpp`, `ld`, `cc` and `c2` are to be
+(`docs/TOOLCHAIN_PLAN.md`).
+
+To follow from the hardware (decided 2026-10-20): `make`, `ar`, `ranlib`,
+and `lorder`, `tsort`, `nm`, `size`, `strip` as MUTOS makefiles need
+them - same naming, same rules. Not present, but referred to by the
+original `cc`: `c0f`, `c1f`, `asf` (its `-f` passes), and in `/lib`
+`mcrt0.o`, `crt2.o`, `crt20.o`, `libf.a`, `lib2.a`.

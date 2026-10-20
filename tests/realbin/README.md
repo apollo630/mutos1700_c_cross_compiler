@@ -88,7 +88,7 @@ operator and type, and the register returned, `d`: every `delay()` call;
 - `c1` is v7's `c1` ported to the 8086: the same functions in the same
   order, the same data structures, and code tables in v7's own `cvopt`
   encoding with MUTOS assembler text. The goldens use 160 of the tables'
-  496 rows. See `docs/DEVLOG.md`'s "The original binaries" and
+  496 rows. See `docs/devlog/originals_and_ports.md`'s "The original binaries" and
   `docs/C1_PORT_PLAN.md`.
 
 ## The port against it (2026-10-13)
@@ -114,6 +114,39 @@ operator and type, and the register returned, `d`: every `delay()` call;
   refused by the port (`docs/C0_PORT_PLAN.md`, section 4;
   `docs/MUTOS_ORIGINAL_BUGS.md`, C0-01 .. C0-12).
 
+## The other originals (2026-10-20)
+
+Run while planning the driver (`../../docs/TOOLCHAIN_PLAN.md`; findings in
+`../../docs/devlog/originals_and_ports.md`, "The other originals as
+oracles"):
+
+- **`c2`** runs as it is (`mutosemu.py c2 in.s out.s`). On the nine
+  `tests/mutos_cc/11_kernel` `.s` goldens it gives
+  `tests/mutos_as/kernel_opt/`'s `delay.s`, `prim.s`, `mem.s`, `pipe.s`,
+  `nami.s`, `fio.s`, `v24.s`, `tty.s` and `amx.s` byte for byte - the
+  optimized kernel sources are its output, which makes it the oracle
+  for a port of `c2`.
+- **`ld`** runs through a link with the real `crt0.o` and `libc.a`, but
+  asks for system calls this emulator does not serve yet (`fstat`,
+  `link`, `umask`, `chmod` - answered with `EINVAL`); without `link` its
+  output stays in its temporary file `/tmp/lda<pid>`, which it then
+  removes, so no `a.out` is left to compare yet (step 0 of the plan
+  serves them). What it does is visible all the same: `-lc` is opened as
+  `/lib/libc.a`, then `/usr/lib/libc.a` (under `--root`); `-r` and `-d`
+  are refused.
+- **`cc`** forks and execs its passes, which this emulator cannot. A
+  scratch harness built on the emulator's `Emu` class faked them - at `fork` it
+  snapshots the process and returns 0, at the child's `exece` it records
+  the path and `argv` and resumes the parent as if the child had exited
+  0, `wait` returns that child - and so listed every pass `cc` runs with
+  its arguments. Serving these calls in `mutosemu.py` and a tracer for
+  `cc` in this directory are step 0 of the plan, so that the port of `cc`
+  is checked against the original the way the ports of `c0` and `c1`
+  are.
+- **`as`**: the options it knows (`-o`, `-e`, `-g`, `-C`, `-l`) and its
+  mnemonic table (the 8087 set, no 80186 mnemonic) - the basis of the
+  planned differential fuzzer for `mutos_as`.
+
 ## Limits of the emulator
 
 - Unicorn executes x86 code as an 80386. Where that changes what these
@@ -133,7 +166,7 @@ operator and type, and the register returned, `d`: every `delay()` call;
 - System calls served: `exit`, `read`, `write`, `open`, `close`, `creat`,
   `unlink`, `break`, `lseek`, `getpid`, `access`, `kill`, `signal`,
   `ioctl` (always "not a tty"); anything else gets `EINVAL` and a
-  warning. No `fork`/`exec`/`wait`. A signal is delivered when the
+  warning. No `fork`/`exec`/`wait` yet (see above). A signal is delivered when the
   program `kill()`s itself (libc.a raises SIGFPE that way): a caught one
   through its handler, which is then reset to the default, as v7's
   kernel does; a default one ends the program (status 128 + the

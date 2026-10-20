@@ -18,6 +18,11 @@ used for INSW/OUTSW (`tests/mutos_as/kernel_opt/mch_insw_outsw.s`):
 `nasm_crosscheck.asm` is a supporting file, not a mutos_as test file - see
 "Independent-encoder cross-check" below.
 
+**Planned (2026-10-20, `docs/TOOLCHAIN_PLAN.md` section 4):** these
+instructions move behind `mutos_as`'s switch `-1`; without it `mutos_as`
+will do what the original `as` does with them (a word referring to an
+undefined external). The files here are then assembled with `-1`.
+
 ## Verification already performed on these seven files
 
 - All seven assemble cleanly with the current `mutos_as` (zero errors).
@@ -43,8 +48,9 @@ used for INSW/OUTSW (`tests/mutos_as/kernel_opt/mch_insw_outsw.s`):
   even-byte grid. This is a real, working confirmation of one of this
   project's more delicate documented conventions, on brand-new code paths.
 
-None of this is a substitute for a real hardware-linked golden file (see
-the main chat response for why) - it only establishes that these seven
+None of this is a substitute for a real hardware-linked golden file (no
+real MUTOS 1700 tool supports these opcodes - the original `as` has none of
+them) - it only establishes that these seven
 files are well-formed, that mutos_as's output for them decodes back to
 what was intended by an independent, actively-maintained disassembler, and
 that it matches an independent, actively-maintained assembler wherever the
@@ -67,7 +73,7 @@ encoding is unambiguous.
    place a real vendor assembler's behavior (once you have a sample) could
    turn out to disagree with.
 
-2. **The literal command you proposed
+2. **The command first proposed for decoding
    (`x86dis -L -e 16 -s intel -f file.o`) silently truncates its output**
    the moment the byte stream contains a `ret` (0xC3) before the end of the
    segment - it stops decoding right there, with no error or warning, and
@@ -75,8 +81,8 @@ encoding is unambiguous.
    `pusha_popa_test.o`: it printed only the first 4 instructions (5 of 48
    text bytes) with that exact invocation. `x86dis -L -r 0 <len> -s intel`
    (explicit range instead of `-e`/forward-trace mode) decodes the full
-   buffer correctly instead. See the main chat response for why this
-   matters for a golden-reference workflow specifically.
+   buffer correctly instead. For a golden-reference workflow that matters:
+   a silently truncated listing looks complete.
 
 3. **`x86dis`'s 16-bit-mode `rep movs` decode prints 32-bit register names**
    (`es:[edi], ds:[esi]`) even with `-L` (legacy/16-bit mode) set, where
@@ -89,8 +95,7 @@ encoding is unambiguous.
 `nasm_crosscheck.asm` re-encodes a representative instruction from each of
 the seven families using NASM (`nasm -O0 -f bin -l crosscheck.lst
 nasm_crosscheck.asm`), for direct comparison against the corresponding
-mutos_as-produced bytes. This is the methodology recommended in the main
-chat response for anything that has one unambiguous correct encoding under
+mutos_as-produced bytes. This is the methodology for anything that has one unambiguous correct encoding under
 the plain 80186 ISA (PUSHA/POPA/INSB/OUTSB/LEAVE, ENTER, BOUND, and the
 register/register or fits-the-marker forms of the shift-count and IMUL-imm
 families). It cannot, by itself, validate design choices unique to this

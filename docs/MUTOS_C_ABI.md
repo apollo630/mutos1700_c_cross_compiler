@@ -375,8 +375,9 @@ four functions with frames of 92, 94, 96 and 98 bytes): all four are
 allocated inline (`sub sp,*92.` … `sub sp,*98.`). A frame is always even, so
 no size is left open: inline up to 98 bytes, the guard from 100 - the
 threshold is `(98,100]`. `mutos_c1` emits `sub sp,N` below 100 bytes and
-`mov ax,N` / `call chkstk` from 100 (`MCC_CHKSTK_MIN`), and refuses no frame
-size.
+`mov ax,N` / `call chkstk` from 100, and refuses no frame size - since the port
+(2026-10-13) by the original `c1`'s own rule: its option `s<n>`, default 100
+(`c1_gen.c`'s constant `MCC_CHKSTK_MIN` before).
 
 ### 1.10 What is *not* part of this convention
 
@@ -646,15 +647,17 @@ how each convention was first confirmed.)
       `03_recfact`). A pointer returns exactly like an `int` (`05_arrptr/
       07_strlibc`'s `char *strcpy()`); a `char` returned from an `int`
       function is widened in `AX` with `movb ax,<mem>` / `cbw`
-      (`10_integ/04_strrev`'s `return buf[0];`). A `char`-returning
-      function is not yet supported.
+      (`10_integ/04_strrev`'s `return buf[0];`). (A `char`-returning
+      function was not supported by `c1_gen.c`; the port compiles it as the
+      original does.)
 - [x] Return: `DX:AX` (`DX`=high) for `long` (§1.5). Implemented and verified
       (`02_long/03_retval`: `mov ax,si / mov dx,di` before `jmp cret`, and
       `mov di,dx / mov si,ax` after a call).
-- [~] `long` = 2 words, high word at the lower address/offset, everywhere (locals,
+- [x] `long` = 2 words, high word at the lower address/offset, everywhere (locals,
       by-reference, by-value parameters) (§1.6) — **implemented and verified**
       for locals, constants and by-value parameters (all of `02_long`); a
-      `long` read or written through a pointer is not yet supported.
+      `long` read or written through a pointer, which `c1_gen.c` refused, the
+      port compiles as the original does.
 - [x] Epilogue: `jmp cret` (shared routine: `lea sp,[bp-4] / pop si / pop di /
       pop bp / ret`) (§1.2). Implemented and verified (`c1_gen.c`'s
       `RETRN` handler).
@@ -675,12 +678,15 @@ how each convention was first confirmed.)
       after the call - `fltprobe/p22_long2`'s `l *= i` (`call almul`, the int
       widened in `DX:AX` and pushed) and `p34_long5`'s `l /= m` (`mov di,m+2` /
       `push di` / `mov di,m` / `push di` / `lea di,l` / `push di` / `call
-      aldiv`); `%=` (`alrem`) is inferred the same way.
-- [ ] `crt0` (own object, real or reimplemented) must: read `argc`/`argv` off the
+      aldiv`); `%=` (`alrem`) the same way (from the original's code tables
+      since the port).
+- [x] `crt0` (own object, real or reimplemented) must: read `argc`/`argv` off the
       initial `sp`, scan for the NULL `argv` terminator, set `_environ`, call `_main`
       with `(argc, argv, envp)` per the standard ABI, then call `exit()` (not raw
       `_exit()`) with `main`'s return value, with an infinite-loop safety net after
-      the call (§2.2, §2.4). **Not yet implemented** — out of `mutos_c1`'s own
-      scope; either a hand-written `mutos_cc` crt0 object or linking against
-      the real `crt0.o` will need to satisfy this once programs are actually
-      linked and run, not just compiled to `.s`.
+      the call (§2.2, §2.4). Out of `mutos_c1`'s own scope - and settled
+      (2026-10-20, `docs/TOOLCHAIN_PLAN.md`): the real `crt0.o` is used, not a
+      reimplementation. The driver `mutos_cc` passes `$MUTOS_ROOT/lib/crt0.o`
+      to `ld` as the original `cc` passes `/lib/crt0.o`; the build puts the
+      real object there. Linked that way, compiled programs already run
+      under an 8086 emulator (the `08_float` goldens, `libcatof.py`).

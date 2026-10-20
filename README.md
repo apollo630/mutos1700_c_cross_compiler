@@ -7,5 +7,13 @@ MUTOS 1700 was a lesser-known operating system for the East German (DDR) office 
 ### Project Goals & Philosophy
 
 * **100% V7 Compatibility**: Modernized to run on current systems while remaining strictly faithful to the original Unix V7 philosophy.
-* **Historical Baseline**: Built directly from the original source code of Dennis Ritchie’s historic V7 compiler (`cc`), assembler (`as`), and linker (`ld`).
+* **Historical Baseline**: Built on the historic V7 sources (Dennis Ritchie’s compiler `cc`, the linker `ld`, John F. Reiser’s preprocessor `cpp`) and on the original MUTOS 1700 binaries themselves: the compiler passes `c0` and `c1` are ports of those binaries, read with the V7 sources as the scaffold and checked against the originals running under an 8086 emulator; the other tools are to follow the same way.
 * **Cross-Compilation**: Seamlessly compile legacy 16-bit x86 UNIX binaries directly from modern 64-bit Linux environments.
+
+### Where to read on
+
+* [`STATUS.md`](STATUS.md) — what is built and verified, tool by tool.
+* [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md) — the decisions and the order of the work ahead.
+* [`CLAUDE.md`](CLAUDE.md) — the project guide: layout, rules, roadmap.
+* [`docs/DEVLOG.md`](docs/DEVLOG.md) — the development log (index of `docs/devlog/`).
+* [`docs/MUTOS_C_ABI.md`](docs/MUTOS_C_ABI.md), [`docs/MUTOS_ORIGINAL_BUGS.md`](docs/MUTOS_ORIGINAL_BUGS.md) — the calling convention, and the bugs found in the original binaries.

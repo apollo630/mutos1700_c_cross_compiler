@@ -1,8 +1,8 @@
 # Bugs of the original MUTOS 1700 tools
 
 This file collects every bug found in the original MUTOS 1700 binaries -
-`c0`, `c1`, `as`, `ld`, `cpp` and `libc.a` (and `c2` once Milestone 5 reads
-it) - in one place, for the day this project offers to fix them (a
+`c0`, `c1`, `as`, `ld`, `cpp` and `libc.a`, and `c2`, `cc`, `make`, `ar` and
+`ranlib` as their ports read them (`docs/TOOLCHAIN_PLAN.md`) - in one place, for the day this project offers to fix them (a
 `mutos_*` option, say, that leaves the faithful default alone). Until then
 the project's tools reproduce the original's behaviour wherever it can be
 reproduced, bugs included, and refuse where it cannot (see each entry).
@@ -22,7 +22,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-18.
+Last updated: 2026-10-20.
 
 ## Overview
 
@@ -46,8 +46,8 @@ Last updated: 2026-10-18.
 | L-05 | `libc.a` `dmath.o` | `pmuld` takes one partial product from the wrong word: `dmul` not correctly rounded | golden, emulator | modelled (`as`) |
 | L-06 | `libc.a` `ldexp` | the exponent wraps silently | golden | modelled (`as`) |
 | L-07 | `libc.a` `atof` | 5\*\*k overflows from k = 55: valid constants below about 1e-38 raise SIGFPE | golden | reproduced (`as`), modelled (`c1`) |
-| AS-01 | `as` | `-L` documented, not implemented ("Unknown option L ignored") | real hardware | not reproduced (`mutos_as` has no `-L` either way) |
-| AS-02 | `as` | unknown mnemonics (`insw`, `outsw`) assembled silently as undefined externals | emulator | not reproduced (`mutos_as` knows them) |
+| AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g`/`-C` planned) |
+| AS-02 | `as` | an unknown mnemonic (`insw`, `pusha`, `enter`, ...) assembled silently as a word with an undefined external | emulator | not reproduced (`mutos_as` knows the 80186 ones; planned: as the original without `-1`) |
 | AS-03 | `as` | the floating-overflow abort message prints garbage where a file name belongs | real hardware | not reproduced |
 | C0-01 | `c0` | folding `-32768 / -1`, `-32768 / 1` (or `%`) faults (8086 divide error) | emulator | refused |
 | C0-02 | `c0` | reads past the end of the file for ever: a name, a comment or a `#` line that runs into it | emulator, fuzzing | refused |
@@ -62,7 +62,8 @@ Last updated: 2026-10-18.
 | C0-11 | `c0` | "undefined; func." before the first function prints bytes from data 000d | emulator | reproduced |
 | C0-12 | `c0` | an enum's size is a stale register: whether a redefined enum tag is reported depends on the storage class | emulator | reproduced |
 
-`cpp` and `ld`: no bug known (see the sections below).
+`cpp`, `ld` and `cc`: no bug known (see the sections below; one `cc` behaviour is
+listed under "Suspect").
 
 ## `c1`
 
@@ -372,23 +373,37 @@ up in the output, and into every MUTOS program. The text offsets are
 
 ## `as`
 
-### AS-01 `-L` is not implemented
+### AS-01 Documented options not implemented, others undocumented
 
 - **Symptom.** `as -L ...` prints "Unknown option L ignored" and
-  assembles as without it; `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1
-  documents the option.
-- **Evidence.** Real hardware (`docs/DEVLOG.md`, the `-L` experiment).
-- **This project.** Nothing depends on it.
+  assembles as without it; `docs/MUTOS1700_Assembler_as.pdf` documents
+  the option (`as [-LWDT] [-o <output>]`). So do the other three: `-W`
+  (no error messages), `-D` and `-T` (debug and trace output) - each
+  gives "Unknown option ... ignored." too. The binary instead knows
+  `-e` (only external symbols in the symbol table), `-g`, `-C` and `-l`
+  (no effect seen yet; the original `cc` always passes `-gC`). Options
+  are read letter by letter.
+- **Evidence.** Real hardware for `-L` (`docs/DEVLOG.md`, the `-L`
+  experiment); emulator for the others (2026-10-20,
+  `docs/devlog/originals_and_ports.md`).
+- **This project.** Nothing depends on `-L`. `mutos_as` implements `-W`
+  as the manual describes it; it is to accept `-g`/`-C`
+  (`docs/TOOLCHAIN_PLAN.md`, decision 9). What `-g`, `-C` and `-l` do is
+  to be read in the binary.
+- **Fix idea.** Implement the manual's options, or correct the manual.
 
 ### AS-02 Unknown mnemonics become undefined symbols
 
 - **Symptom.** `insw` and `outsw` (80186) assemble, without a message,
   as one-word references to undefined external symbols `insw` and
-  `outsw`.
+  `outsw` - and so does every identifier the original does not know as an
+  instruction at the start of a statement (`pusha`, `enter`, 2026-10-20):
+  it is read as an expression. The link then fails with "Undefined".
 - **Evidence.** Emulator (`tests/mutos_as/kernel_opt/mch_insw_outsw`,
-  `check_real.py` lists it apart).
-- **This project.** `mutos_as` assembles them as the instructions (an
-  extension, like its other 80186 opcodes).
+  `check_real.py` lists it apart; the other mnemonics 2026-10-20).
+- **This project.** `mutos_as` assembles the 80186 instructions it knows
+  (an extension); planned (`docs/TOOLCHAIN_PLAN.md`, section 4): only
+  with `-1`, without it as the original.
 - **Fix idea.** Report an unknown mnemonic in operator position.
 
 ### AS-03 Garbage in the floating-overflow message
@@ -627,8 +642,17 @@ first and leaves the name unexpanded in the second.
 
 ## `ld`
 
-No bug known; the real `ld` has not been run under the emulator yet
-(`tests/realbin/` runs `cpp`, `c0`, `c1` and `as`).
+No bug known. Run under the emulator for the first time on 2026-10-20 (a
+link through to its temporary file; the emulator does not serve `link`
+yet): `-l` searches `/lib`, then `/usr/lib`; `-r` and `-d` are refused
+("-r and -d flags not supported", exit status 4) - a limit, not a bug;
+`mutos_ld` keeps both as an extension.
+
+## `cc`
+
+No bug known; traced under the emulator on 2026-10-20 with `fork` and
+`exece` faked (`docs/devlog/originals_and_ports.md`). One behaviour is
+listed under "Suspect".
 
 ## Suspect, no wrong output found
 
@@ -643,3 +667,11 @@ No bug known; the real `ld` has not been run under the emulator yet
   `getree()`. Code reading; `mutos_c1` refuses.
 - **`c1`, a STRASG's degree** is never set by `getree()`: the `a`/`b`
   traces print a leftover word. Only in the traces.
+- **`cc`, `-o` with a `.c` or `.o` name**: v7's `cc` refuses it ("Would
+  overwrite"); the MUTOS `cc` takes the name as an input file as well
+  and writes the output under the name without suffix and directory -
+  `cc -o hello.c x.o` compiles `hello.c` and links `-o hello hello.o
+  x.o`, `cc -o dir/p.o x.o` links `-o p dir/p.o x.o` (the output in the
+  current directory, not in `dir/`). Possibly meant (no source file is
+  overwritten); traced under the emulator, 2026-10-20. The port of `cc`
+  reproduces it and reads the code that does it.
