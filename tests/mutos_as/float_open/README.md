@@ -127,6 +127,6 @@ stop with `*** Error code 4`.
    and reports "MODEL CONTRADICTED" if a modelled constant fits no
    combination. Then update `fltconst.c` and `fltmodel.py`, move the
    probe and its golden to `../float_coverage/` (its `Makefile`/
-   `Makefile.mutos`), and update `STATUS.md`'s open item 7, `CLAUDE.md`'s
-   "Next up" and `docs/DEVLOG.md` in the same change (Workflow
-   Guideline 6).
+   `Makefile.mutos`), and update `STATUS.md`'s open item 7 and the
+   development log (`docs/devlog/m2_as_float.md`) in the same change
+   (Workflow Guideline 6).

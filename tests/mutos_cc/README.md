@@ -1,10 +1,13 @@
 # mutos_cc Milestone 4 — K&R C Test Corpus
 
 Purpose: give `mutos_cc`/`mutos_c0`/`mutos_c1` an incremental, construct-by-
-construct verification corpus **before any code generator exists**, using
-exactly the same methodology that already got Milestone 3 (`mutos_cpp`) to
-"complete, byte-for-byte identical to real hardware" — see `STATUS.md` and
-`tests/mutos_cpp/run_goldens.sh` in the main repo:
+construct verification corpus - written **before any code generator
+existed**, using exactly the same methodology that already got Milestone 3
+(`mutos_cpp`) to "complete, byte-for-byte identical to real hardware" — see
+`STATUS.md` and `tests/mutos_cpp/run_goldens.sh` in the main repo. Since the
+ports of `c1` (2026-10-13) and `c0` (2026-10-18) every golden here is
+reproduced at every stage; the plan below is how the corpus was meant to be
+used, and was:
 
 1. This corpus is compiled with the **real, unmodified `cc`** on real MUTOS
    1700 hardware (or an accurate emulator) — and, separately, run through
@@ -14,11 +17,10 @@ exactly the same methodology that already got Milestone 3 (`mutos_cpp`) to
    (`*.s.golden`/`*.i.golden`, parallel to Milestone 3's `*.i.golden`
    naming; `*.1.golden`/`*.2.golden` plus base64 companions for the binary
    `temp1`/`temp2` streams).
-3. Once `mutos_c1` exists, its output is diffed byte-for-byte against the
-   `.s` goldens, exactly like `mutos_as`/`mutos_cpp` are diffed today —
-   and, separately, once `mutos_c0` exists, *its* output can be diffed
-   against the `.1`/`.2` goldens on its own, before `mutos_c1` even needs
-   to be ready. That's the whole point of capturing this boundary
+3. `mutos_c1`'s output is diffed byte-for-byte against the `.s` goldens,
+   exactly like `mutos_as`/`mutos_cpp` are diffed — and, separately,
+   `mutos_c0`'s output against the `.1`/`.2` goldens on its own, which let
+   it be checked before `mutos_c1` was ready. That's the whole point of capturing this boundary
    directly instead of only the final assembly: see `docs/DEVLOG.md`'s
    Milestone 4 "c0/c1 process split" section for why an inspectable IR
    boundary was worth keeping in the first place.
@@ -196,7 +198,7 @@ the initial per-file breakdown and "The port of `c0`".
 real `chkstk` stack-probe threshold was only bounded to between 76 and 256
 bytes by the existing `libc.a` corpus (largest plain `sub sp,N` seen: `N=76`;
 smallest `call chkstk` seen: `N=256` — nothing in between has been
-observed). `frame080.c` through `frame300.c` are six otherwise-identical
+observed). `02_frame080.c` through `07_frame300.c` are six otherwise-identical
 files whose *only* difference is a local buffer of 80/128/176/224/256/300
 bytes. Compiling all six on real hardware and checking which ones emit
 `call chkstk` instead of a plain `sub sp,N` pins the real cutoff down for
@@ -282,23 +284,22 @@ modern host:
 make goldens
 ```
 
-This runs `cpp -P <name>.c > <name>.i` followed by
-`/lib/c0 <name>.i <name>.1 <name>.2` for every test case — feeding `c0`
-`cpp`'s *output*, never the raw `.c`, exactly like the real `cc` driver
-does internally (see the Makefile comment for why that distinction
-matters for getting byte-identical `temp1`/`temp2`). `temp1`/`temp2` are
-raw binary tagged byte streams (`v7/cc/c04.c`'s `outcode()`), not text, so
-`make goldens` gives them the same binary+base64 treatment already used
+(The `.i`/`.1`/`.2` files it packages were made on MUTOS by `cpp -P <name>.c
+> <name>.i` followed by `/lib/c0 <name>.i <name>.1 <name>.2` - `make
+intermediates`, `Makefile.mutos` or `gen_mutos.sh` - feeding `c0` `cpp`'s
+*output*, never the raw `.c`, exactly like the real `cc` driver does
+internally; see the Makefile comment for why that distinction matters for
+getting byte-identical `temp1`/`temp2`.) `temp1`/`temp2` are raw binary
+tagged byte streams (`v7/cc/c04.c`'s `outcode()`), not text, so `make
+goldens` gives them the same binary+base64 treatment already used
 elsewhere in this project for `tests/mutos_as/kernel_opt/`'s `*.o.golden`/`*.o.golden_base64.txt` pairs:
 `<name>.1.golden`/`<name>.2.golden` (raw bytes) plus
 `<name>.1.golden.base64.txt`/`<name>.2.golden.base64.txt` (base64 text, so
 the content stays inspectable without a binary-capable viewer).
 
 Ship the resulting `*.s.golden`/`*.i.golden`/`*.1.golden`/`*.2.golden`
-tree back; the `.s.golden` part drops straight in as a sibling to
-`tests/mutos_cpp/`'s `*.i.golden` corpus once `mutos_c0`/`mutos_c1` exist
-to diff against — and the `.1.golden`/`.2.golden` part lets `mutos_c0`
-alone be verified well before `mutos_c1` is ready.
+tree back; `run_goldens.sh` picks up every file that has goldens, with no
+script change.
 
 ## Caveats
 
@@ -314,7 +315,8 @@ alone be verified well before `mutos_c1` is ready.
 - `float`/`double` files are compile-only probes of the front end's type
   handling; nothing here assumes a working FPU emulation path end-to-end.
   (The real compiler turns them into calls of `libc.a`'s software
-  floating-point runtime - see `src/mutos_cc/README.md`'s "Floating point".)
+  floating-point runtime - see "Floating point" in
+  `docs/history/cc_current_scope.md`.)
 - This corpus does not exercise the MUTOS **kernel-specific** macros
   (`M7100`/`ASK`/`IFSS`/`V24`/`V30IDE`) used by Milestone 3's kernel-source
   golden corpus (`tests/mutos_cpp/c/`) — those are board-configuration
@@ -334,9 +336,11 @@ alone be verified well before `mutos_c1` is ready.
   flow (not just its flag-parsing) makes `-P` stop cc dead right after
   `cpp`, before `-S`'s effect is ever reached, for every file, no matter
   what else is on the command line. The `.s`-producing recipes now use
-  plain `cc -S`, no `-P`; see the top-level `Makefile`'s header for the
-  full explanation of why this doesn't affect byte-parity with the rest
-  of the golden set.
+  plain `cc -S`, no `-P`; see this directory's `Makefile` header for the
+  full explanation of why this doesn't affect byte-parity of the `.s`
+  goldens (it does affect `c0`'s messages: without `-P` the real `cpp`
+  writes `# N "file"` lines, from which the real `c0` takes the file name
+  and line number of an error - `docs/TOOLCHAIN_PLAN.md`).
 - **`make goldens` must be run with no expectation that it (re)builds
   anything** — an earlier version depended on `all`/`intermediates`, which
   made a plain `make goldens` on the modern host re-check `.s`/`.1`
@@ -351,5 +355,9 @@ alone be verified well before `mutos_c1` is ready.
 
 **All of the above are confirmed fixed, not just diagnosed**: the full
 `.c` → `.s`/`.i`/`.1`/`.2` → `*.golden` pipeline has been run end-to-end on
-real MUTOS 1700 hardware plus a modern Linux host (verified for the
-`00_smoke` category) with no remaining tooling errors.
+real MUTOS 1700 hardware plus a modern Linux host - first for the
+`00_smoke` category, since then for every category, `11_kernel` and the
+fourteen `fltprobe` rounds - with no remaining tooling errors. On the host,
+`make -f Makefile.mutos CC=$MUTOS_ROOT/bin/cc CPP=$MUTOS_ROOT/lib/cpp
+C0=$MUTOS_ROOT/lib/c0` will run the same recipes through this project's tools once the MUTOS root
+and the driver exist (`docs/TOOLCHAIN_PLAN.md`, steps 0 and 3).

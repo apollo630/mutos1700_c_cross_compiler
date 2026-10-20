@@ -1,7 +1,7 @@
 # `mutos_c1` as a port of the real `c1` — plan
 
 Written 2026-10-12, after reading the original binary
-(`mutos_bin/c1.golden.base64.txt`; findings in `docs/DEVLOG.md`'s "The
+(`mutos_bin/c1.golden.base64.txt`; findings in `docs/devlog/originals_and_ports.md`'s "The
 original binaries"). This is the plan for step 3 of `STATUS.md`'s "Next
 up" item 1: replace `src/mutos_cc/c1_gen.c` - a list of shapes inferred
 from goldens - by a port of the mechanism that produced the goldens.
@@ -158,7 +158,10 @@ already reproduces all 132 `.1`/`.2` goldens under the emulator, and
 `mutos_c0` still refuses eight of the nine kernel files) and to `c2`
 (Milestone 5: v7's `c20.c`/`c21.c`, the real `c2` in `mutos_bin/`, and
 `tests/mutos_as/kernel_opt/`'s sources as `cc -O` output). Neither is
-part of this plan.
+part of this plan. (Written 2026-10-12. Since then `c0` is ported -
+`docs/C0_PORT_PLAN.md` -, and `c2` is step 4 of `docs/TOOLCHAIN_PLAN.md`;
+the emulated original `c2` gives nine of `kernel_opt/`'s sources from the
+`11_kernel` goldens byte for byte.)
 
 ## 8. How it went (2026-10-13)
 

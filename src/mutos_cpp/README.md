@@ -7,7 +7,16 @@ modern C11. It is **not** a line-by-line port of the original K&R,
 pointer-arithmetic-heavy source (which relies heavily on 1978-era buffer
 tricks that are neither necessary nor desirable on a modern host); it is a
 clean-room implementation validated **byte-for-byte** against real golden
-reference output, matching this project's approach for `mutos_as`/`mutos_ld`.
+reference output, as `mutos_as` is.
+
+**To be replaced by a port of the original binary** (decided 2026-10-20,
+`docs/TOOLCHAIN_PLAN.md`, step 1): the MUTOS `cpp` is Reiser's program in
+its SCCS version `cpp.c 1.6 12/12/86`, and its binary in `mutos_bin/` still
+has its symbol table. Run under the emulator (`tests/realbin/`) it gives all
+137 `.i` goldens; the port brings what this implementation does not do:
+the `# N "file"` lines (below), the default include directory
+(`/usr/include`, under `$MUTOS_ROOT`) and the original's behaviour in the
+simplified cases listed under "Known, documented simplifications".
 
 Status: **5/5 golden tests byte-identical** (see `STATUS.md` for the
 currently-verified details). Golden references were generated on real
@@ -15,7 +24,12 @@ MUTOS 1700 hardware via `cc -P -DM7100 -DASK -DIFSS -DV24 -DV30IDE <name>.c`;
 `cc`'s `-P` ("stop after preprocessing") is forwarded verbatim to `cpp`
 (see `v7/cc/cc.c`'s option parsing), where `-P` means "suppress
 `# N \"file\"` line markers" - which is why none of the golden `.i` files
-contain any such markers, and why `mutos_cpp` never emits them either.
+contain any such markers, and why `mutos_cpp` never emits them either. The
+original `cc` runs `cpp` **without** `-P` for every compile, though, and
+the original `c0` takes the file name and line number of its messages from
+those markers (`e.c:3: y undefined; func. main`, where `mutos_cpp` and
+`mutos_c0` say `4: y undefined; func. main` for a file with an `#include`
+before the error) - one reason for the port.
 
 ## Behavioral spec (reverse-engineered from `v7/cpp/cpp.c` + `cpy.y` + `yylex.c`)
 
