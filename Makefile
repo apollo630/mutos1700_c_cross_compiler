@@ -10,7 +10,8 @@
 #   mutos_ld   - linker              (src/mutos_ld/,  single .c file,
 #                                      no sub-Makefile of its own yet)
 #   mutos_as   - cross-assembler     (src/mutos_as/)
-#   mutos_cpp  - C preprocessor      (src/mutos_cpp/)
+#   mutos_cpp  - C preprocessor      (src/mutos_cpp/, a port of the
+#                                      original cpp)
 #   mutos_cc   - C compiler          (src/mutos_cc/, produces
 #                                      mutos_c0/mutos_c1 - ports of the
 #                                      original c0 and c1; the
@@ -44,8 +45,9 @@
 #   make check-realbin # the original MUTOS c0 and c1 (mutos_bin/), run under
 #                   # an 8086 emulator, against every tests/mutos_cc
 #                   # golden, tests/realbin/c1_tables.txt against the c1
-#                   # binary, and mutos_c1 and mutos_c0 (the ports of c1
-#                   # and c0) against the emulated originals; the
+#                   # binary, and mutos_c1, mutos_c0 and mutos_cpp (the
+#                   # ports of c1, c0 and cpp) against the emulated
+#                   # originals; the
 #                   # original cc, traced, with the original passes
 #                   # against the goldens it made; the original ld
 #                   # through mutos_root/ (needs the Python module
@@ -193,7 +195,13 @@ check-libcatof: as ld cc
 # segment (c0data.c) current, its .1, .2, messages and exit status the
 # original's on every .i golden (tests/realbin/c0cmp.py), and two
 # fixed-seed differential fuzz runs, one with mutated programs
-# (tests/realbin/c0fuzz.py); then the original cc (tests/realbin/
+# (tests/realbin/c0fuzz.py); then mutos_cpp, the port of cpp
+# (src/mutos_cpp/): its generated data segment (cppdata.c) current, its
+# output, messages and exit status the original's on every .i golden's
+# source - with -P, without (the # N "file" lines), into an output file
+# (tests/realbin/cppcmp.py) -, and two fixed-seed differential fuzz runs,
+# one with mutated programs (tests/realbin/cppfuzz.py); then the
+# original cc (tests/realbin/
 # cctrace.py, fork/exece/wait faked) running the original passes
 # against the goldens it made on the hardware - "cc -S" (c1's messages
 # and exit status included), "cc -P", "cc -O -S" (c2: the kernel_opt
@@ -203,6 +211,7 @@ check-libcatof: as ld cc
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
 REALBIN_C0FUZZ_ARGS = -n 200 -s 1
+REALBIN_CPPFUZZ_ARGS = -n 200 -s 1
 check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -216,6 +225,10 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c0cmp.py goldens
 	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS)
 	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS) --mutate 0.7
+	@python3 tests/realbin/cpptables.py --check-c src/mutos_cpp/cppdata.c
+	@python3 tests/realbin/cppcmp.py goldens
+	@python3 tests/realbin/cppfuzz.py $(REALBIN_CPPFUZZ_ARGS)
+	@python3 tests/realbin/cppfuzz.py $(REALBIN_CPPFUZZ_ARGS) --mutate 0.5
 	@python3 tests/realbin/cctrace.py goldens
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 

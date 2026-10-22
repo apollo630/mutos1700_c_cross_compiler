@@ -1,0 +1,157 @@
+# cppmap.txt - a map of the real MUTOS 1700 cpp (mutos_bin/cpp.golden.base64.txt)
+#
+# Unlike the other originals the binary keeps its symbol table (267
+# symbols; cpptables.py --symbols prints it): the names below are the
+# binary's own. cpp.o ("@(#)cpp.c 1.6 12/12/86") is v7/cpp/cpp.c's
+# functions in its source order, cpy.o ("@(#)yylex.c 1.3 12/12/86") is
+# yylex(), tobinary() and yacc's yyparse() from v7/cpp/cpy.y and
+# yylex.c, then libc.a from text 26c6. cppdis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/cpp): same  - compared, does what v7's does
+#                          delta - compared, v7's code with the noted changes
+#                          new   - no v7 counterpart
+# Port: ported - in src/mutos_cpp/, read from the text at that offset
+#
+# Every function was compared instruction by instruction; the switches
+# (cotoken's at 0875, tobinary's at 2288, yyparse's at 250d and 2689) are
+# jump tables in the text. The binary's parameters: BUFSIZ 512, SBSIZE
+# 32000, symsiz 1000, buffer[] 128+512+512+128 with pbeg 128 into it, a
+# name significant to 128 characters, COFF 0 with signed chars (a byte
+# 0200..0377 indexes a table below its start).
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- cpp.o
+T 00b6 _sayline    same       ported
+T 00e8 _dump       same       ported
+T 0142 _refill     delta      ported  "missing endif" at the end of the input when trulvl or flslvl is not 0
+T 034a _cotoken    delta      ported  a comment split under -C (longer than BUFSIZ) writes its closing "*/" only when flslvl is 0; the static state is data 00ac
+T 0980 _skipbl     same       ported
+T 09ae _unfill     same       ported
+T 0ae0 _doincl     delta      ported  flslvl raised while a <name> is read (no macro expansion in it)
+T 0d18 _equfrm     same       ported
+T 0d5a _dodef      delta      ported  an escaped linefeed in the body is written to the output; an illegal macro name returns with flslvl raised, as v7 (CPP-02)
+T 1120 _control    delta      ported  #line: also takes the quoted file name into fnames[ifno] (savestr); not the number
+T 1420 _savestr    new        ported  calloc()s and copies start..finish
+T 1462 _stsym      same       ported
+T 14d6 _ppsym      same       ported
+T 1502 _pperror    same       ported
+T 1570 _yyerror    same       ported
+T 1588 _ppwarn     same       ported
+T 15b4 _lookup     delta      ported  symsiz 1000; a name not found is entered only for enterf 1 (v7: enterf > 0, DROP included)
+T 1686 _slookup    delta      ported  a name is cut at 128 characters (v7: 8)
+T 1716 _subst      delta      ported  the linefeeds of a call across lines: lineno back to the call's line, an actual's linefeeds pushed with its first push only (actflg[]), the rest pushed before the expansion
+T 1a76 _trmdir     same       ported
+T 1aa4 _copy       same       ported
+T 1ac6 _strdex     same       ported
+T 1af0 _yywrap     same       ported  never called
+T 1afc _main       delta      ported  '$' an identifier character; dirs[0]=dirnams[0]="."; predefines "mutos" only; pbeg = buffer+128
+# ---- cpy.o
+T 1fbe _yylex      delta      ported  passcom 0 while skipbl() reads; the compiled code's own bug: '\ooo' tests and converts at (newp & 0xff00) | inp[2] (CPP-01)
+T 2202 _tobinar    delta      ported  a-f and A-F give 10..15 (v7: c-'a', c-'A')
+T 2322 _yyparse    same       ported  v7's yaccpar; YYMAXDEPTH 150, yyv[150] is errno (CPP-04)
+# ---- libc.a from 26c6 (cppdis.py names its functions by matching libc.a)
+#
+# ---- data (the binary's symbols; the port's image has each at this address)
+D 0002 Isgadr      crt0: far pointer of the stack check
+D 0006 Iscadr      crt0: far pointer of the system calls
+D 000a _yydef      yacc
+D 0086 _sccsid     "@(#)cpp.c 1.6 12/12/86"
+D 009e _savch
+D 00a0 _warnc
+D 00a2 _fin
+D 00a4 _fout
+D 00a6 _nd
+D 00a8 _predef
+D 00aa _prund
+D 00ac state       cotoken()'s static
+D 00ae match       subst()'s static "%s: argument mismatch"
+D 03e2 _sccsid     "@(#)yylex.c 1.3 12/12/86"
+D 03fc ifdef       yylex()'s static
+D 03fe op2         yylex()'s static
+D 040e val2        yylex()'s static
+D 041e opc         yylex()'s static
+D 0420 _yyexca
+D 04ac _yyact
+D 0782 _yypact
+D 07fe _yypgo
+D 0806 _yyr1
+D 0842 _yyr2
+D 087e _yychk
+D 08fa _yychar
+D 08fc _yynerrs
+D 08fe _yyerrflag
+D 09a6 __iob       libc.a
+D 0a46 __lastbuf   libc.a
+D 0a48 _allocb     libc.a (malloc)
+D 0a4a _allocp     libc.a (malloc)
+D 0a4c __ctype_    libc.a
+D 0ad0 Stkbot      chkstk
+D 0ad2 _environ    crt0
+D 0ad4 _pbeg
+D 0ad6 _pbuf
+D 0ad8 _pend
+D 0ada _outp
+D 0adc _inp
+D 0ade _newp
+D 0ae0 _cinit
+D 0ae2 _macbit
+D 0bee _toktyp
+D 0cee _fastab
+D 0dee _slotab
+D 0eee _ptrtab
+D 0ef0 _buffer
+D 13f0 _sbf
+D 90f0 _mactop
+D 90f2 _fretop
+D 90f4 _instack
+D 9110 _bufstack
+D 912c _endbuf
+D 9148 _plvl
+D 914a _maclin
+D 914c _macfil
+D 914e _macnam
+D 9150 _maclvl
+D 9152 _macforw
+D 9154 _macdam
+D 9156 _inctop
+D 916a _fnames
+D 917e _dirnams
+D 9192 _fins
+D 91a6 _lineno
+D 91ba _dirs
+D 91ce _pflag      dirs[10]: a ninth -I's end mark lands here
+D 91d0 _passcom
+D 91d2 _rflag
+D 91d4 _ifno
+D 91d6 _prespc
+D 91fe _punspc     prespc[20]: a 21st -D lands here
+D 9226 _exfail     punspc[20]: a 21st -U lands here
+D 9228 _lastsym
+D 922a _stab
+D a1ca _defloc
+D a1cc _udfloc
+D a1ce _incloc
+D a1d0 _ifloc
+D a1d2 _elsloc
+D a1d4 _eifloc
+D a1d6 _ifdloc
+D a1d8 _ifnloc
+D a1da _ysysloc
+D a1dc _varloc
+D a1de _lneloc
+D a1e0 _ulnloc
+D a1e2 _uflloc
+D a1e4 _trulvl
+D a1e6 _flslvl
+D a1e8 __sobuf     libc.a: the output's stdio buffer
+D a3e8 _yylval
+D a3ea _yyval
+D a3ec _yyv
+D a518 _errno      libc.a; yyv[150]
+D a51a __sibuf     libc.a
+D a71a __stkmax    chkstk
+D a71c _stwork     libc.a (printf)
+D a7b8 _end

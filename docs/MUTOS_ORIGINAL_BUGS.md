@@ -12,7 +12,7 @@ the change that finds a bug.
 Each entry says what goes wrong (with a minimal trigger where one is
 known), why (the mechanism, with the text or data offset in the binary as
 `tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
-and `c0dis.py` for `c0`), how it was
+and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -22,7 +22,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-20.
+Last updated: 2026-10-22.
 
 ## Overview
 
@@ -61,8 +61,21 @@ Last updated: 2026-10-20.
 | C0-10 | `c0` | `conexp()` after a syntax error returns the word at data 8 (the code segment) | emulator | reproduced (the emulator's segment) |
 | C0-11 | `c0` | "undefined; func." before the first function prints bytes from data 000d | emulator | reproduced |
 | C0-12 | `c0` | an enum's size is a stale register: whether a redefined enum tag is reported depends on the storage class | emulator | reproduced |
+| CPP-01 | `cpp` | an octal character constant in `#if` (`'\101'`) is tested and converted at the wrong address (the compiled code reuses a register) | emulator, fuzzing | reproduced |
+| CPP-02 | `cpp` | after "illegal macro name" nothing is written up to the next `#endif` or `#else` | emulator | reproduced |
+| CPP-03 | `cpp` | eight `-I` options disable `-P` (the directory list's end mark lands on `pflag`); a 21st `-D` or `-U` lands on the next variable | emulator | reproduced |
+| CPP-04 | `cpp` | the yacc stack: one state and value more than it holds (the caller's saved SI, `errno`); then "yacc stack overflow" | emulator, fuzzing | reproduced |
+| CPP-05 | `cpp` | actuals longer than 512 bytes run over `subst()`'s frame before "actuals too long": a wrong expansion, a crash | emulator, fuzzing | reproduced up to the frame's saved BP, refused beyond |
+| CPP-06 | `cpp` | `#include "name` without the closing quote: the name is not terminated | emulator, fuzzing | refused |
+| CPP-07 | `cpp` | formals' names longer than 512 bytes run over `dodef()`'s frame | emulator | refused |
+| CPP-08 | `cpp` | a `-D` option longer than about 510 bytes runs over `stsym()`'s frame (a crash) | emulator | refused |
+| CPP-09 | `cpp` | the linefeeds of a macro call are pushed back without the buffer check: below the buffer, over `ptrtab` | emulator | reproduced; refused where it reads libc.a's state |
+| CPP-10 | `cpp` | a comment's linefeeds inside a macro call's actuals are written twice: the output's line numbers run off | emulator, fuzzing | reproduced |
+| CPP-11 | `cpp` | a macro with parameters named without `(` loses the next token and leaves a spurious "unterminated macro call" for the end of the input | emulator, fuzzing | reproduced |
+| CPP-12 | `cpp` | an `#if` whose expression does not parse (empty, "syntax error") counts as true | emulator, fuzzing | reproduced |
+| CPP-13 | `cpp` | the token after an object-like macro's name is dropped, whatever it is: `#define X+1` defines `X` as `1` | emulator | reproduced |
 
-`cpp`, `ld` and `cc`: no bug known (see the sections below; one `cc` behaviour is
+`ld` and `cc`: no bug known (see the sections below; one `cc` behaviour is
 listed under "Suspect").
 
 ## `c1`
@@ -633,12 +646,199 @@ up in the output, and into every MUTOS program. The text offsets are
 
 ## `cpp`
 
-No bug known: the real `cpp` gives all 137 `.i` goldens. Two v7
-behaviours a fix might want to change, both described in
-`src/mutos_cpp/README.md`: a comment's newlines are written even inside a
-false `#if` region, and a function-like macro's name without `(` is
-expanded with empty arguments (and a warning) - `mutos_cpp` reproduces the
-first and leaves the name unexpanded in the second.
+Read in full on 2026-10-22 for its port (`src/mutos_cpp/`,
+`tests/realbin/cppmap.txt`); every entry was run under the emulator with
+the trigger given, and the port does the same. v7's `cpp` shares all but
+CPP-01 (a fault of the MUTOS compiler's code, not of the source) and the
+consequences of the MUTOS deltas in CPP-10 and CPP-11.
+
+### CPP-01 An octal character constant in `#if` reads the wrong address
+
+- **Symptom.** `#if '\101' == 65` is false; `#if '\0' == 0` is false and
+  may say "Illegal number" with text from elsewhere in the buffer;
+  `#if '\7'` is true. The escapes `\b \t \n \f \r \\` and a plain
+  character are right.
+- **Mechanism.** `yylex()` (text 215a..21a0): the source is v7's `if
+  (inp[2]<='9' && inp[2]>='0') yylval=c=tobinary(inp+2,8);`. The compiled
+  code holds `inp` in DX, loads `newp` into DX for the test of the
+  closing quote (215a), then reloads only DL with `inp[2]` in the loop
+  over the escape table (217e) - and at 218a takes DX as `inp` again. So
+  the test `>= '0'` and the conversion read at `(newp & 0xff00) |
+  inp[2]`, two bytes on: some byte of the 256-byte page `newp` is in.
+- **Evidence.** Emulator (the triggers), fuzzing.
+- **This project.** Reproduced (`cpy.c` computes that address).
+- **Fix idea.** `tobinary(inp+2, 8)` and test `inp[2]`, as the source
+  says.
+
+### CPP-02 After "illegal macro name" nothing is written
+
+- **Symptom.** `#define 1 x` warns "illegal macro name"; every line after
+  it is dropped from the output up to the next `#endif` or `#else` (which
+  are taken as closing a false conditional - no "If-less endif").
+- **Mechanism.** `dodef()` raises `flslvl` to prevent expansion and
+  returns from the illegal-name branch (text 0dc2) without lowering it
+  again. v7 too.
+- **Evidence.** Emulator (`#define 1 x` / `abc` / `#endif` / `def`: only
+  `def` is written).
+- **This project.** Reproduced.
+- **Fix idea.** `--flslvl` before that return.
+
+### CPP-03 Too many options run over their arrays
+
+- **Symptom.** `cpp -P -Ia -Ib -Ic -Id -Ie -If -Ig -Ih x.c` writes `# 1
+  "x.c"` lines - `-P` has no effect with eight `-I` options. A 21st `-D`
+  is stored in the first `-U` slot, a 21st `-U` in `exfail` (which `main()`
+  then clears; the 21st name is "removed" as the empty string at data 0).
+- **Mechanism.** `main()` (text 1ce9) accepts an `-I` while `nd <= 8`, so
+  `dirs[1..8]`; then `dirs[nd++]="/usr/include"; dirs[nd++]=0;` (text
+  1e17) writes `dirs[9]` and `dirs[10]` - which is `pflag` (data 91ce).
+  The `-D` and `-U` tests (text 1c7e, 1cc7) are `predef > prespc+NPREDEF`,
+  one too late. v7 too.
+- **Evidence.** Emulator (eight and seven `-I`).
+- **This project.** Reproduced (the image has the variables where the
+  original has them).
+- **Fix idea.** `nd >= 8`, `>=` in the two tests.
+
+### CPP-04 The yacc stack holds one more than it has
+
+- **Symptom.** An `#if` expression 150 states deep (about 150 nested
+  parentheses) works; one deeper gives "yacc stack overflow" - and the
+  `#if` is taken as true (CPP-12).
+- **Mechanism.** v7 yacc's `yyparse()` (text 2353) tests `++yyps >
+  &yys[YYMAXDEPTH]`, so it stores `yys[150]` - the word above the array
+  in its frame, the caller's saved SI, which `control()` does not use
+  again - and `yyv[150]`, which is libc.a's `errno` (data a518); no
+  failed system call comes between the store and its use.
+- **Evidence.** Emulator (148 to 152 levels), fuzzing.
+- **This project.** Reproduced (`errno` is in the image).
+- **Fix idea.** `>=` in the test; a bigger `YYMAXDEPTH`.
+
+### CPP-05 Long actuals run over `subst()`'s frame
+
+- **Symptom.** `#define f(a) [a]` / `f(<520 x's>)` says "f: actuals too
+  long" and writes `[xxxxxxxx]` (8 x's); 514 x's give `[xx]`; longer
+  actuals crash `cpp`.
+- **Mechanism.** `subst()` (text 18e5) copies each token of the actuals
+  into `acttxt[512]` and only then compares (18eb): the text runs on over
+  `actflg[]`, `actual[]`, `params` and `vp` (bp-0x66 .. bp-6), then the
+  saved registers and the return address. The `[xx]`: the actual's end
+  pointer is right (the push-back reads an actual from its end), but
+  `actflg[0]`, which the text now fills from its 512th byte, is cleared
+  after the copy - the push-back stops there. v7 too (without
+  `actflg[]`).
+- **Evidence.** Emulator (the triggers; a crash with a few hundred bytes
+  more), fuzzing.
+- **This project.** Reproduced while the text stays below the saved BP
+  (the frame is in the image at the original's offsets and address - a
+  pointer half overwritten keeps the stack's high byte); refused from
+  there.
+- **Fix idea.** Stop copying at `acttxt + BUFSIZ`.
+
+### CPP-06 `#include "name` without the closing quote
+
+- **Symptom.** The name is taken with whatever bytes follow it on the
+  stack, up to a 0 - "Can't find include file name<garbage>", or a
+  different file.
+- **Mechanism.** `doincl()` (text 0b5d..0b80) copies the token after
+  `"` into `filname[]` and puts the 0 only over a final `"`; the scanner
+  ends an unterminated string at the linefeed, so there is none. v7 too.
+- **Evidence.** Emulator (the original happened to find a 0 right after
+  the name), fuzzing.
+- **This project.** Refused (the stack's contents are not modelled).
+- **Fix idea.** Terminate the name in either case.
+
+### CPP-07 Long formal names run over `dodef()`'s frame
+
+- **Symptom.** `#define f(<300 a's>,<300 b's>) x` says "(null) redefined"
+  and does not define `f`.
+- **Mechanism.** `dodef()` (text 0eef..0f17) copies each formal's name
+  into `formtxt[512]` without a bound, over `formal[]` and its other
+  locals (`np` among them). v7 too.
+- **Evidence.** Emulator (the trigger).
+- **This project.** Refused.
+- **Fix idea.** Check the space left before each copy.
+
+### CPP-08 A long `-D` option runs over `stsym()`'s frame
+
+- **Symptom.** `cpp -DX=<600 y's> x.c` crashes.
+- **Mechanism.** `stsym()` (text 1470) copies the option into `buf[512]`
+  without a bound. v7 too.
+- **Evidence.** Emulator (an invalid instruction after the return).
+- **This project.** Refused.
+- **Fix idea.** Bound the copy.
+
+### CPP-09 A call's linefeeds pushed below the buffer
+
+- **Symptom.** A macro call with several hundred linefeeds in a comment
+  between its actuals, with the right length of body before it, writes
+  linefeeds over the bytes below the scanning buffer - `ptrtab` among
+  them; the scanner then classifies characters through libc.a's FILE
+  structures.
+- **Mechanism.** `subst()` pushes the linefeeds no actual took back in
+  front of the expansion (text 1a4f..1a66, a MUTOS delta) without the
+  `bob()` / `unfill()` check every other push makes; below `pbeg` lie 128
+  bytes of `buffer[]`, then `ptrtab`, `slotab`, `fastab`.
+- **Evidence.** Emulator (`#define f(a) <318 b's>` / `f(/*<700
+  linefeeds>*/)`).
+- **This project.** Reproduced as far as the image goes; refused where the
+  scan reads libc.a's FILE structures.
+- **Fix idea.** `if (bob(p)) {outp=inp=p; p=unfill(p);}` in that loop too.
+
+### CPP-10 A comment's linefeeds in a macro call are written twice
+
+- **Symptom.** After a macro call with a comment of n lines among its
+  actuals, every output line is n lines late - `__LINE__` and the
+  compiler's messages disagree with the output's lines from there on.
+- **Mechanism.** The comment scan (`cotoken()`, text 04c5) writes each
+  linefeed of a comment at once and counts it; `subst()` (text 1939)
+  then pushes `lineno - maclin` linefeeds back, less those its actuals
+  carried - the comment's again.
+- **Evidence.** Emulator (`#define f(a) [a]` / `f(/*` / `` / `*/x)` /
+  `__LINE__`: the comment's two linefeeds come out twice, and
+  `__LINE__`, line 5 of the input, gives `5` on line 7 of the output),
+  fuzzing.
+- **This project.** Reproduced.
+- **Fix idea.** Count only the linefeeds of the actuals' text, or write
+  none in the comment while actuals are collected.
+
+### CPP-11 A macro with parameters named without `(`
+
+- **Symptom.** `#define F(a) <a>` / `F x` / `last` writes ` <>` (the `x`
+  is lost), warns "F: argument mismatch" - and at the end of the input
+  says "F: unterminated macro call" with the place of the last call that
+  had `(` (line 0 and no file name if there was none); the exit status
+  counts it.
+- **Mechanism.** `subst()` sets `plvl = -1` (text 182d) before looking
+  for the `(`, and only the `(` branch sets it again; the token read in
+  its place is overwritten by the expansion. `refill()` at the end of the
+  input (text 0258) takes `plvl != 0` for an open call, `maclin` and
+  `macfil` from the last one. v7 too.
+- **Evidence.** Emulator (the trigger), fuzzing.
+- **This project.** Reproduced.
+- **Fix idea.** `plvl = 0` when there is no `(`, and push the token back.
+
+### CPP-12 An `#if` that does not parse is true
+
+- **Symptom.** `#if` with nothing after it, `#if 1 +`, `#define W` /
+  `#if W`: "syntax error", and the lines up to `#else` or `#endif` are
+  written.
+- **Mechanism.** yacc's `yyparse()` returns 1 on an error it cannot
+  recover from (cpy.y has no error rules), and `control()` (text 12dc)
+  takes 1 as true. v7 too.
+- **Evidence.** Emulator (the triggers), fuzzing.
+- **This project.** Reproduced.
+- **Fix idea.** Take the error as false (`yynerrs`).
+
+### CPP-13 The token after an object-like macro's name is dropped
+
+- **Symptom.** `#define X+1` defines `X` as `1`, `#define Y"s"` as
+  nothing.
+- **Mechanism.** `dodef()` (text 0e22..0e3f) reads the token after the
+  name to see whether it is `(` or a linefeed, and starts the body after
+  it whatever it is - meant for the blank. v7 too.
+- **Evidence.** Emulator (the triggers).
+- **This project.** Reproduced.
+- **Fix idea.** Start the body at that token unless it is a blank.
 
 ## `ld`
 

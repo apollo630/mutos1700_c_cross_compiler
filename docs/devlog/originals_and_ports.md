@@ -1,6 +1,6 @@
-# The original binaries and the ports of `c1` and `c0`
+# The original binaries and the ports of `c1`, `c0` and `cpp`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), and what the other originals showed (2026-10-20).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), and the port of `cpp` (2026-10-22).
 
 ---
 
@@ -708,3 +708,150 @@ stderr on every run, the original nothing; and it makes an object
 without undefined symbols executable (mode 0755), where the original
 leaves it as `creat` made it (0666 less the umask - checked under the
 emulator, which now serves `chmod` and applies the umask).
+
+## The port of `cpp` (2026-10-22)
+
+Step 1 of `docs/TOOLCHAIN_PLAN.md`: `mutos_cpp`, until then a re-implementation
+of the observable behaviour, becomes a port of the original `cpp`, by the
+method of the `c0` and `c1` ports. `src/mutos_cpp/README.md` has the result;
+this is how it went and what the binary held.
+
+### `cpp` is v7's `cpp`, version 1.6
+
+The binary (0411, text 14,080 bytes) is the only original that kept its
+symbol table: 267 symbols name every function and every variable
+(`tests/realbin/cpptables.py --symbols`). `cpp.o` is v7's `cpp.c` - its 23
+functions in source order and one new, `savestr()` - and `cpy.o` is
+`yylex()`, `tobinary()` and yacc's `yyparse()`, then `libc.a` from text
+26c6, every function of it matched to `libc.a`'s objects. Its SCCS strings
+say `cpp.c 1.6 12/12/86` and `yylex.c 1.3 12/12/86`; the `v7/cpp` in the
+tree is close to it (it has `sayline()`, `ppsym()`, the predefined names'
+table). `tests/realbin/cppmap.txt` lists every function, how it compares
+with v7, and what the binary does differently.
+
+Every function was read instruction by instruction beside v7's source.
+15 of the 27 do what v7's do, 11 have local deltas, `savestr()` is new.
+The parameters: `BUFSIZ` 512, a string space of
+32000 bytes (v7: 12000), a symbol table of 1000 entries (v7: 400), the
+scanning buffer 128 bytes into its array (v7: 8), a name significant to 128
+characters (`slookup()`, v7: 8), `COFF` 0 - and the 8086 compiler's chars
+are signed, so a byte 0200..0377 indexes the tables below their start. The
+deltas: `$` is an identifier character; `mutos` the one predefined name;
+"missing endif" at the end of the input; `subst()` keeps the line count of
+a macro call across lines (lineno back to the call's line, the actuals'
+linefeeds pushed back with the expansion - an actual's linefeeds where it
+is pushed first, blanks for them where it is pushed again, the rest in
+front); an escaped linefeed in a `#define` body writes a linefeed;
+`#line` takes the quoted file name (`savestr()`); no expansion between `<`
+and `>`; input from stdin has the directory `.`; `lookup()` enters a name
+only for `enterf` 1; `yylex()` clears `passcom` while it reads;
+`tobinary()` has the hexadecimal digits right; a long comment split under
+`-C` writes its closing `*/` only outside a false `#if`.
+
+### A bug of the compiler, in the binary
+
+`yylex()`'s escaped character constant reads `inp[2]` for the test `<= '9'`
+but a different pointer for `>= '0'` and for the octal conversion: the
+compiled code had `inp` in DX, loaded `newp` into DX to look at the closing
+quote, then reloaded DL alone with `inp[2]` in the loop over the escape
+table, and took DX for `inp` again. So `'\101'` converts whatever stands
+two bytes past `(newp & 0xff00) | '1'` - a byte of the scanning buffer's
+page. Under the emulator `#if '\101' == 65` is false and `#if '\0' == 0`
+says "Illegal number" with text from elsewhere in the buffer. Found by
+reading - the disassembly did not match the source line by line -, then
+run; the port computes the same address (CPP-01). It is a reminder that
+the binary, not the v7 source, is the specification: a port that followed
+the source here would differ.
+
+### A memory image, with one frame in it
+
+As for `c0` (`docs/C0_PORT_PLAN.md`, section 2), the port runs on an image
+of the original's 64K data segment - the binary's data at address 0
+(`cppdata.c`, generated), every global at its symbol's address, 16-bit
+pointers and ints -, because `cpp` is all char pointers into its own
+buffers and runs past its arrays into its neighbours: a ninth `-I`'s end
+mark is `pflag` (CPP-03), `yyv[150]` is `errno` (CPP-04), the linefeeds of a
+call pushed below the buffer land on `ptrtab` (CPP-09). libc.a's stdio
+state, crt0's words and the stack are not modelled; an access there is
+refused. The four local arrays whose addresses the original passes on
+(`doincl()`'s `filname[]`, `dodef()`'s `formtxt[]`, `stsym()`'s `buf[]`,
+`subst()`'s `acttxt[]`) live in a stack area of the image, undefined until
+written: running past one, or reading a byte of it not written in that
+activation, is refused - the original reads or overwrites its own frame
+there.
+
+The first runs showed that one of these is better modelled than refused:
+`subst()` copies an actual into `acttxt[512]` and says "actuals too long"
+only after the copy, and with a few bytes too many the original does not
+crash - `f(<520 x's>)` with `#define f(a) [a]` gives `[xxxxxxxx]`: the text
+fills `actflg[]`, the actual's first flag is cleared after the copy, and
+the push-back stops at it. So `subst()`'s whole frame is in the image at
+the original's offsets (`acttxt[]` at bp-0x266, `actflg[]`, `actual[]`,
+`params`, `vp`, the caller's saved SI and DI - which `slookup()` does not
+use again), every local read and written where the binary reads and
+writes it; only reaching the saved BP is refused (CPP-05). A byte 0376 in
+a macro body - the formal marker - then also needs no refusal: the byte
+before it indexes `actual[]` and `actflg[]` wherever that lands in the
+frame, as in the original.
+
+Then a fuzz case showed that the frame's address matters too: an overrun
+that ends in the middle of an `actual[]` pointer leaves the pointer's high
+byte - the stack's, `0xfd71` under the emulator, pointing into `acttxt[]`
+itself -, and the port, with its frame elsewhere, read other text. So the
+port keeps the original's stack pointer: it starts below the argument
+words, which `cpp_init()` lays out as `mutosemu.py` does (`argv[0]` is
+`cpp`, as the original `cc` names it), and every ported function moves it
+as the original's prologue does - the arguments, the return address, BP,
+DI and SI, its locals (`sub sp,N`, or `chkstk`'s N+2). The four frames
+with modelled arrays are where the original's are; the case and 25 more
+through every path into `subst()` (text, a directive's name, `#include`,
+`#if`, `#line`) with several command lines are identical. On the hardware
+the stack depends on how the kernel lays out the arguments and the
+environment, for the original as for the port.
+
+### Checked by plain comparison
+
+`cpp` has no traces and needs none: its output, its messages and its exit
+status are everything. `tests/realbin/cppcmp.py` runs both on the same
+command line in the same directory; `goldens` takes the source of every
+one of the 137 `.i` goldens with `-P` (and the original's output against
+the golden), without `-P`, and into an output file: 411/411 identical from
+the first complete build. `tests/realbin/cppfuzz.py` generates programs for
+every part of the preprocessor, with random options, a MUTOS root with
+`/usr/include` for `<...>` and absolute names, mutated programs for the
+error paths, and programs at the limits (the string space, the symbol
+table, pushback, the yacc stack, long tokens).
+
+Besides the frame's address, what the fuzzing found was in the port's
+machine and in the tools, not in the reading of the binary: the default
+directory was not marked as a MUTOS path, so `<sys/t.h>` was looked for
+on the host (fixed in `cpp_init()`); and the emulator lost the end of an
+output file when the original crashed - its host files are buffered and
+were closed only after `exit()` -, so where the port refused, its output
+looked longer than the original's (fixed in `mutosemu.py`, found once
+`cppcmp.py` checked a refusal's prefix also where the original does not
+finish). Two things it needed in the comparison: v7's documented
+endless expansions (`#define a <b` / `#define b >a`) - both runs are
+stopped by limits (1 MB of output, 40M instructions for the original,
+5 s for the port) and must agree as far as the shorter one goes -, and
+originals that are merely slow (a recursion that stops at `maclvl` 1000
+after much output) - the original gets 25 times the instruction limit
+before a difference is declared. With the final port and tools, 2,000
+programs (1,000 generated, 1,000 more with half of them mutated) gave
+no difference: 1,802 identical, 33 refused by the port, 130 on which the
+original does not finish - its stack overwritten, an `idiv` fault - and
+the port refused with the original's output up to there, 35 endless in
+both.
+
+### The switch
+
+`src/mutos_cpp/` now holds `cpp.h`, `cpp.c`, `cpy.c`, `cpplib.c`,
+`cppdata.c` (generated) and `main.c` - 3,393 lines, 248 of them the
+generated data; the re-implementation's `util.c`, `source.c`, `macro.c`,
+`ifexpr.c`, `directive.c`, `scan.c`, `main.c` and `mutos_cpp.h` (1,818
+lines) are deleted. `make test` is unchanged line for line; `make
+check-realbin` adds `cppdata.c`'s check, `cppcmp.py goldens` and two
+`cppfuzz.py` runs. The paths: the default directory is looked up under
+the MUTOS root, as decision 4 says; an absolute `#include` name in a source
+is a MUTOS path too, and so is every file found through either; names
+from the command line stay the host's.
