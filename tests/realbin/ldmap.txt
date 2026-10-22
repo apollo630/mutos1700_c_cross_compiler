@@ -1,0 +1,150 @@
+# ldmap.txt - a map of the real MUTOS 1700 ld (mutos_bin/ld.golden.base64.txt)
+#
+# The binary (0411, text 12480, data 952, BSS 36382 bytes) is stripped;
+# the names below are v7's (v7/ld/ld.c), found by the strings each
+# function passes, the calls it makes and its position. It is crt0, then
+# ld.o - v7's ld.c, its 37 functions in source order and one new one,
+# bytrel(), after load2td() -, then libc.a from text 20c0 (printf; the
+# others matched by lddis.py against libc.a's objects). lddis.py reads
+# this file; ldtables.py --strings prints the strings.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/ld/ld.c): same  - compared, does what v7's does
+#                              delta - compared, v7's code with the noted changes
+#                              new   - no v7 counterpart
+#                              libc  - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_ld/ld.c (libc.a's in ldlib.c), read from the
+#       text at that offset
+#
+# Every function was compared instruction by instruction. Common to all:
+# a symbol's type is read and compared as a word - its type byte and the
+# spare byte together (EXTERN+UNDEF is 0x0020) -, the longs (archive
+# times and sizes, liblist[], tab[].cloc) have their high word first, and
+# all of v7's rflag, arflag and dflag code is gone. Switches: main()'s is
+# hashed (c % 6, then c / 6 compared), load1arg()'s, middle()'s and
+# load2td()'s are jump tables in the text (0840, 0ddb, 1512).
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- ld.o
+T 00b6 _delexit    delta      ported  unlinks outname (the temporary "..ldtmp" name) if it is not ofilename; v7: unlink("l.out")
+T 010a _main       delta      ported  mktemp(outname) first; -o sets outname too; -r and -d: error(2, " -r and -d flags not supported") (the port: v7's, an extension); -n sets iflag; no case for nflag
+T 04b6 _endload    delta      ported  -D pads the data without a relocation word
+T 05ea _record     same       ported
+T 0654 _restore    same       ported  not reached (endload() before it ends in delexit())
+T 06d6 _load1arg   same       ported  tnum is the low word of asize / 12 (libc.a's ldiv); a negative one reads tnum*12 as an unsigned count
+T 085e _step       same       ported  libp runs past liblist[256] unchecked (LD-02)
+T 0904 _ldrand     same       ported  a name not in the table: the type read through a null pointer - crt0's word 8 (LD-03)
+T 0994 _add        same       ported
+T 09f0 _load1      delta      ported  types as words; loc + 8 + tsize + dsize summed in 16 bits, zero-extended
+T 0bf8 _middle     delta      ported  no rflag: commons always assigned, every undefined listed; tsize += 6 (the three "jmp $" of finishout) before -i's 64-byte rounding; nflag's page 4K (unreachable)
+T 0e34 _ldrsym     same       ported
+T 0e88 _setupout   delta      ported  no troutb/droutb; relflg 1; entry = the symbol's value (v7: | 1); "Entry point not in text" leaves the last header's entry word (LD-05)
+T 0faa _tcreat     delta      ported  the output is created as outname
+T 1042 _load2arg   same       ported  a name without '/' is scanned back to the byte before it (v7's)
+T 1110 _load2      delta      ported  types as words; the symbol table at loc + tsize + dsize, each sign-extended
+T 1362 _load2td    delta      ported  every relocation through bytrel() but an undefined external's (LD-04); the -r relocation word still computed, bit 15 kept (r & 0100001), not written; symbol index bits 4..14
+T 153a _bytrel     new        ported  adds rel to the word, or (relocation bit 15) to the word starting at its second byte, completed by the next call with the carry; bit 0: minus creloc; three statics at data 003a
+T 162c _finishout  delta      ported  three words 0xfeeb ("jmp $" x 3) after the text; no relocation copies; without -o: unlink a.out, link outname to it
+T 1724 _copy       same       ported
+T 179a _mkfsym     delta      ported  the type written as a word (037, spare 0)
+T 17ea _mget       same       ported
+T 1860 _mput       same       ported
+T 188a _dseek      same       ported
+T 19e6 _half       same       ported
+T 1a02 _get        same       ported
+T 1a76 _getfile    delta      ported  -lX: /lib/libX.a first, then /usr/lib/libX.a, in the string at data 0260 - a name of 14 characters or more is written over the strings after it (LD-01)
+T 1c60 _lookup     same       ported  the hash of the 8 bytes as signed chars
+T 1d14 _slookup    delta      ported  the type written as a word, spare 0
+T 1d42 _enter      delta      ported  the type copied as a word, the spare byte with it
+T 1dd8 _symreloc   delta      ported  the type compared as a word: a spare byte other than 0 is "default" (EXTERN+ABS for an external)
+T 1e62 _error      same       ported  messages to stdout; error(0, ...) sets errlev back to 0 (LD-06)
+T 1ede _lookloc    same       ported
+T 1f34 _readhdr    delta      ported  cdrel = cbrel = 0 (v7: -tsize, -(tsize+dsize)): data and BSS symbols are segment-local
+T 1fae _cp8c       same       ported
+T 1ffa _eq         same       ported
+T 203a _putw       same       ported
+T 2068 _flush      same       ported
+# ---- libc.a from 20c0 (lddis.py names the functions it can match)
+T 20c0 _printf     libc       ported  to stdout (_iob[1] at data 02f0), buffered in 512-byte blocks
+T 2112 __doprnt    libc       ported  flags '-' and '0', width and precision (digits or '*'), d o x u c s; a hashed switch (c % 5)
+T 2432 _l2432      libc       -       _doprnt's helpers to 25fc
+T 25fc _pfloat     libc       -
+T 26f8 _l26f8      libc       -       stdio and malloc to 29ae
+T 29ae _exit       libc       ported
+T 29b8 _atoi       libc       ported  blanks and tabs, one sign, digits
+T 2a1e _l2a1e      libc       -       malloc, _flsbuf, ...
+T 2cb2 _mktemp     libc       ported  the X's: the process number's digits; then 'a'.. while access() finds the name
+T 2d24 _stty       libc       -
+# ---- data (the port's image has each at this address)
+D 0002 Isgadr      crt0: far pointer of the stack check (offset 4, segment at 0004)
+D 0006 Iscadr      crt0: far pointer of the system calls (offset 2, segment at 0008)
+D 000a _premeof    "Premature EOF"
+D 0018 _goodnm     "__.SYMDEF"
+D 0022 _libp       = &liblist[0]
+D 0024 _ofilenam   = "a.out" (0040)
+D 0026 outname     = "..ldtmpXXXXXX" (0046); -o's name with -o
+D 0028 _delarg     = 4
+D 002a _tfname     "/tmp/ldaXXXXXX"
+D 003a br_rel      bytrel(): the relocation pending for the next word's low byte
+D 003c br_pend     bytrel(): a byte-shifted word is pending
+D 003e br_carry    bytrel(): the carry out of its low byte
+D 0260 libname     "/usr/lib/libxxxxxxxxxxxxxxx"
+D 02e0 null        libc.a's "(null)"
+D 02e8 _iob        libc.a's FILE structures (stdout at 02f0)
+D 038e slash       libc.a's "/" (mktemp())
+D 03b6 stklimit    chkstk's limit
+D 03b8 _environ    crt0's (BSS)
+D 03ba _tab        struct tab tab[700] (12 bytes: cname[8], cloc)
+D 248a _tnum
+D 248c _vindex
+D 248e _vnodes     struct overlay vnodes[16] (22 bytes)
+D 25ee _page       struct page page[2] (518 bytes)
+D 29fa _fpage
+D 29fe _text       struct stream text (ptr, bno, nibuf, size, pno)
+D 2a08 _reloc      struct stream reloc
+D 2a12 _archdr     the archive header (26 bytes)
+D 2a2c _filhdr     the a.out header (16 bytes)
+D 2a3c _liblist    struct liblist liblist[256] (a long each)
+D 2e3c _cursym     struct symbol cursym (12 bytes)
+D 2e48 _symtab     struct symbol symtab[1103]
+D 61fc _symhash    struct symbol **symhash[1103]
+D 6a9a _lastsym
+D 6a9c _symindex
+D 6a9e _hshtab     struct symbol *hshtab[1105]
+D 7340 _local      struct local local[1000]
+D 82e0 _p_etext
+D 82e2 _p_edata
+D 82e4 _p_end
+D 82e6 _entrypt
+D 82e8 _trace
+D 82ea _xflag
+D 82ec _Xflag
+D 82ee _Sflag
+D 82f0 _sflag
+D 82f2 _nflag      never set
+D 82f4 _Oflag
+D 82f6 _iflag      -i and -n
+D 82f8 _vflag
+D 82fa _ofilfnd
+D 82fc _infil
+D 82fe _filname
+D 8300 _tsize
+D 8302 _dsize
+D 8304 _bsize
+D 8306 _ssize
+D 8308 _ctrel
+D 830a _cdrel
+D 830c _cbrel
+D 830e _errlev
+D 8310 _toutb      struct buf (518 bytes: fildes, nleft, xnext, iobuf[256])
+D 8516 _doutb
+D 871c _troutb     created by nothing (the port's extension: -r)
+D 8922 _droutb     created by nothing (the port's extension: -r)
+D 8b28 _soutb
+D 8d2e _nsym
+D 8d30 _torigin
+D 8d32 _dorigin
+D 8d34 _borigin
+D 8d36 libcbss     libc.a's BSS (printf's state at 91ba, the stdout buffer) to 91d6

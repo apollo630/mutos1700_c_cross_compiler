@@ -17,15 +17,17 @@ Last updated: 2026-10-22.
 
 ## Top-level build (verified 2026-10-22)
 
-A repo-root `Makefile` builds every component — `mutos_ld` (compiled directly; it
-has no sub-Makefile of its own yet) and, through each one's own
-`src/mutos_<tool>/Makefile`, `mutos_as`, `mutos_cpp` and `mutos_c0`/`mutos_c1` - and
+A repo-root `Makefile` builds every component - through each one's own
+`src/mutos_<tool>/Makefile` (`mutos_ld`'s since its port, 2026-10-22), `mutos_ld`,
+`mutos_as`, `mutos_cpp` and `mutos_c0`/`mutos_c1` - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
-`src/`, `usr/lib/`, `usr/include/`; `make clean` removes it). Every component is
+`src/`, `usr/lib/`, `usr/include/`, and since 2026-10-22 `tmp/`; `make clean` removes
+it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
-`src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` uses it since
-2026-10-22 (its default include directory), the ports of `ld` and `cc` will. A
+`src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
+use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
+temporary file), the port of `cc` will. A
 `.gitignore` covers `mutos_root/` and the build
 products, scoped so that no reference file can fall under it.
 `make test` runs every component's golden-diff suite from one place (`mutos_as`'s
@@ -35,7 +37,8 @@ every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, the compiler's, and
 `tests/mutos_root/check_root.py` on the root and its lookup).
 `make check-realbin` and `make check-libcatof` need the Python module `unicorn` and
 are not part of `make test`: the first checks the original binaries and the ports of
-`c0`, `c1` and `cpp` against the emulated originals, the original `cc` traced through its
+`c0`, `c1`, `cpp` and `ld` against the emulated originals (and `mutos_ld`'s extension
+`-r`/`-d`), the original `cc` traced through its
 original passes against the goldens it made (Milestone 4), and the original `ld`
 through the root (Milestone 1); the second the
 `.float`/`.double` conversion and `mutos_c1`'s constant texts against `libc.a`'s own
@@ -50,7 +53,10 @@ applied: `make all`, `make test`, `make check-realbin`, `make check-libcatof`,
 `make check-docs` - the same results. Verified 2026-10-22 with the port of `cpp`
 (Milestone 3): `make clean && make all` with zero warnings, `make test` - its output
 the same as before, line for line -, `make check-realbin` with the port's new checks,
-`make check-docs`.
+`make check-docs`. Verified 2026-10-22 with the port of `ld` (Milestone 1): `make clean
+&& make all` with zero warnings, `make test` - its output the same as before, line for
+line, plus the root's `tmp/` -, `make check-realbin` with the port's new checks,
+`make check-libcatof`, `make check-docs`.
 
 Not built yet: the driver `mutos_cc` and `mutos_c2` (their links in `mutos_root/`
 dangle until they are) - see [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md),
@@ -60,72 +66,90 @@ steps 3 and 4.
 
 ## Milestone 1 — `mutos_ld` (linker)
 
-**Status: COMPLETE as a port of v7's `ld.c`** *(carried from prior session records -
-its goldens are missing, see below)*; **to be ported from the original binary**
-(`docs/TOOLCHAIN_PLAN.md`, decision 5 and step 2).
+**Status: a port of the original `ld` binary (2026-10-22)** -
+`docs/TOOLCHAIN_PLAN.md`, decision 5 and step 2, done. `mutos_ld` is the
+original MUTOS 1700 `ld` - v7's `ld.c` with the MUTOS deltas -, every function
+read from the stripped binary beside `v7/ld/ld.c` (`tests/realbin/ldmap.txt`),
+running on an image of the original's data segment, with one documented
+extension: `-r` and `-d`, which the original refuses. The port of v7's `ld.c` it
+replaces (`mutos_ld.c`) is deleted; its record is in
+[`docs/history/status_m1_ld.md`](docs/history/status_m1_ld.md). The original's
+behaviour, the deltas and what the port refuses: `src/mutos_ld/README.md`; how it
+went: `docs/devlog/originals_and_ports.md`, "The port of `ld`".
 
-`mutos_ld.c` (`src/mutos_ld/`, ~1180 lines) reimplements the V7 `ld` linker with the
-MUTOS-specific `a.out` deviations (see "Implementation summary" below), including
-full archive (`.a` / `-l`) support.
+### The port (verified 2026-10-22)
 
-### Verified 2026-10-20
-- `mutos_ld.c` compiles cleanly (`cc -std=c11 -Wall -Wextra -Wpedantic -O2`), zero
-  warnings.
-- The reference archive is present and intact as `tests/mutos1700_libc/libc.a.base64.txt`
-  (decodes to 72,178 bytes, 168 members: `__.SYMDEF` and the 167 objects).
-- Linking assembled compiler goldens (`08_float`, `10_integ`, `04_funcs`) with the
-  real `crt0.o` and `libc.a` works; with the archive's modification time newer
-  than its `__.SYMDEF` time (any freshly decoded copy) `mutos_ld` warns
-  `ld:libc.a(__.SYMDEF): out of date (warning)` and scans linearly - the output was
-  the same as with the table on all 14 programs tried.
-- **Against the original `ld`**, run under `tests/realbin/mutosemu.py` (first time):
-  - `-lX` searches `/lib/libX.a`, then `/usr/lib/libX.a`, never the current
-    directory. `mutos_ld` (`resolve_dash_l()`) searches `./libX.a`, then
-    `/usr/lib/libX.a` - a deviation, removed by the port (`-l` then under
-    `$MUTOS_ROOT`).
-  - The original refuses `-r` and `-d` (`ld: -r and -d flags not supported`, exit
-    status 4); `mutos_ld` implements both - kept as a documented extension.
-  - **Its output, compared for the first time** (step 0 of the plan: the emulator now
-    serves the `fstat`, `link`, `chmod` and `umask` it asks for, so it leaves its
-    `a.out`): fourteen compiled goldens (`10_integ`'s five, `08_float/01_floatbas`
-    and `02_dblconv`, `04_funcs`'s seven), assembled by `mutos_as`, linked `-X` with
-    `crt0.o` and `-lc` by both: **5 byte-identical, 9 differing in one thing - the
-    padding after the text.** The original appends 6 bytes of `eb fe` (three `jmp $`)
-    whatever the text's length; `mutos_ld` rounds it up to a multiple of 8. All else
-    follows from it: every data/BSS address, in the text and in the symbol table,
-    shifted by the difference (checked word by word). `mutos_ld`'s rule came from the
-    `myhello` golden (3,498 bytes of text, 3,504 in its header), which fits both;
-    `idhello`'s 6 bytes of `eb fe` before its zero fill fit only the original's. For
-    the port (step 2); `mutos_ld` is unchanged.
-  - **`libc.a`'s time**: the original warns `ld:/lib/libc.a(__.SYMDEF): out of date
-    (warning)` for an archive newer than its `__.SYMDEF` time and is silent at that
-    time (602282477); `mutos_root/lib/libc.a` carries it, and `mutos_ld` and the
-    original both link through the root without the warning, both warn with a newer
-    copy (`tests/mutos_root/check_root.py`, in `make test`; the original with
-    `--realbin`, in `make check-realbin`).
+- **Sources** (`src/mutos_ld/`): `ld.h` (the image, the binary's data addresses,
+  read from its code), `ld.c` (`ld.o`'s 38 functions - v7's 37 and `bytrel()`),
+  `ldlib.c` (the machine: the system calls on the host's files, libc.a's printf to
+  stdout in 512-byte blocks, `atoi()`, `mktemp()`, the refusals), `lddata.c` (the
+  binary's data, generated by `tests/realbin/ldtables.py --c`), `main.c`, a
+  `Makefile` of its own. Zero warnings under `-std=c11 -Wall -Wextra -Wpedantic`.
+- **Against the emulated original** (`tests/realbin/ldcmp.py`): every one of the 131
+  assemblable `.s` goldens of `tests/mutos_cc`, assembled by `mutos_as`, linked
+  with twelve command lines each (`-X crt0.o x.o -lc`, without `-X`, `-x`,
+  `-s -o`, `-i`, `-n`, `-S -O`, the object alone, `-t -u -e` with `libc.a` by
+  name and out of date, `libc.a` by name and current, `-D`, the object twice):
+  1,572/1,572 the same - messages, exit status, and every file left in the
+  directory, bytes and mode; 91 hand-written cases (every message, `-v`, `-D`,
+  `-e`, `-u`, `-l` names of every length, archives with and without a table of
+  contents, bad and short files, the tables' limits, byte-shifted relocations):
+  89 the same, 2 refused (a directory; an object of 32K text, LD-07).
+- **Differential fuzzing** (`tests/realbin/ldfuzz.py`, the final build): 2,000 cases
+  - 1,000 generated (seed 2) and 1,000 with half of the files damaged (seed 3,
+  `--mutate 0.5`) -, no difference: 1,955 the same, 45 refused (an input that is a
+  directory; an `lseek()` to a negative offset from a damaged archive). An ASan/UBSan
+  build of the port: 1,000 more (seeds 5 and 6: 976 the same, 24 refused), the
+  goldens (1,572/1,572), the cases and `check_rflag.py` - no report, no difference
+  (it found one fault of the port earlier, a signed left shift in `lookup()`'s hash,
+  fixed). `make check-realbin` runs 300 of each kind (seed 1: 294 the same, 6
+  refused, in each).
+- **The extension `-r`/`-d`** (`tests/mutos_ld/check_rflag.py`): the 62 programs of
+  the construct corpus, each linked through a relocatable object four ways (`ld -r
+  x.o`, `ld -r crt0.o x.o -lc`, with `-d`, and `-d` then `-i`), run under the
+  emulator as the program linked at once: 248/248 (two of them v7's `-d`
+  defining `_end`, which the second link reports as "Multiply defined", as v7's
+  does). The original refuses both (exit status 4).
+- **`make test`**: as before, plus the root's new `tmp/`; `check_root.py` links
+  through the root without "out of date". `make check-libcatof`, which links
+  `libc.a`'s floating-point runtime through `mutos_ld`: the same results.
+- **Paths**: `/lib/libX.a`, `/usr/lib/libX.a` and the temporary `/tmp/ldaXXXXXX` -
+  the absolute paths the original has compiled in - are looked up under the MUTOS
+  root, which has a `tmp/` since this step; names from the command line are the
+  host's (the rule the port of `cpp` set and the project owner confirmed on
+  2026-10-22).
+- **Refused on purpose** (exit status 2, a message ending in "refused"): a write
+  into libc.a's data by a `-l` name of 124 characters or more (LD-01), an
+  `lseek()` to a negative offset (MUTOS's kernel takes it, the emulator does not -
+  LD-07, damaged archives), an input that is a directory, a printf conversion the
+  port does not have (only from formats a long `-l` name has overwritten).
+- **The original's bugs**: LD-01 to LD-08 in `docs/MUTOS_ORIGINAL_BUGS.md`, each but
+  LD-03 with a trigger run under the emulator - among them a `-l` name of 14
+  characters or more written over the messages (LD-01), more than 256 archive
+  entries run past `liblist[]` (LD-02, "internal error: symbol not found"), a
+  warning that clears an earlier error (LD-06), a text of 65,530 bytes that wraps
+  (LD-08).
 
-### NOT verified this session
-- **The golden reference binaries the "byte-for-byte identical" claim rests on
-  (`myhello`/`idhello`, default-FMAGIC and `-i`/IMAGIC links) are not in this
-  checkout**, nor is a `tests/mutos_ld/` directory. The
-  linker's output has not been compared with real linked binaries since. Step 2 of
-  the plan replaces those goldens with the emulated original `ld` as the oracle.
+### What the binary does differently from v7 (read 2026-10-22)
 
-### Implementation summary (prior session records)
-- Three archive code paths in `getfile()`: (1) plain archive, no `__.SYMDEF` → full
-  linear scan; (2) up-to-date `__.SYMDEF` → fast `ldrand()`-driven symbol pull to a
-  fixed point; (3) stale `__.SYMDEF` (archive mtime newer than the embedded ranlib
-  timestamp — the common case for any freshly-uploaded archive) → warn + linear-scan
-  fallback.
-- MUTOS-specific `a.out`/relocation deviations from stock V7, applied throughout:
-  1. Relocation word bit 15 = 1-byte target-shift flag (x86 is byte-oriented, unlike
-     the word-aligned PDP-11 the original V7 `ld` targeted).
-  2. DATA/BSS-relative values are pure segment-local offsets, not V7's "baked-in
-     preceding segment size" convention.
-  3. `R_EXT` relocation symbol-index field is 11 bits (bits 4–14), not 12.
-  4. `nflag`/`iflag` 64-byte rounding is a separate zero-filled padding stage.
-  5. `ar` archive header `long` fields use PDP-11 middle-endian encoding (high
-     16-bit word first, each word itself little-endian).
+The relocation word's bit 15 marks a word that starts at the next byte (`bytrel()`,
+new); data and BSS values are offsets in their own segment (`readhdr()` clears
+`cdrel`, `cbrel`); symbol types are compared as words, the spare byte included;
+the text gets six bytes of "jmp $" (`eb fe`) at its end, before `-i`'s 64-byte
+rounding (the one difference step 0 had seen: `mutos_ld.c` rounded to 8); `-n` sets
+`iflag` (a 0411 output); the entry point is the symbol's value; `-lX` tries
+`/lib`, then `/usr/lib`; the output is written as `..ldtmp<pid>` in the current
+directory and linked to `a.out` (without `-o`); `-r` and `-d` refused, v7's code
+for them gone. Per function: `tests/realbin/ldmap.txt`.
+
+### Auxiliary deliverables
+
+- `mutos_ld.1` — man page (to be rewritten at the end of the project, `CLAUDE.md`'s
+  man-page rule; it still describes `mutos_ld.c`).
+- `src/mutos_ld/README.md` — the original's behaviour, the port, its refusals, the
+  extension.
+- `tests/realbin/`: `ldmap.txt`, `lddis.py`, `ldtables.py`, `ldcmp.py`, `ldfuzz.py`
+  (its `README.md`); `tests/mutos_ld/check_rflag.py`.
 
 ---
 
@@ -334,8 +358,9 @@ inside `<...>` of an `#include`; `#undef` of an unknown name enters nothing; com
 (`.i`, `.1`, `.2`, `.s`, messages and exit status): the 62-file construct corpus,
 the nine real kernel files of `11_kernel/` and the 61 `fltprobe/` probes of fourteen
 rounds - 132 files, `fltprobe/p19_open3` up to the real compiler's own invalid
-output. The driver `mutos_cc` is not written; it comes after the port of `ld` (that of
-`cpp` is done - Milestone 3; `docs/TOOLCHAIN_PLAN.md`, steps 1 to 3). `src/mutos_cc/README.md` describes
+output. The driver `mutos_cc` is not written; it is next, now that the ports of `cpp`
+(Milestone 3) and `ld` (Milestone 1) are done (`docs/TOOLCHAIN_PLAN.md`, steps 1 to 3).
+`src/mutos_cc/README.md` describes
 both ports; the records of the hand-written `mutos_c0`/`mutos_c1` before them are in
 [`docs/history/status_m4_compiler.md`](docs/history/status_m4_compiler.md).
 
@@ -639,15 +664,18 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    original `cpp`, read from its binary - the `# N "file"` lines, `/usr/include` under
    the root, the original's behaviour where the re-implementation simplified, its bugs
    (CPP-01 to CPP-13). Checked by `tests/realbin/cppcmp.py` and `cppfuzz.py`.
-2. **Port of `ld`** (Milestone 1): `-l` under the root; `-r`/`-d` kept as an
-   extension; the emulated original replaces the missing `myhello`/`idhello`
-   goldens - and has a first answer: the text's padding (Milestone 1). **Next.**
+2. ~~**Port of `ld`**~~ - **done 2026-10-22** (Milestone 1): `mutos_ld` is the
+   original `ld`, read from its binary - `-l` under the root, the six bytes of
+   "jmp $", the byte-shifted relocations, its bugs (LD-01 to LD-08); `-r`/`-d` kept as
+   an extension. Checked by `tests/realbin/ldcmp.py` and `ldfuzz.py` (the emulated
+   original in place of the missing `myhello`/`idhello` goldens) and
+   `tests/mutos_ld/check_rflag.py`.
 3. **The `mutos_cc` driver**, a port of the original `cc` - not of `v7/cc/cc.c`, from
    which it differs (`as -gC`, `-f`, `-o name.o`, its messages; see the plan's
    section 5). The `-P`/`-S` question `CLAUDE.md` kept open is answered by the
    original: `-P` stops after `cpp`, with or without `-S`; the port does the same.
    Its oracle is `cctrace.py`. `mutos_as`'s summary line on stderr (Milestone 2)
-   must not reach the driver's output.
+   must not reach the driver's output. **Next.**
 4. **Port of `c2`** (Milestone 5), 8086 only.
 5. **`mutos_as`**: differential fuzzer against the original, the `-1` switch for the
    80186 instructions; then the decision on a port.
@@ -841,10 +869,11 @@ far.
 
 ## Open items / suggested next steps
 
-1. Milestone 1's golden binaries (`myhello`/`idhello`) are missing from the tree, so
-   its "COMPLETE" is carried forward unchecked. Step 2 of `docs/TOOLCHAIN_PLAN.md`
-   checks the port of `ld` against the emulated original `ld` instead; the goldens
-   would still be welcome as real-hardware evidence.
+1. Milestone 1's golden binaries (`myhello`/`idhello`) are missing from the tree.
+   Since the port of `ld` (2026-10-22) the emulated original `ld` is its oracle -
+   1,572 links of the compiled goldens and the fuzzing without a difference; the
+   goldens would still be welcome as real-hardware evidence (a link on the hardware
+   to compare with the emulated original's).
 2. If real V30-targeted MUTOS source ever surfaces, prioritize re-checking INSB/OUTSB,
    PUSHA/POPA, PUSH imm, ENTER/LEAVE/BOUND, the IMUL immediate forms, and the
    count≠1/CL shift/rotate form — currently the only unconfirmed-by-corpus opcodes in
@@ -863,8 +892,8 @@ far.
 4. Finish Milestone 4 (`mutos_cc`/`mutos_c0`/`mutos_c1`, 62/62 of the corpus
    byte-exact, `tests/mutos_cc/11_kernel` 9/9): `mutos_c1` and `mutos_c0`
    are ports of the real `c1` and `c0` (`docs/C1_PORT_PLAN.md`,
-   `docs/C0_PORT_PLAN.md`); the `mutos_cc` driver follows the port of `ld` (that of
-   `cpp` is done), as a port of the original `cc` - see "Next up" and
+   `docs/C0_PORT_PLAN.md`); the `mutos_cc` driver is next (the ports of `cpp` and
+   `ld` are done), as a port of the original `cc` - see "Next up" and
    `docs/TOOLCHAIN_PLAN.md`.
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,

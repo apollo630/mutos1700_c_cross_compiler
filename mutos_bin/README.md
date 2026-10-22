@@ -29,8 +29,8 @@ optimized kernel sources of `tests/mutos_as/kernel_opt/` from the
 `wait` faked by the emulator, traced by `tests/realbin/cctrace.py`, which
 also runs the whole original chain - 2026-10-20). `c1`'s code tables, read from its data segment, are
 in `tests/realbin/c1_tables.txt`. `c0`, `c1` (`src/mutos_cc/`) and
-`cpp` (`src/mutos_cpp/`, 2026-10-22) are ported, `ld`, `cc` and `c2` are
-to be (`docs/TOOLCHAIN_PLAN.md`).
+`cpp` (`src/mutos_cpp/`, 2026-10-22) and `ld` (`src/mutos_ld/`, 2026-10-22)
+are ported, `cc` and `c2` are to be (`docs/TOOLCHAIN_PLAN.md`).
 
 To follow from the hardware (decided 2026-10-20): `make`, `ar`, `ranlib`,
 and `lorder`, `tsort`, `nm`, `size`, `strip` as MUTOS makefiles need

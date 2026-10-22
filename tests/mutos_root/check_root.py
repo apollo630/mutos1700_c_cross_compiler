@@ -10,7 +10,8 @@ paths under $MUTOS_ROOT, by default that directory
      in tests/ (decoded from their base64 text), libc.a's modification
      time its __.SYMDEF time (602282477, 1989-01-31 20:41:17 UTC), the
      links of the passes and tools to the right files under src/ (a tool
-     not built yet is listed, not an error), usr/lib/ and usr/include/;
+     not built yet is listed, not an error), usr/lib/, usr/include/ and
+     tmp/;
   2. mutos_root.h: rootpath_test.c, compiled with the
      -DMUTOS_ROOT_DEFAULT the Makefiles pass, with MUTOS_ROOT unset,
      empty, set with and without trailing slashes, and "/"; relative
@@ -66,7 +67,7 @@ def read(path):
 
 def check_files(root):
     print('== the root: %s ==' % root)
-    for d in ('lib', 'bin', 'usr/lib', 'usr/include'):
+    for d in ('lib', 'bin', 'usr/lib', 'usr/include', 'tmp'):
         check(os.path.isdir(os.path.join(root, d)), d + '/ is a directory')
     crt0 = os.path.join(root, 'lib', 'crt0.o')
     libc = os.path.join(root, 'lib', 'libc.a')

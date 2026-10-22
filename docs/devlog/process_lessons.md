@@ -173,3 +173,10 @@ These apply to *every* milestone, not just the one where they were first learned
   byte-exact". After new goldens arrive, list what each recipe makes and what
   came back, and make a harness report what it skips (it now checks such a
   file from `mutos_c0` on and lists it apart).
+- **An extension without an oracle needs a check of what it is for.** `mutos_ld`'s
+  `-r`, put back from v7's source into the port of a binary that has none, produced
+  well-formed objects that linked without a message - and programs that returned the
+  wrong value or crashed: v7's relocatable output has data addresses after the text,
+  MUTOS's objects segment offsets. Only running a program linked through `-r`
+  against the same program linked at once showed it. Where the port goes beyond the
+  original, build the semantic check before trusting the code.
