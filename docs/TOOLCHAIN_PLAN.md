@@ -8,15 +8,14 @@ three of the existing tools (`mutos_cpp`, `mutos_ld`, `mutos_as`) are
 re-implementations whose behaviour beyond the goldens was never compared
 with the originals.
 
-**Status (2026-10-20): step 0 is done** (the same day - section 3); step
-1, the port of `cpp`, is next. `STATUS.md`'s "Next up" follows this
-order.
+**Status (2026-10-22): steps 0 and 1 are done** (section 3); step 2, the
+port of `ld`, is next. `STATUS.md`'s "Next up" follows this order.
 
 ## 1. Where things stand
 
 | Tool | Today | Checked against |
 |---|---|---|
-| `mutos_cpp` | re-implementation of the observable behaviour, four documented simplifications, no `# N "file"` lines, no default include directory | 137 `.i` goldens (written with `-P`) |
+| `mutos_cpp` | port of the original `cpp` (2026-10-22; until then a re-implementation without `# N "file"` lines or a default include directory) | the emulated original: every `.i` golden's source with and without `-P`, differential fuzzing |
 | `mutos_c0` | port of the original `c0` (2026-10-18) | the emulated original: every golden, differential fuzzing |
 | `mutos_c1` | port of the original `c1` (2026-10-13) | the emulated original at four depths, differential fuzzing |
 | `mutos_c2` | missing | - |
@@ -63,7 +62,11 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
    the `# N "file"` lines a compile without `-P` writes - the real `c0`
    takes its messages' file names and line numbers from them -, the
    default include directory (`/usr/include` → `$MUTOS_ROOT/usr/include`),
-   and the four cases `mutos_cpp` simplifies.
+   and the four cases `mutos_cpp` simplifies. Settled with the port
+   (2026-10-22): an absolute `#include` name in a source, and every file
+   found through the default directory or such a name, is a MUTOS path too
+   (under the root); names from the command line - the input, the output,
+   `-I` - are the host's.
 5. **`mutos_ld` becomes a port** of the original `ld`. `-lX` is
    `$MUTOS_ROOT/lib/libX.a`, then `$MUTOS_ROOT/usr/lib/libX.a`, never the
    current directory (the original's order). `-r` and `-d`, which the
@@ -112,7 +115,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 | Step | What | Checked by |
 |---|---|---|
 | 0 | Infrastructure: `mutosemu.py` serves `fork`/`exece`/`wait` (faked as above), `fstat`, `chmod`, `umask`, `link`, and a tracer for `cc` joins `tests/realbin/`; `mutos_root/` and the `MUTOS_ROOT` lookup (one header in `src/h/` for every tool); a `.gitignore` (the repository had none) for `mutos_root/` and the build products; `mutos_as` accepts `-g`/`-C` | the real `cc` and `ld` run as oracles; `make test` unchanged. **Done 2026-10-20**: `cctrace.py goldens` - the traced `cc`, running the original passes, gives 132/132 `.s` (`cc -S`, with `c1`'s messages and exit status), 132/132 `.i` (`cc -P`), 9/9 `kernel_opt/` sources (`cc -O -S`); the original `ld` leaves its output (against `mutos_ld`: section 5); `make test` as before, plus `tests/mutos_root/check_root.py` |
-| 1 | Port of `cpp` | the emulated original on the 137 `.i` goldens with and without `-P`, differential fuzzing (macros, conditionals, includes, comments) |
+| 1 | Port of `cpp` | the emulated original on the 137 `.i` goldens with and without `-P`, differential fuzzing (macros, conditionals, includes, comments). **Done 2026-10-22**: `src/mutos_cpp/` is the original read from its binary, on an image of its data segment; `cppcmp.py goldens` 411/411 identical (with `-P`, without, into an output file), the differential fuzzing in `STATUS.md` (Milestone 3) without a difference; thirteen bugs of the original found (CPP-01 to CPP-13) |
 | 2 | Port of `ld` | the emulated original: every compiled golden linked with `crt0.o` and `libc.a`, with `-i`, `-n`, `-s`, `-x`, `-X`, `-u`, `-e`, `-o`, archive search, messages and exit status; this replaces the missing `myhello`/`idhello` goldens |
 | 3 | Port of `cc` | the tracer: every pass's path and arguments, messages and exit status over a matrix of options, the original's against the port's; whole programs through the chain |
 | 4 | Port of `c2` | the emulated original on all 132 `.s` goldens and on `c1fuzz.py`'s programs; `tests/mutos_as/kernel_opt/`'s nine sources from `11_kernel` (the original gives them byte for byte) |
@@ -171,7 +174,10 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
 - **`c2`**: gives `kernel_opt/`'s nine kernel sources from the
   `11_kernel` `.s` goldens byte for byte.
 - **`cpp`**: writes `# N "file"` lines without `-P`; the real `c0`'s
-  messages depend on them (`e.c:3:` where the present chain says `4:`).
+  messages depend on them (`e.c:3:` where the chain with the
+  re-implementation said `4:`). Read in full for its port (2026-10-22):
+  v7's `cpp` with local MUTOS deltas (`tests/realbin/cppmap.txt`), and
+  thirteen bugs (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 to CPP-13).
 
 ## 6. Open questions
 

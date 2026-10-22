@@ -5,15 +5,16 @@ hardware (`as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, as base64 text - see
 its `README.md`). This directory runs them on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
-emulator run away. It is also where `mutos_c1` and `mutos_c0` - since
-2026-10-13 and 2026-10-18 ports of the real `c1` and `c0`
-(`src/mutos_cc/c1port/`, `c0port/`, `docs/C1_PORT_PLAN.md`,
-`docs/C0_PORT_PLAN.md`) - are checked against the originals, on every
+emulator run away. It is also where `mutos_c1`, `mutos_c0` and
+`mutos_cpp` - since 2026-10-13, 2026-10-18 and 2026-10-22 ports of the
+real `c1`, `c0` and `cpp` (`src/mutos_cc/c1port/`, `c0port/`,
+`src/mutos_cpp/`, `docs/C1_PORT_PLAN.md`, `docs/C0_PORT_PLAN.md`,
+`src/mutos_cpp/README.md`) - are checked against the originals, on every
 golden and on random programs.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
-`c1dis.py` and `c0dis.py`.
+`c1dis.py`, `c0dis.py` and `cppdis.py`.
 
 ## Files
 
@@ -32,6 +33,11 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 | `c0dis.py` | `c1dis.py` switched to `c0` (`c1dis.use('c0')`): the annotated disassembly by function name from `c0map.txt`. |
 | `c0tables.py` | `--c`: the original `c0`'s initialized data segment as C - `src/mutos_cc/c0port/c0data.c` (generated, checked in; `--check-c` checks it is current); `--tables`: its keyword table, `opdope[]`, `cvtab[]`, `cvntab[]` and `ctab[]` in readable form. |
 | `c0cmp.py` | `mutos_c0` against the original: the same `.i` to both, their `.1`, `.2`, messages and exit status compared byte for byte - `goldens` (all 137 `.i` goldens) or `files`. A refusal of the port counts apart: it must have written a prefix of the original's output, and where the original does not finish (it reads past the end of a file for ever, or a CPU fault stops it) the port must have refused. |
+| `cppmap.txt` | A map of `cpp` - which kept its symbol table, so the names are the binary's: its functions (v7's `cpp.c`, `yylex.c` and `cpy.y` in source order, one new, then `libc.a` from text 26c6) with their text offsets, how each compares with v7 and what the binary does differently, and its data symbols - the port's memory image follows them. |
+| `cppdis.py` | `c1dis.py` switched to `cpp` (`c1dis.use('cpp')`): the annotated disassembly by function name from `cppmap.txt`. |
+| `cpptables.py` | `--c`: the original `cpp`'s initialized data segment as C - `src/mutos_cpp/cppdata.c` (generated, checked in; `--check-c` checks it is current); `--symbols`: its symbol table; `--tables`: its strings, `yylex()`'s tables and yacc's tables. |
+| `cppcmp.py` | `mutos_cpp` against the original: the same command line in the same directory, the output (stdout or a file named on the command line), messages and exit status compared byte for byte - `goldens` (the source of each of the 137 `.i` goldens with `-P`, also against the golden, without `-P`, and into an output file) or `files`. A refusal of the port must have written a prefix of the original's output, also where the original does not finish (a CPU fault), and there the port must have refused; where both run into the limits (an endless expansion: 1 MB of output or 40M instructions; the port 5 s of CPU) their outputs must agree as far as the shorter goes (`endless`). |
+| `cppfuzz.py` | Differential fuzzing of `mutos_cpp` with `cppcmp.py`'s comparison: random programs for every part of the preprocessor (macros with and without parameters, calls across lines with comments and strings in the actuals, conditionals and `#if` expressions with every operator and number base, character constants, includes with `" "` and `< >`, `-I` and a MUTOS root, `#line`, `__LINE__`, `__FILE__`, comments, backslash-newlines, odd bytes), random options (`-P`, `-C`, `-R`, `-D`, `-U`, `-I`, an output file, stdin), programs at cpp's limits (its string space, symbol table, pushback, the yacc stack, long tokens); `--mutate P` for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
 
@@ -41,6 +47,7 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 make check-realbin            # from the repo root: tables, goldens, coverage,
                               # mutos_c1 at depths 2-4 and a fuzz run,
                               # mutos_c0 on the goldens and two fuzz runs,
+                              # mutos_cpp on the goldens and two fuzz runs,
                               # the original cc traced (cctrace.py goldens),
                               # the original ld through mutos_root/
                               # (tests/mutos_root/check_root.py --realbin)
@@ -52,6 +59,9 @@ python3 tests/realbin/c1fuzz.py --gen lconst -n 300
 python3 tests/realbin/c0cmp.py goldens
 python3 tests/realbin/c0fuzz.py -n 2000 -s 7 --mutate 0.7 --keep /tmp/c0diff
 python3 tests/realbin/c0dis.py fold
+python3 tests/realbin/cppcmp.py goldens
+python3 tests/realbin/cppfuzz.py -n 2000 -s 7 --mutate 0.3 --show 20 --keep /tmp/cppdiff
+python3 tests/realbin/cppdis.py _subst
 ```
 
 The original `cc` (since 2026-10-20, `cctrace.py`):
@@ -135,6 +145,21 @@ operator and type, and the register returned, `d`: every `delay()` call;
   refused by the port (`docs/C0_PORT_PLAN.md`, section 4;
   `docs/MUTOS_ORIGINAL_BUGS.md`, C0-01 .. C0-12).
 
+## The port of `cpp` against it (2026-10-22)
+
+- The source of every `.i` golden (137), with `-P`, without `-P` and into an output
+  file: 411/411 identical - output, messages, exit status (`cppcmp.py goldens`); the
+  original's `-P` output is also each golden.
+- Differential fuzzing (`cppfuzz.py`), with the final port: 2,000 programs - seed 20
+  (1,000 generated) and seed 21 (1,000, `--mutate 0.5`) -, no difference: 1,802
+  identical, 33 refused, 130 on which the original does not finish (each refused by the
+  port, its output a prefix of the original's), 35 endless in both. `make
+  check-realbin` runs 200 of each (seed 1).
+- The port's refusals are each checked against the original's prefix; the categories
+  (`cppfuzz.py --show`): a frame array run past or read unwritten, an `#include` of a
+  directory, a `#if` division the 8086 faults on, a wild pointer into libc.a's state -
+  `src/mutos_cpp/README.md` and `docs/MUTOS_ORIGINAL_BUGS.md` (CPP-01 ..).
+
 ## The other originals (2026-10-20)
 
 Run while planning the driver (`../../docs/TOOLCHAIN_PLAN.md`; findings in
@@ -208,6 +233,15 @@ oracles"):
   the run stops with an error.
 - On the command line, a program that stops without `exit()` (or runs
   past `--max-insns`) gives status 125 and a `mutosemu:` message.
+- What a program `write()`s to a file is in the file however the run
+  ends, as with the kernel: the host files are buffered and are closed
+  at the end of every run. Until 2026-10-22 they were closed only after
+  `exit()` or the instruction limit, so a fault lost up to 8 KB of an
+  output file (`cppfuzz.py` found it: the port's output was longer than
+  the crashed original's).
+- `open()` of a directory fails (ENOENT): the host cannot read one as a
+  file, where MUTOS hands out its entries. `mutos_cpp` refuses such an
+  `#include` rather than follow either.
 - `break` is accepted as asked; the memory is the 64K data segment.
 - Only `0407` and `0411` files; the binaries in `mutos_bin/` are all one
   or the other (`cc` is `0407`, the rest `0411`).

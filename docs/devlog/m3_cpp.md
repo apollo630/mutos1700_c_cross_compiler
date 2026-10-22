@@ -4,11 +4,13 @@ Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEV
 
 ---
 
-**Status:** complete for the real corpus — 5/5 golden files byte-for-byte identical,
-0 ASan/UBSan errors. Full behavioral specification, architecture, and known
-documented simplifications live in **`src/mutos_cpp/README.md`** (not duplicated
-here). Man page: `man/mutos_cpp.1`. Test runner: `tests/mutos_cpp/run_goldens.sh`.
-Since 2026-10-20 a port of the original binary is planned (`docs/TOOLCHAIN_PLAN.md`).
+**Since 2026-10-22 `mutos_cpp` is a port of the original binary** - see
+`originals_and_ports.md`, "The port of `cpp`", and `src/mutos_cpp/README.md`. This
+part records the re-implementation it replaced (deleted that day, the last version in
+commit `03b72f7`; its `STATUS.md` records are in `docs/history/status_m3_cpp.md`): it
+was complete for the real corpus — 5/5 golden files byte-for-byte identical, 0
+ASan/UBSan errors. What follows was true of it when written; where it describes the
+original `cpp`, the port's reading of the binary has the final word.
 
 **Golden generation command** (critical, easy-to-lose detail): the reference `.i`
 files were generated on real MUTOS 1700 hardware via exactly:

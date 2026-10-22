@@ -1,167 +1,144 @@
 # mutos_cpp - MUTOS 1700 Cross C Preprocessor
 
-`mutos_cpp` re-implements the observable behavior of the real MUTOS 1700 /
-Unix V7 "fast cpp" (`v7/cpp/cpp.c`, written by John F. Reiser, July/August
-1978 - see `v7/cpp/README` for the original documentation) from scratch in
-modern C11. It is **not** a line-by-line port of the original K&R,
-pointer-arithmetic-heavy source (which relies heavily on 1978-era buffer
-tricks that are neither necessary nor desirable on a modern host); it is a
-clean-room implementation validated **byte-for-byte** against real golden
-reference output, as `mutos_as` is.
+`mutos_cpp` is a port of the original MUTOS 1700 preprocessor
+(`mutos_bin/cpp.golden.base64.txt`): John F. Reiser's "fast cpp" of
+Unix V7 in its SCCS versions `cpp.c 1.6 12/12/86` and `yylex.c 1.3
+12/12/86`. Every function of the binary was read instruction by
+instruction beside `v7/cpp/cpp.c`, `cpy.y` and `yylex.c` - the binary is
+the specification, v7's source the skeleton - and the port does what the
+binary does, its bugs included (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 ..).
+It replaced, on 2026-10-22, a from-scratch re-implementation of the
+observable behaviour (the last version is in the git history, commit
+`03b72f7`); see `docs/TOOLCHAIN_PLAN.md`, decision 4 and step 1.
 
-**To be replaced by a port of the original binary** (decided 2026-10-20,
-`docs/TOOLCHAIN_PLAN.md`, step 1): the MUTOS `cpp` is Reiser's program in
-its SCCS version `cpp.c 1.6 12/12/86`, and its binary in `mutos_bin/` still
-has its symbol table. Run under the emulator (`tests/realbin/`) it gives all
-137 `.i` goldens; the port brings what this implementation does not do:
-the `# N "file"` lines (below), the default include directory
-(`/usr/include`, under `$MUTOS_ROOT`) and the original's behaviour in the
-simplified cases listed under "Known, documented simplifications".
+`tests/realbin/cppmap.txt` maps every function to its text offset in the
+binary, which - alone among the originals - still has its symbol table,
+and says what each one does differently from v7; `tests/realbin/cppdis.py`
+disassembles one by name.
 
-Status: **5/5 golden tests byte-identical** (see `STATUS.md` for the
-currently-verified details). Golden references were generated on real
-MUTOS 1700 hardware via `cc -P -DM7100 -DASK -DIFSS -DV24 -DV30IDE <name>.c`;
-`cc`'s `-P` ("stop after preprocessing") is forwarded verbatim to `cpp`
-(see `v7/cc/cc.c`'s option parsing), where `-P` means "suppress
-`# N \"file\"` line markers" - which is why none of the golden `.i` files
-contain any such markers, and why `mutos_cpp` never emits them either. The
-original `cc` runs `cpp` **without** `-P` for every compile, though, and
-the original `c0` takes the file name and line number of its messages from
-those markers (`e.c:3: y undefined; func. main`, where `mutos_cpp` and
-`mutos_c0` say `4: y undefined; func. main` for a file with an `#include`
-before the error) - one reason for the port.
+## How it is checked
 
-## Behavioral spec (reverse-engineered from `v7/cpp/cpp.c` + `cpy.y` + `yylex.c`)
+- `tests/mutos_cpp/run_goldens.sh` (in `make test`): the five kernel files
+  of `tests/mutos_cpp/c` against their real-hardware `.i` goldens; through
+  `tests/mutos_cc/run_goldens.sh` all 132 `.i` goldens of the compiler
+  corpus too.
+- `tests/realbin/cppcmp.py goldens` (in `make check-realbin`): the source
+  of every one of the 137 `.i` goldens through the port and through the
+  original running under the 8086 emulator - with `-P` (also against the
+  golden), without `-P` (the `# N "file"` lines, as `cc` runs `cpp`), and
+  into an output file named on the command line; output, messages and
+  exit status byte for byte.
+- `tests/realbin/cppfuzz.py`: differential fuzzing against the emulated
+  original - random programs for every part of the preprocessor, random
+  options, mutated programs for the error paths, and programs at cpp's
+  limits (its string space, symbol table, pushback, the yacc stack, long
+  tokens). See `tests/realbin/README.md`.
 
-This is a K&R-era preprocessor, not an ANSI/ISO one. Notable consequences:
+## The memory image
 
-- **No `#elif`.** Only `#if`/`#ifdef`/`#ifndef`, a single optional `#else`,
-  and `#endif`.
-- **No `#` (stringize) or `##` (token-paste) operators.**
-- **`#if` identifiers are a defined-or-not boolean test, not macro-value
-  substitution.** A bare identifier in a `#if` expression evaluates to `1`
-  if it is currently `#define`d and `0` otherwise; it is *not* replaced by
-  its macro value first. `defined(NAME)` / `defined NAME` evaluate to that
-  same `0`/`1` - in this variant's grammar they are genuinely redundant
-  with a bare identifier, not just similar. This is a real, deliberate
-  divergence from ANSI C's `#if`, inherited directly from `yylex()`.
-- **Directives are recognized only when `#` is the very first character of
-  a physical line** (no leading whitespace tolerated) - a faithful
-  reproduction of `cpp.c`'s `cotoken()`/`prevlf` logic, not a
-  simplification. Unobserved either way by this project's current test
-  corpus (no indented directives exist in it), but it is the historically
-  accurate choice, so it's what this implementation does.
-- **Comments are uniformly removed**, but a comment always terminates a
-  token, so `foo`, comment, `bar` outputs the literally-adjacent text
-  `foobar` while still treating `foo` and `bar` as independently
-  macro-eligible tokens (matching `v7/cpp/README`'s own documented
-  example). Comments contribute **zero** characters of their own text -
-  not even a separating space.
-- **A comment's embedded newlines are *always* individually emitted to
-  output, unconditionally** - even inside a currently-false
-  `#ifdef`/`#ifndef`/`#if` region, where every other kind of output is
-  otherwise completely suppressed. This is a genuinely surprising, easy
-  -to-miss quirk: the reference `cpp.c`'s comment-skipping loop calls
-  `putc('\n', fout)` directly for each embedded newline, bypassing the
-  normal `flslvl`-gated suppression path (`dump()`) entirely. Confirmed
-  against `tests/mutos_cpp/c/mch.c`, which has multi-line comments inside
-  a false `#ifdef M1834` block (M1834 undefined in this project's golden
-  fixtures) whose internal newlines still show up as blank lines in the
-  golden output.
-- **A false `#ifdef`/`#ifndef`/`#if` body outputs nothing at all - not
-  even blank placeholder lines** (per `v7/cpp/README`'s explicit
-  "Stylistic choice" section), *except* for the comment-newline quirk
-  above. This project's implementation reproduces the exact accounting
-  rule (see `src/mutos_cpp/directive.c`'s file header comment): a
-  directive line contributes exactly one blank output line
-  if-and-only-if the conditional-active state was true *immediately
-  before* that specific directive's own effect is applied (its
-  "pre-state"), which correctly reproduces every case checked so far,
-  including a false `#ifdef ... #endif` block (no `#else`) of any body
-  size collapsing to exactly one blank line total, and an `#else` that
-  flips a false branch to true contributing no blank line of its own
-  while the newly-active body that follows is output normally.
-- **Object-like macro bodies discard exactly one separating character**
-  (typically a space or tab) immediately after the macro name before the
-  body text starts; **function-like macro bodies keep everything**
-  starting right after the closing `)` of the formal-parameter list, with
-  no trimming. Confirmed via `param.h`'s `major(x)` macro, whose body's
-  own leading tab is preserved verbatim at every call site in the golden
-  output.
-- **Backslash-newline line continuation** is spliced out of the input
-  stream transparently, everywhere (this project's `source_getc()`
-  handles it at the lowest possible layer, so every higher-level piece of
-  code - directive parsing, macro bodies, `#if` expressions, ordinary
-  text - gets it "for free" and can otherwise ignore it entirely). Not
-  exercised by the current golden corpus (no backslash continuations
-  exist in it), but implemented for correctness/completeness.
-- **Self-referential macros are protected against infinite recursion**
-  via a standard "blue paint" / hide-set: a macro is marked `hidden` for
-  exactly the lifetime of its own expansion's pushback buffer, so
-  `#define a a` terminates (`a` stays literal on rescan) instead of
-  looping forever. This reproduces the *effect* (no infinite loop) of the
-  original's `maclvl`/`macforw`/`symsiz`-based recursion counter without
-  replicating its incidental, fixed-budget-specific mechanics - not
-  exercised by the current golden corpus either way.
+cpp works on its own memory through char pointers, and where it goes past
+an array it reads or writes its neighbours. So the port keeps the
+original's 64K data segment as an image (`cpp.h`): the binary's
+initialized data at address 0 (`cppdata.c`, generated by
+`tests/realbin/cpptables.py --c`), every global at its address, 16-bit
+pointers, 16-bit ints that wrap as the original's do, and chars read with
+their sign - the 8086 compiler's chars are signed, so a byte 0200..0377
+indexes `fastab[]` or `toktyp[]` below its start, as in the original.
+The port keeps the original's stack pointer, so its frames are where the
+original's are - laid out as under the emulator, whose argument layout
+`cpp_init()` copies (`argv[0]` is `cpp`, as the original `cc` names it) -,
+and `subst()`'s frame is in the image whole, at the original's offsets:
+the original runs over `acttxt[]` into its other locals, and a pointer
+half overwritten keeps its high byte, the stack's (CPP-05) - the port
+with it. What the image does not model is refused with exit status 2 and a
+message ending in "refused" (`cpplib.c`, `cpptrap()`):
 
-## Known, documented simplifications (not exercised by the current corpus)
+- libc.a's stdio (the FILE structures, the output's buffer `_sobuf`,
+  stdin's), malloc's and printf's data, crt0's far pointers, the stack
+  beyond the frames the port has: a wild pointer reaching them;
+- a frame array run past - `filname[]` of `doincl()`, `formtxt[]` of
+  `dodef()`, `buf[]` of `stsym()`, `subst()`'s frame up to its saved BP -,
+  or a byte of one read that was not written since its function was
+  entered (`#include "name` without the closing quote: the name is not
+  terminated, the original reads stack garbage);
+- an `#include` that opens a directory (the original reads its entries);
+- a `#if` division by 0, or of -32768 by 1 or -1 (the 8086's `idiv`
+  faults).
 
-- **Formal parameters embedded inside a string/char literal within a
-  macro's own definition are not recognized/substituted.** The real
-  reference `cpp` has a special quote-aware scan specifically for this
-  (see `v7/cpp/README`'s `#define foo(a) '\a'` example); this
-  implementation treats such literals as opaque text during body capture.
-  No macro in this project's real MUTOS kernel corpus does this.
-- **A function-like macro name not immediately (mod whitespace/comments/
-  newlines) followed by `(` is left as a plain, unexpanded identifier.**
-  The reference `cpp` instead expands it anyway (with all-empty actual
-  arguments) accompanied by a warning - a real but obscure K&R-era
-  quirk. This implementation uses the more conventional/modern behavior
-  instead. No real corpus code relies on the original quirk.
-- **A multi-line macro *call*'s embedded raw newlines are captured as
-  part of whichever actual argument they fall within** (matching the
-  reference's own argument-collection behavior, which suppresses output
-  during actuals-scanning), rather than being separately emitted. Not
-  exercised by the current corpus (no macro call spans multiple physical
-  lines in it).
-- No default system include directory (nothing resembling `/usr/include`)
-  is baked in; only `-I` directories and the including file's own
-  directory (for `"..."`-style includes) are searched. Every golden
-  fixture uses relative `"../h/foo.h"`-style includes that resolve
-  without needing one.
+## Behaviour (the original's)
+
+K&R-era, as v7's:
+
+- No `#elif`, no `#` or `##` operators. Directives are recognized only
+  with `#` in the first column; `#line` passes through (as `# N "name"`).
+- In `#if`, macros are expanded first (by the scanner); an identifier left
+  over is 0, `defined X` and `defined(X)` are 1 or 0. An empty or invalid
+  expression is a "syntax error" and counts as true.
+- Comments are removed, but end a token (`a/**/b` is `ab` with `a` and `b`
+  each a candidate for expansion); a comment's linefeeds are written even
+  in a false `#if` region. Nothing else is written there, and a
+  `# N "file"` line follows the region when output resumes (without `-P`).
+- An object-like macro's body starts after the token that follows the
+  name - normally the blank, but whatever it is: `#define X+1` defines `X`
+  as `1`, `#define Y"s"` as nothing (CPP-13); formals are recognized inside
+  strings and character constants of the body; a function-like macro's
+  name not followed (across blanks and linefeeds) by `(` is expanded with
+  empty actuals and an "argument mismatch" warning, and the token read in
+  place of the `(` is lost.
+- `-D` without `=` defines 1; messages go to stderr as `file: line: text`;
+  the exit status is the number of errors.
+
+The MUTOS 1700 deltas from v7, all read from the binary (cppmap.txt):
+
+- a name is significant to 128 characters (v7: 8), `$` is an identifier
+  character, the only predefined name is `mutos`; the symbol table has
+  1000 entries, the string space 32000 bytes, the scanning buffer starts
+  128 bytes into its array;
+- the end of the input with a conditional open: "missing endif";
+- a macro call across lines keeps the output's line count: the linefeeds
+  of the actuals come back with the expansion (an actual's linefeeds where
+  it is pushed back first, its later uses with blanks for them, the rest
+  before the expansion), and `lineno` goes back to the call's line;
+- an escaped linefeed in a `#define` body writes a linefeed;
+- `#line N "name"` also makes `name` the current file's name (not `N` its
+  line number);
+- no macro expansion between `<` and `>` of an `#include`; input from
+  stdin has the directory `.`;
+- `#undef` of an unknown name does not enter it; comments in a `#if` line
+  are removed under `-C` too; hexadecimal digits a-f are 10..15 (v7's
+  yylex.c has a bug there).
+
+## Options and files
+
+`mutos_cpp [-P] [-C] [-R] [-E] [-Dname[=value]] [-Uname] [-Idir] [infile
+[outfile]]`, letter by letter as the original reads them (only the second
+character of each argument is looked at): `-P` no `# N "file"` lines, `-C`
+keep comments, `-R` allow macro recursion, `-E` ignored, `-D` and `-U` 20
+each (a 21st is stored over the next variable), `-I` 8 (with 8 the end
+mark of the directory list lands on `pflag` - both CPP-03); an unknown
+option is "unknown flag". The input is stdin without a name; a second
+name is the output file.
+
+The default include directory is the original's `/usr/include`, looked up
+under the MUTOS root (`$MUTOS_ROOT`, by default the build tree's
+`mutos_root/`; `src/h/mutos_root.h`). The rule for absolute paths: a name
+of the MUTOS file system - the default directory, an absolute name in an
+`#include` of the source, and every file found through either (and the
+directory of such a file, for its own includes) - is looked up under the
+root; a name from the command line (the input, the output, `-I`) is the
+host's. Relative names are relative to the current directory, as on
+MUTOS.
 
 ## Source layout
 
-- `mutos_cpp.h` - shared types and declarations.
-- `util.c` - small shared helpers (identifier/whitespace scanning, string
-  utilities).
-- `source.c` - the nested source stack: real files (top-level input and
-  `#include`) plus in-memory "pushback" buffers (macro-expansion results
-  re-scanned exactly like ordinary text). Pushback (`ungetc`) is scoped
-  **per source frame**, not globally - see the file's header comment for
-  why that distinction is load-bearing (a global pushback stack causes a
-  peeked-but-not-yet-consumed character from the *parent* source to
-  incorrectly "leak" ahead of a macro expansion's freshly-pushed buffer).
-- `macro.c` - the macro table, `#define`/`#undef` processing (including
-  formal-parameter recognition and body-piece constructions), and
-  macro-call expansion (argument collection, substitution, recursion
-  guard).
-- `ifexpr.c` - the `#if` constant-expression evaluator (precedence
-  climbing matching `v7/cpp/cpy.y` exactly).
-- `directive.c` - dispatches every control line (`#define`, `#undef`,
-  `#include`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#endif`, `#line`) and
-  implements the output-line accounting rule described above.
-- `scan.c` - the single flat top-level scanning loop. It does not
-  recurse for `#include` (the new file is simply pushed onto the source
-  stack and the very next loop iteration starts pulling from it) or for
-  macro expansion (the substituted text is pushed as a new source buffer
-  and re-scanned by this same loop) - both "just work" via the source
-  stack abstraction.
-- `main.c` - CLI entry point (`-D`, `-U`, `-I`, `-P`, `-C`, `-R`, `-o`,
-  positional `infile [outfile]`) and diagnostics.
-
-## Testing
-
-`tests/mutos_cpp/run_goldens.sh` preprocesses every `*.c` file in
-`tests/mutos_cpp/c/` with the exact flags the golden references were
-generated with, and diffs the result byte-for-byte against `<name>.i.golden`.
+- `cpp.h` - the memory image, the original's data addresses, parameters.
+- `cpp.c` - `cpp.o`'s functions in the binary's order, `sayline()` to
+  `main()`.
+- `cpy.c` - `cpy.o`'s: `yylex()`, `tobinary()`, `yyparse()` with the
+  grammar's actions; the yacc tables are the binary's, in the image.
+- `cpplib.c` - the machine: the image's initial state (crt0's argument
+  words), the files (open/read/close, the output stream in 512-byte
+  blocks), libc.a's printf for the messages, `calloc()`, `exit()`, the
+  frames' arrays, the refusals.
+- `cppdata.c` - generated: the binary's initialized data.
+- `main.c` - the entry.

@@ -758,21 +758,26 @@ class Emu:
     def run(self, max_insns=0):
         """Run to exit(); return the exit status."""
         try:
-            self.uc.emu_start(self.cbase, self.cbase + 0x10000,
-                              count=max_insns)
-        except _Exit:
-            pass
-        except UcError as e:
-            raise RuntimeError('emulation stopped: %s at %04x:%04x'
-                               % (e, self.reg('cs'), self.reg('ip')))
-        for fd in list(self.fds):
             try:
-                if fd in self.owned:
-                    self.fds[fd].close()
-                else:
-                    self.fds[fd].flush()
-            except (OSError, ValueError):
+                self.uc.emu_start(self.cbase, self.cbase + 0x10000,
+                                  count=max_insns)
+            except _Exit:
                 pass
+            except UcError as e:
+                raise RuntimeError('emulation stopped: %s at %04x:%04x'
+                                   % (e, self.reg('cs'), self.reg('ip')))
+        finally:
+            # what the program write()s is written, as by the kernel, also
+            # when a fault or a limit stops it: the host files are
+            # buffered, so they are closed (or flushed) in any case
+            for fd in list(self.fds):
+                try:
+                    if fd in self.owned:
+                        self.fds[fd].close()
+                    else:
+                        self.fds[fd].flush()
+                except (OSError, ValueError):
+                    pass
         if self.status is None:
             if getattr(self, 'eof_stop', False):
                 raise RuntimeError('program reads past the end of a file for '

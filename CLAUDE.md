@@ -31,9 +31,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/src/mutos_ld/`: Source code for the Mutos Linker - a port of v7's `ld.c` with the
   MUTOS deltas; to be re-ported from the original binary (`docs/TOOLCHAIN_PLAN.md`).
 * `/src/mutos_as/`: Source code for the Mutos Assembler.
-* `/src/mutos_cpp/`: Source code for the Mutos C Preprocessor. See `src/mutos_cpp/README.md`
-  for its full behavioral specification; to be re-ported from the original binary
-  (`docs/TOOLCHAIN_PLAN.md`).
+* `/src/mutos_cpp/`: Source code for the Mutos C Preprocessor - since 2026-10-22 a port of
+  the original MUTOS 1700 `cpp` read from its binary, running on an image of its data
+  segment (`cpp.h`); `src/mutos_cpp/README.md` has the original's behaviour, its deltas
+  from v7 and what the port refuses.
 * `/src/mutos_cc/`: Source code for the Mutos C Compiler. Contains `mutos_c0` (front end -
   since 2026-10-18 a port of the original MUTOS 1700 `c0` read from its binary,
   `src/mutos_cc/c0port/`, see `docs/C0_PORT_PLAN.md`) and `mutos_c1` (back end - since
@@ -111,7 +112,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `cc` with `fork`/`exece`/`wait` faked - `cctrace.py` traces it, or runs the whole
   original chain, and gives the goldens back through it (`cc -S`, `-P`, `-O -S`). Also `c1`'s and `c0`'s maps, tables and annotated
   disassemblers, and the checks of the two ports against the emulated originals
-  (`c1trees.py`, `c1fuzz.py`, `c0cmp.py`, `c0fuzz.py`). The emulator shifts by CL, and
+  (`c1trees.py`, `c1fuzz.py`, `c0cmp.py`, `c0fuzz.py`), and since 2026-10-22 the same for
+  `cpp` (`cppmap.txt`, `cppdis.py`, `cpptables.py`, `cppcmp.py`, `cppfuzz.py`). The
+  emulator shifts by CL, and
   faults on a quotient of -32768, as the 8086 does, not as the 80386 Unicorn emulates.
   See its `README.md`, `docs/C1_PORT_PLAN.md` and `docs/C0_PORT_PLAN.md`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
@@ -131,7 +134,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `ar`, `ranlib` (and related tools) are to follow (`docs/TOOLCHAIN_PLAN.md`).
 * `/v7/cc/`: Reference source code from Research Unix Version 7 C compiler.
 * `/v7/cpp/`: Reference source code for the fast V7 C preprocessor (John F. Reiser, 1978)
-  that `mutos_cpp` re-implements the observable behavior of.
+  - the original MUTOS `cpp` is a later version of it; the skeleton of `mutos_cpp`'s port.
 * `/v7/ld/`: Reference source code from Research Unix Version 7 Linker, but in part with MUTOS 1700 headers.
 * `/docs/`: Architecture notes, specifications, and design documents.
   * **`docs/TOOLCHAIN_PLAN.md`**: the plan from the compiler passes to a complete cross
@@ -235,15 +238,12 @@ You act as an expert systems programmer, compiler architect, and operating syste
      original `cc` always passes `-gC`, which `mutos_as` accepts and ignores since
      2026-10-20 (`docs/TOOLCHAIN_PLAN.md`, decision 9). Its 80186/V30 opcodes - an extension
      the original lacks - are to move behind the switch `-1` (section 4 there).
-   * **Known, deliberate exception (until the port of `cpp`)**: `mutos_cpp` never
-     emits `# N "file"` line-marker output, regardless of `-P`. Every real MUTOS 1700
-     `.i` golden this tool is validated against was itself generated with `cc`'s `-P`
-     flag (which `cc` also forwards verbatim to `cpp` — see `v7/cc/cc.c`), so this is
-     simply `mutos_cpp`'s only supported mode; `-P` is accepted on the command line
-     purely for compatibility. See `src/mutos_cpp/README.md`. The original `cc` runs
-     `cpp` *without* `-P` for every compile, and the original `c0` takes its messages'
-     file name and line number from those markers (found 2026-10-20) - so the port of
-     `cpp` (`docs/TOOLCHAIN_PLAN.md`, step 1) ends this exception.
+   * **Ended 2026-10-22 - `mutos_cpp`'s `# N "file"` lines**: until then `mutos_cpp`
+     (a re-implementation) never wrote them, regardless of `-P`, since every real
+     `.i` golden was made with `-P`. The original `cc` runs `cpp` *without* `-P` for
+     every compile, and the original `c0` takes its messages' file name and line
+     number from those lines (found 2026-10-20); `mutos_cpp` is now a port of the
+     original `cpp` (`docs/TOOLCHAIN_PLAN.md`, step 1) and writes them as it does.
    * **`-P` and `-S` (settled 2026-10-20)**: real `cc.c`'s `-P` makes `cc` exit right
      after `cpp` (`if (pflag) { cflag++; continue; }`), before `-S`'s `sflag` is ever
      reached, so `cc -P -S foo.c` produces only `foo.i` — found the hard way generating
@@ -453,12 +453,12 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   port it. No 8087 support needed.
 
 ### Milestone 3: The C Preprocessor (`mutos_cpp`)
-* Re-implementing the observable behavior of the real MUTOS 1700 / V7 "fast cpp"
-  (John F. Reiser, 1978): **complete for the real corpus** (5/5 golden files
-  byte-for-byte identical) — see `STATUS.md` and `src/mutos_cpp/README.md`.
-* **Next**: a port of the original `cpp` binary (`cpp.c 1.6 12/12/86`, with its symbol
-  table): `# N "file"` lines without `-P`, `/usr/include` under the MUTOS root, none of
-  the four documented simplifications.
+* **A port of the original `cpp` binary since 2026-10-22** (`cpp.c 1.6 12/12/86`, with
+  its symbol table; `docs/TOOLCHAIN_PLAN.md`, step 1): the `# N "file"` lines without
+  `-P`, `/usr/include` under the MUTOS root, the original's behaviour in every case the
+  re-implementation simplified, its bugs (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 ..).
+  Checked against the emulated original on every `.i` golden's source and by
+  differential fuzzing - see `STATUS.md` and `src/mutos_cpp/README.md`.
 
 ### Milestone 4: The C-Compiler (`mutos_cc`, `mutos_c0`, `mutos_c1`) [CURRENT FOCUS]
 * **`c0`/`c1` process split: confirmed, not just inherited.** Deliberately kept as
@@ -479,7 +479,7 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   there - the hand-written compiler, corpus category by category and the `fltprobe`
   rounds - is in `docs/devlog/` and `docs/history/`.
 * **Next**: the `mutos_cc` driver, as a port of the original `cc` binary (it differs
-  from `v7/cc/cc.c`), after the ports of `cpp` and `ld`. It passes
+  from `v7/cc/cc.c`), after the port of `ld` (`cpp`'s is done). It passes
   `$MUTOS_ROOT/lib/crt0.o` and `-lc` to `ld` and finds its passes as
   `$MUTOS_ROOT/lib/c0` etc. (symbolic links in the root).
 

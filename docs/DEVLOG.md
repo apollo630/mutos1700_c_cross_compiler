@@ -54,7 +54,7 @@ The assembler's floating constants: `.float`/`.double`, the real conversion re-e
 
 ## [Milestone 3 — `mutos_cpp` (C preprocessor)](devlog/m3_cpp.md)
 
-The preprocessor: golden generation command, the two bugs worth remembering, the output-line accounting rule.
+The preprocessor until its port (2026-10-22): golden generation command, the re-implementation's two bugs worth remembering, its output-line accounting rule. The port: "The port of `cpp`" in the part on the originals.
 
 - The two bugs worth remembering
 - Core output-line-accounting rule
@@ -130,9 +130,9 @@ The optimizer and the NEC V30: why `-mv30` code must keep the ABI, and why not `
 - `PREPARE`/`DISPOSE` vs. the discrete instruction sequence — real numbers
 - Recommendation
 
-## [The original binaries and the ports of `c1` and `c0`](devlog/originals_and_ports.md)
+## [The original binaries and the ports of `c1`, `c0` and `cpp`](devlog/originals_and_ports.md)
 
-The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20).
+The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20); the port of `cpp` (2026-10-22).
 
 - Plan after round 13: read the original `c1` (2026-10-10)
 - The original binaries (2026-10-12)
@@ -140,6 +140,7 @@ The original binaries read and run under an emulator; the ports of `c1` and `c0`
 - The port of `c0` (2026-10-14, 2026-10-18)
 - The other originals as oracles (2026-10-20)
 - Step 0 of the plan: the infrastructure (2026-10-20)
+- The port of `cpp` (2026-10-22)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

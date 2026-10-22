@@ -6,11 +6,12 @@
 # on real MUTOS 1700 hardware - the "-P" is cc's own "stop after
 # preprocessing" flag, which cc also forwards verbatim to cpp, where it
 # means "suppress '# N \"file\"' line markers"; see v7/cc/cc.c's option
-# parsing and src/mutos_cpp/README), then diffs the result against its
-# <n>.i.golden reference. Include search is relative to each source
+# parsing and src/mutos_cpp/README.md), then diffs the result against
+# its <n>.i.golden reference. Include search is relative to each source
 # file's own directory (matching every golden's "../h/foo.h" include
-# style), which mutos_cpp's default quote-include resolution already
-# handles with no -I needed.
+# style), as the original cpp's - which mutos_cpp is a port of - so no
+# -I is needed. (tests/realbin/cppcmp.py compares mutos_cpp with the
+# emulated original on these sources and all others with a .i golden.)
 #
 # Prints a three-way summary:
 #   1. Clean preprocesses (mutos_cpp succeeded AND the diff matched)
