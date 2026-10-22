@@ -8,8 +8,9 @@ three of the existing tools (`mutos_cpp`, `mutos_ld`, `mutos_as`) are
 re-implementations whose behaviour beyond the goldens was never compared
 with the originals.
 
-**Status (2026-10-20): plan; nothing of it is implemented yet** - step 0
-is next. `STATUS.md`'s "Next up" follows this order.
+**Status (2026-10-20): step 0 is done** (the same day - section 3); step
+1, the port of `cpp`, is next. `STATUS.md`'s "Next up" follows this
+order.
 
 ## 1. Where things stand
 
@@ -19,14 +20,15 @@ is next. `STATUS.md`'s "Next up" follows this order.
 | `mutos_c0` | port of the original `c0` (2026-10-18) | the emulated original: every golden, differential fuzzing |
 | `mutos_c1` | port of the original `c1` (2026-10-13) | the emulated original at four depths, differential fuzzing |
 | `mutos_c2` | missing | - |
-| `mutos_as` | re-implementation, 80186/V30 opcodes always on | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof` |
-| `mutos_ld` | port of v7's `ld.c` with the MUTOS deltas | its goldens (`myhello`/`idhello`) are missing from the tree |
+| `mutos_as` | re-implementation, 80186/V30 opcodes always on; takes `-g`/`-C` (step 0) | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof` |
+| `mutos_ld` | port of v7's `ld.c` with the MUTOS deltas | its goldens (`myhello`/`idhello`) are missing from the tree; the emulated original (step 0): the same output but for the text's padding |
 | `mutos_cc` | missing | - |
 | `ar`, `ranlib`, `make` | missing | - |
 
 The originals run under `tests/realbin/mutosemu.py`: `cpp`, `c0`, `c1`,
 `as` since 2026-10-12, and on 2026-10-20 also `c2`, `ld` and - with
-`fork`/`exece`/`wait` faked in a scratch harness - `cc`. What they showed
+`fork`/`exece`/`wait` faked, first in a scratch harness, since step 0 by
+the emulator and traced by `tests/realbin/cctrace.py` - `cc`. What they showed
 is in `docs/devlog/originals_and_ports.md`, "The other originals as
 oracles (2026-10-20)"; the points that shape this plan are in section 5.
 
@@ -109,7 +111,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 
 | Step | What | Checked by |
 |---|---|---|
-| 0 | Infrastructure: `mutosemu.py` serves `fork`/`exece`/`wait` (faked as above), `fstat`, `chmod`, `umask`, `link`, and a tracer for `cc` joins `tests/realbin/`; `mutos_root/` and the `MUTOS_ROOT` lookup (one header in `src/h/` for every tool); a `.gitignore` (the repository has none) for `mutos_root/` and the build products; `mutos_as` accepts `-g`/`-C` | the real `cc` and `ld` run as oracles; `make test` unchanged |
+| 0 | Infrastructure: `mutosemu.py` serves `fork`/`exece`/`wait` (faked as above), `fstat`, `chmod`, `umask`, `link`, and a tracer for `cc` joins `tests/realbin/`; `mutos_root/` and the `MUTOS_ROOT` lookup (one header in `src/h/` for every tool); a `.gitignore` (the repository had none) for `mutos_root/` and the build products; `mutos_as` accepts `-g`/`-C` | the real `cc` and `ld` run as oracles; `make test` unchanged. **Done 2026-10-20**: `cctrace.py goldens` - the traced `cc`, running the original passes, gives 132/132 `.s` (`cc -S`, with `c1`'s messages and exit status), 132/132 `.i` (`cc -P`), 9/9 `kernel_opt/` sources (`cc -O -S`); the original `ld` leaves its output (against `mutos_ld`: section 5); `make test` as before, plus `tests/mutos_root/check_root.py` |
 | 1 | Port of `cpp` | the emulated original on the 137 `.i` goldens with and without `-P`, differential fuzzing (macros, conditionals, includes, comments) |
 | 2 | Port of `ld` | the emulated original: every compiled golden linked with `crt0.o` and `libc.a`, with `-i`, `-n`, `-s`, `-x`, `-X`, `-u`, `-e`, `-o`, archive search, messages and exit status; this replaces the missing `myhello`/`idhello` goldens |
 | 3 | Port of `cc` | the tracer: every pass's path and arguments, messages and exit status over a matrix of options, the original's against the port's; whole programs through the chain |
@@ -152,7 +154,16 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   name.o` compiles or uses that file and writes `name` (no "Would
   overwrite").
 - **`ld`**: `-l` searches `/lib`, then `/usr/lib`, never `./`; `-r` and
-  `-d` refused.
+  `-d` refused. It appends **6 bytes** of `eb fe` (three `jmp $`) to the
+  text, whatever its length - `mutos_ld` rounds the text up to a multiple
+  of 8 instead, the one difference on fourteen compiled goldens linked
+  both ways (found in step 0; the port takes the original's rule). An
+  archive newer than its `__.SYMDEF` time draws `out of date (warning)`,
+  as from `mutos_ld`.
+- **`cc`, traced** (step 0): `Can't find <path>` on stdout and exit
+  status 1 for a pass that is not there (`-f`'s `/lib/c0f`); `x.c:`
+  before each source's passes when there are several; the `.o` of a
+  single source removed after the link.
 - **`as`**: options `-o`, `-e`, `-g`, `-C`, `-l`; the manual's `-L`,
   `-W`, `-D`, `-T` unknown to the binary; the 8087 set in its table, no
   80186 mnemonic; an unknown mnemonic assembles silently as a word with

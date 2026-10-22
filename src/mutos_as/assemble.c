@@ -734,7 +734,19 @@ int main(int argc, char **argv)
      * labels is simply the only implementable option here. See
      * CLAUDE.md's "Known, deliberate exception" and STATUS.md's open
      * item 6 for what this does (and does not) settle about the
-     * separate libc.a-vs-kernel L-label discrepancy. */
+     * separate libc.a-vs-kernel L-label discrepancy.
+     *
+     * "-g" and "-C" (2026-10-20, docs/TOOLCHAIN_PLAN.md decision 9):
+     * the original binary knows them, and the original cc always runs
+     * "as -gC -o x.o tmp". No effect of either is known yet (none on
+     * the probes run under the emulator), so they are accepted and
+     * ignored. The original reads its options letter by letter ("-gC"
+     * is g, then C), so an argument made only of the letters this
+     * assembler knows without an operand - g, C, v, W - is read the
+     * same way: "-gC", "-Cg", "-g -C" and "-gCW" all work. "-o" keeps
+     * its two forms below; any other letter is still the usage error
+     * it was (the original's "Unknown option X ignored." and the other
+     * letters it knows are for the differential fuzzer, plan step 5). */
     bool verbose = false;
     bool opt_W = false;
     const char *opt_o = NULL;
@@ -743,11 +755,9 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (strcmp(a, "-v") == 0) { verbose = true; continue; }
-        if (strcmp(a, "-W") == 0) { opt_W = true; continue; }
         if (strcmp(a, "-o") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: %s [-W] [-o output] [file ...]\n", argv[0]);
+                fprintf(stderr, "usage: %s [-gCW] [-o output] [file ...]\n", argv[0]);
                 return 1;
             }
             opt_o = argv[++i];
@@ -757,8 +767,16 @@ int main(int argc, char **argv)
             opt_o = a + 2; /* attached form, e.g. "-ofoo.o" */
             continue;
         }
+        if (a[0] == '-' && a[1] != '\0' && strspn(a + 1, "gCvW") == strlen(a + 1)) {
+            for (const char *p = a + 1; *p; p++) {
+                if (*p == 'v') verbose = true;
+                else if (*p == 'W') opt_W = true;
+                /* 'g', 'C': accepted, no effect (see above) */
+            }
+            continue;
+        }
         if (a[0] == '-' && a[1] != '\0') {
-            fprintf(stderr, "usage: %s [-W] [-o output] [file ...]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-gCW] [-o output] [file ...]\n", argv[0]);
             return 1;
         }
         if (nfilenames < (int)(sizeof(filenames) / sizeof(filenames[0])))

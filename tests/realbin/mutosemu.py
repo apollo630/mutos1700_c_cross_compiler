@@ -24,17 +24,39 @@ in what these binaries compute - a shift or rotate by CL of 32 or more,
 a signed division whose quotient is -32768 - the instructions get hooks
 that do what the 8086 (and the V30) does (Emu._hook_8086()).
 
-System calls served: exit, read, write, open, close, creat, unlink,
-break, lseek, getpid, access, kill, signal, ioctl (always "not a tty").
+System calls served: exit, fork, read, write, open, close, wait, creat,
+link, unlink, exece (and exec), chmod, break, stat, lseek, getpid,
+fstat, access, kill, signal, ioctl (always "not a tty"), umask.
 Signals: signal() records the handler (libc.a's per-signal trampoline);
 kill() of the process itself delivers the signal as v7's kernel does -
 a caught one through an interrupt frame into its trampoline, the handler
 then reset to the default; a default one kills the process (run()
 returns 128 + the signal number, emu.killed holds the signal); an
 ignored one does nothing.
-Anything else is answered with EINVAL and a warning on stderr. There is
-no fork/exec, so "cc" itself cannot run; its passes (cpp, c0, c1, as)
-are run one by one instead, as cc would run them.
+Anything else is answered with EINVAL and a warning on stderr.
+
+fork, exece and wait are faked, for "cc" (and later "make"): fork()
+saves the process - registers, its segments, its open files - and
+continues as the child (fork() returns 0 there). The child's exece()
+asks the emulator's on_exec(emu, path, argv, envp, pid) what the
+program would do: None if there is no such file (exece() fails with
+ENOENT and the child goes on, as on MUTOS), -errno for another failure
+(ENOEXEC: not an a.out), else the child's wait() status word (exit
+status << 8, or a signal number). The default only
+checks that the file exists and answers "exited 0"; cctrace.py's runs
+the program itself. Then, or at the child's exit(), the saved process
+is restored and its fork() returns the child's process number; wait()
+returns the children in the order they ended. Every exece() is listed
+in emu.execs. Only one process runs at a time, so a child's exece()
+returns to its parent before the parent goes on - as a parent that
+waits at once sees it.
+
+stat/fstat fill v7's 30-byte struct stat (sys/stat.h: the longs high
+word first, docs/MUTOS_C_ABI.md 1.6) from the host's; chmod, link and
+creat act on the host's files; umask is the emulated process's own,
+starting from the host's, and applies to the mode creat gives a new
+file. The errors of these calls are the host's error numbers, which are
+v7's up to 34 (EINVAL beyond).
 
 Validation: run over every golden in tests/mutos_cc, the real c1 gives
 each .s.golden byte for byte (c1_errors.txt's messages and the round
@@ -42,13 +64,13 @@ logs' included) and the real c0 each .1/.2 golden - see check_real.py
 and README.md.
 
 Usage:
-    mutosemu.py [--cwd DIR] [--root DIR] [--max-insns N] TOOL [ARG...]
+    mutosemu.py [--cwd DIR] [--root DIR] [--max-insns N] [--pid N] TOOL [ARG...]
         TOOL is a name in mutos_bin/ (c1, c0, cpp, as, ...) or a path to
         an a.out file. Relative file names the program opens are resolved
         against --cwd (default: the current directory), absolute ones
         (/usr/include/stdio.h) under --root if given, else as they are.
-        getpid() is the host's, so the real as's scratch file /tmp/AS<pid>
-        differs between runs side by side. The program's
+        getpid() is the host's (or --pid's), so the real as's scratch
+        file /tmp/AS<pid> differs between runs side by side. The program's
         stdout/stderr go to ours; the exit status is the program's - 125
         (and a "mutosemu:" message) if it stopped without an exit, ran
         past --max-insns or made the emulator fail.
@@ -83,7 +105,21 @@ SYSCALL_OFF = 0x0002   # Iscadr's offset (crt0.o data word 6)
 STKGROW_OFF = 0x0004   # Isgadr's offset (crt0.o data word 2)
 
 # V7 error numbers used below
-ENOENT, EBADF, EACCES, EINVAL, ESPIPE, ENOTTY = 2, 9, 13, 22, 29, 25
+ENOENT, EBADF, ECHILD, EACCES, EINVAL, ESPIPE, ENOTTY = 2, 9, 10, 13, 22, 29, 25
+# v7's error numbers 1..34 are the host's (Linux) 1..34 - EPERM .. ERANGE
+V7_ERRNO_MAX = 34
+
+
+def v7_errno(e):
+    """The v7 error number for a host OSError."""
+    return e.errno if e.errno and e.errno <= V7_ERRNO_MAX else EINVAL
+
+
+def host_umask():
+    """The host process's umask (read without changing it)."""
+    m = os.umask(0o022)
+    os.umask(m)
+    return m
 
 REG = {'ax': UC_X86_REG_AX, 'bx': UC_X86_REG_BX, 'cx': UC_X86_REG_CX,
        'dx': UC_X86_REG_DX, 'si': UC_X86_REG_SI, 'di': UC_X86_REG_DI,
@@ -105,14 +141,25 @@ class _Exit(Exception):
     pass
 
 
+def default_on_exec(emu, path, argv, envp, pid):
+    """A faked exece(): the program is not run. ENOENT (None) if there is
+    no such file, as MUTOS's exece; else the child "exits 0"."""
+    if not os.path.isfile(emu._path(path)):
+        return None
+    return 0
+
+
 class Emu:
     """One process: a loaded a.out image, its arguments and open files."""
 
     def __init__(self, image, args, cwd='.', stdin=None, stdout=None,
-                 stderr=None, root=None, eof_limit=None):
+                 stderr=None, root=None, eof_limit=None, pid=None, fds=None,
+                 on_exec=None, umask=None, envp=()):
         magic, tsize, dsize, bsize = struct.unpack_from('<4H', image, 0)
         if magic not in (0o407, 0o411):
             raise ValueError('not a 0407/0411 a.out (magic %o)' % magic)
+        self.magic = magic
+        self.tsize = tsize
         self.text = image[16:16 + tsize]
         self.data = image[16 + tsize:16 + tsize + dsize]
         self.cwd = cwd
@@ -142,29 +189,42 @@ class Emu:
         uc.reg_write(UC_X86_REG_CS, CSEG)
         for r in (UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_SS):
             uc.reg_write(r, dseg)
-        # argument strings at the top of the data segment, then the
-        # words crt0 reads: argc, argv[0..], NULL, envp NULL
+        # argument and environment strings at the top of the data
+        # segment, then the words crt0 reads: argc, argv[0..], NULL,
+        # envp[0..], NULL
         top = 0xFFF0
         ptrs = []
-        for a in args:
+        for a in list(args) + list(envp):
             s = a.encode('latin1') + b'\0'
             top -= len(s)
             uc.mem_write(self.dbase + top, s)
             ptrs.append(top)
         top &= ~1
-        words = [len(args)] + ptrs + [0, 0]
+        words = ([len(args)] + ptrs[:len(args)] + [0]
+                 + ptrs[len(args):] + [0])
         sp = top - 2 * len(words)
         uc.mem_write(self.dbase + sp, struct.pack('<%dH' % len(words), *words))
         uc.reg_write(UC_X86_REG_SP, sp)
         uc.reg_write(UC_X86_REG_IP, 0)
-        self.fds = {0: stdin if stdin is not None else sys.stdin.buffer,
-                    1: stdout if stdout is not None else sys.stdout.buffer,
-                    2: stderr if stderr is not None else sys.stderr.buffer}
+        if fds is not None:
+            # inherited open files (a faked exece): used, never closed
+            self.fds = dict(fds)
+        else:
+            self.fds = {0: stdin if stdin is not None else sys.stdin.buffer,
+                        1: stdout if stdout is not None else sys.stdout.buffer,
+                        2: stderr if stderr is not None else sys.stderr.buffer}
         self.owned = set()
         self.text_hooks = {}
         self.handlers = {}
         self.killed = None
-        self.pid = (os.getpid() & 0x7FFF) or 1
+        self.pid = pid if pid is not None else (os.getpid() & 0x7FFF) or 1
+        self.umask = host_umask() if umask is None else umask
+        # fork/exece/wait (faked, see the module's docstring)
+        self.on_exec = on_exec if on_exec is not None else default_on_exec
+        self.forks = []         # saved parents, innermost last
+        self.zombies = []       # (pid, wait status) of ended children
+        self.execs = []         # every exece: (pid, path, argv, envp)
+        self.next_pid = self.pid
         uc.hook_add(UC_HOOK_CODE, self._trampoline,
                     begin=self.cbase + SYSCALL_OFF,
                     end=self.cbase + STKGROW_OFF)
@@ -402,6 +462,8 @@ class Emu:
         if h == 1:                                   # ignored
             return self._return_far(0)
         if h == 0:                                   # default: killed
+            if self.forks:                           # a child: ends
+                return self._child_end(sig)
             self.killed = sig
             self.status = 128 + sig
             self.uc.emu_stop()
@@ -432,15 +494,174 @@ class Emu:
         self.owned.add(fd)
         return fd
 
+    # -- fork, exece, wait (faked) -------------------------------------
+    def _segments(self):
+        """(address, size) of the memory a process may change: the data
+        segment for 0411; for 0407 the one segment above the text (the
+        text itself is compared, not rewritten - see _child_end())."""
+        if self.magic == 0o411:
+            return self.dbase, 0x10000
+        return self.cbase + self.tsize, 0x10000 - self.tsize
+
+    def _fork(self):
+        """fork(): save the parent, continue as the child."""
+        addr, size = self._segments()
+        self.next_pid += 1
+        child = self.next_pid
+        self.forks.append({
+            'context': self.uc.context_save(),
+            'memory': bytes(self.uc.mem_read(addr, size)),
+            'text': (bytes(self.uc.mem_read(self.cbase, self.tsize))
+                     if self.magic == 0o407 else None),
+            'fds': dict(self.fds), 'owned': set(self.owned),
+            'brk': self.brk, 'handlers': dict(self.handlers),
+            'umask': self.umask, 'eof_reads': self.eof_reads,
+            'pid': self.pid, 'child': child})
+        parent = self.pid
+        self.pid = child
+        # the child shares the parent's open files: it may close them
+        # (only its own entry goes), never the host file under them
+        self.owned = set()
+        return self._return_far(parent, 0)          # BX = 0: the child
+
+    def _child_end(self, status):
+        """The child ended (exit, a fatal signal, or a faked exece) with
+        wait() status word status: restore the parent, whose fork()
+        returns the child's number."""
+        frame = self.forks.pop()
+        for fd in self.owned:                       # files the child opened
+            try:
+                self.fds[fd].close()
+            except (OSError, ValueError, KeyError):
+                pass
+        for fd in frame['fds']:
+            try:
+                frame['fds'][fd].flush()
+            except (OSError, ValueError, AttributeError):
+                pass
+        self.uc.context_restore(frame['context'])
+        addr, _ = self._segments()
+        self.uc.mem_write(addr, frame['memory'])
+        if frame['text'] is not None and \
+                bytes(self.uc.mem_read(self.cbase, self.tsize)) != frame['text']:
+            self.uc.mem_write(self.cbase, frame['text'])
+        self.fds, self.owned = frame['fds'], frame['owned']
+        self.brk, self.handlers = frame['brk'], frame['handlers']
+        self.umask, self.eof_reads = frame['umask'], frame['eof_reads']
+        self.pid = frame['pid']
+        self.zombies.append((frame['child'], status & 0xFFFF))
+        return self._return_far(frame['child'], 1)  # BX != 0: the parent
+
+    def _strings(self, off):
+        """The strings of a NULL-terminated pointer array at off."""
+        out = []
+        while off:
+            p = self.word(off)
+            if p == 0:
+                return out
+            out.append(self.cstr(p))
+            off += 2
+        return out
+
+    def _exece(self, bx, cx, si):
+        path = self.cstr(bx)
+        argv = self._strings(cx)
+        envp = self._strings(si)
+        self.execs.append((self.pid, path, argv, envp))
+        status = self.on_exec(self, path, argv, envp, self.pid)
+        if status is None:
+            return self._return_far(ENOENT, error=True)
+        if status < 0:                               # -errno: exece fails
+            return self._return_far(-status, error=True)
+        if not self.forks:
+            # exece in the first process: it is replaced - end the run
+            # with the program's status, as a shell would see it
+            self.status = (status >> 8) & 0xFF if status & 0xFF == 0 \
+                else 128 + (status & 0x7F)
+            self.uc.emu_stop()
+            raise _Exit()
+        return self._child_end(status)
+
+    def _wait(self):
+        if not self.zombies:
+            return self._return_far(ECHILD, error=True)
+        pid, status = self.zombies.pop(0)
+        return self._return_far(pid, status)
+
+    # -- stat ---------------------------------------------------------
+    def _stat_bytes(self, st):
+        """v7's struct stat (30 bytes) for a host os.stat_result; the
+        longs (st_size and the times) high word first."""
+        def lng(v):
+            v = int(v) & 0xFFFFFFFF
+            return struct.pack('<HH', v >> 16, v & 0xFFFF)
+        return (struct.pack('<7H', st.st_dev & 0xFFFF, st.st_ino & 0xFFFF,
+                            st.st_mode & 0xFFFF, min(st.st_nlink, 0x7FFF),
+                            st.st_uid & 0xFFFF, st.st_gid & 0xFFFF,
+                            getattr(st, 'st_rdev', 0) & 0xFFFF)
+                + lng(st.st_size) + lng(st.st_atime) + lng(st.st_mtime)
+                + lng(st.st_ctime))
+
+    def _fstat_of(self, f):
+        """The host stat of an open file - for an in-memory one (a test's
+        captured stdout), a regular file of its present size, mode 0, the
+        way v7 shows a pipe."""
+        try:
+            return os.fstat(f.fileno())
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            size = len(f.getvalue()) if hasattr(f, 'getvalue') else 0
+            return os.stat_result((0o100000, 0, 0, 1, 0, 0, size, 0, 0, 0))
+
     def _syscall(self):
         n = self.reg('ax')
         bx, cx, si, di = (self.reg('bx'), self.reg('cx'), self.reg('si'),
                           self.reg('di'))
         ret = self._return_far
         if n == 1:                                   # exit(status)
+            if self.forks:                           # a child: ends
+                return self._child_end((bx & 0xFF) << 8)
             self.status = bx & 0xFF
             self.uc.emu_stop()
             raise _Exit()
+        if n == 2:                                   # fork()
+            return self._fork()
+        if n == 7:                                   # wait()
+            return self._wait()
+        if n in (11, 59):                            # exec(name, argv),
+            return self._exece(bx, cx, si if n == 59 else 0)  # exece(.., envp)
+        if n == 9:                                   # link(name1, name2)
+            try:
+                os.link(self._path(self.cstr(bx)), self._path(self.cstr(cx)))
+            except OSError as e:
+                return ret(v7_errno(e), error=True)
+            return ret(0)
+        if n == 15:                                  # chmod(name, mode)
+            try:
+                os.chmod(self._path(self.cstr(bx)), cx & 0o7777)
+            except OSError as e:
+                return ret(v7_errno(e), error=True)
+            return ret(0)
+        if n == 18:                                  # stat(name, buf)
+            try:
+                st = os.stat(self._path(self.cstr(bx)))
+            except OSError as e:
+                return ret(v7_errno(e), error=True)
+            self.uc.mem_write(self.dbase + cx, self._stat_bytes(st))
+            return ret(0)
+        if n == 28:                                  # fstat(fd, buf)
+            f = self.fds.get(bx)
+            if f is None:
+                return ret(EBADF, error=True)
+            try:
+                f.flush()
+            except (OSError, ValueError, AttributeError):
+                pass
+            self.uc.mem_write(self.dbase + cx,
+                              self._stat_bytes(self._fstat_of(f)))
+            return ret(0)
+        if n == 60:                                  # umask(mask)
+            old, self.umask = self.umask, bx & 0o777
+            return ret(old)
         if n == 3:                                   # read(fd, buf, n)
             f = self.fds.get(bx)
             if f is None:
@@ -480,10 +701,17 @@ class Emu:
                 f.flush()
             return ret(0)
         if n == 8:                                   # creat(name, mode)
+            path = self._path(self.cstr(bx))
+            new = not os.path.exists(path)
             try:
-                f = open(self._path(self.cstr(bx)), 'w+b')
+                f = open(path, 'w+b')
             except OSError:
                 return ret(EACCES, error=True)
+            if new:                                  # a new file: the mode
+                try:                                 # asked, less the umask
+                    os.chmod(path, cx & 0o7777 & ~self.umask)
+                except OSError:
+                    pass
             return ret(self._newfd(f))
         if n == 10:                                  # unlink(name)
             try:
@@ -555,12 +783,12 @@ class Emu:
 
 
 def run_tool(tool, args, cwd='.', stdin=b'', max_insns=0, root=None,
-             eof_limit=None):
+             eof_limit=None, pid=None, on_exec=None):
     """Run a tool with captured output: (status, stdout, stderr)."""
     out, err = io.BytesIO(), io.BytesIO()
     emu = Emu(load_image(tool), [os.path.basename(tool)] + list(args),
               cwd=cwd, stdin=io.BytesIO(stdin), stdout=out, stderr=err,
-              root=root, eof_limit=eof_limit)
+              root=root, eof_limit=eof_limit, pid=pid, on_exec=on_exec)
     st = emu.run(max_insns)
     return st, out.getvalue(), err.getvalue()
 
@@ -569,6 +797,7 @@ def main(argv):
     cwd = '.'
     root = None
     max_insns = 0
+    pid = None
     while argv and argv[0].startswith('--'):
         if argv[0] == '--cwd':
             cwd = argv[1]
@@ -579,13 +808,16 @@ def main(argv):
         elif argv[0] == '--max-insns':
             max_insns = int(argv[1])
             argv = argv[2:]
+        elif argv[0] == '--pid':
+            pid = int(argv[1])
+            argv = argv[2:]
         else:
             sys.exit('mutosemu: unknown option %s' % argv[0])
     if not argv:
         sys.exit(__doc__.split('Usage:')[1].split('As a module')[0])
     tool = argv[0]
     emu = Emu(load_image(tool), [os.path.basename(tool)] + argv[1:], cwd=cwd,
-              root=root)
+              root=root, pid=pid)
     try:
         status = emu.run(max_insns)
     except RuntimeError as e:
