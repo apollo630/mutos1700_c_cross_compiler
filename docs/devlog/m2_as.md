@@ -386,6 +386,17 @@ recognized as an alternate program name (via `argv[0]` basename) with currently 
 functional difference (no project material documents concrete 8087 coprocessor
 opcodes to gate behind it).
 
+**`-g` and `-C` (2026-10-20)**: accepted and ignored - the original binary knows
+them (with `-o`, `-e`, `-l`), the original `cc` always runs `as -gC -o x.o tmp`, and
+no effect of either is known. An option argument made only of the letters `g`, `C`,
+`v`, `W` is read letter by letter, as the original reads its options (`-gC`, `-Cg`,
+`-gCW`); `-o` keeps its two forms; any other letter is the usage error it was (the
+original says `Unknown option X ignored.` and goes on - for the differential fuzzer,
+`docs/TOOLCHAIN_PLAN.md` step 5). Where the two also differ, found on the way: the
+summary line `mutos_as` writes to stderr on every run (the original writes nothing),
+and the `chmod 0755` above (the original leaves 0666 less the umask) -
+`docs/devlog/originals_and_ports.md`, "Step 0 of the plan".
+
 **Deliberate, documented deviation**: `-L` (control over whether compiler-internal
 `L`-prefixed labels appear in the symbol table) is **not implemented** — it was
 implemented once, found to break byte-for-byte golden parity (every real golden this

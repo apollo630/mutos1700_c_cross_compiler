@@ -53,4 +53,14 @@ Reference test archive: real MUTOS `libc.a`, 72178 bytes, 167 object members,
    pure-16-bit-LE `a.out` exec header, which has no `long` field at all and is not
    middle-endian (see `mutos_aout.h`'s own top-of-file comment).
 
+**The text padding - found 2026-10-20 against the emulated original `ld`**: the
+original appends **6 bytes** of `eb fe` (three `jmp $`) to the text, whatever its
+length; `mutos_ld` (`g_tsize = (g_tsize + 7u) & ~7u`) rounds it up to a multiple of
+8 instead. The `myhello` golden this rule came from (3,498 bytes of text, 3,504 in
+the header) fits both; `idhello`'s 6 bytes of `eb fe` before its zero fill fit only
+the original's. On fourteen compiled goldens linked both ways, nine differ by it
+and by nothing else (every data/BSS address shifted by the difference), five are
+identical. Left for the port of `ld` (`docs/TOOLCHAIN_PLAN.md`, step 2); details in
+`docs/devlog/originals_and_ports.md`, "Step 0 of the plan: the infrastructure".
+
 ---

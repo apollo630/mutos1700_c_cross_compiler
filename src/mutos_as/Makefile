@@ -95,7 +95,11 @@ CC      ?= cc
 CSTD    := -std=c11
 WARN    := -Wall -Wextra -Wpedantic
 OPT     := -O2 -g
-CFLAGS  := $(CSTD) $(WARN) $(OPT)
+# The MUTOS root's compiled-in default for src/h/mutos_root.h
+# (docs/TOOLCHAIN_PLAN.md, decision 2): the build tree's mutos_root/.
+# The top-level Makefile passes the same path.
+MUTOS_ROOT_DEFAULT ?= $(abspath $(CURDIR)/../../mutos_root)
+CFLAGS  := $(CSTD) $(WARN) $(OPT) -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
 LDFLAGS :=
 
 ASM_SRCS      := lexer.c parser.c pass2.c symtab.c encode.c objwrite.c fltconst.c assemble.c

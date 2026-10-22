@@ -591,3 +591,120 @@ the real `c0` uses them: for a file with an `#include` before an error,
 the original pipeline says `e.c:3: y undefined; func. main`, `mutos_cpp`
 and `mutos_c0` say `4: y undefined; func. main` - a wrong line and no
 file name. Its default include directory is `/usr/include`.
+
+## Step 0 of the plan: the infrastructure (2026-10-20)
+
+Step 0 of `docs/TOOLCHAIN_PLAN.md`: the emulator serves what the
+original `ld` and `cc` ask for, the tracer for `cc` joins
+`tests/realbin/`, the MUTOS root is built, `mutos_as` takes `-gC`.
+
+### The system calls, from `libc.a`'s stubs
+
+The registers each call uses were read from `libc.a`'s own stubs (the
+originals call nothing else):
+
+| Call | Number | Stub | In | Out |
+|---|---|---|---|---|
+| `fork` | 2 | `fork.o` | - | AX: the other process's number; BX: 0 in the child, else the parent (the stub returns 0 in the child and stores AX in `_par_uid`) |
+| `wait` | 7 | `wait.o` | - | AX: the child; BX: its status word (exit status << 8, or the signal), stored through the argument if not NULL |
+| `link` | 9 | `sys2a` | BX, CX: the names | - |
+| `chmod` | 15 | `sys2a` | BX: name, CX: mode | - |
+| `stat`, `fstat` | 18, 28 | `sys2a` | BX: name or fd, CX: buffer | v7's 30-byte `struct stat` (`tests/mutos_cpp/h/stat.h`), its longs high word first |
+| `exece` | 59 | `execve.o` (`execv`, `execl` load the same) | BX: path, CX: argv, SI: envp | only on failure |
+| `umask` | 60 | `sys1a` | BX: mask | AX: the old one |
+| `time` | 13 | `time.o` | - | AX: high word, BX: low word (not served: nothing asked for it) |
+
+`mutosemu.py` now serves them. `fork`/`exece`/`wait` are faked: one
+process runs at a time - `fork` saves the parent (registers, the
+segment it can change, its open files, `brk`, signals, `umask`) and goes
+on as the child; at the child's `exece` an `on_exec` hook says what the
+program would have done (by default only whether the file exists,
+ENOENT if not), at its `exit` or after the `exece` the parent is
+restored and its `fork` returns. A parent that waits at once - as `cc`
+does - cannot tell. `stat`/`fstat` fill the structure from the host's.
+
+### The original `cc`, traced
+
+`tests/realbin/cctrace.py` runs `cc` and records each `exece` with its
+`argv`, in order with what is written to stdout and stderr, and the exit
+status. With `--run` every pass runs too, as an emulated a.out from a
+MUTOS root of the originals (`oracle_root()`: the seven originals as
+`lib/cpp` ... `bin/cc`, `crt0.o`, `libc.a` at its `__.SYMDEF` time,
+`tmp/`), so the whole original chain runs on the host. Against the
+goldens it made on the hardware (`cctrace.py goldens`):
+
+- `cc -S x.c` from inside each corpus directory, as the corpus was made:
+  132/132 `.s` goldens, and the messages: where `c1` printed some -
+  `c1_errors.txt` and the round logs, which are the hardware's own
+  transcripts of those `make` runs (`*** Error code 1`) - exactly those
+  lines, on stderr, and exit status 1; elsewhere none and 0;
+- `cc -P x.c`: 132/132 `.i` goldens, `cpp` the only pass;
+- `cc -O -S x.c` on the nine `11_kernel` sources: 9/9 the optimized
+  kernel sources of `tests/mutos_as/kernel_opt/`, `c2` the last pass.
+
+What the traces show besides (the port of `cc`, step 3, is to show the
+same):
+
+- A pass that is not there: `cc -f -c x.c` runs `/lib/cpp`, then tries
+  `/lib/c0f` and prints `Can't find /lib/c0f` on stdout, exit status 1.
+- With several sources `cc` prints `x.c:` on stdout before each one's
+  passes (`cc -c a.c b.c`).
+- `cc -o wc wc.c` links and then removes `wc.o`, as v7's `cc` does for
+  a single source.
+- The temporary files are `/tmp/ctm<k>` and `mktemp`'s six digits of the
+  process number (`ctm4` the `cpp` output, `ctm1`/`ctm2` `c0`'s, `ctm5`
+  `c1`'s before `c2`, `ctm3` the assembler input).
+
+### The original `ld`, to the end
+
+With `fstat`, `link`, `chmod` and `umask` served, the original `ld`
+leaves its output (written to `/tmp/lda<pid>`, then linked to the
+output name). Fourteen compiled goldens (`10_integ`, `08_float`'s
+`01_floatbas`/`02_dblconv`, `04_funcs`), assembled by `mutos_as` and
+linked `-X` with `crt0.o` and `-lc`, against `mutos_ld` with the same
+files:
+
+- five byte for byte the same (the two `08_float` programs among them,
+  with much of `libc.a`);
+- nine not, all for one reason: **the original appends 6 bytes to the
+  text - three `jmp $` (`eb fe`) - whatever its length; `mutos_ld`
+  rounds the text up to a multiple of 8** (with the same filler). Where
+  the text came to 2 mod 8 the two agree. Everything else differs only
+  by the shift that follows: every data and BSS address in the text and
+  in the symbol table moves by the difference (checked word by word).
+  `mutos_ld`'s rule came from the `myhello` golden - 3,498 bytes of
+  text, 3,504 in its header - which fits both rules; `idhello`'s, whose
+  64-byte rounding left only 6 bytes of `eb fe` before the zeros, fits
+  only the original's. Six bytes is the 8086's instruction queue, which
+  may be why. For the port of `ld` (step 2).
+- `libc.a`'s time: with the archive newer than the time in its
+  `__.SYMDEF` the original says `ld:/lib/libc.a(__.SYMDEF): out of date
+  (warning)` and links all the same (the same output here); at exactly
+  that time (602282477) it says nothing; a second later it warns again.
+  So `mutos_root/lib/libc.a` carries that time, and both `ld`s link
+  through the root without the warning (`tests/mutos_root/check_root.py`).
+
+### The MUTOS root
+
+`scripts/mutos_root.sh` (run by `make`) fills `mutos_root/` as decision
+3 lists it: `crt0.o` and `libc.a` decoded (the time set with `TZ=UTC0
+touch -t 198901312041.17`, POSIX), the passes and tools as symbolic
+links into `src/` - relative, so that they survive a move of the tree -,
+`usr/lib/` and `usr/include/` empty. A link to a tool not built yet
+(`mutos_c2`, `mutos_cc`) dangles; through it the driver would print
+`Can't find`, as on a MUTOS system without the file. `src/h/mutos_root.h`
+is the lookup (header only: `mutos_root()`, `mutos_path()`), its
+default `MUTOS_ROOT_DEFAULT` passed by every Makefile; no tool uses it
+yet - the ports of `cpp`, `ld` and `cc` will.
+
+### `mutos_as -gC`
+
+`mutos_as` takes `-g` and `-C`, alone or together (`-gC`, letter by
+letter as the original reads them, with its own `-v` and `-W`), and
+ignores them; the object is the same. Two more differences from the
+original surfaced on the way, for the driver (step 3) and the fuzzer
+(step 5): `mutos_as` writes a summary line (`x.s: text=... -> x.o`) to
+stderr on every run, the original nothing; and it makes an object
+without undefined symbols executable (mode 0755), where the original
+leaves it as `creat` made it (0666 less the umask - checked under the
+emulator, which now serves `chmod` and applies the umask).

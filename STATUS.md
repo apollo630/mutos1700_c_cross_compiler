@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-10-20.
+Last updated: 2026-10-22.
 
 ---
 
@@ -19,24 +19,38 @@ Last updated: 2026-10-20.
 
 A repo-root `Makefile` builds every component — `mutos_ld` (compiled directly; it
 has no sub-Makefile of its own yet) and, through each one's own
-`src/mutos_<tool>/Makefile`, `mutos_as`, `mutos_cpp` and `mutos_c0`/`mutos_c1`.
+`src/mutos_<tool>/Makefile`, `mutos_as`, `mutos_cpp` and `mutos_c0`/`mutos_c1` - and
+makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
+`lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
+`src/`, `usr/lib/`, `usr/include/`; `make clean` removes it). Every component is
+compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
+`src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); no tool uses it yet - the
+ports of `cpp`, `ld` and `cc` will. A `.gitignore` covers `mutos_root/` and the build
+products, scoped so that no reference file can fall under it.
 `make test` runs every component's golden-diff suite from one place (`mutos_as`'s
 `kernel_nonopt`/`kernel_opt`/`libc_recon`/`float_coverage` plus its `.float`/`.double`
 checks - `check_floatdat.sh` and `float_coverage/fltmodel.py` - and the assembly of
-every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, and the compiler's).
+every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, the compiler's, and
+`tests/mutos_root/check_root.py` on the root and its lookup).
 `make check-realbin` and `make check-libcatof` need the Python module `unicorn` and
 are not part of `make test`: the first checks the original binaries and the ports of
-`c0` and `c1` against the emulated originals (Milestone 4), the second the
+`c0` and `c1` against the emulated originals, the original `cc` traced through its
+original passes against the goldens it made (Milestone 4), and the original `ld`
+through the root (Milestone 1); the second the
 `.float`/`.double` conversion and `mutos_c1`'s constant texts against `libc.a`'s own
 `atof`/`ecvt` (Milestones 2 and 4). `make check-docs` checks the Markdown files.
 
-Verified this session: `make clean && make all` with zero warnings under
-`-std=c11 -Wall -Wextra -Wpedantic`, then `make test` (results in the milestone
-sections), `make check-realbin` and `make check-libcatof`.
+Verified 2026-10-20: `make clean && make all` with zero warnings under
+`-std=c11 -Wall -Wextra -Wpedantic` (a second `make` changes nothing in the root),
+then `make test` - its output as before step 0 plus the root's checks, all passed
+(results in the milestone sections) -, `make check-realbin` and
+`make check-libcatof`. Re-run 2026-10-22 on a fresh clone with step 0's change
+applied: `make all`, `make test`, `make check-realbin`, `make check-libcatof`,
+`make check-docs` - the same results.
 
-Not built yet: the driver `mutos_cc`, `mutos_c2`, and the MUTOS root `mutos_root/`
-(`crt0.o`, `libc.a` and the passes for the driver) - see
-[`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), step 0.
+Not built yet: the driver `mutos_cc` and `mutos_c2` (their links in `mutos_root/`
+dangle until they are) - see [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md),
+steps 3 and 4.
 
 ---
 
@@ -67,6 +81,24 @@ full archive (`.a` / `-l`) support.
     `$MUTOS_ROOT`).
   - The original refuses `-r` and `-d` (`ld: -r and -d flags not supported`, exit
     status 4); `mutos_ld` implements both - kept as a documented extension.
+  - **Its output, compared for the first time** (step 0 of the plan: the emulator now
+    serves the `fstat`, `link`, `chmod` and `umask` it asks for, so it leaves its
+    `a.out`): fourteen compiled goldens (`10_integ`'s five, `08_float/01_floatbas`
+    and `02_dblconv`, `04_funcs`'s seven), assembled by `mutos_as`, linked `-X` with
+    `crt0.o` and `-lc` by both: **5 byte-identical, 9 differing in one thing - the
+    padding after the text.** The original appends 6 bytes of `eb fe` (three `jmp $`)
+    whatever the text's length; `mutos_ld` rounds it up to a multiple of 8. All else
+    follows from it: every data/BSS address, in the text and in the symbol table,
+    shifted by the difference (checked word by word). `mutos_ld`'s rule came from the
+    `myhello` golden (3,498 bytes of text, 3,504 in its header), which fits both;
+    `idhello`'s 6 bytes of `eb fe` before its zero fill fit only the original's. For
+    the port (step 2); `mutos_ld` is unchanged.
+  - **`libc.a`'s time**: the original warns `ld:/lib/libc.a(__.SYMDEF): out of date
+    (warning)` for an archive newer than its `__.SYMDEF` time and is silent at that
+    time (602282477); `mutos_root/lib/libc.a` carries it, and `mutos_ld` and the
+    original both link through the root without the warning, both warn with a newer
+    copy (`tests/mutos_root/check_root.py`, in `make test`; the original with
+    `--realbin`, in `make check-realbin`).
 
 ### NOT verified this session
 - **The golden reference binaries the "byte-for-byte identical" claim rests on
@@ -113,6 +145,8 @@ instructions listed under "`mutos_as` opcode coverage").
 
 - **Clean rebuild** (`make clean && make all`), zero warnings under
   `-std=c11 -Wall -Wextra -Wpedantic`.
+- **`-g`/`-C`**: `-gC`, `-g -C` and `-Cg -ox.o` give the object of no option
+  (`10_integ/01_wordcount.s.golden`); `-gx` and `-L` are still the usage error.
 - **Full regression (`make test`): 76/76 golden files byte-for-byte identical**,
   full file compare (header + text + data + text-reloc + data-reloc + symtab):
   `tests/mutos_as/kernel_opt/` 62/62 (with `mch_insw_outsw.s`, whose golden is the
@@ -149,9 +183,16 @@ other originals as oracles"):
 - **Options.** The original knows `-o`, `-e` (only external symbols in the symbol
   table), `-g`, `-C` and `-l`, letter by letter (`-gCe`); `-g`, `-C`, `-l` showed no
   effect on the probes. Every other letter gives `Unknown option X ignored.` - the
-  manual's `-L`, `-W`, `-D` and `-T` included. `mutos_as` has `-o`, `-W` and `-v`
-  and rejects every other option with its usage message - so the original `cc`'s
-  `as -gC` fails with it today.
+  manual's `-L`, `-W`, `-D` and `-T` included. `mutos_as` has `-o`, `-W` and `-v`,
+  and **since 2026-10-20 takes `-g` and `-C`** - alone or together (`-gC`), letter by
+  letter as the original reads them - and ignores them (plan decision 9): the
+  original `cc`'s `as -gC -o x.o tmp` works. Every other option is still its usage
+  error.
+- **Output** (checked under the emulator, 2026-10-20): `mutos_as` writes a summary
+  line (`x.s: text=... -> x.o`) to stderr on every run, the original nothing; it
+  makes an object without undefined symbols executable (0755), the original leaves
+  it as `creat` made it (0666 less the umask). For the driver (step 3) - which would
+  show the line on every compile - and the differential fuzzer (step 5).
 - **Mnemonics.** The original's table has the whole 8087 set (not needed here) and
   no 80186 mnemonic; an unknown mnemonic assembles silently to a word referring to an
   undefined external of that name (AS-02). Spellings `mutos_as` accepts that the
@@ -184,7 +225,8 @@ other originals as oracles"):
 - `float_coverage/libcatof.py` — `libc.a`'s own `atof` under an 8086 emulator.
 - `run_goldens.sh` / `mk_goldenbase64.sh` — batch golden-diff test runner and base64
   golden-file generator.
-- CLI: `-o output` (also `-ooutput`), `-W` (suppress diagnostics), `-v`, multi-file concatenation, stdin
+- CLI: `-o output` (also `-ooutput`), `-W` (suppress diagnostics), `-v`, `-g` and `-C` (accepted, no
+  effect - the original `cc` passes `-gC`), multi-file concatenation, stdin
   fallback, exec-bit on success, `asf` argv[0] alias. `-L` (control 'L'-prefixed
   compiler-internal label output) was implemented, found to break golden parity, and
   was **deliberately removed** per explicit prior user decision.
@@ -324,7 +366,13 @@ both ports; the records of the hand-written `mutos_c0`/`mutos_c1` before them ar
   `c0`, 1 on which the original does not finish (refused by the port); `mutos_c0` on
   all 137 `.i` inputs identical to the original; `c0fuzz.py` (200 programs, seed 1,
   plain and mutated): none different - 198 and 195 the same, the rest refused by the
-  port or not finished by the original, as specified.
+  port or not finished by the original, as specified. New with step 0 of the plan:
+  **the original `cc`, traced** (`tests/realbin/cctrace.py goldens`), running the
+  original passes from inside each corpus directory as on the hardware - `cc -S`
+  132/132 `.s` goldens, with exactly the messages of `c1_errors.txt` and the round
+  logs and exit status 1 where `c1` printed any, none and 0 elsewhere; `cc -P` 132/132
+  `.i` goldens, `cpp` the only pass; `cc -O -S` on `11_kernel` 9/9 the
+  `kernel_opt/` sources, `c2` the last pass.
 - **`make check-libcatof`**: `mutos_c1`'s constant texts against `libc.a`'s own
   `ecvt(atof())` - 5,630 literals compared, 0 differ; float initializers through
   `fstsp` - 5,649 compared, 0 differ (the `mutos_as` half: Milestone 2).
@@ -544,6 +592,15 @@ seven are new; the other 31 are placed, not compared yet. The real `c1`'s own de
 `rcexpr`/`cexpr` call; option `s<n>` is the `chkstk` frame threshold.
 Full findings: `docs/devlog/originals_and_ports.md`'s "The original binaries".
 
+**Since step 0 of the plan (2026-10-20)** the emulator fakes `fork`/`exece`/`wait`
+and serves `stat`/`fstat`, `link`, `chmod` and `umask`, so the original `cc` and `ld`
+run too: `tests/realbin/cctrace.py` traces `cc` - each pass's path and arguments, the
+messages, the exit status - or, with `--run`, runs the whole original chain; through
+it `cc -S` gives the 132 `.s` goldens (with `c1`'s messages and exit status as the
+hardware's transcripts have them), `cc -P` the 132 `.i` goldens, `cc -O -S` the nine
+`kernel_opt/` sources. The original `ld`'s output against `mutos_ld`'s: Milestone 1.
+Findings: `docs/devlog/originals_and_ports.md`, "Step 0 of the plan".
+
 **Decision (2026-10-12): `mutos_c1` becomes a port of the real `c1`**
 (v7's sources, the binary's deltas, the binary's tables generated, not
 typed), built beside `c1_gen.c` and checked against the emulated
@@ -577,21 +634,25 @@ screen.
 The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (decided
 2026-10-20):
 
-0. **Infrastructure**: `tests/realbin/mutosemu.py` serves `fork`/`exece`/`wait`
-   (faked), `fstat`, `chmod`, `umask` and `link`, and a tracer for the original `cc`
-   joins `tests/realbin/`; `mutos_root/` (`lib/crt0.o`, `lib/libc.a` with its
-   `__.SYMDEF` time, the passes as symbolic links) and the `MUTOS_ROOT` lookup; a
-   `.gitignore` (there is none yet) for `mutos_root/` and the build products; `mutos_as`
-   accepts `-g`/`-C`.
+0. ~~**Infrastructure**~~ - **done 2026-10-20**: `tests/realbin/mutosemu.py` fakes
+   `fork`/`exece`/`wait` and serves `stat`/`fstat`, `chmod`, `umask` and `link`;
+   `tests/realbin/cctrace.py` traces the original `cc` (the goldens through it: see
+   "The original binaries" above); `mutos_root/` is built by `make`
+   (`scripts/mutos_root.sh`), `src/h/mutos_root.h` is the lookup, every Makefile
+   passes its default; a `.gitignore` for `mutos_root/` and the build products;
+   `mutos_as` accepts `-g`/`-C`. Checked by `tests/mutos_root/check_root.py` (`make
+   test`) and `make check-realbin`.
 1. **Port of `cpp`** (Milestone 3): `# N "file"` lines, `/usr/include` under the
-   root, no simplifications.
+   root (`mutos_root.h`), no simplifications. **Next.**
 2. **Port of `ld`** (Milestone 1): `-l` under the root; `-r`/`-d` kept as an
    extension; the emulated original replaces the missing `myhello`/`idhello`
-   goldens.
+   goldens - and has a first answer: the text's padding (Milestone 1).
 3. **The `mutos_cc` driver**, a port of the original `cc` - not of `v7/cc/cc.c`, from
    which it differs (`as -gC`, `-f`, `-o name.o`, its messages; see the plan's
    section 5). The `-P`/`-S` question `CLAUDE.md` kept open is answered by the
    original: `-P` stops after `cpp`, with or without `-S`; the port does the same.
+   Its oracle is `cctrace.py`. `mutos_as`'s summary line on stderr (Milestone 2)
+   must not reach the driver's output.
 4. **Port of `c2`** (Milestone 5), 8086 only.
 5. **`mutos_as`**: differential fuzzer against the original, the `-1` switch for the
    80186 instructions; then the decision on a port.
@@ -612,7 +673,10 @@ original `c2` runs under `tests/realbin/mutosemu.py`, and on the nine `.s` golde
 `tests/mutos_cc/11_kernel` it gives `tests/mutos_as/kernel_opt/`'s `delay.s`,
 `prim.s`, `mem.s`, `pipe.s`, `nami.s`, `fio.s`, `v24.s`, `tty.s` and `amx.s` byte for
 byte (verified 2026-10-20) - the optimized kernel sources are its output, so the
-port has nine real-hardware goldens besides the emulated original.
+port has nine real-hardware goldens besides the emulated original. The whole
+original chain gives them too: `cc -O -S` on the nine `11_kernel` sources, the
+traced original `cc` running the original passes (`tests/realbin/cctrace.py
+goldens`, 9/9, verified 2026-10-20).
 
 **80186/V30 code generation** in `mutos_c1` and `mutos_c2` is deferred: the decision
 whether and how it comes is taken once the 8086 toolchain works completely

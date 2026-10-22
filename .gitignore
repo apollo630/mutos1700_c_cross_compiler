@@ -1,0 +1,33 @@
+# Build products - what "make" writes (CLAUDE.md, Workflow Guideline 5).
+#
+# Scoped on purpose: nothing here may hide reference data. The real
+# hardware references are *.o.golden, *.golden.base64.txt and the
+# base64 text in tests/mutos1700_crt0/, tests/mutos1700_libc/ and
+# mutos_bin/ - no pattern below matches them (Workflow Guideline 2).
+
+# The MUTOS root, made by scripts/mutos_root.sh, removed by "make clean"
+# (docs/TOOLCHAIN_PLAN.md, decision 3)
+/mutos_root/
+
+# Objects and programs under src/
+/src/**/*.o
+/src/mutos_ld/mutos_ld
+/src/mutos_as/mutos_as
+/src/mutos_as/parse_dump
+/src/mutos_as/classify_test
+/src/mutos_as/fltconst_test
+/src/mutos_cpp/mutos_cpp
+/src/mutos_cc/mutos_c0
+/src/mutos_cc/mutos_c1
+/src/mutos_cc/mutos_c2
+/src/mutos_cc/mutos_cc
+/src/mutos_cc/fltdec_test
+
+# The objects "make test" assembles next to the .s files it checks
+# (tests/mutos_as/run_goldens.sh writes <name>.o beside <name>.o.golden).
+# Four of them in float_coverage/ were committed once and stay tracked;
+# ignoring does not touch a tracked file.
+/tests/mutos_as/*/*.o
+
+# Python's byte-code caches (tests/realbin/ imports its own modules)
+__pycache__/

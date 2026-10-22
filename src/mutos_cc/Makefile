@@ -27,7 +27,12 @@
 # this Makefile - see README.md's "Next steps".
 
 CC      = cc
-CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
+# The MUTOS root's compiled-in default for src/h/mutos_root.h
+# (docs/TOOLCHAIN_PLAN.md, decision 2): the build tree's mutos_root/.
+# The top-level Makefile passes the same path.
+MUTOS_ROOT_DEFAULT ?= $(abspath $(CURDIR)/../../mutos_root)
+CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic -O2 -g \
+          -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
 
 C0_SRCS = c0port/c00.c c0port/c01.c c0port/c02.c c0port/c03.c \
           c0port/c04.c c0port/c0data.c c0port/c0lib.c

@@ -19,7 +19,8 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 
 | File | What it is |
 |---|---|
-| `mutosemu.py` | The emulator: loads a MUTOS `a.out` (0411 or 0407) into Unicorn, builds `crt0`'s argument stack and serves the system calls behind `crt0`'s two far-call trampolines (`Iscadr` → CS:0002, `Isgadr` → CS:0004, see `docs/MUTOS_C_ABI.md` §2.2). Shifts and rotates by CL as the 8086 does them (see "Limits of the emulator"). Usable from the command line and as a module (with hooks on text offsets; `eof_limit` stops a program that reads the end of a file again and again). |
+| `mutosemu.py` | The emulator: loads a MUTOS `a.out` (0411 or 0407) into Unicorn, builds `crt0`'s argument stack and serves the system calls behind `crt0`'s two far-call trampolines (`Iscadr` → CS:0002, `Isgadr` → CS:0004, see `docs/MUTOS_C_ABI.md` §2.2) - `fork`/`exece`/`wait` faked, so that `cc` runs (see "Limits of the emulator"). Shifts and rotates by CL as the 8086 does them. Usable from the command line and as a module (with hooks on text offsets; `eof_limit` stops a program that reads the end of a file again and again; `on_exec` decides what an `exece` does). |
+| `cctrace.py` | The original `cc`, traced: every `exece` with its `argv`, in order with what is written to stdout and stderr, and the exit status - the oracle for the port of `cc`. Traced, no pass runs (an existing file "exits 0"); with `--run` the original passes run too, as emulated a.outs from a MUTOS root of the originals (`--make-root` writes one), so the whole chain `cpp`, `c0`, `c1`, `c2`, `as`, `ld` runs. `goldens`: `cc -S`, `cc -P` and `cc -O -S` against the goldens they made on the hardware. |
 | `check_real.py` | `goldens`: the real `cpp`, `c0`, `c1` and `as` against every golden; `coverage`: which rows of `c1`'s code tables the goldens use. |
 | `c1tables.py` | Reads `c1`'s code tables (`regtab`, `efftab`, `cctab`, `sptab`) and `opdope[]`, `opntab[]`, `instab`, `branchtab` from the binary and writes them in `v7/cc/table.s` notation - the inverse of `v7/cc/cvopt.c`. |
 | `c1_tables.txt` | Its output, kept in the tree as the readable reference (generated - `make check-realbin` checks it is current). |
@@ -39,7 +40,10 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 ```sh
 make check-realbin            # from the repo root: tables, goldens, coverage,
                               # mutos_c1 at depths 2-4 and a fuzz run,
-                              # mutos_c0 on the goldens and two fuzz runs
+                              # mutos_c0 on the goldens and two fuzz runs,
+                              # the original cc traced (cctrace.py goldens),
+                              # the original ld through mutos_root/
+                              # (tests/mutos_root/check_root.py --realbin)
 python3 tests/realbin/check_real.py goldens
 python3 tests/realbin/check_real.py coverage --unused
 python3 tests/realbin/c1trees.py --depth 4 --show 1
@@ -50,8 +54,23 @@ python3 tests/realbin/c0fuzz.py -n 2000 -s 7 --mutate 0.7 --keep /tmp/c0diff
 python3 tests/realbin/c0dis.py fold
 ```
 
-The real pipeline on any file, the way `cc` runs it (`cc` itself cannot
-run: there is no `fork`/`exec`):
+The original `cc` (since 2026-10-20, `cctrace.py`):
+
+```sh
+T=tests/realbin/cctrace.py
+python3 $T -O -o x x.c               # the passes cc would run, none run
+python3 $T --run -o x x.c            # the whole original chain: x is linked
+python3 $T --run --cwd dir -S x.c    # x.s in dir, c1's messages and status
+python3 $T goldens                   # cc -S, -P, -O -S against the goldens
+python3 $T --make-root /tmp/oroot    # a MUTOS root of the originals, to keep
+```
+
+Its output: `exec PATH ARGV...` per pass, `1| ...` and `2| ...` for
+stdout and stderr, `exit N`; the temporary names `/tmp/ctm<k>XXXXXX`
+(`--raw`: as they are). By default a fresh MUTOS root of the originals is
+made for the run; `--root DIR` takes another (`mutos_root/`, say).
+
+The passes one by one, the way `cc` runs them:
 
 ```sh
 E=tests/realbin/mutosemu.py
@@ -59,6 +78,8 @@ python3 $E cpp -P x.c > x.i          # headers: relative to the current director
 python3 $E c0 x.i x.1 x.2
 python3 $E c1 x.1 x.2 x.s
 python3 $E as -o x.o x.s
+python3 $E --root R ld -X /lib/crt0.o x.o -lc   # R: a root with lib/crt0.o,
+                                     # lib/libc.a and tmp/ (cctrace.py --make-root)
 ```
 
 `--cwd DIR` resolves the program's relative file names against `DIR`,
@@ -126,23 +147,26 @@ oracles"):
   `nami.s`, `fio.s`, `v24.s`, `tty.s` and `amx.s` byte for byte - the
   optimized kernel sources are its output, which makes it the oracle
   for a port of `c2`.
-- **`ld`** runs through a link with the real `crt0.o` and `libc.a`, but
-  asks for system calls this emulator does not serve yet (`fstat`,
-  `link`, `umask`, `chmod` - answered with `EINVAL`); without `link` its
-  output stays in its temporary file `/tmp/lda<pid>`, which it then
-  removes, so no `a.out` is left to compare yet (step 0 of the plan
-  serves them). What it does is visible all the same: `-lc` is opened as
+- **`ld`** links with the real `crt0.o` and `libc.a`: `-lc` is opened as
   `/lib/libc.a`, then `/usr/lib/libc.a` (under `--root`); `-r` and `-d`
-  are refused.
-- **`cc`** forks and execs its passes, which this emulator cannot. A
-  scratch harness built on the emulator's `Emu` class faked them - at `fork` it
-  snapshots the process and returns 0, at the child's `exece` it records
-  the path and `argv` and resumes the parent as if the child had exited
-  0, `wait` returns that child - and so listed every pass `cc` runs with
-  its arguments. Serving these calls in `mutosemu.py` and a tracer for
-  `cc` in this directory are step 0 of the plan, so that the port of `cc`
-  is checked against the original the way the ports of `c0` and `c1`
-  are.
+  are refused. Since step 0 of the plan (the same day) the emulator
+  serves the `fstat`, `link`, `umask` and `chmod` it asks for, so its
+  output - written to `/tmp/lda<pid>`, then linked to the output name -
+  is left to compare: on fourteen compiled goldens five are `mutos_ld`'s
+  byte for byte, nine differ by the text's padding alone (the original
+  appends 6 bytes of `eb fe`, `mutos_ld` rounds up to 8 - see
+  `docs/devlog/originals_and_ports.md`, "Step 0 of the plan"). With
+  `libc.a` newer than its `__.SYMDEF` time it warns `out of date`; at
+  that time, as in `mutos_root/`, it does not.
+- **`cc`** forks and execs its passes. First traced with a scratch
+  harness; since step 0 the emulator fakes `fork`/`exece`/`wait` itself
+  (below) and `cctrace.py` traces `cc` - or runs the whole original
+  chain with `--run`. Against the goldens it made on the hardware
+  (`cctrace.py goldens`): `cc -S` 132/132 `.s` with `c1`'s messages and
+  exit status where the hardware's transcripts have them, `cc -P` 132/132
+  `.i`, `cc -O -S` 9/9 of `kernel_opt/`'s optimized kernel sources. The
+  port of `cc` is to be checked against these traces the way the ports
+  of `c0` and `c1` are checked against the emulated originals.
 - **`as`**: the options it knows (`-o`, `-e`, `-g`, `-C`, `-l`) and its
   mnemonic table (the 8087 set, no 80186 mnemonic) - the basis of the
   planned differential fuzzer for `mutos_as`.
@@ -163,10 +187,20 @@ oracles"):
   hook unless a jump can enter them. Other 80386 behaviour that differs
   from the 8086 (`push sp`, the opcodes the 8086 does not have) is not
   modelled: an instruction that depends on it runs as on the 80386.
-- System calls served: `exit`, `read`, `write`, `open`, `close`, `creat`,
-  `unlink`, `break`, `lseek`, `getpid`, `access`, `kill`, `signal`,
-  `ioctl` (always "not a tty"); anything else gets `EINVAL` and a
-  warning. No `fork`/`exec`/`wait` yet (see above). A signal is delivered when the
+- System calls served: `exit`, `fork`, `read`, `write`, `open`, `close`,
+  `wait`, `creat`, `link`, `unlink`, `exece` (and `exec`), `chmod`,
+  `break`, `stat`, `lseek`, `getpid`, `fstat`, `access`, `kill`,
+  `signal`, `ioctl` (always "not a tty"), `umask`; anything else gets
+  `EINVAL` and a warning. `stat`/`fstat` give v7's `struct stat` from the
+  host's (the longs high word first); `umask` is the emulated process's,
+  starting from the host's, and `creat` applies it to a new file's mode.
+- `fork`/`exece`/`wait` are faked: one process at a time. `fork` saves
+  the parent and goes on as the child; the child's `exece` asks the
+  `on_exec` hook (default: ENOENT if the file does not exist, else "exited
+  0"; `cctrace.py --run` runs the program), and then - or at the child's
+  `exit` - the parent is restored and its `fork` returns. Right for a
+  parent that waits at once, as `cc` does; a parent that goes on while
+  its child runs (a pipeline, `&`) is not modelled. A signal is delivered when the
   program `kill()`s itself (libc.a raises SIGFPE that way): a caught one
   through its handler, which is then reset to the default, as v7's
   kernel does; a default one ends the program (status 128 + the

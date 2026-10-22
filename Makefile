@@ -17,14 +17,19 @@
 #                                      mutos_cc driver itself, and
 #                                      mutos_c2, are not yet written;
 #                                      see src/mutos_cc/README.md)
+#   mutos_root/ - the MUTOS root     (scripts/mutos_root.sh: crt0.o,
+#                                      libc.a, the passes as symbolic
+#                                      links; docs/TOOLCHAIN_PLAN.md,
+#                                      decisions 2 and 3)
 #
 # Usage:
-#   make            # build everything
+#   make            # build everything, and make mutos_root/
 #   make ld         # build just mutos_ld
 #   make as         # build just mutos_as
 #   make cpp        # build just mutos_cpp
 #   make cc         # build just mutos_c0/mutos_c1
-#   make clean      # clean every component
+#   make root       # make (or bring up to date) mutos_root/
+#   make clean      # clean every component, remove mutos_root/
 #   make test       # run every component's golden-diff test suite
 #   make fuzz       # semantic fuzzing of mutos_c0/mutos_c1 (see
 #                   # tests/mutos_cc/fuzz/README.md); FUZZ_ARGS passes
@@ -40,7 +45,10 @@
 #                   # an 8086 emulator, against every tests/mutos_cc
 #                   # golden, tests/realbin/c1_tables.txt against the c1
 #                   # binary, and mutos_c1 and mutos_c0 (the ports of c1
-#                   # and c0) against the emulated originals (needs the Python module
+#                   # and c0) against the emulated originals; the
+#                   # original cc, traced, with the original passes
+#                   # against the goldens it made; the original ld
+#                   # through mutos_root/ (needs the Python module
 #                   # "unicorn"; see tests/realbin/README.md)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
@@ -48,29 +56,54 @@
 CC     = cc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
-.PHONY: all ld as cpp cc clean test fuzz check-docs check-libcatof check-realbin install-hooks
+# The MUTOS root (docs/TOOLCHAIN_PLAN.md, decisions 2 and 3): every tool
+# looks up the absolute MUTOS paths (/lib/crt0.o, /lib/c0, /usr/include)
+# under $MUTOS_ROOT, by default this tree's mutos_root/ - its absolute
+# path, compiled in as MUTOS_ROOT_DEFAULT (src/h/mutos_root.h). Every
+# component gets the same definition: passed to the sub-Makefiles, which
+# work out the same path when run on their own. After moving the tree:
+# rebuild, or set MUTOS_ROOT.
+ifneq ($(words $(CURDIR)),1)
+$(error the path of the build tree must not contain blanks: $(CURDIR))
+endif
+MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
+ROOTDEF = -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
+SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
-all: ld as cpp cc
+.PHONY: all ld as cpp cc root clean test fuzz check-docs check-libcatof check-realbin install-hooks
+
+all: ld as cpp cc root
 
 ld: src/mutos_ld/mutos_ld
 
 src/mutos_ld/mutos_ld: src/mutos_ld/mutos_ld.c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(ROOTDEF) -o $@ $<
 
 as:
-	$(MAKE) -C src/mutos_as
+	$(SUBMAKE) -C src/mutos_as
 
 cpp:
-	$(MAKE) -C src/mutos_cpp
+	$(SUBMAKE) -C src/mutos_cpp
 
 cc:
-	$(MAKE) -C src/mutos_cc
+	$(SUBMAKE) -C src/mutos_cc
 
+# mutos_root/: crt0.o and libc.a decoded from tests/ (libc.a with its
+# __.SYMDEF time), the passes and tools as symbolic links into src/ (a
+# link to a tool not built yet dangles), usr/lib/ and usr/include/.
+# scripts/mutos_root.sh rewrites only what differs. Ignored by git.
+root:
+	@sh scripts/mutos_root.sh
+
+# "make clean" removes mutos_root/ too - with anything put into it (its
+# usr/lib/ is for the user's own libraries) - and never touches tests/ or
+# mutos_bin/ (CLAUDE.md, Workflow Guidelines 2 and 5).
 clean:
 	rm -f src/mutos_ld/mutos_ld
 	$(MAKE) -C src/mutos_as clean
 	$(MAKE) -C src/mutos_cpp clean
 	$(MAKE) -C src/mutos_cc clean
+	rm -rf ./mutos_root
 
 # Runs every component's own golden-diff test suite. Each suite is
 # independently authoritative about what "pass" means for that
@@ -91,6 +124,10 @@ clean:
 # tests/mutos_as/float_open/ is deliberately NOT run here: it holds
 # probes mutos_as still refuses - at present only fltsig.s, which the
 # real "as" refuses too (see its README.md).
+# tests/mutos_root/check_root.py checks mutos_root/ (its files against
+# the references in tests/, libc.a's time, the links), the lookup of
+# src/h/mutos_root.h, and that mutos_ld uses libc.a's __.SYMDEF without
+# "out of date".
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -110,6 +147,8 @@ test: all
 	@cd tests/mutos_cpp && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp ./run_goldens.sh
 	@echo "== mutos_cc (c0/c1) goldens =="
 	@cd tests/mutos_cc && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp MUTOS_C0=$(CURDIR)/src/mutos_cc/mutos_c0 MUTOS_C1=$(CURDIR)/src/mutos_cc/mutos_c1 ./run_goldens.sh
+	@echo "== the MUTOS root (mutos_root/, src/h/mutos_root.h) =="
+	@python3 tests/mutos_root/check_root.py --cc "$(CC)" $(MUTOS_ROOT_DEFAULT)
 
 # Checks every *.md file for the kind of drift a rebuild/regression run
 # can't catch: numbers restated in more than one place that disagree,
@@ -154,12 +193,17 @@ check-libcatof: as ld cc
 # segment (c0data.c) current, its .1, .2, messages and exit status the
 # original's on every .i golden (tests/realbin/c0cmp.py), and two
 # fixed-seed differential fuzz runs, one with mutated programs
-# (tests/realbin/c0fuzz.py). Separate
+# (tests/realbin/c0fuzz.py); then the original cc (tests/realbin/
+# cctrace.py, fork/exece/wait faked) running the original passes
+# against the goldens it made on the hardware - "cc -S" (c1's messages
+# and exit status included), "cc -P", "cc -O -S" (c2: the kernel_opt
+# sources); then the original ld through mutos_root/ (check_root.py
+# --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
 REALBIN_C0FUZZ_ARGS = -n 200 -s 1
-check-realbin: cc cpp
+check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
 	@python3 tests/realbin/check_real.py goldens
@@ -172,6 +216,8 @@ check-realbin: cc cpp
 	@python3 tests/realbin/c0cmp.py goldens
 	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS)
 	@python3 tests/realbin/c0fuzz.py $(REALBIN_C0FUZZ_ARGS) --mutate 0.7
+	@python3 tests/realbin/cctrace.py goldens
+	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed
