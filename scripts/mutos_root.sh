@@ -4,7 +4,7 @@
 # The MUTOS root (docs/TOOLCHAIN_PLAN.md, decisions 2 and 3) is one
 # directory that mirrors the MUTOS file system: the cross tools look up
 # every absolute path an original MUTOS 1700 tool names (/lib/crt0.o,
-# /lib/c0, -lc's /lib/libc.a, /usr/include) under it - $MUTOS_ROOT, by
+# /lib/c0, -lc's /lib/libc.a, /usr/include, /tmp) under it - $MUTOS_ROOT, by
 # default the build tree's mutos_root/ (src/h/mutos_root.h). The
 # top-level Makefile runs this script on every "make"; "make clean"
 # removes the directory, with anything put into it.
@@ -24,6 +24,8 @@
 #   usr/lib/       empty: for the user's own libraries (ld -lX looks in
 #                  lib/, then usr/lib/)
 #   usr/include/   the headers, once there are any (empty for now)
+#   tmp/           the temporary files: ld's /tmp/ldaXXXXXX (created and
+#                  unlinked at once, opened), later cc's /tmp/ctm...
 #
 # The links are relative for the build tree's own mutos_root/ (they
 # stay valid when the tree moves, with MUTOS_ROOT set to its new place)
@@ -40,7 +42,7 @@ set -e
 top=$(cd "$(dirname "$0")/.." && pwd)
 root=${1:-$top/mutos_root}
 
-mkdir -p "$root/lib" "$root/bin" "$root/usr/lib" "$root/usr/include"
+mkdir -p "$root/lib" "$root/bin" "$root/usr/lib" "$root/usr/include" "$root/tmp"
 root=$(cd "$root" && pwd)
 
 # decode BASE64-FILE TARGET: write TARGET only if its bytes differ

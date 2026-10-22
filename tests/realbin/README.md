@@ -5,12 +5,12 @@ hardware (`as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, as base64 text - see
 its `README.md`). This directory runs them on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
-emulator run away. It is also where `mutos_c1`, `mutos_c0` and
-`mutos_cpp` - since 2026-10-13, 2026-10-18 and 2026-10-22 ports of the
-real `c1`, `c0` and `cpp` (`src/mutos_cc/c1port/`, `c0port/`,
-`src/mutos_cpp/`, `docs/C1_PORT_PLAN.md`, `docs/C0_PORT_PLAN.md`,
-`src/mutos_cpp/README.md`) - are checked against the originals, on every
-golden and on random programs.
+emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`
+and `mutos_ld` - since 2026-10-13, 2026-10-18 and 2026-10-22 (the last two)
+ports of the real `c1`, `c0`, `cpp` and `ld` (`src/mutos_cc/c1port/`,
+`c0port/`, `src/mutos_cpp/`, `src/mutos_ld/`, `docs/C1_PORT_PLAN.md`,
+`docs/C0_PORT_PLAN.md`, `src/mutos_cpp/README.md`, `src/mutos_ld/README.md`)
+- are checked against the originals, on every golden and on random input.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
@@ -38,6 +38,11 @@ for running the binaries; `capstone` (`pip install capstone`) only for
 | `cpptables.py` | `--c`: the original `cpp`'s initialized data segment as C - `src/mutos_cpp/cppdata.c` (generated, checked in; `--check-c` checks it is current); `--symbols`: its symbol table; `--tables`: its strings, `yylex()`'s tables and yacc's tables. |
 | `cppcmp.py` | `mutos_cpp` against the original: the same command line in the same directory, the output (stdout or a file named on the command line), messages and exit status compared byte for byte - `goldens` (the source of each of the 137 `.i` goldens with `-P`, also against the golden, without `-P`, and into an output file) or `files`. A refusal of the port must have written a prefix of the original's output, also where the original does not finish (a CPU fault), and there the port must have refused; where both run into the limits (an endless expansion: 1 MB of output or 40M instructions; the port 5 s of CPU) their outputs must agree as far as the shorter goes (`endless`). |
 | `cppfuzz.py` | Differential fuzzing of `mutos_cpp` with `cppcmp.py`'s comparison: random programs for every part of the preprocessor (macros with and without parameters, calls across lines with comments and strings in the actuals, conditionals and `#if` expressions with every operator and number base, character constants, includes with `" "` and `< >`, `-I` and a MUTOS root, `#line`, `__LINE__`, `__FILE__`, comments, backslash-newlines, odd bytes), random options (`-P`, `-C`, `-R`, `-D`, `-U`, `-I`, an output file, stdin), programs at cpp's limits (its string space, symbol table, pushback, the yacc stack, long tokens); `--mutate P` for the error paths. |
+| `ldmap.txt` | A map of the stripped `ld`: its functions (v7's `ld.c` in source order, `bytrel()` new after `load2td()`, then `libc.a` from text 20c0) with their text offsets, how each compares with v7 (`same`, `delta`, `new`) and what the binary does differently, and the data offsets of its globals - the port's memory image follows them. |
+| `lddis.py` | `c1dis.py` switched to `ld` (`c1dis.use('ld')`): the annotated disassembly by function name from `ldmap.txt`. |
+| `ldtables.py` | `--c`: the original `ld`'s initialized data segment as C - `src/mutos_ld/lddata.c` (generated, checked in; `--check-c` checks it is current); `--strings`: its strings. |
+| `ldcmp.py` | `mutos_ld` against the original: the same command line in two copies of the same directory with the same MUTOS root (`crt0.o`, `libc.a` at its `__.SYMDEF` time, `tmp/`, a case's own libraries); the messages, the exit status and every file left in the directory (bytes and mode; the temporary output name counted as one) compared - `goldens` (every assemblable `.s` golden of `tests/mutos_cc`, assembled by `mutos_as`, linked with twelve command lines), `cases` (hand-written: the messages, the options, `-l` names, archives, bad files, the tables' limits, the original's bugs) or `files`. A refusal of the port must have written a prefix of the original's messages, and where the original does not finish the port must have refused. `-r` and `-d` (the port's extension) are not compared; `tests/mutos_ld/check_rflag.py` checks them. |
+| `ldfuzz.py` | Differential fuzzing of `mutos_ld` with `ldcmp.py`'s comparison: random objects (text and data words with every relocation kind, the pc-relative and byte-shift bits; external definitions in every segment, absolutes, undefined, commons, locals, "L" locals, file names, shared names, a spare byte, an odd size, no relocation bits, another magic), real `crt0.o` and `libc.a` members, archives plain, current and out of date - by name or through `-l` from the root -, random options; `--mutate P` damages files for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
 
@@ -62,6 +67,10 @@ python3 tests/realbin/c0dis.py fold
 python3 tests/realbin/cppcmp.py goldens
 python3 tests/realbin/cppfuzz.py -n 2000 -s 7 --mutate 0.3 --show 20 --keep /tmp/cppdiff
 python3 tests/realbin/cppdis.py _subst
+python3 tests/realbin/ldcmp.py goldens
+python3 tests/realbin/ldcmp.py cases --show 100
+python3 tests/realbin/ldfuzz.py -n 2000 -s 7 --mutate 0.5 --keep /tmp/lddiff
+python3 tests/realbin/lddis.py _bytrel
 ```
 
 The original `cc` (since 2026-10-20, `cctrace.py`):
@@ -160,6 +169,19 @@ operator and type, and the register returned, `d`: every `delay()` call;
   directory, a `#if` division the 8086 faults on, a wild pointer into libc.a's state -
   `src/mutos_cpp/README.md` and `docs/MUTOS_ORIGINAL_BUGS.md` (CPP-01 ..).
 
+## The port of `ld` against it (2026-10-22)
+
+- Every assemblable `.s` golden (131), assembled by `mutos_as`, linked with twelve
+  command lines (`ldcmp.py goldens`): 1,572/1,572 the same - messages, exit status,
+  the files left in the directory, bytes and mode.
+- The hand-written cases (`ldcmp.py cases`: 91, 89 the same, 2 refused) and
+  differential fuzzing (`ldfuzz.py`, 2,000 cases with and without damaged files:
+  1,955 the same, 45 refused; see `STATUS.md`) - no difference; the refusals (an input that is a directory, an `lseek()` to a negative
+  offset - `docs/MUTOS_ORIGINAL_BUGS.md`, LD-07) each checked against the original's
+  messages. `make check-realbin` runs the goldens, the cases and 300 fuzz cases of
+  each kind (seed 1).
+- The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`, LD-01 ..
+
 ## The other originals (2026-10-20)
 
 Run while planning the driver (`../../docs/TOOLCHAIN_PLAN.md`; findings in
@@ -177,9 +199,10 @@ oracles"):
   are refused. Since step 0 of the plan (the same day) the emulator
   serves the `fstat`, `link`, `umask` and `chmod` it asks for, so its
   output - written to `/tmp/lda<pid>`, then linked to the output name -
-  is left to compare: on fourteen compiled goldens five are `mutos_ld`'s
-  byte for byte, nine differ by the text's padding alone (the original
-  appends 6 bytes of `eb fe`, `mutos_ld` rounds up to 8 - see
+  is left to compare: on fourteen compiled goldens five were `mutos_ld`'s
+  (then a port of v7's `ld.c`) byte for byte, nine differed by the text's
+  padding alone (the original appends 6 bytes of `eb fe`, `mutos_ld`
+  rounded up to 8 - see
   `docs/devlog/originals_and_ports.md`, "Step 0 of the plan"). With
   `libc.a` newer than its `__.SYMDEF` time it warns `out of date`; at
   that time, as in `mutos_root/`, it does not.

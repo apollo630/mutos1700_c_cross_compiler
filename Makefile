@@ -7,8 +7,8 @@
 # aggregates them so `make` from the repo root builds everything.
 #
 # Components:
-#   mutos_ld   - linker              (src/mutos_ld/,  single .c file,
-#                                      no sub-Makefile of its own yet)
+#   mutos_ld   - linker              (src/mutos_ld/, a port of the
+#                                      original ld)
 #   mutos_as   - cross-assembler     (src/mutos_as/)
 #   mutos_cpp  - C preprocessor      (src/mutos_cpp/, a port of the
 #                                      original cpp)
@@ -49,37 +49,37 @@
 #                   # ports of c1, c0 and cpp) against the emulated
 #                   # originals; the
 #                   # original cc, traced, with the original passes
-#                   # against the goldens it made; the original ld
-#                   # through mutos_root/ (needs the Python module
-#                   # "unicorn"; see tests/realbin/README.md)
+#                   # against the goldens it made; mutos_ld (the port
+#                   # of ld) against the original on every compiled
+#                   # golden, hand-written cases and two fuzz runs, and
+#                   # its -r/-d extension (tests/mutos_ld/); the
+#                   # original ld through mutos_root/ (needs the Python
+#                   # module "unicorn"; see tests/realbin/README.md)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
 
 CC     = cc
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -g
 
 # The MUTOS root (docs/TOOLCHAIN_PLAN.md, decisions 2 and 3): every tool
 # looks up the absolute MUTOS paths (/lib/crt0.o, /lib/c0, /usr/include)
 # under $MUTOS_ROOT, by default this tree's mutos_root/ - its absolute
 # path, compiled in as MUTOS_ROOT_DEFAULT (src/h/mutos_root.h). Every
-# component gets the same definition: passed to the sub-Makefiles, which
-# work out the same path when run on their own. After moving the tree:
+# component gets the same definition: passed to the sub-Makefiles (each
+# compiles with -std=c11 -Wall -Wextra -Wpedantic), which work out the
+# same path when run on their own. After moving the tree:
 # rebuild, or set MUTOS_ROOT.
 ifneq ($(words $(CURDIR)),1)
 $(error the path of the build tree must not contain blanks: $(CURDIR))
 endif
 MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
-ROOTDEF = -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
 SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
 .PHONY: all ld as cpp cc root clean test fuzz check-docs check-libcatof check-realbin install-hooks
 
 all: ld as cpp cc root
 
-ld: src/mutos_ld/mutos_ld
-
-src/mutos_ld/mutos_ld: src/mutos_ld/mutos_ld.c
-	$(CC) $(CFLAGS) $(ROOTDEF) -o $@ $<
+ld:
+	$(SUBMAKE) -C src/mutos_ld
 
 as:
 	$(SUBMAKE) -C src/mutos_as
@@ -92,7 +92,7 @@ cc:
 
 # mutos_root/: crt0.o and libc.a decoded from tests/ (libc.a with its
 # __.SYMDEF time), the passes and tools as symbolic links into src/ (a
-# link to a tool not built yet dangles), usr/lib/ and usr/include/.
+# link to a tool not built yet dangles), usr/lib/, usr/include/ and tmp/.
 # scripts/mutos_root.sh rewrites only what differs. Ignored by git.
 root:
 	@sh scripts/mutos_root.sh
@@ -101,7 +101,7 @@ root:
 # usr/lib/ is for the user's own libraries) - and never touches tests/ or
 # mutos_bin/ (CLAUDE.md, Workflow Guidelines 2 and 5).
 clean:
-	rm -f src/mutos_ld/mutos_ld
+	$(MAKE) -C src/mutos_ld clean
 	$(MAKE) -C src/mutos_as clean
 	$(MAKE) -C src/mutos_cpp clean
 	$(MAKE) -C src/mutos_cc clean
@@ -200,7 +200,15 @@ check-libcatof: as ld cc
 # output, messages and exit status the original's on every .i golden's
 # source - with -P, without (the # N "file" lines), into an output file
 # (tests/realbin/cppcmp.py) -, and two fixed-seed differential fuzz runs,
-# one with mutated programs (tests/realbin/cppfuzz.py); then the
+# one with mutated programs (tests/realbin/cppfuzz.py); then mutos_ld,
+# the port of ld (src/mutos_ld/): its generated data segment (lddata.c)
+# current, its messages, exit status and output files the original's on
+# every compiled golden linked with a matrix of options and on the
+# hand-written cases (tests/realbin/ldcmp.py), two fixed-seed
+# differential fuzz runs, one with damaged files (tests/realbin/
+# ldfuzz.py), and its extension -r/-d, which the original refuses,
+# by running programs linked through a relocatable object
+# (tests/mutos_ld/check_rflag.py); then the
 # original cc (tests/realbin/
 # cctrace.py, fork/exece/wait faked) running the original passes
 # against the goldens it made on the hardware - "cc -S" (c1's messages
@@ -212,6 +220,7 @@ check-libcatof: as ld cc
 REALBIN_FUZZ_ARGS = -n 200 -s 1
 REALBIN_C0FUZZ_ARGS = -n 200 -s 1
 REALBIN_CPPFUZZ_ARGS = -n 200 -s 1
+REALBIN_LDFUZZ_ARGS = -n 300 -s 1
 check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -229,6 +238,12 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/cppcmp.py goldens
 	@python3 tests/realbin/cppfuzz.py $(REALBIN_CPPFUZZ_ARGS)
 	@python3 tests/realbin/cppfuzz.py $(REALBIN_CPPFUZZ_ARGS) --mutate 0.5
+	@python3 tests/realbin/ldtables.py --check-c src/mutos_ld/lddata.c
+	@python3 tests/realbin/ldcmp.py goldens
+	@python3 tests/realbin/ldcmp.py cases
+	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS)
+	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS) --mutate 0.5
+	@python3 tests/mutos_ld/check_rflag.py
 	@python3 tests/realbin/cctrace.py goldens
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 

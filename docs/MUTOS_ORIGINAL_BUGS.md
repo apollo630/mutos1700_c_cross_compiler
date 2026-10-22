@@ -12,7 +12,8 @@ the change that finds a bug.
 Each entry says what goes wrong (with a minimal trigger where one is
 known), why (the mechanism, with the text or data offset in the binary as
 `tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
-and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`), how it was
+and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
+`ldmap.txt` and `lddis.py` for `ld`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -74,9 +75,17 @@ Last updated: 2026-10-22.
 | CPP-11 | `cpp` | a macro with parameters named without `(` loses the next token and leaves a spurious "unterminated macro call" for the end of the input | emulator, fuzzing | reproduced |
 | CPP-12 | `cpp` | an `#if` whose expression does not parse (empty, "syntax error") counts as true | emulator, fuzzing | reproduced |
 | CPP-13 | `cpp` | the token after an object-like macro's name is dropped, whatever it is: `#define X+1` defines `X` as `1` | emulator | reproduced |
+| LD-01 | `ld` | a `-l` name of 14 characters or more is written over the strings after `/usr/lib/libxxxxxxxxxxxxxxx`: the messages change | emulator | reproduced; refused where it reaches libc.a's data |
+| LD-02 | `ld` | more than 256 archive entries (members loaded, end marks) run past `liblist[]` over `cursym` and `symtab[]` | emulator | reproduced |
+| LD-03 | `ld` | `ldrand()` reads a symbol type through a null pointer (crt0's word 8) | code reading | reproduced |
+| LD-04 | `ld` | an undefined external's word does not complete a byte-shifted word before it: the carry goes one word on | emulator | reproduced (completed under the extension `-r`) |
+| LD-05 | `ld` | "Entry point not in text" leaves the last input's entry word in the header | emulator | reproduced |
+| LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced |
+| LD-07 | `ld` | an object of 32K or more of text or data: its symbol table is looked for 64K too early | emulator, code reading | refused |
+| LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced |
 
-`ld` and `cc`: no bug known (see the sections below; one `cc` behaviour is
-listed under "Suspect").
+`cc`: no bug known (see the section below; one `cc` behaviour is listed
+under "Suspect").
 
 ## `c1`
 
@@ -842,11 +851,138 @@ consequences of the MUTOS deltas in CPP-10 and CPP-11.
 
 ## `ld`
 
-No bug known. Run under the emulator for the first time on 2026-10-20 (a
-link through to its temporary file; the emulator does not serve `link`
-yet): `-l` searches `/lib`, then `/usr/lib`; `-r` and `-d` are refused
-("-r and -d flags not supported", exit status 4) - a limit, not a bug;
-`mutos_ld` keeps both as an extension.
+Read in full on 2026-10-22 for its port (`src/mutos_ld/`,
+`tests/realbin/ldmap.txt`); every entry with a trigger was run under the
+emulator - most are cases of `tests/realbin/ldcmp.py cases` -, and the
+port does the same. All but LD-04 and LD-08 (the MUTOS deltas
+`bytrel()` and the six bytes of "jmp $") are v7's own. Not bugs: `-r` and
+`-d` refused ("-r and -d flags not supported", exit status 4) - a limit,
+which `mutos_ld` lifts as an extension -, and `-n` making a 0411 output
+like `-i`.
+
+### LD-01 A long `-l` name runs over the strings after it
+
+- **Symptom.** `ld x.o -lqqqqqqqqqqqqqq` (14 characters, no such library)
+  says `ld:/usr/lib/libqqqqqqqqqqqqqq.a: ` and nothing more; with 30
+  characters the message is `qqqqqqqqqqqqqq.a`, the tail of the name.
+  Longer names reach the formats `error()` prints with (`%s`, `(%.14s)`,
+  `: `, `%s\n`) and the later messages; from 124 characters libc.a's
+  stdio structures. The strings stay changed for the rest of the run,
+  also when the library is found.
+- **Mechanism.** `getfile()` (text 1aad..1afe) writes `-lX`'s `X` into
+  the 28-byte string `/usr/lib/libxxxxxxxxxxxxxxx` (data 0260) from its
+  13th byte on, then `.a` and a 0 - no length check. With 14 characters
+  the 0 lands on `cannot open` (data 027c), the message `error()` then
+  prints.
+- **Evidence.** Emulator (`ldcmp.py cases`: `-l of 12 characters` to
+  `-l of 100 characters`, `-l overwriting the formats`).
+- **This project.** Reproduced (the strings are in the image); a write
+  into libc.a's data refused.
+- **Fix idea.** A buffer of its own, or "name too long" past 13.
+
+### LD-02 More than 256 archive entries run past `liblist[]`
+
+- **Symptom.** A link that takes more than about 250 members from
+  archives - or names `-lc` 300 times - stops with `ld:crt0.o: internal
+  error: symbol not found` (exit status 4).
+- **Mechanism.** Each member pass 1 loads and each archive's end mark
+  takes one of `liblist[256]`'s entries (`step()`, text 0886..08a0 and
+  08dc..08f1; `load1arg()`, 07ab), with no check; the 257th is written over
+  `cursym` (data 2e3c), the next ones over `symtab[]` from its first
+  entry - a symbol's name becomes 0xff bytes and pass 2 cannot find it.
+- **Evidence.** Emulator (`ldcmp.py cases`: `300 members from a table`,
+  `300 members by a scan`, `-lc 300 times`; 250 members link).
+- **This project.** Reproduced (`liblist[]` and what follows are in the
+  image).
+- **Fix idea.** Check `libp` against `&liblist[NROUT]`.
+
+### LD-03 `ldrand()` reads a type through a null pointer
+
+- **Symptom.** None seen: for every table-of-contents name not in the
+  symbol table, the "type" compared with EXTERN+UNDEF is the word at data
+  0008 - `crt0`'s code segment of the system-call far pointer -, so the
+  member is skipped as it should be unless the code segment is 0x0020.
+- **Mechanism.** `ldrand()` (text 093a..0945): `slookup()` returns a hash
+  slot, never 0, so v7's test `(pp = slookup(...)) == 0` never fires and
+  `sp = *pp` is 0 for an unknown name; `sp->stype` is read at address 8.
+- **Evidence.** Code reading (under the emulator the word is 0x1000).
+- **This project.** Reproduced (the image's crt0 word 8 is the emulator's
+  0x1000).
+- **Fix idea.** `if (*pp == 0) continue;`.
+
+### LD-04 An undefined external does not complete a byte-shifted word
+
+- **Symptom.** For data `.byte 0` / `.word d` / `.word und` (`d` defined,
+  `und` undefined - both words byte-shifted), the carry out of `d`'s low
+  byte is not added to `d`'s high byte but to `und`'s: data words `ff00
+  0000 0000` with relocation `8004 8008 0000` give `00 05 00 00 01 00`
+  where `00 05 01 ...` is meant (`d` = data 6). Only with an undefined
+  symbol, so the link fails anyway (`Undefined:`, exit status 1, the
+  output not executable).
+- **Mechanism.** `load2td()` (text 1478..14b2) sends every word through
+  `bytrel()` but one with a relocation to an undefined external.
+  `bytrel()` completes a byte-shifted word (its high byte is the next
+  word's low byte) on its next call - here the word after.
+- **Evidence.** Emulator (`ldcmp.py cases`: `byte-shifted before an
+  undefined`).
+- **This project.** Reproduced; under `-r` (the extension) the word goes
+  through `bytrel()` and is completed.
+- **Fix idea.** `t = bytrel(t, 0, r, creloc)` there too.
+
+### LD-05 "Entry point not in text" leaves a stale entry word
+
+- **Symptom.** `ld -e _fdat x.o` (`_fdat` a data symbol) says `ld:Entry
+  point not in text` (exit status 1) and writes the header with the
+  entry word of the last input's header (`x.o`'s 0x1234 in the case).
+- **Mechanism.** `setupout()` (text 0f60..0f6e) reports and does not set
+  `filhdr.entry`; the header is still the last one `readhdr()` read.
+- **Evidence.** Emulator (`ldcmp.py cases`: `-e not text, an entry
+  word`).
+- **This project.** Reproduced.
+- **Fix idea.** `filhdr.entry = 0` there.
+
+### LD-06 A warning clears an earlier error
+
+- **Symptom.** `ld x.o y.o p.a -lt`, with `p.a` holding a member without
+  relocation bits and `libt.a` an out-of-date table of contents: `ld:p.a(nr.o):
+  No relocation bits`, `/lib/libt.a(__.SYMDEF): out of date (warning)`,
+  exit status 0 and the output made executable; without `-lt` exit
+  status 1. Any level-1 error of pass 1 (an overflow, "No relocation
+  bits") is cleared by a later warning; the warning is printed without
+  the `ld:` an error after a warning gets again.
+- **Mechanism.** `error()` (text 1ed1) ends with `errlev = n` - also for
+  the warning's n = 0.
+- **Evidence.** Emulator (`ldcmp.py cases`: `a warning clears an error`).
+- **This project.** Reproduced.
+- **Fix idea.** Raise `errlev`, never lower it.
+
+### LD-07 Objects of 32K or more of text or data
+
+- **Symptom.** An object whose text (or data) is 32,768 bytes or more
+  cannot be linked: under the emulator `ld:big.o: Local symbol botch`
+  (exit status 4) for a 32K text with one external reference.
+- **Mechanism.** `load2()` (text 114e..1168) adds `tsize` and `dsize`
+  sign-extended to the long position of the symbol table (`load1()` adds
+  them as a 16-bit sum, zero-extended); from 0x8000 the position is 64K
+  too small - negative for a file of its own -, and the data's relocation
+  likewise (`loc + tsize + dsize/2`, text 12fd). What is read there
+  depends on the kernel: v7's `seek()` takes a negative offset and the
+  read after it fails; the emulator refuses the seek and reads on from
+  where the file was.
+- **Evidence.** Emulator (`ldcmp.py cases`: `text 32K`), code reading.
+- **This project.** Refused (an `lseek()` to a negative offset).
+- **Fix idea.** Unsigned sizes in `load2()`.
+
+### LD-08 A text of 65,530 bytes or more wraps
+
+- **Symptom.** An object of 65,530 bytes of text links without a message
+  (exit status 0, the output executable) and the header says text 0;
+  65,528 bytes give 65,534.
+- **Mechanism.** `middle()` (text 0cdd) adds the six bytes of "jmp $"
+  that `finishout()` writes to `tsize` without `add()`'s check.
+- **Evidence.** Emulator (`ldcmp.py cases`: `text 65530 (6 bytes wrap)`).
+- **This project.** Reproduced.
+- **Fix idea.** `tsize = add(tsize, 6, "text overflow")`.
 
 ## `cc`
 

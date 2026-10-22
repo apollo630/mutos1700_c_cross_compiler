@@ -4,12 +4,14 @@ Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEV
 
 ---
 
-**Status:** complete per prior verification, but **not re-verified recently** — the
-golden reference binaries (`myhello`, `idhello`) and `tests/mutos_ld/` are currently
-missing from the checkout. See `STATUS.md` for current status; treat this section as
-historical record of what was verified when the goldens were last present. Since
-2026-10-20 the original `ld` runs under the emulator (`originals_and_ports.md`, "The
-other originals as oracles"); a port of it is planned (`docs/TOOLCHAIN_PLAN.md`).
+**Status:** this part is the record of the first `mutos_ld` - a port of v7's
+`ld.c` with the MUTOS deltas as they were known then (`mutos_ld.c`, deleted
+2026-10-22) -, verified when the golden reference binaries (`myhello`, `idhello`) were
+last present; they are missing from the checkout. Since 2026-10-20 the original `ld`
+runs under the emulator (`originals_and_ports.md`, "The other originals as
+oracles"), and since 2026-10-22 `mutos_ld` is a port of the original binary, checked
+against it (`originals_and_ports.md`, "The port of `ld`"; `src/mutos_ld/README.md`).
+See `STATUS.md` for the current status.
 
 Verified byte-for-byte identical against three real hardware-linked binaries:
 `myhello` (default FMAGIC), `idhello` (`-i`/IMAGIC, separate I&D), and end-to-end
@@ -62,5 +64,13 @@ the original's. On fourteen compiled goldens linked both ways, nine differ by it
 and by nothing else (every data/BSS address shifted by the difference), five are
 identical. Left for the port of `ld` (`docs/TOOLCHAIN_PLAN.md`, step 2); details in
 `docs/devlog/originals_and_ports.md`, "Step 0 of the plan: the infrastructure".
+
+**The port (2026-10-22)** read the rest from the binary: the six bytes are counted
+in the text size in `middle()` before `-i`'s 64-byte rounding (so `idhello`'s 3,504
+bytes were 3,498 + 6), the relocation of a byte-shifted word is a function of its own
+(`bytrel()`, the carry out of the low byte into the next word), the deviations 2 and
+3 above are the original's, deviation 4 too; and the binary has more: symbol types
+compared as words, `-n` the same as `-i`, the output under a temporary name in the
+current directory. `docs/devlog/originals_and_ports.md`, "The port of `ld`".
 
 ---
