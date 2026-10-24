@@ -1,5 +1,5 @@
-# Makefile - MUTOS 1700 Cross C Compiler front end/back end
-# (mutos_c0 / mutos_c1)
+# Makefile - MUTOS 1700 Cross C Compiler: the driver and the passes
+# (mutos_cc / mutos_c0 / mutos_c1)
 #
 # Builds on a Linux host, matching mutos_as/mutos_cpp/mutos_ld's
 # style/tooling: plain C11, gcc/clang, no external build system.
@@ -20,11 +20,19 @@
 # binary by tests/realbin/c1tables.py --c and checked in, so that a build
 # needs no Python.
 #
+# mutos_cc (the driver that runs cpp, c0, c1, c2, as and ld in sequence)
+# is a port of the original MUTOS 1700 cc - v7's cc with the MUTOS
+# deltas - read from its binary (ccport/, docs/TOOLCHAIN_PLAN.md, step 3)
+# and checked against the original run under an 8086 emulator ("make
+# check-realbin", tests/realbin/cccmp.py). ccport/ccdata.c, the
+# original's initialized segment (text and data: cc is 0407), is
+# generated from the binary by tests/realbin/cctables.py --c and checked
+# in. It finds its passes through the MUTOS root ($MUTOS_ROOT/lib/c0, ...).
+#
 # See README.md and STATUS.md for the currently-verified results.
 #
-# mutos_cc (the driver that runs cpp|c0|c1|as|ld in sequence) and
-# mutos_c2 (the peephole optimizer, Milestone 5) are not yet part of
-# this Makefile - see README.md's "Next steps".
+# mutos_c2 (the peephole optimizer, Milestone 5) is not yet part of this
+# Makefile - see docs/TOOLCHAIN_PLAN.md, step 4.
 
 CC      = cc
 # The MUTOS root's compiled-in default for src/h/mutos_root.h
@@ -33,6 +41,10 @@ CC      = cc
 MUTOS_ROOT_DEFAULT ?= $(abspath $(CURDIR)/../../mutos_root)
 CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic -O2 -g \
           -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
+
+CC_SRCS = ccport/main.c ccport/cc.c ccport/cclib.c ccport/ccdata.c
+CC_OBJS = $(CC_SRCS:.c=.o)
+CC_TARGET = mutos_cc
 
 C0_SRCS = c0port/c00.c c0port/c01.c c0port/c02.c c0port/c03.c \
           c0port/c04.c c0port/c0data.c c0port/c0lib.c
@@ -53,7 +65,10 @@ C1_TARGET = mutos_c1
 # check-libcatof" (tests/mutos_as/float_coverage/libcatof.py ecvt).
 FLTDEC_TEST = fltdec_test
 
-all: $(C0_TARGET) $(C1_TARGET) $(FLTDEC_TEST)
+all: $(CC_TARGET) $(C0_TARGET) $(C1_TARGET) $(FLTDEC_TEST)
+
+$(CC_TARGET): $(CC_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(CC_OBJS)
 
 $(FLTDEC_TEST): fltdec_test.o c1_fltdec.o c1_fltconst.o
 	$(CC) -o $@ fltdec_test.o c1_fltdec.o c1_fltconst.o
@@ -64,6 +79,8 @@ $(C0_TARGET): $(C0_OBJS)
 $(C1_TARGET): $(C1_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(C1_OBJS)
 
+$(CC_OBJS): ccport/cc.h
+ccport/cclib.o: ../h/mutos_root.h
 $(C0_OBJS): c0port/c0.h
 $(C1_PORT:.c=.o): c1port/c1.h
 c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
@@ -76,7 +93,8 @@ c1_fltconst.o: $(FLTCONST) ../mutos_as/fltconst.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(C0_OBJS) $(C1_OBJS) $(C0_TARGET) $(C1_TARGET) \
+	rm -f $(CC_OBJS) $(CC_TARGET) \
+	      $(C0_OBJS) $(C1_OBJS) $(C0_TARGET) $(C1_TARGET) \
 	      fltdec_test.o $(FLTDEC_TEST)
 
 .PHONY: all clean

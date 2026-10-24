@@ -825,8 +825,8 @@ int main(int argc, char **argv)
     /* as.1: "Mit -W werden alle Fehlermeldungen des Assemblers
      * ausgeschaltet." - redirect stderr to /dev/null for the duration
      * of both passes and the object-file write, restoring it right
-     * before the final success summary (which is a status line, not
-     * an error message, and stays visible either way). Errors are
+     * before the success summary (-v: a status line, not an error
+     * message, which stays visible either way). Errors are
      * still tracked internally (as.errors, Parser.error_count) and
      * still correctly block Pass 2 / the exit code / the executable-
      * bit decision under -W - only the printed text is suppressed. */
@@ -903,10 +903,15 @@ int main(int argc, char **argv)
         close(saved_stderr_fd);
     }
 
-    fprintf(stderr, "%s: text=%zu bytes, data=%zu bytes, bss=%ld bytes, %d symbols, "
-            "%zu text reloc(s), %zu data reloc(s) -> %s\n",
-            path, text_out.len, data_out.len, as.bss_loc, nsyms, text_relocs.n, data_relocs.n,
-            objpath);
+    /* The summary line only with -v: the original as writes nothing on
+     * success, and the original cc (and so mutos_cc, its port) runs as
+     * for every source - the line would show on every compile
+     * (docs/TOOLCHAIN_PLAN.md, step 3). */
+    if (verbose)
+        fprintf(stderr, "%s: text=%zu bytes, data=%zu bytes, bss=%ld bytes, %d symbols, "
+                "%zu text reloc(s), %zu data reloc(s) -> %s\n",
+                path, text_out.len, data_out.len, as.bss_loc, nsyms, text_relocs.n,
+                data_relocs.n, objpath);
 
     if (verbose) {
         for (size_t i = 0; i < text_relocs.n; i++) {

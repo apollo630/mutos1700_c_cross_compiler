@@ -32,7 +32,12 @@ ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 def _aout(path):
     img = base64.b64decode(open(path, 'rb').read())
     magic, tsize, dsize = struct.unpack_from('<3H', img, 0)
-    return img[16:16 + tsize], img[16 + tsize:16 + tsize + dsize]
+    text, data = img[16:16 + tsize], img[16 + tsize:16 + tsize + dsize]
+    if magic == 0o407:
+        # one segment (cc): the data follows the text, so the data is
+        # indexed by its address - the text and the data together
+        data = text + data
+    return text, data
 
 
 TEXT, DATA = _aout(os.path.join(ROOT, 'mutos_bin', 'c1.golden.base64.txt'))
@@ -160,7 +165,10 @@ def main(argv):
     # (c0's getcc ends in the bytes of mount.o); libc.a is linked last
     names = {a: n for a, n in libc_names().items() if a > max(funcs)}
     names.update({a: v[0] for a, v in funcs.items()})
-    starts = sorted(funcs) + [min(a for a in names if a not in funcs and a > max(funcs))]
+    # the last mapped function ends at the next named one, or at the
+    # text's end (ccmap.txt names everything up to the last function)
+    rest = [a for a in names if a not in funcs and a > max(funcs)]
+    starts = sorted(funcs) + [min(rest) if rest else len(TEXT)]
     if argv[:1] == ['--functions']:
         for a, b in zip(starts, starts[1:]):
             n, status, note, port = funcs[a]

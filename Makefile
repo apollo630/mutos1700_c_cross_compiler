@@ -12,12 +12,12 @@
 #   mutos_as   - cross-assembler     (src/mutos_as/)
 #   mutos_cpp  - C preprocessor      (src/mutos_cpp/, a port of the
 #                                      original cpp)
-#   mutos_cc   - C compiler          (src/mutos_cc/, produces
+#   mutos_cc   - C compiler          (src/mutos_cc/, produces the
+#                                      driver mutos_cc and the passes
 #                                      mutos_c0/mutos_c1 - ports of the
-#                                      original c0 and c1; the
-#                                      mutos_cc driver itself, and
-#                                      mutos_c2, are not yet written;
-#                                      see src/mutos_cc/README.md)
+#                                      original cc, c0 and c1; mutos_c2
+#                                      is not yet written; see
+#                                      src/mutos_cc/README.md)
 #   mutos_root/ - the MUTOS root     (scripts/mutos_root.sh: crt0.o,
 #                                      libc.a, the passes as symbolic
 #                                      links; docs/TOOLCHAIN_PLAN.md,
@@ -28,7 +28,7 @@
 #   make ld         # build just mutos_ld
 #   make as         # build just mutos_as
 #   make cpp        # build just mutos_cpp
-#   make cc         # build just mutos_c0/mutos_c1
+#   make cc         # build just mutos_cc/mutos_c0/mutos_c1
 #   make root       # make (or bring up to date) mutos_root/
 #   make clean      # clean every component, remove mutos_root/
 #   make test       # run every component's golden-diff test suite
@@ -52,9 +52,13 @@
 #                   # against the goldens it made; mutos_ld (the port
 #                   # of ld) against the original on every compiled
 #                   # golden, hand-written cases and two fuzz runs, and
-#                   # its -r/-d extension (tests/mutos_ld/); the
+#                   # its -r/-d extension (tests/mutos_ld/); mutos_cc
+#                   # (the port of cc) against the original, traced, with
+#                   # the original passes and with the ported ones, and a
+#                   # fuzz run; the
 #                   # original ld through mutos_root/ (needs the Python
-#                   # module "unicorn"; see tests/realbin/README.md)
+#                   # module "unicorn" and, for cc's stub, a C compiler;
+#                   # see tests/realbin/README.md)
 #   make install-hooks # one-time per clone: run check-docs automatically
 #                       # before every commit (see .githooks/pre-commit)
 
@@ -129,7 +133,9 @@ clean:
 # tests/mutos_root/check_root.py checks mutos_root/ (its files against
 # the references in tests/, libc.a's time, the links), the lookup of
 # src/h/mutos_root.h, and that mutos_ld uses libc.a's __.SYMDEF without
-# "out of date".
+# "out of date". tests/mutos_cc/check_driver.py runs the driver mutos_cc
+# with the ported passes through mutos_root/ - "cc -S", "cc -P" against
+# the goldens, "cc -o" on the construct corpus.
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -151,6 +157,8 @@ test: all
 	@cd tests/mutos_cc && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp MUTOS_C0=$(CURDIR)/src/mutos_cc/mutos_c0 MUTOS_C1=$(CURDIR)/src/mutos_cc/mutos_c1 ./run_goldens.sh
 	@echo "== the MUTOS root (mutos_root/, src/h/mutos_root.h) =="
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" $(MUTOS_ROOT_DEFAULT)
+	@echo "== mutos_cc (the driver) with the ported passes =="
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_cc/check_driver.py
 
 # Checks every *.md file for the kind of drift a rebuild/regression run
 # can't catch: numbers restated in more than one place that disagree,
@@ -213,14 +221,22 @@ check-libcatof: as ld cc
 # cctrace.py, fork/exece/wait faked) running the original passes
 # against the goldens it made on the hardware - "cc -S" (c1's messages
 # and exit status included), "cc -P", "cc -O -S" (c2: the kernel_opt
-# sources); then the original ld through mutos_root/ (check_root.py
-# --realbin). Separate
+# sources); then mutos_cc, the port of cc (src/mutos_cc/ccport/): its
+# generated segment (ccdata.c) current, the passes it runs with their
+# arguments, its messages, exit status and the files left the
+# original's - on a matrix of command lines with the passes traced, on
+# the construct corpus with the original passes run in both, and with
+# the ported passes against the original chain (tests/realbin/
+# cccmp.py) -, the ported chain against the goldens, and a fixed-seed
+# differential fuzz run (tests/realbin/ccfuzz.py); then the original ld
+# through mutos_root/ (check_root.py --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
 REALBIN_C0FUZZ_ARGS = -n 200 -s 1
 REALBIN_CPPFUZZ_ARGS = -n 200 -s 1
 REALBIN_LDFUZZ_ARGS = -n 300 -s 1
+REALBIN_CCFUZZ_ARGS = -n 1000 -s 1
 check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -245,6 +261,12 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS) --mutate 0.5
 	@python3 tests/mutos_ld/check_rflag.py
 	@python3 tests/realbin/cctrace.py goldens
+	@python3 tests/realbin/cctables.py --check-c src/mutos_cc/ccport/ccdata.c
+	@python3 tests/realbin/cccmp.py cases
+	@python3 tests/realbin/cccmp.py run
+	@python3 tests/realbin/cccmp.py programs
+	@python3 tests/realbin/cccmp.py goldens
+	@python3 tests/realbin/ccfuzz.py $(REALBIN_CCFUZZ_ARGS)
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from

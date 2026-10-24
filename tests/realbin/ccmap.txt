@@ -1,0 +1,129 @@
+# ccmap.txt - a map of the real MUTOS 1700 cc (mutos_bin/cc.golden.base64.txt)
+#
+# The binary (0407, text 8026, data 894, BSS 2776 bytes) is stripped; the
+# names below are v7's (v7/cc/cc.c), found by the strings each function
+# passes, the calls it makes and its position. 0407 is one segment: the
+# text at 0000, the data from 1f5a, the BSS from 22d8, the heap from 2db0,
+# the stack at the top - so a data address below is an address in that
+# segment, not an offset in the data. It is crt0 (the 0407 crt0: jumps
+# at 0000-0010, the code at 0080), then cc.o - v7's cc.c, its ten
+# functions in source order -, then libc.a from text 0fc6 (ccdis.py names
+# every function there by matching libc.a's objects against the text).
+# ccdis.py reads this file; cctables.py --strings prints the strings.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <address> <name> [<note>]" for data.
+# Status (against v7/cc/cc.c): same  - compared, does what v7's does
+#                              delta - compared, v7's code with the noted changes
+#                              libc  - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_cc/ccport/cc.c (libc.a's in cclib.c), read
+#       from the text at that offset
+#
+# Every function was compared instruction by instruction. main()'s switch
+# on the option letter is hashed (c % 5 into a jump table at 02ff, then
+# c / 5 compared); idexit() is not called but passed to signal() (0c3c).
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o (0407): jumps to 0080; 0002 and 0004 are the trampolines' own "jmp $"
+# ---- cc.o
+T 00b6 _main       delta      ported  options: -a (the "Executing ..." messages), -K<n> (appended to c1's option string "s", passed as c1's 4th argument); -f only sets a flag (c0f, c1f, asf, -lf); -o with a .c or .o name or an option after it: i--, outfile = -1, the name becomes the output's when the first .o is listed; no fcrt0.o; mktemp("/tmp/ctm0XXXXXX") and creat(tmp0, 0400) once; as -gC; the c0 failure unlinks tmp4, the c1 failure tmp1 and tmp2, no cunlink() before as; ld -X pref [-o out] files [-l2 | [-lf] -lc]
+T 0c3c _idexit     same       ported
+T 0c54 _dexit      same       ported
+T 0cbc _error      same       ported  fprintf(exflag ? stderr : stdout, s, x); putc('\n', ...) on the FILE in the image's place (libc.a's data)
+T 0d54 _getsuf     same       ported  chars signed (cbw)
+T 0dba _setsuf     same       ported
+T 0dfc _callsys    same       ported
+T 0eb2 _copy       same       ported  tsa + 1000 < tsp compared unsigned
+T 0f22 _nodup      same       ported
+T 0fa6 _cunlink    same       ported
+# ---- libc.a from 0fc6 (ccdis.py names the functions it can match)
+T 0fc6 _fprintf    libc       ported  _stbuf(), _doprnt(), _ftbuf()
+T 1008 _printf     libc       ported  stdout: _stbuf() gives the unbuffered stdout _sobuf (290e) for the call, _ftbuf() writes it out (in 512-byte blocks) and makes it unbuffered again
+T 104c _setbuf     libc       ported  setbuf(stdout, NULL): unbuffered
+T 108e __doprnt    libc       ported  as ld's (the same object of libc.a): '-', '0', width and precision, d o x u c s
+T 13aa _crack      libc       -       _doprnt's helpers to 159e
+T 159e __strout    libc       ported  a '-' before the zeros
+T 1670 __flsbuf    libc       ported  an unbuffered FILE: one write() per byte (stderr; stdout outside printf)
+T 1758 _fflush     libc       -
+T 17ae __cleanup   libc       ported  exit(): every FILE closed
+T 17cc _fclose     libc       -
+T 1832 __stbuf     libc       ported
+T 186c __ftbuf     libc       ported
+T 1892 _exit       libc       ported
+T 189c _malloc     libc       ported  not v7's: a first-fit ring from allocp (22ac), grown by ialloc() in units of 1024 words; its words 22aa, 22ac, 2daa, 2dac, 2dae in the image
+T 19a4 _free       libc       -       not called (setbuf() frees only a buffer of its own)
+T 19be _ialloc     libc       ported  puts a new arena into the ring
+T 1a4e _realloc    libc       -
+T 1afe _isatty     libc       -
+T 1b24 _mktemp     libc       ported  the X's: the process number's digits; then 'a'.. while access() finds the name; "/" (22ae) after 'y'
+T 1b94 _stty       libc       -
+T 1bc4 _strcat     libc       ported
+T 1bf2 _strcpy     libc       ported
+T 1c16 _access     libc       ported
+T 1c1c _close      libc       ported
+T 1c22 _creat      libc       ported
+T 1c28 _execv      libc       ported  execve(name, argv, environ)
+T 1c46 _fork       libc       ported
+T 1c62 _getpid     libc       ported
+T 1c6a _ioctl      libc       -
+T 1c70 _sbrk       libc       ported  curbrk at 22b0
+T 1ca2 _brk        libc       -
+T 1cc0 _signal     libc       ported  the handlers' table at 22b2
+T 1d70 _unlink     libc       ported
+T 1d76 _wait       libc       ported
+T 1d94 _write      libc       ported
+T 1d9a chkstk      libc       ported  main()'s frame: bp - 0xea (0xe4 + 2 + si and di)
+T 1dd0 cret        libc       -
+T 1dd8 ldiv        libc       -
+T 1f20 sys1a       libc       -
+T 1f40 __exit      libc       ported
+T 1f4e _kill       libc       -
+# ---- data (the port's image has each at this address)
+D 1f5a crt0w       crt0's words: 1f5c/1f5e the stack check's far pointer (offset 4), 1f60/1f62 the system calls' (offset 2); crt0 stores the code segment into 1f5e and 1f62
+D 1f64 _tsa        = ts (22e8)
+D 1f66 _tsp        = ts (22e8)
+D 1f68 kopt        char kopt[10] = "s": c1's option string; -K<n> appends n (strcat(kopt + 1, ...), no length check)
+D 1f72 _pass0      char pass0[20] = "/lib/c0"
+D 1f86 _pass1      char pass1[20] = "/lib/c1"
+D 1f9a _pass2      char pass2[20] = "/lib/c2"
+D 1fae _passp      char passp[20] = "/lib/cpp"
+D 1fc2 passa       char passa[20] = "/bin/as" (-f: "/bin/asf")
+D 1fd6 _pref       = "/lib/crt0.o" (1fd8)
+D 1fe4 crt2        "/lib/crt2.o"
+D 1ff0 crt20       "/lib/crt20.o"
+D 20c6 tmpname     "/tmp/ctm0XXXXXX"
+D 21b3 binld       "/bin/ld"
+D 2200 null        libc.a's "(null)"
+D 2208 _iob        libc.a's FILE structures, 20 of 8 bytes (stdout 2210, stderr 2218)
+D 22a8 _lastbuf    = &_iob[20]
+D 22aa alloch      malloc(): the ring's head (= allocs, 2daa; ialloc() lowers it)
+D 22ac allocp      malloc(): where the search starts
+D 22ae slash       libc.a's "/" (mktemp())
+D 22b0 curbrk      sbrk(): the break (= _end, 2db0)
+D 22b2 sigtab      signal()'s handlers
+D 22d6 stklimit    chkstk's limit
+D 22d8 _environ    crt0's (BSS)
+D 22da _tmp0       char *tmp0 .. tmp5 (22da, 22dc, 22de, 22e0, 22e2, 22e4)
+D 22e6 _outfile    char *outfile (-1 after "-o x.c")
+D 22e8 _ts         char ts[1050]
+D 2702 _av         char *av[50]
+D 2766 _clist      char *clist[100]
+D 282e _llist      char *llist[100]
+D 28f6 _pflag
+D 28f8 _sflag
+D 28fa _cflag
+D 28fc _eflag
+D 28fe _exflag
+D 2900 _oflag
+D 2902 _proflag
+D 2904 aflag       -a: the "Executing ..." messages
+D 2906 fflag       -f (v7: noflflag)
+D 2908 kflag       -K
+D 290a _chpass
+D 290c _npassname
+D 290e _sobuf      libc.a's: stdout's buffer for the length of a printf()
+D 2b0e _sibuf      libc.a's: stdin's buffer
+D 2d0e _errno
+D 2daa allocs      malloc(): the ring's first word (0 until the first malloc(); ialloc() points it at itself)
+D 2dac allocx      malloc(): the word a split block's tail held (for realloc())
+D 2dae mtemp       malloc()'s static temp: a pass count, then the arena's size in words

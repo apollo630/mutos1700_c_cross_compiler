@@ -130,9 +130,9 @@ The optimizer and the NEC V30: why `-mv30` code must keep the ABI, and why not `
 - `PREPARE`/`DISPOSE` vs. the discrete instruction sequence — real numbers
 - Recommendation
 
-## [The original binaries and the ports of `c1`, `c0`, `cpp` and `ld`](devlog/originals_and_ports.md)
+## [The original binaries and the ports of `c1`, `c0`, `cpp`, `ld` and `cc`](devlog/originals_and_ports.md)
 
-The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20); the ports of `cpp` and `ld` (2026-10-22).
+The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20); the ports of `cpp` and `ld` (2026-10-22); the port of `cc` (2026-10-24).
 
 - Plan after round 13: read the original `c1` (2026-10-10)
 - The original binaries (2026-10-12)
@@ -142,6 +142,7 @@ The original binaries read and run under an emulator; the ports of `c1` and `c0`
 - Step 0 of the plan: the infrastructure (2026-10-20)
 - The port of `cpp` (2026-10-22)
 - The port of `ld` (2026-10-22)
+- The port of `cc` (2026-10-24)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

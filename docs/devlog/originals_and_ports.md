@@ -1,4 +1,4 @@
-# The original binaries and the ports of `c1`, `c0`, `cpp` and `ld`
+# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld` and `cc`
 
 Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), and the ports of `cpp` and `ld` (2026-10-22).
 
@@ -972,3 +972,127 @@ run as when linked at once, 248/248 - two of them by the rule of v7's `-d`, whic
 defines `_end` in the object, so that the program's second link reports "Multiply
 defined" as v7's does. There is no original to compare `-r` with; running the
 programs is the check.
+
+## The port of `cc` (2026-10-24)
+
+Step 3 of `docs/TOOLCHAIN_PLAN.md`: `mutos_cc`, missing until then, is a port of
+the original `cc`, by the method of the earlier ports. `src/mutos_cc/README.md`
+("The port of the real `cc`") has the result; this is how it went and what the
+binary held. The same session began with the project owner's confirmation of four
+points of the `ld` port: `tmp/` in `mutos_root/` (which `cc` needs too), the
+semantics of the `-r` extension (MUTOS's object convention, checked by running
+programs), the rename for host file systems without hard links, and the removal of
+the unused `make_test_obj.py` and `make_test_archive.py`.
+
+### `cc` is v7's `cc`
+
+The binary (0407, text 8,026 bytes) is stripped and small: `crt0` (the 0407
+variant: jumps at 0000 to 0010, the code at 0080), then `cc.o` - v7's `cc.c`, its
+ten functions in source order -, then libc.a from text 0fc6, every function of it
+matched to libc.a's objects (`fprintf`, `printf`, `setbuf`, `_doprnt`, stdio,
+`malloc`, `mktemp`, `strcat`, `strcpy`, the system calls). 0407 is one segment, so
+the data's addresses follow the text: `tsa` at 1f64, `kopt[]` at 1f68, the passes'
+paths at 1f72, 1f86, 1f9a, 1fae and - new - `passa[]` at 1fc2 for `as`, the BSS
+from 22d8 (`tmp0` .. `tmp5`, `outfile`, `ts[]`, `av[]`, `clist[]`, `llist[]`, the
+flags), the heap from 2db0 (`tests/realbin/ccmap.txt`). Nine of the ten functions do
+what v7's do; `main()` has the deltas:
+
+- **Two new options.** `-a` sets a flag that prints `Executing cpp...`,
+  `Executing c0...`, `Executing c1...`, `Executing Optimizer...`, `Assembler as
+  ...` and `Loader...` before each pass - the messages the trace of 2026-10-20 had
+  seen in the data without knowing what switches them on (an open question of the
+  plan). `-K<n>` appends `n` to `kopt[10]` (`"s"`) and gives it to `c1` as its fourth
+  argument: `c1`'s option `s<n>`, the frame size from which a function calls
+  `chkstk`.
+- **`-f`** only sets a flag; before each call `strcpy()` puts `/lib/c0f`,
+  `/lib/c1f`, `/bin/asf` into the path arrays, `av[0]` becomes `c0f`, `c1f`, `asf`,
+  and the link gets `-lf` before `-lc`. v7's `fcrt0.o`, `-lfpsim` and "-f overwrites
+  earlier option" are gone.
+- **`-o`**: v7 refuses a `.c` or `.o` name ("Would overwrite"). The binary reads
+  such a name again as an argument (`i--`), and also a name starting with `-`, and
+  sets `outfile` to -1; the next object put into `llist[]` - `x.o`, or `x.c`'s `x.o` -
+  becomes the output's name: `setsuf(t, 0)`, then the `.` cut off. Without one
+  `outfile` stays -1 and `ld` gets the string at address ffff (CC-05).
+- **The temporary file**: `mktemp("/tmp/ctm0XXXXXX")` and one `creat(tmp0, 0400)`
+  where v7 tries `/tmp/ctm0a`, `b`, ... .
+- **The calls**: `as -gC -o x.o tmp3` (v7: `as -u`); a failed `c0` unlinks `tmp4`, a
+  failed `c1` `tmp1` and `tmp2`; v7's `cunlink()` of `tmp1`, `tmp2`, `tmp4` before
+  `as` is gone. A failed `c2` is passed over as in v7 - so `mutos_cc -O` works
+  before `mutos_c2` exists, with `Can't find /lib/c2` and the unoptimized output.
+
+`main()`'s option switch is hashed: `c % 5` into a jump table at 02ff, then `c / 5`
+compared in each branch - with `div`, unsigned, so a letter 0200..0377 (negative as
+a char) falls to the default.
+
+### A memory image, with `main()`'s frame and the heap in it
+
+As for `cpp` and `ld`, the port runs on an image of the original's segment, here
+the whole 64K of one: the text at 0 (read only - the original reads it through a
+null pointer, CC-06), the data, the BSS, the heap and the stack. `cc` needs it for
+its overruns (CC-01 to CC-05): `-K` over the path arrays, `-B` from one into the
+next, a long source path past `ts[]` into `av[]`, `ld`'s arguments past `av[]` into
+`clist[]` and `llist[]`. Two of them reach beyond the static data:
+
+- `-P` and `-E` store into `ptemp[100]`, `main()`'s local array, without a check;
+  the 101st store lands on `pv` itself and the loop that copies `ptemp[]` into
+  `cpp`'s arguments then runs up to wherever `pv` points - through `main()`'s
+  frame, crt0's words and the argument strings. So `main()`'s frame is in the image
+  where the original's is: crt0's words below the arguments, as `mutosemu.py` lays
+  them out, the return address, BP, DI, SI, and the locals at BP-6 .. BP-e8 as the
+  code addresses them. Every local is read and written in the image, in the
+  binary's order where an overrun could make the order matter (`slot()`: the index
+  read, the count incremented in memory, then the store).
+- `copy()` takes a new block from `malloc()` once `ts[]` is full, and a long name
+  runs past the block's end into the next block's header. libc.a's `malloc()` - a
+  first-fit ring with its own arena rules, not v7's - is re-enacted on the image,
+  every word at the binary's address, so that the original's broken ring is the
+  port's (CC-01). Where it leads past the break, the port refuses: what MUTOS has
+  there is not known (the emulator gives zeros).
+
+libc.a's stdio is not in the image: `cc` makes stdout unbuffered, and `printf()`
+lends it a buffer for the length of a call (`_stbuf()`/`_ftbuf()`), so the port's
+printf writes one call's text at once, in blocks of 512, and `putc()` and stderr a
+byte at a time - the FILE structures are back where they were after every call.
+
+### Host paths and processes
+
+The plan's path rule needed one addition. `cc` passes its MUTOS paths on: `cpp
+x.c /tmp/ctm4...`, `ld -X /lib/crt0.o`. The passes take every name from their
+command line as the host's, so `cc` must give them host paths - but `cc` also
+passes names from its own command line, which may be absolute host paths (`cc
+/home/u/x.c`), and builds paths from both (`-B/usr/new/` + `c0`). So the image marks
+every byte that came from the command line, and `strcpy()`, `strcat()` and `copy()`
+carry the mark: an absolute name is a MUTOS path - put under the root - when its
+`/` is not marked. The passes run as real processes with `MUTOS_ROOT` set to `cc`'s
+root. `callsys()` reads the path and the arguments from the image before `fork()`
+(the child changes nothing before its `execv()`), so a name the port cannot read
+is refused by `cc` itself.
+
+### Checked against the traced original
+
+`cc`'s output is what it runs, so the comparison needs the passes the port runs.
+`tests/realbin/cccmp.py` gives the port a MUTOS root whose passes are all
+`ccstub.c`: it logs its path and arguments, writes a marker into stdout and stderr
+- so that `cc`'s own messages can be placed between the passes, as the emulator's
+trace has them -, and ends as a case says (an exit status or a signal). The first
+version of the stub left no files, and the mutants showed what that missed: a
+port that removed `x.o` after a link of two objects looked like the original. So a
+stub that "exits 0" leaves the files the pass would write, and so does the traced
+original's `on_exec`. The stub can also hand itself to `cccmp.py --pass`, which
+runs the emulated original pass (`run`: a difference is then the driver's) or the
+ported tool (`programs`, `goldens`).
+
+From the first complete build the port did what the original does: 172 hand-written
+command lines, the corpus with the original passes, the ported chain against the
+goldens (`09_amx`'s `cc -O -S` needed a longer CPU limit for the emulated `c2`) and
+against the original chain, 5,500 fuzz cases. That was too clean to trust, so
+thirteen mutants of the port, each with one small fault, measured the tools. Two
+gaps showed. The traced passes left no files (above). And the fuzzer's "long
+names" were long base names - more than 14 characters after the last `/` give
+`getsuf()` no suffix, so `cc` never copies them: `ts[]` and `malloc()` were hardly
+reached. Long paths to short sources reach them, and they found CC-01 - first as
+refusals of the port: a name that runs past its `malloc()` block writes two of its
+characters into the next block's header, and the next `malloc()` follows them. The
+cases at the exact limit (`ts[]` filled to `tsa + 1000`, where the original takes no
+new block) now tell the faithful port from a mutant comparing `<=`. Every mutant
+that can change what `cc` does is found; the four that are not cannot.
