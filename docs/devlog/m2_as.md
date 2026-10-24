@@ -397,6 +397,13 @@ summary line `mutos_as` writes to stderr on every run (the original writes nothi
 and the `chmod 0755` above (the original leaves 0666 less the umask) -
 `docs/devlog/originals_and_ports.md`, "Step 0 of the plan".
 
+**The summary line only with `-v` (2026-10-24)**: with the port of `cc` (plan step 3)
+`mutos_as` runs for every source, and its summary line would have shown on every
+compile; it is written only with `-v` since, so that a successful run writes
+nothing, as the original's. Nothing in the tree read the line (`make test`'s output
+is unchanged); `tests/realbin/cccmp.py programs` compares the chain's stderr with
+the original chain's exactly.
+
 **Deliberate, documented deviation**: `-L` (control over whether compiler-internal
 `L`-prefixed labels appear in the symbol table) is **not implemented** — it was
 implemented once, found to break byte-for-byte golden parity (every real golden this

@@ -13,7 +13,7 @@ Each entry says what goes wrong (with a minimal trigger where one is
 known), why (the mechanism, with the text or data offset in the binary as
 `tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
 and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
-`ldmap.txt` and `lddis.py` for `ld`), how it was
+`ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -23,7 +23,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-22.
+Last updated: 2026-10-24.
 
 ## Overview
 
@@ -83,9 +83,12 @@ Last updated: 2026-10-22.
 | LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced |
 | LD-07 | `ld` | an object of 32K or more of text or data: its symbol table is looked for 64K too early | emulator, code reading | refused |
 | LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced |
-
-`cc`: no bug known (see the section below; one `cc` behaviour is listed
-under "Suspect").
+| CC-01 | `cc` | a source's name of 50 characters or more runs past `ts[]` into `av[]`, or past its `malloc()` block into the next block's header | emulator | reproduced; refused where a pointer leads past the break |
+| CC-02 | `cc` | `-P` and `-E` fill `ptemp[]` without a check: the 101st overwrites `main()`'s `pv`, `cpp` gets words of the frame as arguments | emulator | reproduced; refused from about 150 `-P` (libc.a's buffers) |
+| CC-03 | `cc` | a `-K` of 9 characters or more runs over the passes' paths (`Can't find `) | emulator | reproduced |
+| CC-04 | `cc` | a `-B` prefix of more than 17 characters runs into the next pass's path | emulator | reproduced |
+| CC-05 | `cc` | `-o` before an option, and no object after it: `ld` gets the string at address ffff as the output name | emulator | reproduced |
+| CC-06 | `cc` | with `-P`, `tmp1` .. `tmp3` are copies of a null pointer (crt0's code) | code reading, emulator | reproduced |
 
 ## `c1`
 
@@ -986,9 +989,122 @@ like `-i`.
 
 ## `cc`
 
-No bug known; traced under the emulator on 2026-10-20 with `fork` and
-`exece` faked (`docs/devlog/originals_and_ports.md`). One behaviour is
-listed under "Suspect".
+Read in full on 2026-10-24 for its port (`src/mutos_cc/ccport/`,
+`tests/realbin/ccmap.txt`); every entry was run under the emulator with
+`fork` and `exece` faked - each is a case of `tests/realbin/cccmp.py
+cases` -, and the port does the same. CC-01, CC-02, CC-04 and CC-06 are
+v7's own (`v7/cc/cc.c` has the same code); CC-03 and CC-05 come with the
+MUTOS deltas (`-K`, the new `-o`). One more behaviour is listed under
+"Suspect".
+
+### CC-01 A source's name runs past `ts[]` or its `malloc()` block
+
+- **Symptom.** Sources with long paths make `ld` get a wrong name: nine
+  sources of 99 characters, one of 29, one of 69 (`pp...p/a.c`) and then
+  `qq...q/b.c` (64 characters) link `ld -X /lib/crt0.o a.o ! -lc` - `!`
+  where `b.o` belongs. With more of them `malloc()`'s list of blocks is
+  broken; under the emulator `cc` then follows a pointer made of two
+  characters of a name.
+- **Mechanism.** `copy()` (text 0eb2) copies a name - `setsuf()` copies
+  every source's whole path, once for the object list and once for each
+  `as` call - to `tsp` and only then checks `tsa + 1000 < tsp`, for a
+  buffer of 1050 bytes: `ts[]` (data 22e8) or a block from `malloc()`. A
+  name of 50 characters or more that starts near the end runs past it -
+  out of `ts[]` into `av[]` (2702, then `clist[]` at 2766), where the
+  next pass's arguments overwrite it; out of a block into the header word
+  of the block after it, which `malloc()` (text 189c) then follows.
+- **Evidence.** Emulator (`cccmp.py cases`: `ts[] full at tsa + 1000, a
+  name into av[]`, `ts[] full, a name into clist[] (refused)`, `malloc()
+  blocks, one overrun (refused)`).
+- **This project.** Reproduced in `ts[]`, `av[]` and the blocks; refused
+  where a pointer leads past the break (memory the original has not
+  allocated: what MUTOS has there is not known).
+- **Fix idea.** Check before the copy (`if (tsp + strlen(as) + 1 > tsa +
+  CHSPACE + 50)`), or `malloc()` each name.
+
+### CC-02 `-P` and `-E` fill `ptemp[]` without a check
+
+- **Symptom.** `cc` with 101 `-P` options runs `cpp a.c a.i` with 104
+  arguments more - the `-P`s, then words of `main()`'s frame and of the
+  arguments area as pointers: strings of crt0's code (`ëþëþ`), `a.o`,
+  `g`. A 102nd `-P` is written into the arguments area.
+- **Mechanism.** `main()` (text 01b4..01d1) stores `-P` and `-E` into
+  `ptemp[100]` (bp-d4) without the check the `-D`, `-I`, `-U`, `-C` case
+  has (`Too many DIUC options`, text 0248). The 101st store lands on
+  `pv` itself (bp-0c, the word after `ptemp[]`), so `pv` becomes the
+  argument's address plus 2 and the next ones go wherever that is. The
+  loop that copies `ptemp[]` into `cpp`'s `av[]` (text 07bd) runs up to
+  that `pv`: with 101 `-P` 221 words, past `av[]` over `clist[]` and
+  into `llist[]`; from about 150 `-P` on over the flags after it into
+  libc.a's stdout buffer.
+- **Evidence.** Emulator (`cccmp.py cases`: `100 -P`, `101 -P`, `102
+  -P`; `cccmp.py files` with 150 and 300).
+- **This project.** Reproduced (`main()`'s frame and the arguments are
+  in the image); refused where the copy reaches libc.a's buffers.
+- **Fix idea.** The `-D` case's check for `-P` and `-E` too.
+
+### CC-03 A long `-K` runs over the passes' paths
+
+- **Symptom.** `cc -K123456789 a.c` runs `cpp`, then tries `c0` under the
+  empty name and says `Can't find ` (exit status 1); `-Kxxxxxxxxxxxx`
+  says `Can't find xxx`.
+- **Mechanism.** `-K` (text 01d8) appends its argument to `kopt[10]`
+  (data 1f68, `"s"`) with `strcat(kopt + 1, ...)` - no length check. The
+  string's 0 lands on `pass0[]` (1f72) from 9 characters on; longer ones
+  run on over `pass1[]`, `pass2[]`, `passp[]`, `passa[]` and the strings
+  after them.
+- **Evidence.** Emulator (`cccmp.py cases`: `-K into pass0`, `-K into
+  pass1`, `-K over the strings`).
+- **This project.** Reproduced.
+- **Fix idea.** Refuse a `-K` of more than 8 characters.
+
+### CC-04 A long `-B` prefix runs over the next path
+
+- **Symptom.** `cc -B<25 characters> -t2 -O a.c` runs `cpp` as
+  `bbbbbc2` - `Can't find bbbbbc2`, exit status 1 - although `-t2`
+  replaces only `c2`.
+- **Mechanism.** `main()`'s loop over `chpass` (text 04f4..05bb) builds
+  each replaced pass with `strcpy(passN, npassname)` and `strcat(passN,
+  "cN")` into arrays of 20 bytes (data 1f72, 1f86, 1f9a, 1fae, 1fc2): a
+  prefix of more than 17 characters runs into the next array - `pass2[]`
+  into `passp[]`, `passp[]` into the `as` path `passa[]`.
+- **Evidence.** Emulator (`cccmp.py cases`: `-B long`, `-B into pass1`,
+  `-B long -t1`).
+- **This project.** Reproduced.
+- **Fix idea.** Longer arrays, or "prefix too long".
+
+### CC-05 `-o` before an option, and no object after it
+
+- **Symptom.** `cc -o -x prog` (`prog` an object without the `.o`
+  suffix) links `ld -X /lib/crt0.o -o "" -x prog -lc`: `ld:cannot create
+  output`, exit status 4.
+- **Mechanism.** `-o` (text 0145..01a3) reads its name again as an
+  argument when it is a `.c` or `.o` name or starts with `-`, and sets
+  `outfile` to -1 until an object comes (`x.o`, or `x.c`'s `x.o`); its
+  name without the suffix becomes the output's (see "Suspect"). Without
+  one `outfile` stays -1, and `ld` gets the string at address ffff -
+  under the emulator a 0 above the argument strings; on the hardware
+  whatever the top byte of the segment is.
+- **Evidence.** Emulator (`cccmp.py cases`: `-o -lm`, `-o never
+  resolved, a library`).
+- **This project.** Reproduced as under the emulator (the image has the
+  emulator's layout of the arguments).
+- **Fix idea.** v7's "Would overwrite" for a `.c` or `.o` name, a usage
+  message for a missing one.
+
+### CC-06 With `-P`, copies of a null pointer
+
+- **Symptom.** None visible: `cc -P a.c` makes the temporary names
+  `tmp1`, `tmp2`, `tmp3` (and `tmp5` with `-O`) from the bytes at
+  address 0 - crt0's first instruction, `e9 7d` - and writes their `'1'`,
+  `'2'`, ... six bytes after each such string's end, into `ts[]`. None
+  of them is used.
+- **Mechanism.** `tmp0` is made only without `-P` (text 05d8), but
+  `copy(tmp0)` (text 067c..06b1) runs in any case.
+- **Evidence.** Code reading; emulator (`cccmp.py cases`: `-P a.c`, the
+  same names in `ts[]`).
+- **This project.** Reproduced (the text is in the image, read only).
+- **Fix idea.** Make the copies only when `tmp0` is set.
 
 ## Suspect, no wrong output found
 
@@ -1009,5 +1125,10 @@ listed under "Suspect".
   `cc -o hello.c x.o` compiles `hello.c` and links `-o hello hello.o
   x.o`, `cc -o dir/p.o x.o` links `-o p dir/p.o x.o` (the output in the
   current directory, not in `dir/`). Possibly meant (no source file is
-  overwritten); traced under the emulator, 2026-10-20. The port of `cc`
-  reproduces it and reads the code that does it.
+  overwritten); traced under the emulator, 2026-10-20. Read in the binary
+  for the port of `cc` (2026-10-24): `main()` (text 0145..01a3) reads the
+  name again as an argument (`i--`) and sets `outfile` to -1; the first
+  object put into the list after that (text 0479..04af) becomes the
+  output's name, `setsuf(t, 0)` with the `.` cut off. A name starting
+  with `-` is treated the same way - see CC-05 for the case without an
+  object. `mutos_cc` reproduces it.

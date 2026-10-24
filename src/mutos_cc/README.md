@@ -1,4 +1,13 @@
-# mutos_c0 / mutos_c1 - MUTOS 1700 Cross C Compiler (Milestone 4)
+# mutos_cc / mutos_c0 / mutos_c1 - MUTOS 1700 Cross C Compiler (Milestone 4)
+
+`mutos_cc`, the driver that runs the passes, is since 2026-10-24 a
+**port of the original MUTOS 1700 `cc`** - v7's `cc` with the MUTOS
+deltas - read from its binary (`ccport/`, `../../docs/TOOLCHAIN_PLAN.md`,
+step 3): v7's functions with the binary's deltas, run on an image of the
+original's 64K segment, its text and data generated from the binary. It
+finds its passes through the MUTOS root and is checked against the
+original itself, run under an 8086 emulator with its passes traced - see
+"The port of the real `cc`" below.
 
 `mutos_c0` (front end: lex/parse/typecheck, emits the `temp1`/`temp2`
 intermediate-code stream) is, since 2026-10-18, a **port of the original
@@ -41,9 +50,10 @@ and `p19_open3` up to the real compiler's own invalid output, which
 refusal of either port - where the original traps or reads state the port
 does not model - apart from a mismatch, never as a silent wrong output).
 
-The driver `mutos_cc` and the optimizer `mutos_c2` are not written yet;
-both are to be ports of the original binaries
-(`../../docs/TOOLCHAIN_PLAN.md`), see "Next steps".
+The optimizer `mutos_c2` is not written yet; it is to be a port of the
+original binary (`../../docs/TOOLCHAIN_PLAN.md`), see "Next steps". Until
+then `mutos_cc -O` says `Can't find /lib/c2` and assembles `c1`'s output
+unoptimized, as the original does without `/lib/c2`.
 
 ## The `temp1`/`temp2` wire format
 
@@ -236,21 +246,142 @@ same on random programs (see `../../tests/realbin/README.md`); `make
 check-realbin` runs both. The tree dump for depths 1 and 2 goes to the
 file the environment variable `C1PORT_TREES` names.
 
+## The port of the real `cc`
+
+`mutos_cc` is the original `cc` (`mutos_bin/cc.golden.base64.txt`, 0407,
+text 8,026 bytes, stripped): v7's `cc.c`, its ten functions in source
+order, with the MUTOS deltas. Every function was read instruction by
+instruction from the binary beside `v7/cc/cc.c`
+(`../../tests/realbin/ccmap.txt` maps them, `ccdis.py` disassembles one
+by name); the port does what the binary does, its bugs included
+(`../../docs/MUTOS_ORIGINAL_BUGS.md`, CC-01 to CC-06).
+
+### Behaviour (the original's)
+
+`mutos_cc [option ...] file ...`, an option's letter right after the
+`-`, its value the rest of the argument (`-o`'s the next one):
+
+- **The passes.** For a source `x.c` (with `-E` any name): `cpp x.c
+  /tmp/ctm4...` (without `-P`: the `# N "file"` lines), `c0 tmp4 tmp1
+  tmp2 [-P]`, `c1 tmp1 tmp2 tmp3 [s<n>]`, with `-O` `c2 tmp5 tmp3`, then
+  `as -gC -o x.o tmp3`; for `x.s` only `as`. The passes are `/lib/cpp`,
+  `/lib/c0`, `/lib/c1`, `/lib/c2`, `/bin/as`, `/bin/ld`; with `-f`
+  `/lib/c0f`, `/lib/c1f`, `/bin/asf` and `-lf` before `-lc`.
+- **The link.** `ld -X /lib/crt0.o [-o out] file ... -lc` - the objects,
+  archives, other names and unknown options (`-i`, `-s`, `-x`, `-lm`,
+  ...) in their order -, unless there was an error, `-c`, `-S`, `-P` or
+  `-E`. One source alone: its `.o` is removed after a successful link.
+- **The options.** `-c` no link; `-S` stops after `c1` with `x.s`; `-P`
+  runs `cpp ... -P` into `x.i` and nothing else, with or without `-S`;
+  `-E` runs `cpp x.c - -E`; `-O` adds `c2` (a `c2` that fails is passed
+  over: `as` gets `c1`'s output); `-p` gives `c0` `-P` and links
+  `/lib/mcrt0.o`; `-2` links `/lib/crt2.o`, `-20` `/lib/crt20.o` and
+  `-l2` for `-lc`; `-D`, `-I`, `-U`, `-C` go to `cpp` (at most 100: "Too
+  many DIUC options"); `-t[012p]` and `-B[prefix]` replace passes by the
+  prefix and their name (`-t` alone: all four; the prefix by default
+  `/usr/src/cmd/c/`, `-B` alone `/usr/src/cmd/c/o`); `-a` writes
+  `Executing cpp...`, `Executing c0...`, `Executing c1...`, `Executing
+  Optimizer...`, `Assembler as ...`, `Loader...` before each pass; `-K<n>`
+  gives `c1` the option `s<n>` (the frame size from which a function
+  calls `chkstk`). `-o name` names the output; a name that is a `.c` or
+  `.o` name, or starts with `-`, is an input as well, and the output is
+  then the next object's name without suffix and directory (`cc -o
+  hello.c` compiles `hello.c` and writes `hello`).
+- **Messages and exit status.** `x.c:` on stdout before each source's
+  passes when there are several; `Can't find /lib/c0f` for a pass that is
+  not there (an error); `Fatal error in /lib/c0` for a pass killed by a
+  signal other than SIGINT (exit status 8, `cc` ends); the passes' own
+  messages. The exit status counts the errors, `ld`'s status or'ed in.
+- **Temporary files.** `/tmp/ctm0` and six digits of the process number,
+  created with mode 0400 and kept for the run; `ctm1` .. `ctm5` beside it
+  for the passes. All are removed at the end, and on SIGINT and SIGTERM
+  (exit status 100).
+
+### The memory image
+
+`cc` keeps its file names in fixed arrays and copies into them without a
+check: a `-K` argument runs over `kopt[]` and the passes' paths (CC-03), a
+`-B` prefix over the next path (CC-04), a long source path past `ts[]`
+into `av[]` or past its `malloc()` block (CC-01), more than 50 arguments
+for `ld` past `av[]` into `clist[]` and `llist[]`, more than 100 `-P`
+past `ptemp[]` into `main()`'s `pv` (CC-02) - and it reads through a null
+pointer with `-P` (CC-06) and through -1 after an unresolved `-o`
+(CC-05). So the port keeps the original's 64K segment as an image
+(`ccport/cc.h`): the binary is 0407 - one segment -, so its text is at
+address 0 (read only), its data at 1f5a (`ccport/ccdata.c`, generated by
+`../../tests/realbin/cctables.py --c`), the BSS at 22d8, the heap from
+2db0 (libc.a's `malloc()` re-enacted on the image, its words at the
+binary's addresses), `main()`'s frame and the argument words and strings
+at the top, laid out as crt0 and `tests/realbin/mutosemu.py` lay them
+out. Words are little-endian at any address, chars signed.
+
+What the image does not model is refused - exit status 2 and a message
+on stderr ending in "refused" (`ccport/cclib.c`, `cctrap()`):
+
+- libc.a's data and BSS (the FILE structures, the stdio buffers, the
+  signal table) - reached by about 150 `-P` (CC-02);
+- memory past the break - reached when a `malloc()` block's overrun
+  (CC-01) breaks the list of blocks;
+- a heap that reaches `main()`'s frame (MUTOS refuses such a break, the
+  emulator gives it), arguments longer than about 32K;
+- a printf conversion the port's printf does not have (only from formats
+  a `-K` argument has written over).
+
+### Paths and the passes
+
+What the original names by an absolute path of the MUTOS file system - its
+passes (`/lib/c0`, `-t`'s `/usr/src/cmd/c/c0`, ...), the startup files
+(`/lib/crt0.o`, ...), its temporary files (`/tmp/ctm...`) - is looked up
+under the MUTOS root (`$MUTOS_ROOT`, by default the build tree's
+`mutos_root/`; `../h/mutos_root.h`): where `cc` uses it itself (`execv()`,
+`creat()`, `access()`, `unlink()`) and where it passes it to a pass,
+which gets the host path (`$MUTOS_ROOT/tmp/ctm4...`,
+`$MUTOS_ROOT/lib/crt0.o`). A name from the command line - a source, an
+object, `-o`'s name, a `-B` prefix - is the host's
+(`../../docs/TOOLCHAIN_PLAN.md`, decision 4). The image marks every byte
+that came from the command line and carries the mark along where `cc`
+copies a string: an absolute name is a MUTOS path when its `/` is not so
+marked. The passes run as real host processes (`fork()`, `execv()`,
+`wait()`) with `MUTOS_ROOT` set to `cc`'s root in their environment. In
+the build tree's root `lib/cpp`, `lib/c0`, `lib/c1`, `bin/as`, `bin/ld`
+are symbolic links to `mutos_cpp`, `mutos_c0`, `mutos_c1`, `mutos_as`,
+`mutos_ld`; `lib/c2` dangles until `mutos_c2` exists.
+
+The process number in the temporary names is the host's, folded to 15
+bits as MUTOS's are - two runs at the same time in one root whose numbers
+agree in those 15 bits would meet at `/tmp/ctm0...` (the second says `cc:
+cannot create temp`, or, run as root, shares the files).
+
+### How it is checked
+
+- `../../tests/realbin/cccmp.py` runs the port and the original (under
+  the emulator, its `fork`/`exece`/`wait` faked) on the same command line
+  in copies of one directory, each with a MUTOS root of its own, and
+  compares the passes run with their paths and arguments, what was
+  written to stdout and stderr before, between and after them, the exit
+  status and the files left (in the directory and the root's `tmp/`).
+  For the port every pass is `tests/realbin/ccstub.c`, which logs its
+  arguments and leaves the files the pass would write. `cases`: 177
+  command lines with the passes traced - every option, `-o` in its forms,
+  the limits and the overruns, passes that fail or are killed; `run`:
+  the construct corpus with the emulated original passes run in both;
+  `programs`: the port with the ported passes against the original chain
+  (the same `a.out`); `goldens`: the ported chain against the
+  real-hardware goldens (`cc -S`, `cc -P`, `cc -O -S` with the original
+  `c2`).
+- `../../tests/realbin/ccfuzz.py`: differential fuzzing - random command
+  lines of every option, names of every kind, the limits, failing
+  passes.
+- `../../tests/mutos_cc/check_driver.py` (in `make test`, no emulator):
+  the port with the ported passes against the goldens and linking the
+  construct corpus.
+
 ## Next steps
 
-The order is `../../docs/TOOLCHAIN_PLAN.md`'s (decided 2026-10-20):
+The order is `../../docs/TOOLCHAIN_PLAN.md`'s (decided 2026-10-20); the
+driver (step 3) is done:
 
-1. **`mutos_cc` driver** - a port of the original `cc` binary, which differs
-   from `v7/cc/cc.c` (`as -gC`, `-f`, `-o name.o`, its messages - the plan's
-   section 5). It runs the passes as the original runs `/lib/cpp`,
-   `/lib/c0`, ... - under `$MUTOS_ROOT`, where the build links them - and
-   passes `$MUTOS_ROOT/lib/crt0.o` and `-lc` to `ld`. It comes after the
-   ports of `cpp` (whose `# N "file"` lines the original `c0`'s messages
-   need) and `ld` (whose `-l` it relies on). Until then the pipeline is
-   exercised by invoking each tool directly (`tests/mutos_cc/run_goldens.sh`).
-   The `-P`/`-S` question is settled by the original: `-P` stops after
-   `cpp`, with or without `-S`.
-2. **`mutos_c2`** (Milestone 5): a port of the original `c2`, 8086 only - the
+1. **`mutos_c2`** (Milestone 5): a port of the original `c2`, 8086 only - the
    emulated original reproduces `tests/mutos_as/kernel_opt/`'s optimized
    kernel sources from `11_kernel`'s `.s` goldens.
 
@@ -267,6 +398,12 @@ assembler step either way.
 
 ## Source layout
 
+- `ccport/` - `mutos_cc`, the port of the real `cc` (see "The port of
+  the real `cc`"): `cc.h` (the image, the binary's addresses), `cc.c`
+  (`cc.o`'s ten functions), `cclib.c` (the machine: the image's initial
+  state, libc.a's printf, `strcpy()`, `strcat()`, `malloc()`,
+  `mktemp()`, the system calls on the host, the paths, the refusals),
+  `ccdata.c` (generated: the binary's text and data), `main.c`.
 - `c0port/` - `mutos_c0`, the port of the real `c0` (see "The port of
   the real `c0`"); invoked as v7's `cc` invokes `c0`: `mutos_c0
   source.i temp1 temp2 [profileflag]`.
@@ -277,6 +414,13 @@ assembler step either way.
   for `mutos_c1`'s `%.17e` (and `fltdec_test`, below).
 
 ## Testing
+
+`tests/mutos_cc/check_driver.py` (in `make test`) runs `mutos_cc` with the
+ported passes through the build tree's MUTOS root: `cc -S` and `cc -P` on
+every golden's source (the `.s` with `c1`'s messages and exit status, the
+`.i`), `cc -o` on the construct corpus. `tests/realbin/cccmp.py` and
+`ccfuzz.py` (`make check-realbin`) compare it with the original `cc` - see
+"The port of the real `cc`".
 
 `tests/mutos_cc/run_goldens.sh` runs the real `mutos_cpp → mutos_c0 →
 mutos_c1` pipeline over every corpus file that has goldens and diffs
