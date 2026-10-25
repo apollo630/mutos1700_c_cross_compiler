@@ -51,10 +51,12 @@ in `tests/realbin/c1_tables.txt`. `c0`, `c1` (`src/mutos_cc/`) and
 `cc` (`src/mutos_cc/ccport/`, 2026-10-24) and `c2` (`src/mutos_cc/c2port/`,
 2026-10-25) are ported; `as` is not (`docs/TOOLCHAIN_PLAN.md`, decision 9).
 
-The binaries of 2026-10-25 are what MUTOS makefiles need (decided
-2026-10-20, `docs/TOOLCHAIN_PLAN.md`, decisions 10 and 11): `ar` and
-`ranlib` are to be ported, `make` is run through the wrapper
-`mutos_make` for now - its built-in rules and macros are v7's
+The binaries of 2026-10-25 - what MUTOS makefiles need (decided
+2026-10-20, `docs/TOOLCHAIN_PLAN.md`, decision 11), and the editors -
+are all to be ported like the toolchain (decided 2026-10-25, decision
+10):
+`make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `ed`, `em`, and
+the script `lorder`. `make`'s built-in rules and macros are v7's
 `builtin[]` string for string (`docs/devlog/originals_and_ports.md`,
 "The originals of 2026-10-25"). None of them runs under `tests/realbin/`
 yet. v7's sources are in `v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`,

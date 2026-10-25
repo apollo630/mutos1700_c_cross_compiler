@@ -2,7 +2,8 @@
 
 This file collects every bug found in the original MUTOS 1700 binaries
 (`mutos/mutos_bin/`) - `c0`, `c1`, `as`, `ld`, `cpp`, `cc`, `c2` and
-`libc.a`, and `make`, `ar` and `ranlib` as their ports read them
+`libc.a`, and `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`,
+`ed` and `em` as their ports read them
 (`docs/TOOLCHAIN_PLAN.md`) - in one place, for the day this project offers to fix them (a
 `mutos_*` option, say, that leaves the faithful default alone). Until then
 the project's tools reproduce the original's behaviour wherever it can be
@@ -77,6 +78,7 @@ Last updated: 2026-10-25.
 | CPP-11 | `cpp` | a macro with parameters named without `(` loses the next token and leaves a spurious "unterminated macro call" for the end of the input | emulator, fuzzing | reproduced |
 | CPP-12 | `cpp` | an `#if` whose expression does not parse (empty, "syntax error") counts as true | emulator, fuzzing | reproduced |
 | CPP-13 | `cpp` | the token after an object-like macro's name is dropped, whatever it is: `#define X+1` defines `X` as `1` | emulator | reproduced |
+| CPP-14 | `cpp` | "Can't find include file" names the line after the `#include` | emulator | reproduced |
 | LD-01 | `ld` | a `-l` name of 14 characters or more is written over the strings after `/usr/lib/libxxxxxxxxxxxxxxx`: the messages change | emulator | reproduced; refused where it reaches libc.a's data |
 | LD-02 | `ld` | more than 256 archive entries (members loaded, end marks) run past `liblist[]` over `cursym` and `symtab[]` | emulator | reproduced |
 | LD-03 | `ld` | `ldrand()` reads a symbol type through a null pointer (crt0's word 8) | code reading | reproduced |
@@ -862,6 +864,21 @@ consequences of the MUTOS deltas in CPP-10 and CPP-11.
 - **Evidence.** Emulator (the triggers).
 - **This project.** Reproduced.
 - **Fix idea.** Start the body at that token unless it is a blank.
+
+### CPP-14 A missing include file is reported one line late
+
+- **Symptom.** `#include <nosuch.h>` on line 1 gives `a.c: 2: Can't
+  find include file nosuch.h`; on line 3, `4:`.
+- **Mechanism.** The `#include` line's linefeed is counted before
+  `doincl()` looks for the file; when no directory has it, `doincl()`
+  (text 0c99..0ca2, the call to `pperror()` at 0bd7) reports with
+  `lineno[ifno]` as it is. v7's source steps it back for its other
+  messages after a line (`missing )`, `redefined`). v7 too.
+- **Evidence.** Emulator (both triggers; found 2026-10-25 while checking
+  the headers in the MUTOS root).
+- **This project.** Reproduced.
+- **Fix idea.** `--lineno[ifno]` around the message, as `dodef()` does
+  for `redefined`.
 
 ## `ld`
 

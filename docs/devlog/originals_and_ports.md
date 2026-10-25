@@ -1256,7 +1256,9 @@ into `v7/`. What reading them showed, on the day:
   VAX: `AS=as -`) string for string - all 67, `.SUFFIXES` to the last
   rule. The rules file the `mutos_make` wrapper is to give the host's
   `make` (decision 10) is therefore v7's table; read from the strings
-  only, the code is not read yet.
+  only, the code is not read yet. (Decided later the same day: `make` is
+  ported, not wrapped - decision 10 -, so the table is the port's
+  `builtin[]`; and so are all the other binaries of the delivery.)
 - **The headers.** `usr/include/` (26 files, `local/uparm.h`, and 46 in
   `sys/`) is what C programs include; `sys/h/` (43) is the kernel's.
   The two `sys` directories agree but for `k5170.h` (`sys/h/`'s has
@@ -1279,9 +1281,18 @@ into `v7/`. What reading them showed, on the day:
   space only, the others are identical. A port follows the binary, so
   where a v7 tool prints with `FORMAT` the MUTOS one is expected to print
   hexadecimal.
-- **The MUTOS root has no headers yet.** `scripts/mutos_root.sh` leaves
+- **The MUTOS root had no headers.** `scripts/mutos_root.sh` left
   `usr/include/` empty, so `mutos_cc -c` on a source with `#include
-  <stdio.h>` stops with `Can't find include file stdio.h` (2026-10-25).
+  <stdio.h>` stopped with `Can't find include file stdio.h`. Decided the
+  same day: the script copies `mutos/mutos_include/usr/include/` into the
+  root (`docs/TOOLCHAIN_PLAN.md`, decision 3). Since then a program with
+  `<stdio.h>`, `<sys/types.h>` and `<sys/stat.h>` compiles, links and
+  runs under the emulator (`hello, 512 30` - `BUFSIZ` and a 30-byte
+  `struct stat`), and the original chain - the emulated `cc` with the
+  original passes (`tests/realbin/cctrace.py --run`), the same headers
+  in its root - gives the same `a.out`, byte for byte. The message
+  without the header names the line after the `#include`, in the
+  original as in the port: CPP-14.
 - **The manual pages** (German, terminal format: `ESC G`/`ESC H` around
   highlighted text, `ESC 9`/`ESC 8` around subscripts, overstrikes with
   backspace - `a`, BS, `"` for `ä`, `p`, BS, `8` for `ß`, `_`, BS, a
@@ -1294,4 +1305,11 @@ into `v7/`. What reading them showed, on the day:
   `-D` - no `-r`, no `-d`, which the binary refuses. `cc.1.d` has no
   `-a`, `-K`, `-2`, `-20`, and names `/usr/c/` for `-B`/`-t`, where the
   binary has `/usr/src/cmd/c/` (`src/mutos_cc/README.md`). The `make`
-  page, which decision 11 asked for, is not among them.
+  page, which decision 11 asked for, was not among them; it followed the
+  same day (`make.1.d`, commit `adaf28a`). It says what the corpus's
+  makefiles were written against (`docs/devlog/m4_foundations.md`,
+  "MUTOS 1700 host-tooling findings"): `=` macros and two-suffix rules
+  only, each command line in a shell of its own, options `-f`, `-i`,
+  `-k`, `-n`, `-t`, `-r`, `-s`. Its default suffix list, `.out .o .c .e
+  .r .f .y .l .s`, is v7's manual's, not the binary's: the binary has
+  v7's built-in `.out .o .c .f .e .r .y .yr .ye .l .s`.

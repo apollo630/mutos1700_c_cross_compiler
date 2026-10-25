@@ -248,7 +248,8 @@ making the distinction impossible to miss: a loud warning at the very top of
 `gen_mutos.sh` itself, and the two invocations visually separated in
 `tests/mutos_cc/README.md`'s workflow section. Real `make(1)`'s own manpage
 was checked at this point (person-supplied `basename_1.d`/`expr_1.d`/
-`find_1.d`/`make_1.d` troff source) and confirmed: no `%.o: %.c` pattern
+`find_1.d`/`make_1.d` troff source; the `make` page is in the tree since
+2026-10-25 as `mutos/mutos_man/make.1.d`) and confirmed: no `%.o: %.c` pattern
 rules, no `$(wildcard)`/`$(dir)`/`$(notdir)` functions, no `:=` — only plain
 `=` macros and two-suffix rules like `.c.o:`. Also confirmed from the
 manpage's own *Fehlerquellen* section: shell state (notably `cd`) does not

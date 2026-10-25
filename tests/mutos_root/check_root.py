@@ -11,7 +11,8 @@ paths under $MUTOS_ROOT, by default that directory
      time its __.SYMDEF time (602282477, 1989-01-31 20:41:17 UTC), the
      links of the passes and tools to the right files under src/ (a tool
      not built yet is listed, not an error), usr/lib/, usr/include/ and
-     tmp/;
+     tmp/; usr/include/ holds every file of mutos/mutos_include/usr/include/
+     byte for byte;
   2. mutos_root.h: rootpath_test.c, compiled with the
      -DMUTOS_ROOT_DEFAULT the Makefiles pass, with MUTOS_ROOT unset,
      empty, set with and without trailing slashes, and "/"; relative
@@ -20,10 +21,13 @@ paths under $MUTOS_ROOT, by default that directory
      which pulls in much of libc.a) against the root's crt0.o and libc.a
      without "out of date", and with a copy of libc.a with a new time
      with it - the check can fail;
-  4. with --realbin (needs the Python module "unicorn"): the same against
-     the original ld, emulated (tests/realbin/mutosemu.py), through the
-     root's lib/ and usr/ - status 0 and no message; with a newer
-     libc.a its "out of date" warning.
+  4. the headers: mutos_cc compiles and links a program that includes
+     <stdio.h>, <sys/types.h> and <sys/stat.h> through the root;
+  5. with --realbin (needs the Python module "unicorn"): the same as 3
+     against the original ld, emulated (tests/realbin/mutosemu.py),
+     through the root's lib/ and usr/ - status 0 and no message; with a
+     newer libc.a its "out of date" warning; and the program of 4 runs
+     under the emulator and prints what its headers make it print.
 
 Usage: check_root.py [--cc CC] [--realbin] ROOT
 Exit status 1 on any failure.
@@ -45,6 +49,22 @@ LINKS = (('lib/cpp', 'mutos_cpp/mutos_cpp'), ('lib/c0', 'mutos_cc/mutos_c0'),
          ('bin/cc', 'mutos_cc/mutos_cc'))
 GOLDEN_S = os.path.join(REPO, 'tests', 'mutos_cc', '08_float',
                         '01_floatbas.s.golden')
+INCLUDE = os.path.join(REPO, 'mutos', 'mutos_include', 'usr', 'include')
+# a program the original headers must compile: BUFSIZ from <stdio.h>,
+# struct stat from <sys/stat.h> (which needs <sys/types.h>)
+HELLO_C = '''#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+main()
+{
+	struct stat st;
+
+	printf("hello, %d %d\\n", BUFSIZ, sizeof st);
+	exit(0);
+}
+'''
+HELLO_OUT = b'hello, 512 30\n'
 
 FAILS = []
 
@@ -63,6 +83,10 @@ def decoded(rel):
 def read(path):
     with open(path, 'rb') as f:
         return f.read()
+
+
+def read_or_none(path):
+    return read(path) if os.path.isfile(path) else None
 
 
 def check_files(root):
@@ -91,6 +115,16 @@ def check_files(root):
             missing.append(mpath)
     if missing:
         print('  (not built yet, the links dangle: %s)' % ', '.join(missing))
+    headers = sorted(os.path.relpath(os.path.join(d, f), INCLUDE)
+                     for d, _, fs in os.walk(INCLUDE) for f in fs)
+    bad = [h for h in headers
+           if read(os.path.join(INCLUDE, h)) != read_or_none(
+               os.path.join(root, 'usr', 'include', h))]
+    check(headers and not bad,
+          'usr/include/ has the %d files of mutos/mutos_include/usr/include/, '
+          'byte for byte%s' % (len(headers),
+                               ' (differ or missing: %s)' % ', '.join(bad[:5])
+                               if bad else ''))
 
 
 def check_header(root, cc):
@@ -187,6 +221,31 @@ def check_mutos_ld(root):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_include(root, realbin):
+    print('== the headers: a program with <stdio.h> through the root ==')
+    tmp = tempfile.mkdtemp(prefix='rootinc')
+    try:
+        with open(os.path.join(tmp, 'hello.c'), 'w') as f:
+            f.write(HELLO_C)
+        env = dict(os.environ, MUTOS_ROOT=root)
+        r = subprocess.run([os.path.join(SRC, 'mutos_cc', 'mutos_cc'), '-o',
+                            'hello', 'hello.c'], cwd=tmp, env=env,
+                           capture_output=True, text=True)
+        out = (r.stdout + r.stderr).strip()
+        exe = os.path.join(tmp, 'hello')
+        ok = r.returncode == 0 and os.path.isfile(exe) and not out
+        check(ok, 'mutos_cc -o hello hello.c (status %d%s)'
+              % (r.returncode, ', ' + out if out else ''))
+        if ok and realbin:
+            sys.path.insert(0, os.path.join(REPO, 'tests', 'realbin'))
+            import mutosemu
+            st, so, se = mutosemu.run_tool(exe, [], cwd=tmp)
+            check(st == 0 and so == HELLO_OUT and not se,
+                  'it runs under the emulator: status %d, %r' % (st, so + se))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_original_ld(root):
     print("== the original ld (emulated) through the root ==")
     sys.path.insert(0, os.path.join(REPO, 'tests', 'realbin'))
@@ -244,6 +303,7 @@ def main(argv):
     check_files(root)
     check_header(root, cc)
     check_mutos_ld(root)
+    check_include(root, realbin)
     if realbin:
         check_original_ld(root)
     print('mutos_root: %s' % ('%d failure(s)' % len(FAILS) if FAILS

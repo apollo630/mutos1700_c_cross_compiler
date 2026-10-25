@@ -6,7 +6,10 @@ ended: the compiler passes are ports of the originals; the driver, the
 optimizer, the archiver and support for MUTOS makefiles are missing, and
 three of the existing tools (`mutos_cpp`, `mutos_ld`, `mutos_as`) are
 re-implementations whose behaviour beyond the goldens was never compared
-with the originals.
+with the originals. Decisions taken later with the project owner are
+dated where they stand (2026-10-25: the headers in the MUTOS root,
+decision 3; the port of `make` and of the other tools brought from the
+hardware, decision 10).
 
 **Status (2026-10-25): steps 0 to 4 are done** (section 3); step 5, the
 differential fuzzer for `mutos_as` and the switch `-1`, is next.
@@ -23,7 +26,7 @@ differential fuzzer for `mutos_as` and the switch `-1`, is next.
 | `mutos_as` | re-implementation, 80186/V30 opcodes always on; takes `-g`/`-C` (step 0) | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof` |
 | `mutos_ld` | port of the original `ld` (2026-10-22; until then a port of v7's `ld.c` with the MUTOS deltas known then), `-r`/`-d` an extension | the emulated original: every compiled golden linked with a matrix of options, hand-written cases, differential fuzzing (its own goldens `myhello`/`idhello` are missing from the tree); the extension by running programs linked through `-r` |
 | `mutos_cc` | port of the original `cc` (2026-10-24) | the emulated original, its passes traced: a matrix of command lines, the corpus with the original passes run in both, the ported chain against the original chain and the goldens, differential fuzzing |
-| `ar`, `ranlib`, `make` | not ported; the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
+| `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | not ported yet (decision 10, steps 6 to 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
 
 The originals run under `tests/realbin/mutosemu.py`: `cpp`, `c0`, `c1`,
 `as` since 2026-10-12, and on 2026-10-20 also `c2`, `ld` and - with
@@ -55,7 +58,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
    | `lib/libc.a` | decoded from `tests/mutos1700_libc/libc.a.base64.txt` as it is (not re-archived from the 167 objects), its modification time set to its `__.SYMDEF` time, 1989-01-31 20:41:17 UTC, so that `ld` uses the table without "out of date" |
    | `lib/cpp`, `lib/c0`, `lib/c1`, `lib/c2`, `bin/as`, `bin/ld`, `bin/cc` | symbolic links to `mutos_cpp`, `mutos_c0`, ... - the passes are found through the root, so the driver maps each of the original's paths one to one, and `-B`/`-t` keep their meaning |
    | `usr/lib/` | empty: for the user's own libraries |
-   | `usr/include/` | empty: the original headers are in the tree since 2026-10-25 (`mutos/mutos_include/usr/include/`), not in the root yet (section 6) |
+   | `usr/include/` | the original headers: `mutos/mutos_include/usr/include/` copied as it is, `sys/` and `local/` included (decided 2026-10-25; until then empty) |
    | `tmp/` | the temporary files the originals name under `/tmp` (`ld`'s `/tmp/ldaXXXXXX`, `cc`'s `/tmp/ctm...`) - added with step 2 (2026-10-22) |
 
    `make install` comes later.
@@ -104,29 +107,39 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
    emulated original measures the differences; a port is decided after
    that. The 80186/V30 instructions move behind the switch `-1` (section
    4).
-10. **MUTOS makefiles are supported** without a `make` port for now: a
-    wrapper `mutos_make` runs the host's `make` with its built-in rules
-    off (`-r`), a rules file with the MUTOS `make`'s own built-in rules and
-    macros (read from its binary), and `$MUTOS_ROOT/bin` first in `PATH`,
-    so that `cc`, `as`, `ld`, `ar` in a recipe are the MUTOS tools. Whether
-    `make` is ported is decided later. **`ar` and `ranlib` are ported**
-    (from their binaries): a makefile that builds a library needs them,
-    and the host's `ar` writes a format `mutos_ld` cannot read. A recipe
-    with an absolute path (`/lib/c0`) cannot be redirected by any `make`;
-    such makefiles need the path as a macro (`make CC=$MUTOS_ROOT/bin/cc
-    CPP=$MUTOS_ROOT/lib/cpp C0=$MUTOS_ROOT/lib/c0` works for
-    `tests/mutos_cc/*/Makefile.mutos` since the driver exists - all
-    twelve with the host's `make`, every `.s` and `.1` the golden,
-    2026-10-24).
+10. **`make` and the other tools are ported** (decided 2026-10-25). The
+    plan of 2026-10-20 was a wrapper `mutos_make` around the host's `make`
+    (its built-in rules off, the MUTOS `make`'s rules from a file,
+    `$MUTOS_ROOT/bin` first in `PATH`) and a port of `make` decided
+    later; it is replaced: `mutos_make` is a port of the original `make`,
+    from its binary with `v7/make/` as the scaffold, as every other tool
+    (decision 1). So are all the other binaries brought on 2026-10-25
+    (decision 11): `ar`, `ranlib` - a makefile that builds a library needs
+    them, and the host's `ar` writes a format `mutos_ld` cannot read -,
+    `nm`, `size`, `strip`, `tsort`, the editors `ed` and `em` (`em` has no
+    v7 source: the binary alone), and `lorder`, which is a shell script,
+    not a binary. The executables: `mutos_make`, `mutos_ar`,
+    `mutos_ranlib`, `mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort`,
+    `mutos_lorder`, `mutos_ed`, `mutos_em`. A recipe with an absolute path
+    (`/lib/c0`) is run by the host's shell and cannot be redirected by any
+    `make`; such makefiles need the path as a macro (`make
+    CC=$MUTOS_ROOT/bin/cc CPP=$MUTOS_ROOT/lib/cpp C0=$MUTOS_ROOT/lib/c0`).
+    With the host's `make` that works for all thirteen
+    `tests/mutos_cc/*/Makefile.mutos` since the driver exists: every `.s`,
+    `.i`, `.1` and `.2` the golden but `fltprobe/p19_open3.s`, which
+    `mutos_c1` refuses as `invalid_goldens.txt` says; `fltprobe`'s needs
+    `-i`, because its ten probes in `c1_errors.txt` end with `c1`'s
+    messages and exit status 1, as on the hardware (2026-10-25; on
+    2026-10-24 the twelve others were run).
 11. **Binaries and manual pages from the hardware**: the project owner
     brings `make`, `ar`, `ranlib` (and `lorder`, `tsort`, `nm`, `size`,
     `strip` as makefiles need them) into `mutos_bin/`, and the MUTOS `make`
-    manual page as reference material. **Done 2026-10-25 but for the
-    `make` page**: every original file is under `mutos/` since - the eight
-    tools (`lorder` a shell script) with `ed` and `em` in
-    `mutos/mutos_bin/`, the manual pages of all but `make` (and `as`, `cc`,
-    `ld`, `ed`, `a.out(5)`, `ar(5)`, `types(5)`, `filsys(5)`) in
-    `mutos/mutos_man/`, the original headers in `mutos/mutos_include/`; v7's
+    manual page as reference material. **Done 2026-10-25**: every
+    original file is under `mutos/` since - the eight tools (`lorder` a
+    shell script) with `ed` and `em` in `mutos/mutos_bin/`, the manual
+    pages of all eight, `make`'s included (and `as`, `cc`, `ld`, `ed`,
+    `a.out(5)`, `ar(5)`, `types(5)`, `filsys(5)`) in `mutos/mutos_man/`,
+    the original headers in `mutos/mutos_include/`; v7's
     sources of `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort` and
     `ed` in `v7/`. What they showed: `docs/devlog/originals_and_ports.md`,
     "The originals of 2026-10-25" - among it that the original `make`'s
@@ -147,10 +160,15 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 | 3 | Port of `cc` | the tracer: every pass's path and arguments, messages and exit status over a matrix of options, the original's against the port's; whole programs through the chain. **Done 2026-10-24**: `src/mutos_cc/ccport/` is the original read from its binary, on an image of its 64K segment (text, data, heap, `main()`'s frame); `cccmp.py` - the port's passes a stub that logs its arguments - 177 command lines traced (175 the same, 2 refused), the corpus with the original passes run in both 124/124, the ported chain against the original chain 124/124 (the same `a.out`) and against the goldens (`cc -S` 132/132, `cc -P` 132/132, `cc -O -S` 9/9 with the original `c2`), differential fuzzing in `STATUS.md` (Milestone 4) without a difference; six bugs of the original found (CC-01 to CC-06) |
 | 4 | Port of `c2` | the emulated original on all 132 `.s` goldens and on `c1fuzz.py`'s programs; `tests/mutos_as/kernel_opt/`'s nine sources from `11_kernel` (the original gives them byte for byte). **Done 2026-10-25**: `src/mutos_cc/c2port/` is the original read from its binary, on an image of its data segment with libc.a's stdio in it; `c2cmp.py goldens` 396/396 the same (132 goldens three ways: into a file, with the statistics, through stdin and stdout), the nine `kernel_opt/` sources byte for byte - also through `mutos_cc -O -S` (`check_driver.py`, `cccmp.py goldens`) -, the hand-written cases and the differential fuzzing (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, assembly made for `c2`'s passes, both damaged) in `STATUS.md` (Milestone 5) without a difference; seven bugs of the original found (C2-01 to C2-07), two of them endless loops the port refuses |
 | 5 | `mutos_as`: differential fuzzer, the `-1` switch | the emulated original; then the decision on a port |
-| 6 | MUTOS makefiles: ports of `ar` and `ranlib`, the `mutos_make` wrapper, `bin/` in the root | `libc.a` rebuilt from its 167 objects against the original archive; the corpus's `Makefile.mutos` files |
+| 6 | Ports of `ar` and `ranlib`; `bin/` in the root for the new tools | the emulated original: archives made and changed with every key, `libc.a` rebuilt from its 167 objects against the original archive, `__.SYMDEF` included; differential fuzzing |
+| 7 | Port of `make` | the emulated original, its `fork`/`exece`/`wait` faked as for `cc` and the commands it runs traced: the corpus's `Makefile.mutos` files, makefiles written for its rules, macros and options, differential fuzzing; then the corpus's makefiles through `mutos_make` and the ported tools against the goldens |
+| 8 | Ports of `nm`, `size`, `strip`, `tsort`; `lorder` | the emulated original on every object and archive of the tree (the compiled goldens, `crt0.o`, `libc.a`) with each option; `lorder` and `tsort` on `libc.a`'s objects |
+| 9 | Ports of `ed` and `em` | the emulated original on scripted editing sessions |
 
-Later: the 80186/V30 decision for `c1`/`c2`, `make install`, the manual
-pages.
+Steps 6 to 9 in this order were proposed on 2026-10-25 (the archiver
+first, since `make`'s library makefiles need it; the editors last, since
+no makefile does). Later: the 80186/V30 decision for `c1`/`c2`, `make
+install`, the manual pages.
 
 ## 4. The switch `-1` (decided 2026-10-20)
 
@@ -234,10 +252,15 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   and the library for 8087 (K 1810 WM 87) code, as `cc.1.d` and
   `as.1.d` in `mutos/mutos_man/` say (2026-10-25; until then only
   presumed). Not on hand; `-f` fails until they are.
-- How the MUTOS root gets the headers (2026-10-25): its `usr/include/`
-  is empty, so `mutos_cc -c` on a source with `#include <stdio.h>` stops
-  with `Can't find include file stdio.h`. The originals are in
-  `mutos/mutos_include/usr/include/`; whether `scripts/mutos_root.sh`
-  copies them into the root (or links them) is to be decided.
-- The MUTOS `make` manual page (decision 11): not in `mutos/mutos_man/`
-  yet.
+- How `mutos_make` runs its recipes: the original hands each line to
+  `/bin/sh -c`; on the host that can only be the host's shell, with
+  `$MUTOS_ROOT/bin` first in `PATH` so that `cc`, `as`, `ld`, `ar` in a
+  recipe are the MUTOS tools - to be settled with step 7.
+- Where the new tools sit in the MUTOS file system (`/bin` or
+  `/usr/bin`), and so in the root: to be read from the binaries that
+  name them - steps 6 to 9. (`make` names `/bin/sh`, and libc's
+  `execvp` in it the search path `:/bin:/usr/bin` for a `PATH` not set.)
+- `lorder` is a shell script: its port is the script, run by the host's
+  shell with the MUTOS `nm` - to be settled with step 8.
+- What `ed` and `em` need of the terminal (`sgtty`, `ioctl`) under the
+  emulator: to be read with step 9.
