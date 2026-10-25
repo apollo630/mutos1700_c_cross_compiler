@@ -2,7 +2,7 @@
  * c1.h - the MUTOS 1700 code generator, ported from the original binary.
  *
  * This is v7's c1.h (v7/cc/c1.h) with the MUTOS 1700 deltas the original
- * c1 (mutos_bin/c1.golden.base64.txt) shows: its new operators, its
+ * c1 (mutos/mutos_bin/c1.golden.base64.txt) shows: its new operators, its
  * register numbering and the floating-point stack model. The port follows
  * docs/C1_PORT_PLAN.md: the binary is the specification, v7's source the
  * skeleton; tests/realbin/c1map.txt maps every function to its text

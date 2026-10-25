@@ -41,7 +41,7 @@
 #                   # an 8086 emulator (needs the
 #                   # Python module "unicorn"; see
 #                   # tests/mutos_as/float_coverage/libcatof.py)
-#   make check-realbin # the original MUTOS c0 and c1 (mutos_bin/), run under
+#   make check-realbin # the original MUTOS c0 and c1 (mutos/mutos_bin/), run under
 #                   # an 8086 emulator, against every tests/mutos_cc
 #                   # golden, tests/realbin/c1_tables.txt against the c1
 #                   # binary, and mutos_c1, mutos_c0 and mutos_cpp (the
@@ -104,7 +104,7 @@ root:
 
 # "make clean" removes mutos_root/ too - with anything put into it (its
 # usr/lib/ is for the user's own libraries) - and never touches tests/ or
-# mutos_bin/ (CLAUDE.md, Workflow Guidelines 2 and 5).
+# mutos/mutos_bin/ (CLAUDE.md, Workflow Guidelines 2 and 5).
 clean:
 	$(MAKE) -C src/mutos_ld clean
 	$(MAKE) -C src/mutos_as clean
@@ -189,7 +189,7 @@ check-libcatof: as ld cc
 	@python3 tests/mutos_as/float_coverage/libcatof.py fecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
 
 # The original MUTOS 1700 binaries as an oracle: the real c0 and c1 from
-# mutos_bin/, run under an 8086 emulator (tests/realbin/mutosemu.py), must
+# mutos/mutos_bin/, run under an 8086 emulator (tests/realbin/mutosemu.py), must
 # give back every tests/mutos_cc golden byte for byte - c1's messages and
 # exit status included - and tests/realbin/c1_tables.txt must be what
 # c1tables.py reads from the c1 binary; then the share of c1's code-table

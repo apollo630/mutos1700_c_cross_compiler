@@ -1,8 +1,11 @@
 # `tests/realbin/` — the original MUTOS 1700 binaries as an oracle
 
-`../../mutos_bin/` holds the original toolchain binaries brought from the
-hardware (`as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, as base64 text - see
-its `README.md`). This directory runs them on the modern host under an
+`../../mutos/mutos_bin/` holds the original binaries brought from the
+hardware (the toolchain `as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, and since
+2026-10-25 `make`, `ar`, `ranlib`, the other tools MUTOS makefiles use and
+the editors, which nothing here runs yet - as base64 text, see its
+`README.md`). This
+directory runs the toolchain on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
 emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`,
@@ -335,5 +338,6 @@ oracles"):
   file, where MUTOS hands out its entries. `mutos_cpp` refuses such an
   `#include` rather than follow either.
 - `break` is accepted as asked; the memory is the 64K data segment.
-- Only `0407` and `0411` files; the binaries in `mutos_bin/` are all one
-  or the other (`cc` is `0407`, the rest `0411`).
+- Only `0407` and `0411` files; the binaries in `mutos/mutos_bin/` are all
+  one or the other (of the toolchain `cc` is `0407`, the rest `0411`;
+  `lorder` there is a shell script, no binary).

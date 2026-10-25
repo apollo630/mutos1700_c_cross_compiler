@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ccdis.py - annotated 8086 disassembly of the real MUTOS 1700 cc.
 
-c1dis.py on mutos_bin/cc.golden.base64.txt with ccmap.txt: names the
+c1dis.py on mutos/mutos_bin/cc.golden.base64.txt with ccmap.txt: names the
 functions and data from the map (the binary is stripped: the names are
 v7's, see ccmap.txt), the libc.a functions linked in by matching libc.a's
 objects against the text, and prints a listing with call targets, data

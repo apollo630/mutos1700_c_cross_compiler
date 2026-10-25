@@ -256,7 +256,7 @@ file the environment variable `C1PORT_TREES` names.
 
 ## The port of the real `cc`
 
-`mutos_cc` is the original `cc` (`mutos_bin/cc.golden.base64.txt`, 0407,
+`mutos_cc` is the original `cc` (`mutos/mutos_bin/cc.golden.base64.txt`, 0407,
 text 8,026 bytes, stripped): v7's `cc.c`, its ten functions in source
 order, with the MUTOS deltas. Every function was read instruction by
 instruction from the binary beside `v7/cc/cc.c`
@@ -387,7 +387,7 @@ cannot create temp`, or, run as root, shares the files).
 
 ## The port of the real `c2`
 
-`mutos_c2` is the original `c2` (`mutos_bin/c2.golden.base64.txt`, 0411,
+`mutos_c2` is the original `c2` (`mutos/mutos_bin/c2.golden.base64.txt`, 0411,
 text 17,792 bytes, stripped): crt0, then `c20.o` - v7's `c20.c` in source
 order, `reducelit()` gone -, then `c21.o` - v7's `c21.c` rewritten for the
 8086, twelve functions new -, then libc.a. Every function was read

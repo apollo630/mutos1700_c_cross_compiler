@@ -1,4 +1,4 @@
-# ccmap.txt - a map of the real MUTOS 1700 cc (mutos_bin/cc.golden.base64.txt)
+# ccmap.txt - a map of the real MUTOS 1700 cc (mutos/mutos_bin/cc.golden.base64.txt)
 #
 # The binary (0407, text 8026, data 894, BSS 2776 bytes) is stripped; the
 # names below are v7's (v7/cc/cc.c), found by the strings each function

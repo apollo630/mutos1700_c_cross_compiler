@@ -1,4 +1,4 @@
-# cppmap.txt - a map of the real MUTOS 1700 cpp (mutos_bin/cpp.golden.base64.txt)
+# cppmap.txt - a map of the real MUTOS 1700 cpp (mutos/mutos_bin/cpp.golden.base64.txt)
 #
 # Unlike the other originals the binary keeps its symbol table (267
 # symbols; cpptables.py --symbols prints it): the names below are the

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ldcmp.py - mutos_ld, the port of the real ld, against the original.
 
-The original MUTOS 1700 ld (mutos_bin/ld.golden.base64.txt) runs under
+The original MUTOS 1700 ld (mutos/mutos_bin/ld.golden.base64.txt) runs under
 mutosemu.py; mutos_ld (src/mutos_ld/) runs on the host. Each gets the
 same command line in a copy of the same directory and the same MUTOS root
 (lib/crt0.o, lib/libc.a at its __.SYMDEF time, usr/lib/, tmp/, and any

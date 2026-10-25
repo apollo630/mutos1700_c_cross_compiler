@@ -1,7 +1,7 @@
 # mutos_cpp - MUTOS 1700 Cross C Preprocessor
 
 `mutos_cpp` is a port of the original MUTOS 1700 preprocessor
-(`mutos_bin/cpp.golden.base64.txt`): John F. Reiser's "fast cpp" of
+(`mutos/mutos_bin/cpp.golden.base64.txt`): John F. Reiser's "fast cpp" of
 Unix V7 in its SCCS versions `cpp.c 1.6 12/12/86` and `yylex.c 1.3
 12/12/86`. Every function of the binary was read instruction by
 instruction beside `v7/cpp/cpp.c`, `cpy.y` and `yylex.c` - the binary is

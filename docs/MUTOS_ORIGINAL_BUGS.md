@@ -1,8 +1,9 @@
 # Bugs of the original MUTOS 1700 tools
 
-This file collects every bug found in the original MUTOS 1700 binaries -
-`c0`, `c1`, `as`, `ld`, `cpp` and `libc.a`, and `c2`, `cc`, `make`, `ar` and
-`ranlib` as their ports read them (`docs/TOOLCHAIN_PLAN.md`) - in one place, for the day this project offers to fix them (a
+This file collects every bug found in the original MUTOS 1700 binaries
+(`mutos/mutos_bin/`) - `c0`, `c1`, `as`, `ld`, `cpp`, `cc`, `c2` and
+`libc.a`, and `make`, `ar` and `ranlib` as their ports read them
+(`docs/TOOLCHAIN_PLAN.md`) - in one place, for the day this project offers to fix them (a
 `mutos_*` option, say, that leaves the faithful default alone). Until then
 the project's tools reproduce the original's behaviour wherever it can be
 reproduced, bugs included, and refuse where it cannot (see each entry).
@@ -48,7 +49,7 @@ Last updated: 2026-10-25.
 | L-05 | `libc.a` `dmath.o` | `pmuld` takes one partial product from the wrong word: `dmul` not correctly rounded | golden, emulator | modelled (`as`) |
 | L-06 | `libc.a` `ldexp` | the exponent wraps silently | golden | modelled (`as`) |
 | L-07 | `libc.a` `atof` | 5\*\*k overflows from k = 55: valid constants below about 1e-38 raise SIGFPE | golden | reproduced (`as`), modelled (`c1`) |
-| AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g`/`-C` planned) |
+| AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g`/`-C` accepted, no effect) |
 | AS-02 | `as` | an unknown mnemonic (`insw`, `pusha`, `enter`, ...) assembled silently as a word with an undefined external | emulator | not reproduced (`mutos_as` knows the 80186 ones; planned: as the original without `-1`) |
 | AS-03 | `as` | the floating-overflow abort message prints garbage where a file name belongs | real hardware | not reproduced |
 | C0-01 | `c0` | folding `-32768 / -1`, `-32768 / 1` (or `%`) faults (8086 divide error) | emulator | refused |
@@ -412,7 +413,9 @@ up in the output, and into every MUTOS program. The text offsets are
   assembles as without it; `docs/MUTOS1700_Assembler_as.pdf` documents
   the option (`as [-LWDT] [-o <output>]`). So do the other three: `-W`
   (no error messages), `-D` and `-T` (debug and trace output) - each
-  gives "Unknown option ... ignored." too. The binary instead knows
+  gives "Unknown option ... ignored." too. The manual page as(1)
+  (`mutos/mutos_man/as.1.d`, 3/89) has `-L` and `-W` (`as [-LW] [-o
+  output] file ...`). The binary instead knows
   `-e` (only external symbols in the symbol table), `-g`, `-C` and `-l`
   (no effect seen yet; the original `cc` always passes `-gC`). Options
   are read letter by letter.
@@ -420,9 +423,9 @@ up in the output, and into every MUTOS program. The text offsets are
   experiment); emulator for the others (2026-10-20,
   `docs/devlog/originals_and_ports.md`).
 - **This project.** Nothing depends on `-L`. `mutos_as` implements `-W`
-  as the manual describes it; it is to accept `-g`/`-C`
-  (`docs/TOOLCHAIN_PLAN.md`, decision 9). What `-g`, `-C` and `-l` do is
-  to be read in the binary.
+  as the manual describes it; it accepts `-g` and `-C` and ignores them
+  (since 2026-10-20, `docs/TOOLCHAIN_PLAN.md`, decision 9). What `-g`,
+  `-C` and `-l` do is to be read in the binary.
 - **Fix idea.** Implement the manual's options, or correct the manual.
 
 ### AS-02 Unknown mnemonics become undefined symbols

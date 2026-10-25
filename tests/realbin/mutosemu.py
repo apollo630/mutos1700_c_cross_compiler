@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """mutosemu.py - run the real MUTOS 1700 binaries under an 8086 emulator.
 
-The original toolchain binaries live in ../../mutos_bin/ as base64 text
+The original toolchain binaries live in ../../mutos/mutos_bin/ as base64 text
 (<name>.golden.base64.txt: as, c0, c1, c2, cc, cpp, ld - stripped 0411 or
 0407 a.out files, see that directory). This module loads one of them -
 or any other MUTOS a.out - into Unicorn and runs it the way the MUTOS
@@ -65,7 +65,7 @@ and README.md.
 
 Usage:
     mutosemu.py [--cwd DIR] [--root DIR] [--max-insns N] [--pid N] TOOL [ARG...]
-        TOOL is a name in mutos_bin/ (c1, c0, cpp, as, ...) or a path to
+        TOOL is a name in mutos/mutos_bin/ (c1, c0, cpp, as, ...) or a path to
         an a.out file. Relative file names the program opens are resolved
         against --cwd (default: the current directory), absolute ones
         (/usr/include/stdio.h) under --root if given, else as they are.
@@ -96,7 +96,7 @@ from unicorn.x86_const import (UC_X86_REG_AX, UC_X86_REG_BX, UC_X86_REG_CX,
                                UC_X86_REG_SS, UC_X86_REG_EFLAGS)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BIN_DIR = os.path.normpath(os.path.join(HERE, '..', '..', 'mutos_bin'))
+BIN_DIR = os.path.normpath(os.path.join(HERE, '..', '..', 'mutos', 'mutos_bin'))
 
 CSEG = 0x1000          # paragraph of the code segment
 DSEG = 0x2000          # paragraph of the data/stack segment

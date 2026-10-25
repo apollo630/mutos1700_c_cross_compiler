@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c2cmp.py - mutos_c2, the port of the real c2, against the original.
 
-The original MUTOS 1700 c2 (mutos_bin/c2.golden.base64.txt) runs under
+The original MUTOS 1700 c2 (mutos/mutos_bin/c2.golden.base64.txt) runs under
 mutosemu.py; mutos_c2 (src/mutos_cc/c2port/) runs on the host. Both get
 the same command line in two copies of the same directory - the input,
 and an output file named second (as cc runs it: "c2 tmp5 tmp3"), or

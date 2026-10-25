@@ -15,7 +15,7 @@ switched on 2026-10-18 (section 5).
 
 ## 1. What was ported
 
-The original `c0` (`mutos_bin/c0.golden.base64.txt`, 0411, text 23,168
+The original `c0` (`mutos/mutos_bin/c0.golden.base64.txt`, 0411, text 23,168
 bytes, stripped) is v7's `c0` compiled for the 8086: `crt0`, then 73
 functions in exactly v7's source order (`c00.c` .. `c04.c` - v7's 72 and one
 new), then `libc.a` from text `4a1e`. `tests/realbin/c0map.txt` lists every

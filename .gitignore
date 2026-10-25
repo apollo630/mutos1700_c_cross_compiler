@@ -3,7 +3,8 @@
 # Scoped on purpose: nothing here may hide reference data. The real
 # hardware references are *.o.golden, *.golden.base64.txt and the
 # base64 text in tests/mutos1700_crt0/, tests/mutos1700_libc/ and
-# mutos_bin/ - no pattern below matches them (Workflow Guideline 2).
+# mutos/mutos_bin/, and every other original file under mutos/ (headers,
+# manual pages) - no pattern below matches them (Workflow Guideline 2).
 
 # The MUTOS root, made by scripts/mutos_root.sh, removed by "make clean"
 # (docs/TOOLCHAIN_PLAN.md, decision 3)

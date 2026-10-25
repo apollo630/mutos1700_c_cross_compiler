@@ -2,7 +2,7 @@
  * cc.h - the MUTOS 1700 C compiler driver, ported from the original binary.
  *
  * This is v7's cc (v7/cc/cc.c) as the original MUTOS 1700 binary has it
- * (mutos_bin/cc.golden.base64.txt, 0407, text 8,026 bytes, stripped of
+ * (mutos/mutos_bin/cc.golden.base64.txt, 0407, text 8,026 bytes, stripped of
  * its symbols). The port follows the method of the c0, c1, cpp and ld
  * ports (docs/C0_PORT_PLAN.md): the binary is the specification, v7's
  * source the skeleton. tests/realbin/ccmap.txt maps every function to its

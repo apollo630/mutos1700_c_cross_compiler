@@ -23,7 +23,7 @@ differential fuzzer for `mutos_as` and the switch `-1`, is next.
 | `mutos_as` | re-implementation, 80186/V30 opcodes always on; takes `-g`/`-C` (step 0) | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof` |
 | `mutos_ld` | port of the original `ld` (2026-10-22; until then a port of v7's `ld.c` with the MUTOS deltas known then), `-r`/`-d` an extension | the emulated original: every compiled golden linked with a matrix of options, hand-written cases, differential fuzzing (its own goldens `myhello`/`idhello` are missing from the tree); the extension by running programs linked through `-r` |
 | `mutos_cc` | port of the original `cc` (2026-10-24) | the emulated original, its passes traced: a matrix of command lines, the corpus with the original passes run in both, the ported chain against the original chain and the goldens, differential fuzzing |
-| `ar`, `ranlib`, `make` | missing | - |
+| `ar`, `ranlib`, `make` | not ported; the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
 
 The originals run under `tests/realbin/mutosemu.py`: `cpp`, `c0`, `c1`,
 `as` since 2026-10-12, and on 2026-10-20 also `c2`, `ld` and - with
@@ -55,7 +55,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
    | `lib/libc.a` | decoded from `tests/mutos1700_libc/libc.a.base64.txt` as it is (not re-archived from the 167 objects), its modification time set to its `__.SYMDEF` time, 1989-01-31 20:41:17 UTC, so that `ld` uses the table without "out of date" |
    | `lib/cpp`, `lib/c0`, `lib/c1`, `lib/c2`, `bin/as`, `bin/ld`, `bin/cc` | symbolic links to `mutos_cpp`, `mutos_c0`, ... - the passes are found through the root, so the driver maps each of the original's paths one to one, and `-B`/`-t` keep their meaning |
    | `usr/lib/` | empty: for the user's own libraries |
-   | `usr/include/` | the headers, once there are any |
+   | `usr/include/` | empty: the original headers are in the tree since 2026-10-25 (`mutos/mutos_include/usr/include/`), not in the root yet (section 6) |
    | `tmp/` | the temporary files the originals name under `/tmp` (`ld`'s `/tmp/ldaXXXXXX`, `cc`'s `/tmp/ctm...`) - added with step 2 (2026-10-22) |
 
    `make install` comes later.
@@ -121,7 +121,16 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 11. **Binaries and manual pages from the hardware**: the project owner
     brings `make`, `ar`, `ranlib` (and `lorder`, `tsort`, `nm`, `size`,
     `strip` as makefiles need them) into `mutos_bin/`, and the MUTOS `make`
-    manual page as reference material (`docs/mutos_man/make_1.d`).
+    manual page as reference material. **Done 2026-10-25 but for the
+    `make` page**: every original file is under `mutos/` since - the eight
+    tools (`lorder` a shell script) with `ed` and `em` in
+    `mutos/mutos_bin/`, the manual pages of all but `make` (and `as`, `cc`,
+    `ld`, `ed`, `a.out(5)`, `ar(5)`, `types(5)`, `filsys(5)`) in
+    `mutos/mutos_man/`, the original headers in `mutos/mutos_include/`; v7's
+    sources of `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort` and
+    `ed` in `v7/`. What they showed: `docs/devlog/originals_and_ports.md`,
+    "The originals of 2026-10-25" - among it that the original `make`'s
+    built-in rules and macros are v7's `builtin[]`, string for string.
 12. **Manual pages** (`man/`) are written at the end of the project; the
     existing ones stay as they are until then, also where they no longer
     describe the tools. Requirements: English, no development details,
@@ -197,9 +206,10 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   input, one `mktemp()` for the temporary files -, and six bugs
   (`docs/MUTOS_ORIGINAL_BUGS.md`, CC-01 to CC-06).
 - **`as`**: options `-o`, `-e`, `-g`, `-C`, `-l`; the manual's `-L`,
-  `-W`, `-D`, `-T` unknown to the binary; the 8087 set in its table, no
-  80186 mnemonic; an unknown mnemonic assembles silently as a word with
-  an undefined external.
+  `-W`, `-D`, `-T` (`docs/MUTOS1700_Assembler_as.pdf`; the manual page
+  `mutos/mutos_man/as.1.d` names `-L` and `-W`) unknown to the binary;
+  the 8087 set in its table, no 80186 mnemonic; an unknown mnemonic
+  assembles silently as a word with an undefined external.
 - **`c2`**: gives `kernel_opt/`'s nine kernel sources from the
   `11_kernel` `.s` goldens byte for byte. Read in full for its port
   (2026-10-25): v7's `c2` (`tests/realbin/c2map.txt`) with `c21.c`'s
@@ -220,5 +230,14 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   (`cc`'s "Executing ..." messages: its option `-a`, read with step 3.)
 - Whether `cc -o name.o` writing `name` is meant (listed as suspect in
   `docs/MUTOS_ORIGINAL_BUGS.md`).
-- What `c0f`, `c1f`, `asf` and `libf.a` are (probably the passes for
-  8087 code): not on hand; `-f` fails until they are.
+- `c0f`, `c1f`, `asf` and `libf.a`: the compiler passes, the assembler
+  and the library for 8087 (K 1810 WM 87) code, as `cc.1.d` and
+  `as.1.d` in `mutos/mutos_man/` say (2026-10-25; until then only
+  presumed). Not on hand; `-f` fails until they are.
+- How the MUTOS root gets the headers (2026-10-25): its `usr/include/`
+  is empty, so `mutos_cc -c` on a source with `#include <stdio.h>` stops
+  with `Can't find include file stdio.h`. The originals are in
+  `mutos/mutos_include/usr/include/`; whether `scripts/mutos_root.sh`
+  copies them into the root (or links them) is to be decided.
+- The MUTOS `make` manual page (decision 11): not in `mutos/mutos_man/`
+  yet.

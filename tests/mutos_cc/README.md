@@ -33,7 +33,8 @@ the deliverable is the generated **assembly text**, not an executable.
 **Every directory and file name is ≤14 characters, including the
 extension.** This is not an arbitrary style choice: it is MUTOS 1700's real
 filesystem limit, inherited unmodified from V7 Unix —
-`tests/mutos_cpp/h/dir.h` / `h/param.h` in the main repo both define
+`tests/mutos_cpp/h/dir.h` / `h/param.h` in the main repo (copies of the
+original headers in `mutos/mutos_include/`) both define
 `DIRSIZ 14` (`char d_name[DIRSIZ]`). A real V7 filesystem doesn't reject an
 over-length name, it **silently truncates** it — two files whose first 14
 characters collide would clobber each other on the real hardware without

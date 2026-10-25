@@ -1,7 +1,7 @@
 # mutos_ld - MUTOS 1700 Cross Linker
 
 `mutos_ld` is a port of the original MUTOS 1700 link editor
-(`mutos_bin/ld.golden.base64.txt`): Unix V7's `ld` with the MUTOS
+(`mutos/mutos_bin/ld.golden.base64.txt`): Unix V7's `ld` with the MUTOS
 deltas for the 8086. Every function of the binary was read instruction by
 instruction beside `v7/ld/ld.c` - the binary is the specification, v7's
 source the skeleton - and the port does what the binary does, its bugs
