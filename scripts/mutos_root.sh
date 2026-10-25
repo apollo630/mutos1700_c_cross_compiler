@@ -23,7 +23,10 @@
 #                  running it fails as on a MUTOS system without the file
 #   usr/lib/       empty: for the user's own libraries (ld -lX looks in
 #                  lib/, then usr/lib/)
-#   usr/include/   the headers, once there are any (empty for now)
+#   usr/include/   the original headers: mutos/mutos_include/usr/include/
+#                  copied as it is, sys/ and local/ included (since
+#                  2026-10-25) - a file the source tree does not have
+#                  is left alone
 #   tmp/           the temporary files: ld's /tmp/ldaXXXXXX (created and
 #                  unlinked at once, opened), later cc's /tmp/ctm...
 #
@@ -35,7 +38,7 @@
 # nothing but libc.a's time if something reset it.
 #
 # Usage: scripts/mutos_root.sh [ROOT]     (default: <tree>/mutos_root)
-# Needs: sh, base64 (-d), cmp, ln, touch (-t, POSIX).
+# Needs: sh, base64 (-d), cmp, cp, find, ln, touch (-t, POSIX).
 
 set -e
 
@@ -61,6 +64,25 @@ decode "$top/tests/mutos1700_crt0/crt0.o.base64.txt" "$root/lib/crt0.o"
 decode "$top/tests/mutos1700_libc/libc.a.base64.txt" "$root/lib/libc.a"
 # libc.a's __.SYMDEF time (602282477), as POSIX touch takes it
 TZ=UTC0 touch -t 198901312041.17 "$root/lib/libc.a"
+
+# the original headers, file for file; one line for those copied
+inc=$top/mutos/mutos_include/usr/include
+headers=$(cd "$inc" && find . -type f | sort)
+n=0
+while read -r f; do
+    f=${f#./}
+    d=$(dirname "$root/usr/include/$f")
+    [ -d "$d" ] || mkdir -p "$d"
+    if ! cmp -s "$inc/$f" "$root/usr/include/$f"; then
+        cp "$inc/$f" "$root/usr/include/$f"
+        n=$((n + 1))
+    fi
+done <<HEADERS
+$headers
+HEADERS
+if [ "$n" -gt 0 ]; then
+    echo "mutos_root: $root/usr/include: $n header(s) from mutos/mutos_include/usr/include"
+fi
 
 # the passes and tools: MUTOS path, then the tool under src/
 if [ "$root" = "$top/mutos_root" ]; then

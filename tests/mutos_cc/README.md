@@ -360,5 +360,9 @@ real MUTOS 1700 hardware plus a modern Linux host - first for the
 `00_smoke` category, since then for every category, `11_kernel` and the
 fourteen `fltprobe` rounds - with no remaining tooling errors. On the host,
 `make -f Makefile.mutos CC=$MUTOS_ROOT/bin/cc CPP=$MUTOS_ROOT/lib/cpp
-C0=$MUTOS_ROOT/lib/c0` will run the same recipes through this project's tools once the MUTOS root
-and the driver exist (`docs/TOOLCHAIN_PLAN.md`, steps 0 and 3).
+C0=$MUTOS_ROOT/lib/c0` runs the same recipes through this project's tools
+(`docs/TOOLCHAIN_PLAN.md`, decision 10): all thirteen `Makefile.mutos`
+give every `.s`, `.i`, `.1` and `.2` golden but `fltprobe/p19_open3.s`,
+which `mutos_c1` refuses as `invalid_goldens.txt` says (2026-10-25).
+`fltprobe`'s needs `make -i`, since its probes in `c1_errors.txt` end with
+`c1`'s messages and exit status 1, as on the hardware.

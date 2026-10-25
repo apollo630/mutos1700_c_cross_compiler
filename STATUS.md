@@ -23,10 +23,9 @@ A repo-root `Makefile` builds every component - through each one's own
 since 2026-10-25) - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
-`src/`, `usr/lib/`, `usr/include/` - empty: the original headers, in the tree since
-2026-10-25 (`mutos/mutos_include/`), are not in the root yet, so `#include <stdio.h>`
-is not found (`docs/TOOLCHAIN_PLAN.md`, section 6) -, and since 2026-10-22 `tmp/`;
-`make clean` removes it). Every component is
+`src/`, `usr/lib/`, `usr/include/` - since 2026-10-25 the original headers, copied from
+`mutos/mutos_include/usr/include/` -, and since 2026-10-22 `tmp/`; `make clean` removes
+it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
 `src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
 use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
@@ -83,6 +82,19 @@ the binary not found. On a copy of the tree with the change: `make clean && make
 with zero warnings, `make test` - its output the same as before, line for line -,
 `make check-realbin` (all checks passed, no difference against the originals),
 `make check-libcatof`,
+`make check-docs`.
+
+Verified 2026-10-25 with the headers in the root: `scripts/mutos_root.sh` copies
+`mutos/mutos_include/usr/include/` (73 files, `sys/` and `local/` included) into the
+root's `usr/include/`, a file only when it differs; `tests/mutos_root/check_root.py`
+checks them byte for byte and has `mutos_cc` compile and link a program with
+`<stdio.h>`, `<sys/types.h>` and `<sys/stat.h>` through the root - with `--realbin` it
+runs under the emulator and prints `hello, 512 30` (`BUFSIZ`, a 30-byte `struct stat`).
+The original chain, the emulated `cc` running the original passes with the same headers
+in its root (`tests/realbin/cctrace.py --run`), gives that program's `a.out` byte for
+byte. On a copy of the tree: `make clean && make all` with zero warnings, `make test` -
+its output as before, line for line, plus `check_root.py`'s three new lines -, `make
+check-realbin` (the same, line for line, plus the new lines), `make check-libcatof`,
 `make check-docs`.
 
 ---
@@ -345,7 +357,8 @@ how it went: `docs/devlog/originals_and_ports.md`, "The port of `cpp`".
   quote); an `#include` that opens a directory; a `#if` division by 0 or of -32768 by
   +-1 (the 8086's `idiv` faults). The port keeps the original's stack pointer, so those
   frames are where the original's are (under the emulator's layout of the arguments).
-- **The original's bugs**: CPP-01 to CPP-13 in `docs/MUTOS_ORIGINAL_BUGS.md`, each with
+- **The original's bugs**: CPP-01 to CPP-14 (CPP-14 found 2026-10-25) in
+  `docs/MUTOS_ORIGINAL_BUGS.md`, each with
   a trigger run under the emulator - among them a miscompiled octal character constant
   in `#if` (CPP-01, the compiler reused a register), eight `-I` options switching `-P`
   off (CPP-03), actuals over 512 bytes running over `subst()`'s frame (CPP-05,
@@ -423,8 +436,13 @@ original's behaviour, the image, the paths and what the port refuses:
   Milestone 5). `make test`'s
   `tests/mutos_cc/check_driver.py` (no emulator): `cc -S` 131/131 and 1 refused,
   `cc -P` 132/132, `cc -o` on the construct corpus 62/62. The corpus's
-  `Makefile.mutos` files with the host's `make` and the root's tools: all twelve,
-  every `.s` and `.1` the golden.
+  `Makefile.mutos` files with the host's `make` and the root's tools (re-run
+  2026-10-25): all thirteen - the eleven categories', `11_kernel`'s and `fltprobe`'s -,
+  527 of their 528 `.s`, `.i`, `.1` and `.2` files the golden; the one that is not,
+  `fltprobe/p19_open3.s`, `mutos_c1` refuses as `invalid_goldens.txt` says.
+  `fltprobe`'s runs with `make -i`: its ten probes in `c1_errors.txt` end with `c1`'s
+  messages and exit status 1, as on the hardware (on 2026-10-24 the twelve others were
+  run).
 - **Differential fuzzing** (`tests/realbin/ccfuzz.py`, the passes traced): 6,000
   cases - 1,000 with seed 1 (985 the same, 15 refused) and 5,000 with seed 2 (4,949
   the same, 51 refused) -, no difference; every refusal is CC-01. An ASan/UBSan
@@ -785,8 +803,14 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    Every pass `mutos_cc` runs is a port of the original now.
 5. **`mutos_as`**: differential fuzzer against the original, the `-1` switch for the
    80186 instructions; then the decision on a port. **Next.**
-6. **MUTOS makefiles**: ports of `ar` and `ranlib`, the `mutos_make` wrapper (the
-   originals in `mutos/mutos_bin/` since 2026-10-25, see "Further tools" below).
+6. **Ports of `ar` and `ranlib`**, `bin/` in the root for the new tools.
+7. **Port of `make`** (decided 2026-10-25 in place of the wrapper `mutos_make` of
+   2026-10-20).
+8. **Ports of `nm`, `size`, `strip`, `tsort`**, and `lorder`.
+9. **Ports of `ed` and `em`.**
+
+Steps 6 to 9 are Milestone 6 (below); their originals are in `mutos/mutos_bin/` since
+2026-10-25, the order was proposed that day.
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
 the limits it had for `c1_gen.c`'s sake (no constant divisor, no `x = y;`, simple
@@ -887,27 +911,28 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 
 ---
 
-## Further tools — `ar`, `ranlib`, MUTOS makefiles
+## Milestone 6 — `make`, `ar`, `ranlib` and the other MUTOS tools
 
-**Status: NOT STARTED** (`docs/TOOLCHAIN_PLAN.md`, decision 10 and step 6).
-MUTOS-compatible makefiles are to run on the host through a wrapper `mutos_make`
-around the host's `make` (built-in rules off, the MUTOS `make`'s own rules and
-macros, `$MUTOS_ROOT/bin` first in `PATH`); `ar` and `ranlib` are to be ported from
-their binaries.
+**Status: NOT STARTED** (`docs/TOOLCHAIN_PLAN.md`, decision 10, steps 6 to 9).
+**Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
+wrapper `mutos_make` around the host's `make`, planned on 2026-10-20, is dropped -, and
+so are all the other binaries brought from the hardware that day: `ar`, `ranlib`,
+`nm`, `size`, `strip`, `tsort`, the editors `ed` and `em`, and the shell script
+`lorder`. The executables: `mutos_make`, `mutos_ar`, `mutos_ranlib`, `mutos_nm`,
+`mutos_size`, `mutos_strip`, `mutos_tsort`, `mutos_lorder`, `mutos_ed`, `mutos_em`.
 
-The material is in the tree since 2026-10-25 (decision 11): the binaries `make`,
-`ar`, `ranlib`, `nm`, `size`, `strip`, `tsort` and the shell script `lorder`
-(`mutos/mutos_bin/`, headers in its `README.md`), their manual pages but `make`'s
-(`mutos/mutos_man/`, German), the original headers (`mutos/mutos_include/`) and v7's
-sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`, `v7/strip/`,
-`v7/tsort/`; their header copies are partly v7's, not MUTOS's). Still missing: the
-MUTOS `make` manual page. Read so far (2026-10-25, from the binary's strings, not its
+The material is in the tree since 2026-10-25 (decision 11): the binaries
+(`mutos/mutos_bin/`, headers in its `README.md`), their manual pages, `make.1.d`
+included (`mutos/mutos_man/`, German), the original headers (`mutos/mutos_include/`)
+and v7's sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`,
+`v7/strip/`, `v7/tsort/`, `v7/ed/`; their header copies are partly v7's, not MUTOS's;
+`em` has no v7 source). Read so far (2026-10-25, from the binary's strings, not its
 code): the original `make`'s built-in rules and macros are v7's `builtin[]`
-(`v7/make/files.c`, `AS=as -`) string for string - the rules file of the wrapper. None
-of these binaries runs under `tests/realbin/` yet. What the real `make` is known to
-do and not do on the hardware is in `docs/devlog/m4_foundations.md`, "MUTOS 1700
-host-tooling findings"; what the new files showed in
-`docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
+(`v7/make/files.c`, `AS=as -`) string for string; `make.1.d` gives another default
+suffix list than the binary has (v7's manual's). None of these binaries runs under `tests/realbin/`
+yet. What the real `make` is known to do and not do on the hardware is in
+`docs/devlog/m4_foundations.md`, "MUTOS 1700 host-tooling findings"; what the new
+files showed in `docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
 
 ---
 
