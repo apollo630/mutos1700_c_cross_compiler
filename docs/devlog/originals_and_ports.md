@@ -1,6 +1,6 @@
-# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld` and `cc`
+# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc` and `c2`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), and the ports of `cpp` and `ld` (2026-10-22).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25).
 
 ---
 
@@ -1096,3 +1096,138 @@ characters into the next block's header, and the next `malloc()` follows them. T
 cases at the exact limit (`ts[]` filled to `tsa + 1000`, where the original takes no
 new block) now tell the faithful port from a mutant comparing `<=`. Every mutant
 that can change what `cc` does is found; the four that are not cannot.
+
+## The port of `c2` (2026-10-25)
+
+Step 4 of `docs/TOOLCHAIN_PLAN.md`: `mutos_c2`, missing until then, is a port of
+the original `c2`, by the method of the earlier ports, for the 8086 only (decision
+7). `src/mutos_cc/README.md` ("The port of the real `c2`") has the result; this is
+how it went and what the binary held.
+
+### `c2` is v7's `c2`, rewritten for the 8086
+
+The binary (0411, text 17,792 bytes, data 1,476, BSS 2,908) is stripped. Its order
+is v7's: crt0, then `c20.o` - v7's `c20.c` in source order, `reducelit()` gone -,
+then `c21.o` - v7's `c21.c` in source order, with `toofar()` taking `ilen()` and
+`adrlen()` in, `shortbr()` in `addsob()`'s place, `convreg()` and `bytereg()` new
+after `isreg()`, `source()` and `setcc()` gone, and nine new functions after
+`natural()` -, then libc.a from text 3484. Each function was found by the strings it
+passes, the calls it makes and its place, and compared with v7's instruction by
+instruction (`tests/realbin/c2map.txt`: every function's status - same, delta,
+rewritten for the 8086, new - with its deltas; `c2dis.py` disassembles one by name).
+The data hold the opcode table (64 entries in the MUTOS assembler's spelling, read
+by `c2tables.py --optab`), `revbr[]`, the strings and libc.a's stdio; the BSS
+`line[]`, the list's head, the counters, `regs[14][32]`, the opcode hash table, the
+stdio buffers and the static buffers of `oplook()`, `refcount()` and `repladdr()`.
+
+What is v7's and what is new:
+
+- **c20.o** is v7's almost unchanged: the opcodes are the 8086's (`jmp` read as
+  `br`, the short `j`, `je` .. `jae` read as `br` and the conditional branches,
+  `loop` a branch), `ret` ends a block as `br` does, `.bss` stops the deletion of
+  unreachable code, a branch redirected to another label takes its code (a target
+  that is no `L` label) with its number, `getline()` drops an empty line after a
+  line, and `main()`'s loop runs the new passes - `pushopt()` after `rmove()`,
+  `indexopt()`, `simplify()` and `shortbr()` before `output()` - with `nreg` set to
+  3 for each chunk and lowered by its `|NREG n` lines.
+- **c21.o** keeps v7's frame and rewrites what knows the machine: `rmove()` (a jump
+  table over the 60 ops), `dest()`, `savereg()`, `dualop()` in the MUTOS operand
+  order `op dst,src` (the destination into `regs[13]`, the source into `regs[12]`),
+  `findrand()` over all twelve entries, `isreg()` on two characters, `repladdr()`,
+  `findcon()`/`compare()`/`setcon()` on `*n.` constants, `redunbr()`, `toofar()`
+  measuring the distance in bytes from the instructions' text. `setcc()` is gone,
+  so `ccloc` is only ever cleared (C2-04).
+- **New**: `pushopt()` with `regmask()` (each node's registers read and written, two
+  mask bytes that make the node 16 bytes, then carried back along the branches),
+  `renback()`, `renfwd()`, `pinned()` and `renreg()` - a register renamed backwards
+  or forwards to remove a `mov` between two, `mov r,x` / `push r` to `push x`,
+  `push x` .. `pop r` to `mov r,x` -; `indexopt()` and `addindex()` (`add si,bx`
+  before `(si)` gives `(si)(bx)`), `simplify()` (`mov r,*0.` to `sub r,r`, `cmp
+  r,*0.` to `test r,r`, `and ax,#255.` to `subb ah,ah`) and `shortbr()`, the long
+  branches whose label is near enough made short. With them come the four counters
+  the oracle notes of 2026-10-20 had seen: "mov/push converted to push" (never
+  incremented: C2-02), "pop/push converted to mov", "ors -> tests" (`rmove()`'s `or
+  r,r`) and "long branches to short".
+
+### A memory image, libc.a's stdio in it
+
+As for the other ports, the port runs on an image of the original's data segment:
+every global at its address, the nodes in the heap from the original's break (1120),
+16-bit pointers, signed chars, little-endian words at any address. `c2` needs it:
+`dualop()` copies operands into `regs[]` without a check, `oplook()` the first token
+into `tmpop[32]`, `repladdr()` into `rt1[50]` and `rt2[50]` (C2-03) - a long
+destination runs over the opcode hash table, `repladdr()`'s copies over libc.a's
+buffers into the nodes. Unlike `cc`, whose stdout is unbuffered, `c2` writes through
+libc.a's buffered stdio with its buffers in the BSS, so libc.a's stdio - `getc()`,
+`ungetc()`, `_filbuf()`, `_flsbuf()`, `printf()` through `_doprnt()`, `fflush()`,
+`fclose()`, `freopen()`, `exit()`'s `_cleanup()` - runs on the image as well, the
+FILE structures and `_sibuf`/`_sobuf` at their addresses; only the system calls are
+the host's.
+
+The first fuzz cases showed one more piece of the segment the image needs: crt0's
+words below the data. A node pointer that is null is the "node" at address 0, and
+`decref()` of it unlinks that node - it writes the word at 4 (crt0's code segment,
+0x1000 under the emulator) into the word at 8, the far pointer every system call
+goes through. The first version refused any write there; but the value written is
+the value already there, on the hardware as under the emulator, so crt0's words are
+memory now, and a system call is refused only when its far pointer has really
+changed (`check_farptr()`). The same null node is how C2-06 changes `optab[0]`'s
+opcode and how C2-07 links a label before the list's head.
+
+### Checked by plain comparison
+
+The comparison is the earlier ports': `tests/realbin/c2cmp.py` runs both on the same
+command line and compares the output, the messages and the exit status;
+`c2fuzz.py` feeds them random input. From the first complete build the nine
+`11_kernel` outputs were `kernel_opt/`'s, and all 132 `.s` goldens three ways
+(`c2 in out`, `c2 - in out` with the statistics, `c2 <in >out`) 396/396 the
+original's. The fuzzer has three generators - the real compiler's output for
+`c1fuzz.py`'s and `fuzz_c.py`'s programs, through the ported chain, and assembly in
+`c1`'s style written to reach every pass (register moves to rename, `push`/`pop`
+pairs, `add si,bx` before `(si)`, constants compared, branches near and far, jumps
+to jumps, unreachable code, several functions in one file) - and a mutator that
+damages either (long operands and first tokens over the fixed buffers, odd bytes,
+lines deleted or doubled, branches to undefined labels or to code, empty lines). A
+coverage build of the port (gcov) over the goldens and generated cases ran 98 % of
+`c20.c`'s lines and 97 % of `c21.c`'s; the assembly generator was extended for the
+shapes it had missed (byte instructions, the index patterns, `xchg` with memory, `mov
+sp`, shifts of indexed memory), and most of what stays unrun is code the binary has
+but cannot reach (`check()`, which nothing calls, a `movb` case after `movb` has
+cleared everything).
+
+The damaged input found the original's endless loops. One single line, `mov` without
+an operand, keeps the original busy for ever: the destination is empty, every
+register's entry is empty at the start, and `dest()` clears the entry it found -
+which stays empty and is found again (C2-01, together with the case the MUTOS
+`findrand()` brought in: a destination equal to a register's constant clears the
+register, not the constant). The port first looped as well, which the comparison
+accepts (both stopped by the limits) but a user would not; it now refuses where the
+entry it has just cleared still matches. The other loop, C2-07, came from the
+hand-written cases: a label alone on its line leaves an empty line behind it - a
+node with op 0 and no code, as the list's head has -, and `xjump()`, comparing
+backwards from a jump and its target, takes the two for equal; the label it inserts
+before the head is never written, and with two such labels the list becomes a circle
+that `iterate()` deletes from for ever. The port refuses once it has deleted more
+nodes after one branch than the data segment can hold. Two of the first bug cases
+did not show their bug: the jump to an undefined label (C2-06) had an empty line
+between its label and the `br` - the same empty-line node - so `nonlab()` never
+found the `br`, and the `lea` into memory (C2-05) cleared the low byte of a counter
+that was 0 anyway; both cases were rewritten until the original showed the effect
+(`je` for a later `br`, `0 redundant jumps` for 1).
+
+The numbers of 2026-10-25 (details in `STATUS.md`, Milestone 5): `goldens`
+396/396 the same and `kernel_opt/` 9/9; `cases` 66 - 59 the same, 6 where the
+original never ends and the port refuses, 1 refused (a directory as the input); the
+fuzzer 1,100 cases of the real compiler's output for `c1fuzz.py`'s programs, 600 for
+`fuzz_c.py`'s, 2,100 of generated assembly and 600 damaged ones, without a
+difference. Most damaged cases the port refuses are C2-03's: an operand long enough
+to write over the opcode hash table leaves the original looking up later lines
+through pointers made of characters - into memory past its break, which the port
+does not model, or round the table for ever. An ASan/UBSan build of the port ran the
+goldens and 2,400 generated cases without a report. `make check-realbin` with the new
+checks took 66 minutes on two cores, `c2`'s part about 12 of them.
+
+With `mutos_c2` the whole chain is ported: `mutos_cc -O -S` gives `kernel_opt/`'s
+nine sources from `11_kernel` (`tests/mutos_cc/check_driver.py`, in `make test`
+since), and `tests/realbin/cccmp.py`'s `goldens` and `programs` run `mutos_c2` where
+they ran the emulated original `c2` before.

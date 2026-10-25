@@ -29,10 +29,15 @@
 # generated from the binary by tests/realbin/cctables.py --c and checked
 # in. It finds its passes through the MUTOS root ($MUTOS_ROOT/lib/c0, ...).
 #
-# See README.md and STATUS.md for the currently-verified results.
+# mutos_c2 (the optimizer that "cc -O" runs between c1 and as) is a port
+# of the original MUTOS 1700 c2 - v7's c2 rewritten for the 8086, with
+# passes of its own - read from its binary (c2port/, docs/TOOLCHAIN_PLAN.md,
+# step 4) and checked against the original run under an 8086 emulator
+# ("make check-realbin", tests/realbin/c2cmp.py). c2port/c2data.c, the
+# original's initialized data segment, is generated from the binary by
+# tests/realbin/c2tables.py --c and checked in.
 #
-# mutos_c2 (the peephole optimizer, Milestone 5) is not yet part of this
-# Makefile - see docs/TOOLCHAIN_PLAN.md, step 4.
+# See README.md and STATUS.md for the currently-verified results.
 
 CC      = cc
 # The MUTOS root's compiled-in default for src/h/mutos_root.h
@@ -51,6 +56,11 @@ C0_SRCS = c0port/c00.c c0port/c01.c c0port/c02.c c0port/c03.c \
 C0_OBJS = $(C0_SRCS:.c=.o)
 C0_TARGET = mutos_c0
 
+C2_SRCS = c2port/main.c c2port/c20.c c2port/c21.c c2port/c2lib.c \
+          c2port/c2data.c
+C2_OBJS = $(C2_SRCS:.c=.o)
+C2_TARGET = mutos_c2
+
 C1_PORT = c1port/c10.c c1port/c11.c c1port/c12.c c1port/c1tab.c c1port/c1lib.c
 # c1_fltdec.c: libc.a's ecvt() for c1's "%.17e"; mutos_as's
 # floating-constant conversion (libc.a's atof(), exactly) compiled in as
@@ -65,7 +75,7 @@ C1_TARGET = mutos_c1
 # check-libcatof" (tests/mutos_as/float_coverage/libcatof.py ecvt).
 FLTDEC_TEST = fltdec_test
 
-all: $(CC_TARGET) $(C0_TARGET) $(C1_TARGET) $(FLTDEC_TEST)
+all: $(CC_TARGET) $(C0_TARGET) $(C1_TARGET) $(C2_TARGET) $(FLTDEC_TEST)
 
 $(CC_TARGET): $(CC_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(CC_OBJS)
@@ -79,10 +89,14 @@ $(C0_TARGET): $(C0_OBJS)
 $(C1_TARGET): $(C1_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(C1_OBJS)
 
+$(C2_TARGET): $(C2_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(C2_OBJS)
+
 $(CC_OBJS): ccport/cc.h
 ccport/cclib.o: ../h/mutos_root.h
 $(C0_OBJS): c0port/c0.h
 $(C1_PORT:.c=.o): c1port/c1.h
+$(C2_OBJS): c2port/c2.h
 c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
 c1_fltdec.o: c1_fltdec.c c1_fltdec.h ../mutos_as/fltconst.h
 fltdec_test.o: fltdec_test.c c1_fltdec.h
@@ -95,6 +109,7 @@ c1_fltconst.o: $(FLTCONST) ../mutos_as/fltconst.h
 clean:
 	rm -f $(CC_OBJS) $(CC_TARGET) \
 	      $(C0_OBJS) $(C1_OBJS) $(C0_TARGET) $(C1_TARGET) \
+	      $(C2_OBJS) $(C2_TARGET) \
 	      fltdec_test.o $(FLTDEC_TEST)
 
 .PHONY: all clean

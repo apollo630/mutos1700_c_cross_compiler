@@ -1,4 +1,4 @@
-# mutos_cc / mutos_c0 / mutos_c1 - MUTOS 1700 Cross C Compiler (Milestone 4)
+# mutos_cc / mutos_c0 / mutos_c1 / mutos_c2 - MUTOS 1700 Cross C Compiler (Milestones 4 and 5)
 
 `mutos_cc`, the driver that runs the passes, is since 2026-10-24 a
 **port of the original MUTOS 1700 `cc`** - v7's `cc` with the MUTOS
@@ -50,10 +50,18 @@ and `p19_open3` up to the real compiler's own invalid output, which
 refusal of either port - where the original traps or reads state the port
 does not model - apart from a mismatch, never as a silent wrong output).
 
-The optimizer `mutos_c2` is not written yet; it is to be a port of the
-original binary (`../../docs/TOOLCHAIN_PLAN.md`), see "Next steps". Until
-then `mutos_cc -O` says `Can't find /lib/c2` and assembles `c1`'s output
-unoptimized, as the original does without `/lib/c2`.
+`mutos_c2`, the optimizer `cc -O` runs between `c1` and `as`, is since
+2026-10-25 a **port of the original MUTOS 1700 `c2`** - v7's `c2`,
+rewritten for the 8086 and the MUTOS assembler, with passes of its own -
+read from its binary (`c2port/`, `../../docs/TOOLCHAIN_PLAN.md`, step 4):
+v7's functions with the binary's deltas and the new ones, run on an image
+of the original's data segment, its initialized data generated from the
+binary. It is checked against the original itself, run under an 8086
+emulator, on every `.s` golden and on random input, and gives
+`tests/mutos_as/kernel_opt/`'s optimized kernel sources byte for byte -
+see "The port of the real `c2`" below. Until then `mutos_cc -O` said
+`Can't find /lib/c2` and assembled `c1`'s output unoptimized, as the
+original does without `/lib/c2`.
 
 ## The `temp1`/`temp2` wire format
 
@@ -345,7 +353,8 @@ marked. The passes run as real host processes (`fork()`, `execv()`,
 `wait()`) with `MUTOS_ROOT` set to `cc`'s root in their environment. In
 the build tree's root `lib/cpp`, `lib/c0`, `lib/c1`, `bin/as`, `bin/ld`
 are symbolic links to `mutos_cpp`, `mutos_c0`, `mutos_c1`, `mutos_as`,
-`mutos_ld`; `lib/c2` dangles until `mutos_c2` exists.
+`mutos_ld`, `lib/c2` to `mutos_c2` (since 2026-10-25; until then it
+dangled).
 
 The process number in the temporary names is the host's, folded to 15
 bits as MUTOS's are - two runs at the same time in one root whose numbers
@@ -367,8 +376,8 @@ cannot create temp`, or, run as root, shares the files).
   the construct corpus with the emulated original passes run in both;
   `programs`: the port with the ported passes against the original chain
   (the same `a.out`); `goldens`: the ported chain against the
-  real-hardware goldens (`cc -S`, `cc -P`, `cc -O -S` with the original
-  `c2`).
+  real-hardware goldens (`cc -S`, `cc -P`, `cc -O -S` - with the original
+  `c2` until 2026-10-24, since then with `mutos_c2`).
 - `../../tests/realbin/ccfuzz.py`: differential fuzzing - random command
   lines of every option, names of every kind, the limits, failing
   passes.
@@ -376,14 +385,112 @@ cannot create temp`, or, run as root, shares the files).
   the port with the ported passes against the goldens and linking the
   construct corpus.
 
+## The port of the real `c2`
+
+`mutos_c2` is the original `c2` (`mutos_bin/c2.golden.base64.txt`, 0411,
+text 17,792 bytes, stripped): crt0, then `c20.o` - v7's `c20.c` in source
+order, `reducelit()` gone -, then `c21.o` - v7's `c21.c` rewritten for the
+8086, twelve functions new -, then libc.a. Every function was read
+instruction by instruction from the binary beside `v7/cc/c20.c` and
+`c21.c` (`../../tests/realbin/c2map.txt` maps them, `c2dis.py`
+disassembles one by name); the port does what the binary does, its bugs
+included (`../../docs/MUTOS_ORIGINAL_BUGS.md`, C2-01 to C2-07).
+
+### Behaviour (the original's)
+
+- **The command line.** `mutos_c2 [+] [-] [input [output]]` - `cc -O`
+  runs `c2 tmp5 tmp3`. The input replaces stdin (`C2: can't find x`,
+  exit status 1), the output stdout (`C2: can't create x`); `-` writes
+  the statistics to stderr at the end (`%d iterations` .. `%d long
+  branches to short`, `%dK core`), `+` sets a flag nothing reads. A line
+  of more than 510 characters: `C2: Sorry, input line too long`, exit
+  status 1; no memory: `C Optimizer: out of space`.
+- **The work, by chunks.** The input is read up to each `.globl` (a
+  chunk, usually a function) and optimized and written before the next
+  is read; the memory for the instructions is used again for each. v7's
+  passes run on it - jumps to jumps, code after jumps, jumps to the next
+  line, unreferenced labels, cross-jumps, code motion, loop inversion,
+  redundant moves on what the registers are known to hold, constant
+  comparisons - in the MUTOS assembler's syntax: `op dst,src`, constants
+  `*n.`, the 8086's registers (ax dx si di bx cx; bp the frame). "`jmp`"
+  and the short "`j`", "`je`" .. "`jae`" are read as v7's `br` and
+  conditional branches.
+- **The new passes.** After `rmove()`: `pushopt()` - registers renamed
+  backwards and forwards to remove a `mov` between them, `mov r,x` /
+  `push r` to `push x`, `push x` .. `pop r` to `mov r,x` -, the register
+  variables kept out as the chunk's least `|NREG n` says; then `indexopt()`
+  (`add si,bx` before `(si)` becomes `(si)(bx)`), `simplify()` (`mov
+  r,*0.` to `sub r,r`, `cmp r,*0.` to `test r,r`, `and ax,#255.` to `subb
+  ah,ah`) and `shortbr()`, which writes a branch whose label is near
+  enough by the instructions' lengths as the short `j`/`je`/...
+- **What it is checked by**: `tests/mutos_as/kernel_opt/`'s nine
+  optimized kernel sources are its output for `11_kernel`'s `.s` goldens -
+  real-hardware goldens - and the emulated original for anything else.
+
+### The memory image
+
+`c2` keeps the instructions as 16-byte nodes in memory it takes with
+`sbrk()`, the operands it looks at in buffers of 32 bytes (`regs[]`), and
+copies into those and others without a check (C2-03): a long operand runs
+over `regs[]` into the opcode hash table, a long first token past
+`tmpop[]`, `repladdr()`'s copies past `rt1[]` and `rt2[]` into libc.a's
+data and the heap; a jump to an undefined label makes it write through a
+null pointer (C2-06), and an empty line after a label through another
+(C2-07). So the port keeps the original's data segment as an image
+(`c2port/c2.h`): the binary's initialized data at address 0
+(`c2port/c2data.c`, generated by `../../tests/realbin/c2tables.py --c`),
+every global at its address, the BSS and from 1120 the heap, crt0's words
+at 0 .. 9 and the argument words and strings at the top, laid out as
+`tests/realbin/mutosemu.py` lays them out. libc.a's stdio runs on the image
+too - the FILE structures, `_sibuf` and `_sobuf` where the original has
+them -, so that an overrun into them does what it does in the original.
+Words are little-endian at any address, chars signed.
+
+What the image does not model is refused - exit status 2 and a message on
+stderr ending in "refused" (`c2port/c2lib.c`, `c2trap()`), after what the
+original had written by then:
+
+- memory past the break (the emulator gives zeros, MUTOS gives what is
+  there) - reached through the opcode hash table a long operand has
+  written over (C2-03), or nodes read through such pointers;
+- a system call after crt0's far pointer (words 6 and 8, which a node
+  pointer that is null reaches) was written over;
+- a heap that would reach the stack (MUTOS's own break limit is not
+  known; the emulator grants any break);
+- the original's endless loops where the port sees them: `dest()` with a
+  destination that stays equal to a register's entry (C2-01),
+  `iterate()` deleting the code after a branch in a list that has become
+  a circle (C2-07);
+- a directory as the input, a printf conversion the port's printf does
+  not have.
+
+### How it is checked
+
+- `../../tests/realbin/c2cmp.py` runs the port and the original (under
+  the emulator) on the same command line in copies of one directory and
+  compares the output, the messages and the exit status; a refusal must
+  have written a prefix of the original's output. `goldens`: every `.s`
+  golden of `tests/mutos_cc` three ways - `c2 in out`, `c2 - in out` (the
+  statistics), `c2 <in >out` - and the nine `11_kernel` outputs against
+  `kernel_opt/`; `cases`: hand-written cases - the command lines, the
+  input's form, the line buffer's end, long tokens and operands over the
+  fixed buffers, many chunks, a large function, the heap's end, label
+  numbers, every bug of C2-01 to C2-07.
+- `../../tests/realbin/c2fuzz.py`: differential fuzzing - the real
+  compiler's output for random programs (`c1fuzz.py`'s and `fuzz_c.py`'s,
+  through the ported chain), assembly made to reach every pass, and both
+  damaged at random (`--mutate`).
+- `../../tests/mutos_cc/check_driver.py` (in `make test`, no emulator):
+  `cc -O -S` on `11_kernel` against `kernel_opt/`, `cc -O -o` on the
+  construct corpus.
+
 ## Next steps
 
 The order is `../../docs/TOOLCHAIN_PLAN.md`'s (decided 2026-10-20); the
-driver (step 3) is done:
-
-1. **`mutos_c2`** (Milestone 5): a port of the original `c2`, 8086 only - the
-   emulated original reproduces `tests/mutos_as/kernel_opt/`'s optimized
-   kernel sources from `11_kernel`'s `.s` goldens.
+driver (step 3) and `mutos_c2` (step 4) are done - every pass `cc` runs is
+a port of the original now. What comes next is the assembler's
+differential fuzzer (step 5); 80186/V30 code generation in `mutos_c1` and
+`mutos_c2` waits until the 8086 toolchain works completely (decision 8).
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the
@@ -404,6 +511,14 @@ assembler step either way.
   state, libc.a's printf, `strcpy()`, `strcat()`, `malloc()`,
   `mktemp()`, the system calls on the host, the paths, the refusals),
   `ccdata.c` (generated: the binary's text and data), `main.c`.
+- `c2port/` - `mutos_c2`, the port of the real `c2` (see "The port of
+  the real `c2`"): `c2.h` (the image, the binary's addresses, the node),
+  `c20.c` (`c20.o`'s functions, `main()` to `backjmp()`), `c21.c`
+  (`c21.o`'s, `rmove()` to `renfwd()`), `c2lib.c` (the machine: the
+  image's initial state, crt0's words, `sbrk()`, libc.a's stdio on the
+  image, the system calls on the host, the refusals), `c2data.c`
+  (generated: the binary's data), `main.c`; invoked as `cc` invokes it:
+  `mutos_c2 [+] [-] [input [output]]`.
 - `c0port/` - `mutos_c0`, the port of the real `c0` (see "The port of
   the real `c0`"); invoked as v7's `cc` invokes `c0`: `mutos_c0
   source.i temp1 temp2 [profileflag]`.
@@ -420,7 +535,11 @@ ported passes through the build tree's MUTOS root: `cc -S` and `cc -P` on
 every golden's source (the `.s` with `c1`'s messages and exit status, the
 `.i`), `cc -o` on the construct corpus. `tests/realbin/cccmp.py` and
 `ccfuzz.py` (`make check-realbin`) compare it with the original `cc` - see
-"The port of the real `cc`".
+"The port of the real `cc`". `check_driver.py` also runs `cc -O -S` on the
+nine `11_kernel` sources against `tests/mutos_as/kernel_opt/` and `cc -O
+-o` on the construct corpus - `mutos_c2` in the chain; `tests/realbin/c2cmp.py`
+and `c2fuzz.py` compare `mutos_c2` with the original `c2` - see "The port
+of the real `c2`".
 
 `tests/mutos_cc/run_goldens.sh` runs the real `mutos_cpp → mutos_c0 →
 mutos_c1` pipeline over every corpus file that has goldens and diffs

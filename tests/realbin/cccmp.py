@@ -37,7 +37,8 @@ The passes, three ways:
     difference is the driver's;
   - the ported passes (goldens, programs): the port runs mutos_cpp,
     mutos_c0, mutos_c1, mutos_as, mutos_ld - the whole cross toolchain -
-    and the original c2 under the emulator until mutos_c2 exists.
+    mutos_c2 (since 2026-10-25; until then the original c2 under the
+    emulator).
 
 A refusal of the port (exit status 2 and a last line on stderr ending in
 "refused") counts apart; what it wrote before must be what the original
@@ -58,7 +59,7 @@ Usage:
         the port with the ported passes against the real-hardware goldens:
         "cc -S x.c" (the .s, c1's messages, the exit status), "cc -P x.c"
         (the .i), "cc -O -S x.c" for the nine 11_kernel sources (the
-        kernel_opt sources; c2 the original, emulated)
+        kernel_opt sources; c2 the port, mutos_c2)
     cccmp.py programs [-j N] [--port PATH] [--show N]
         the construct corpus's programs compiled and linked by the port
         with the ported passes and by the original chain: the a.out and
@@ -105,7 +106,7 @@ KERNEL_OPT = os.path.join(ROOT, 'tests', 'mutos_as', 'kernel_opt')
 PASSES = (('lib/cpp', 'cpp', 'mutos_cpp/mutos_cpp'),
           ('lib/c0', 'c0', 'mutos_cc/mutos_c0'),
           ('lib/c1', 'c1', 'mutos_cc/mutos_c1'),
-          ('lib/c2', 'c2', None),
+          ('lib/c2', 'c2', 'mutos_cc/mutos_c2'),
           ('bin/as', 'as', 'mutos_as/mutos_as'),
           ('bin/ld', 'ld', 'mutos_ld/mutos_ld'))
 
@@ -350,8 +351,8 @@ def run_port(args, cwd, root, port=PORT, status=None, run=None):
     """The port: (exit status, segments, execs, raw stderr). root must be
     a real path (the stub sees resolved paths); status as for run_orig;
     run: None - no pass runs; 'orig' - every pass runs as the emulated
-    original; 'ported' - as the ported tool, or the emulated original if
-    there is none (c2)."""
+    original; 'ported' - as the ported tool (every pass has one since
+    the port of c2)."""
     status = status or {}
     env = dict(os.environ)
     env['MUTOS_ROOT'] = root

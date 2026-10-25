@@ -14,10 +14,9 @@
 #                                      original cpp)
 #   mutos_cc   - C compiler          (src/mutos_cc/, produces the
 #                                      driver mutos_cc and the passes
-#                                      mutos_c0/mutos_c1 - ports of the
-#                                      original cc, c0 and c1; mutos_c2
-#                                      is not yet written; see
-#                                      src/mutos_cc/README.md)
+#                                      mutos_c0/mutos_c1/mutos_c2 - ports
+#                                      of the original cc, c0, c1 and
+#                                      c2; see src/mutos_cc/README.md)
 #   mutos_root/ - the MUTOS root     (scripts/mutos_root.sh: crt0.o,
 #                                      libc.a, the passes as symbolic
 #                                      links; docs/TOOLCHAIN_PLAN.md,
@@ -28,7 +27,7 @@
 #   make ld         # build just mutos_ld
 #   make as         # build just mutos_as
 #   make cpp        # build just mutos_cpp
-#   make cc         # build just mutos_cc/mutos_c0/mutos_c1
+#   make cc         # build just mutos_cc/mutos_c0/mutos_c1/mutos_c2
 #   make root       # make (or bring up to date) mutos_root/
 #   make clean      # clean every component, remove mutos_root/
 #   make test       # run every component's golden-diff test suite
@@ -55,7 +54,9 @@
 #                   # its -r/-d extension (tests/mutos_ld/); mutos_cc
 #                   # (the port of cc) against the original, traced, with
 #                   # the original passes and with the ported ones, and a
-#                   # fuzz run; the
+#                   # fuzz run; mutos_c2 (the port of c2) against the
+#                   # original on every .s golden, hand-written cases and
+#                   # four fuzz runs; the
 #                   # original ld through mutos_root/ (needs the Python
 #                   # module "unicorn" and, for cc's stub, a C compiler;
 #                   # see tests/realbin/README.md)
@@ -135,7 +136,8 @@ clean:
 # src/h/mutos_root.h, and that mutos_ld uses libc.a's __.SYMDEF without
 # "out of date". tests/mutos_cc/check_driver.py runs the driver mutos_cc
 # with the ported passes through mutos_root/ - "cc -S", "cc -P" against
-# the goldens, "cc -o" on the construct corpus.
+# the goldens, "cc -O -S" (mutos_c2) against the kernel_opt sources,
+# "cc -o" and "cc -O -o" on the construct corpus.
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -228,7 +230,15 @@ check-libcatof: as ld cc
 # the construct corpus with the original passes run in both, and with
 # the ported passes against the original chain (tests/realbin/
 # cccmp.py) -, the ported chain against the goldens, and a fixed-seed
-# differential fuzz run (tests/realbin/ccfuzz.py); then the original ld
+# differential fuzz run (tests/realbin/ccfuzz.py); then mutos_c2, the
+# port of c2 (src/mutos_cc/c2port/): its generated data segment
+# (c2data.c) current, its output, messages and exit status the
+# original's on every .s golden three ways ("c2 in out", "c2 - in out",
+# "c2 <in >out"; the 11_kernel ones the kernel_opt sources) and on the
+# hand-written cases (tests/realbin/c2cmp.py), and four fixed-seed
+# differential fuzz runs - the real compiler's output for random
+# programs, assembly made for c2's passes, both damaged
+# (tests/realbin/c2fuzz.py); then the original ld
 # through mutos_root/ (check_root.py --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
@@ -237,6 +247,7 @@ REALBIN_C0FUZZ_ARGS = -n 200 -s 1
 REALBIN_CPPFUZZ_ARGS = -n 200 -s 1
 REALBIN_LDFUZZ_ARGS = -n 300 -s 1
 REALBIN_CCFUZZ_ARGS = -n 1000 -s 1
+REALBIN_C2FUZZ_ARGS = -n 100 -s 1
 check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -267,6 +278,13 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/cccmp.py programs
 	@python3 tests/realbin/cccmp.py goldens
 	@python3 tests/realbin/ccfuzz.py $(REALBIN_CCFUZZ_ARGS)
+	@python3 tests/realbin/c2tables.py --check-c src/mutos_cc/c2port/c2data.c
+	@python3 tests/realbin/c2cmp.py goldens
+	@python3 tests/realbin/c2cmp.py cases
+	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen c1fuzz
+	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen fuzz_c
+	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen asm
+	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen mix --mutate 0.5
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
