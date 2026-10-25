@@ -1,0 +1,165 @@
+# c2map.txt - a map of the real MUTOS 1700 c2 (mutos_bin/c2.golden.base64.txt)
+#
+# The binary (0411, text 17792, data 1476, BSS 2908 bytes) is stripped;
+# the names below are v7's (v7/cc/c20.c, c21.c) where the function has a
+# counterpart there, found by the strings each function passes, the calls
+# it makes and its position, and the port's (src/mutos_cc/c2port/) for
+# the new ones. It is crt0, then c20.o - v7's c20.c in source order,
+# reducelit() gone -, then c21.o - v7's c21.c in source order, toofar()
+# with ilen() and adrlen() in it, addsob()'s place taken by shortbr(),
+# convreg() and bytereg() new after isreg(), source(), setcc() gone -,
+# then nine new functions after natural(), then libc.a from text 3484
+# (freopen; the others matched by c2dis.py against libc.a's objects).
+# c2dis.py reads this file; c2tables.py --strings prints the strings,
+# --optab the opcode table.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/cc/c2*.c): same  - compared, does what v7's does
+#                               delta - compared, v7's code with the noted changes
+#                               x86   - v7's purpose, rewritten for the 8086
+#                               new   - no v7 counterpart
+#                               libc  - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_cc/c2port/c20.c or c21.c (libc.a's in
+#       c2lib.c), read from the text at that offset
+#
+# Every function was compared instruction by instruction. Common to all:
+# the ops are the MUTOS assembler's (c2tables.py --optab: optab[] with 64
+# entries, OPHS 79), a node is 16 bytes (v7's 14 and two mask bytes),
+# regs[] has 14 entries of 32 bytes (regs[12] RT1 the source, regs[13]
+# RT2 the destination: the MUTOS order "op dst,src"), constants are
+# "*n." (decimal), a branch redirected to another target takes its code
+# with its label number. Switches: rmove()'s, toofar()'s and regmask()'s
+# are jump tables in the text (1441, 1913, 2c24), convreg()'s, bytereg()'s
+# and compare()'s too (1d8b, 1dbb, 229e), indexopt()'s (262e); pinned()'s
+# is hashed (op % 2: table 312c, then op / 2 compared).
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- c20.o
+T 00b6 _main       delta      ported  pushopt() after rmove(); indexopt(), simplify(), shortbr() before output() (v7: addsob()); nreg = 3 for each chunk; the statistics without "sob's added", with four new counters ("mov/push converted to push" never counted, C2-02)
+T 037e _input      delta      ported  "j" read as JBR, "je".."jae" as CBR with their condition, "jmp" as JBR; "loop" a branch; refc and the masks not set (the reused arena's)
+T 04e6 _getline    delta      ported  a linefeed: the next character looked at and given back (ungetc) unless it is a linefeed - an empty line after a line dropped, not after a label (C2-07)
+T 05c2 _getnum     same       ported
+T 0604 _output     delta      ported  no reducelit(), no SOB; the short branches and "loop" printed with their label
+T 0728 _copy       same       ported  the port: copy1(), copy2()
+T 07a0 _opsetup    delta      ported  OPHS 79; the third character only if the second is not the end ("j"); the probe wraps at &ophash[OPHS]
+T 081a _oplook     delta      ported  tmpop[2] cleared first; tmpop[32] at 0eee copied into without a check (C2-03)
+T 093e _refcount   delta      ported  "loop" a branch; "|NREG n" lowers nreg (atoi() of its operand); a branch redirected to a row's last label takes its code
+T 0a7a _iterate    delta      ported  "loop" a branch; "ret" ends a block as JBR and JMP do; .bss stops the deletion after a jump; redirected branches take the code; a target jump's null ref incremented (C2-06); the deletion after a jump in a circular list never ends (C2-07, refused past 65536 nodes)
+T 0c3c _xjump      same       ported  an empty line equals the head: a label inserted before first (C2-07)
+T 0cae _insertl    same       ported
+T 0d14 _codemove   delta      ported  a "ret" before the target ends a block; the inverted loop's branch takes the label's code
+T 0ee6 _comjump    same       ported
+T 0f40 _backjmp    delta      ported  the branch takes the code
+# ---- c21.o
+T 0fb8 _rmove      x86        ported  a jump table (1441) for ops 1..60: mov (the redundancy tests on regs[], movb clears all), lea r,(r) -> mov (regs[-1] when the destination is no register, C2-05), and/or/add/sub/xor (sub r,r -> mov r,*0. again; or r,r -> cmp r,*0.), inc/dec/neg, imul/idiv/div, push, cwd, cbw, loop, test (test r,r -> cmp r,*0., not ax; a "test" without a comma removed: ccloc is only cleared, C2-04), cmp, CBR after cmp of constants, JBR (redunbr), "|" and "seg" nothing
+T 14c8 _jumpsw     same       ported
+T 1588 _shortbr    new        ported  in addsob()'s place: CBR -> SCBR, JBR (not to "@...") -> SJBR when toofar() says near, until no change; "long branches to short"
+T 15e8 _toofar     x86        ported  the length between a branch and its label from the nodes' text (ilen()/adrlen() inline, a jump table at 1913): 0 label/"|", 2 short branch/loop, 5 CBR, 3/4 br and call, 1 cwd/cbw, else from the operands; 6 for the rest; more than 127 too far; no label number 10000
+T 19b8 _abs        same       ported  the port: iabs()
+T 19d2 _equop      same       ported
+T 1a4a _decref     same       ported
+T 1a70 _nonlab     same       ported
+T 1a96 _alloc      same       ported  the end test unsigned; sbrk(2000) - the break and lastr in step
+T 1aea _clearreg   delta      ported  regs[0..11], conloc, ccloc (v7: conval)
+T 1b10 _savereg    x86        ported  not for bp; an operand through a register other than bp not kept; a constant also into regs[ai+6]; no source() first
+T 1b96 _dest       x86        ported  a destination register and its constant forgotten; findrand() matches; a store through a register but bp forgets all but constants; findrand() names a regs[6..11] match by its register: the loop never ends (C2-01, refused)
+T 1c48 _singop     same       ported
+T 1c6a _dualop     x86        ported  the first operand into RT2 (regs[13]), the second into RT1 (regs[12]), 32 bytes each, without a check (C2-03)
+T 1cb2 _findrand   delta      ported  regs[flt..11], the index modulo 6
+T 1cee _isreg      x86        ported  the first two characters against the words at 0454 ("bp" 6 .. "ax" 0), the rest not looked at
+T 1d2a _convreg    new        ported  a register's name into a string; "CONVREG BOTCH %d" past 6
+T 1d9c _bytereg    new        ported  ax, dx, bx, cx have a byte half
+T 1dca _check      same       ported  not called
+T 1dee _repladdr   x86        ported  a byte instruction only with ax dx bx cx; rt1[50] at 100c, rt2[50] at 103e (C2-03); "dst,src" rebuilt
+T 1f24 _movedat    delta      ported  a .data repeating the segment is kept; data.forw read uninitialized (no effect)
+T 207c _redunbr    x86        ported  test and cmp (both two operands); the branch's target, not its code
+T 210c _findcon    x86        ported  "*n." constants; a register's constant in regs[r+6]; conloc 09ec, conval 0a0c
+T 2162 _compare    x86        ported  "*n." both, decimal; a jump table at 229e
+T 22b6 _setcon     x86        ported  "*" constants
+T 2300 _equstr     same       ported
+T 2328 _natural    x86        ported  "*..." without a register, or through bp
+T 2362 _pushopt    new        ported  regmask(); from the last node back renback(), else renfwd(); "mov r,x" "push r" -> "push x" (counted as a redundant move, C2-02); then "push x" .. "pop r" -> "mov r,x"
+T 2588 _indexopt   new        ported  "add si|di,bx|bp" or "add bx,si|di" removed, "(r)" after it becoming "(r)(i)"
+T 275e _addindex   new        ported  "x(from)" -> "x(from)(to)"
+T 27b6 _regmask    new        ported  each node's read (N_USE, 0e) and written (N_SET, 0f) registers - a jump table at 2c24 -, then the branches' reads along their targets until no change; the last node
+T 2d48 _simplify   new        ported  mov r,*0. -> sub r,r; cmp r,*0. -> test r,r; and ax|dx,#255. -> subb ah|dh,ah|dh (not before a CBR)
+T 2ed0 _renback    new        ported  "mov rd,rs" / "xchg rd,ax" removed by renaming rs back to its definition
+T 3074 _pinned     new        ported  may "from" not become "to" in a node (a hashed switch: op % 2 at 312c, op / 2 compared)
+T 31f2 _renreg     new        ported  "rename": a register in a node's masks and text (regnames[] at 04f2)
+T 32ae _renfwd     new        ported  "mov rd,rs" removed by renaming rd forward to rs
+# ---- libc.a from 3484 (c2dis.py names the functions it can match)
+T 3484 _freopen    libc       ported  fclose(), then _endopen()
+T 34a4 _fprintf    libc       ported  _stbuf(), _doprnt(), _ftbuf()
+T 34e6 _printf     libc       ported  to stdout (_iob[1] at 0524)
+T 352a _ungetc     libc       ported
+T 3576 __filbuf    libc       ported  stdin's buffer _sibuf at 0cec from the start (freopen() keeps it); a malloc()'d one refused
+T 3634 __doprnt    libc       ported  flags '-' and '0', width and precision (digits or '*'), d o x u c s; its work area at 1084 not written
+T 3950 _crack      libc       -       _doprnt's helpers to 3b44
+T 3b44 __strout    libc       ported  putc() of each character, the padding
+T 3c16 __flsbuf    libc       ported  stdout gets _sobuf at 0aea (unbuffered on a terminal); stderr unbuffered; a malloc()'d buffer refused
+T 3cfe _fflush     libc       ported
+T 3d54 __cleanu    libc       ported  fclose() of _iob[0.._lastbuf)
+T 3d72 _fclose     libc       ported  free() of a malloc()'d buffer refused
+T 3dd8 __stbuf     libc       ported
+T 3e12 __ftbuf     libc       ported
+T 3e38 __endope    libc       ported  "r", "w", "a", "+"
+T 3f10 _create     libc       ported  creat(name, 0666), reopened for "+"
+T 3f4a _exit       libc       ported  _cleanup(), then exit
+T 3f54 _abort      libc       ported  kill(getpid(), 6): check()'s
+T 3f6a _atoi       libc       ported  blanks and tabs, one sign, digits
+T 3fce _malloc     libc       -       not called: no FILE of c2's gets a malloc()'d buffer
+T 4230 _isatty     libc       ported  gtty(): the emulator answers "not a terminal", the port the host's
+T 4286 _index      libc       ported
+T 42aa _strcat     libc       ported
+T 42d8 _strcmp     libc       ported
+T 4306 _strcpy     libc       ported
+T 432a _close      libc       ported
+T 4380 _sbrk       libc       ported  ENOMEM past 64K; the break the emulator grants always - the port refuses one near the stack
+# ---- data (the port's image has each at this address)
+D 0004 crt0_w4     crt0's word 4: the code segment (0x1000 under the emulator)
+D 0008 crt0_w8     crt0's word 8: the code segment
+D 000a optab       struct optab optab[64], 4 bytes each, then 0
+D 000c optab0op    optab[0]'s opcode ("br" JBR) - a jump to an undefined label increments it through a null pointer (C2-06)
+D 010e revbr       char revbr[10]
+D 0118 isn         int isn = 20000
+D 011a lastseg     int lastseg = -1
+D 011c strings     the opcodes' names, then the messages and formats (c2tables.py --strings)
+D 0454 regtab      isreg()'s names, two characters a word, reversed: bp cx bx di si dx ax, 0
+D 04a5 regnm       convreg()'s "ax" .. "bp"
+D 04f2 regnames    char *regnames[6] (renreg()): "ax" .. "cx"; [6] would be the word "cl" at 04fe
+D 0514 null        libc.a's "(null)"
+D 051c iob         libc.a's _iob[20]: stdin 051c, stdout 0524, stderr 052c
+D 05bc lastbuf     _lastbuf = &_iob[20]
+D 05be allocs      malloc()'s words (unused)
+D 05c2 curbrk      sbrk()'s break, 1120 at the start
+D 05c4 environ     crt0's
+D 05c6 line        char line[512]
+D 07c6 first       struct node first
+D 07d6 curlp       char *curlp
+D 07d8 nbrbr       the counters, in v7's c2.h order: nbrbr, nsaddr, redunm, iaftbr, njp1, nrlab, nxjump, ncmot, nrevbr, loopiv, nredunj, nskip, ncomj, nsob, nrtst, nlit, then npush 07f8, npop 07fa, nors 07fc, nshort 07fe
+D 0800 nchange
+D 0802 nreg        the least "|NREG n" of the chunk (3 at most)
+D 0804 debug       "+" (not used)
+D 0806 lasta
+D 0808 lastr
+D 080a firstr
+D 080c regs        char regs[14][32]: 0..5 ax dx si di bx cx, 6..11 their constants, 12 RT1, 13 RT2
+D 09cc unused      32 bytes
+D 09ec conloc      char conloc[32]
+D 0a0c conval      char conval[32]
+D 0a2c ccloc       char ccloc[32] - only ever cleared
+D 0a4c ophash      struct optab *ophash[79]
+D 0aea sobuf       libc.a's _sobuf[512] (stdout)
+D 0cea errno
+D 0cec sibuf       libc.a's _sibuf[512] (stdin)
+D 0eec stkmax      (cret.o's __stkmax)
+D 0eee tmpop       oplook()'s static char tmpop[32]
+D 0f0e labhash     refcount()'s static struct node *labhash[127]
+D 100c rt1         repladdr()'s static char rt1[50]
+D 103e rt2         repladdr()'s static char rt2[50]
+D 1070 nbfbuf      libc.a's one-byte buffers of unbuffered input (_filbuf())
+D 1084 dowork      _doprnt()'s work area (libc.a's BSS)
+D 111a mallocb     malloc()'s BSS
+D 1120 end         the end of the BSS: the heap (the nodes, the code strings) from here

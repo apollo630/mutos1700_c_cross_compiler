@@ -6,17 +6,18 @@ its `README.md`). This directory runs them on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
 emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`,
-`mutos_ld` and `mutos_cc` - since 2026-10-13, 2026-10-18, 2026-10-22 (the
-next two) and 2026-10-24 ports of the real `c1`, `c0`, `cpp`, `ld` and `cc`
-(`src/mutos_cc/c1port/`, `c0port/`, `src/mutos_cpp/`, `src/mutos_ld/`,
-`src/mutos_cc/ccport/`, `docs/C1_PORT_PLAN.md`, `docs/C0_PORT_PLAN.md`,
+`mutos_ld`, `mutos_cc` and `mutos_c2` - since 2026-10-13, 2026-10-18,
+2026-10-22 (the next two), 2026-10-24 and 2026-10-25 ports of the real `c1`,
+`c0`, `cpp`, `ld`, `cc` and `c2` (`src/mutos_cc/c1port/`, `c0port/`,
+`src/mutos_cpp/`, `src/mutos_ld/`, `src/mutos_cc/ccport/`, `c2port/`,
+`docs/C1_PORT_PLAN.md`, `docs/C0_PORT_PLAN.md`,
 `src/mutos_cpp/README.md`, `src/mutos_ld/README.md`,
 `src/mutos_cc/README.md`) - are checked against the originals, on every
 golden and on random input.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
-`c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py` and `ccdis.py`; a C
+`c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py`, `ccdis.py` and `c2dis.py`; a C
 compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 
 ## Files
@@ -49,8 +50,13 @@ compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 | `ccdis.py` | `c1dis.py` switched to `cc` (`c1dis.use('cc')`; for a 0407 binary the data is indexed by its address in the segment): the annotated disassembly by function name from `ccmap.txt`. |
 | `cctables.py` | `--c`: the original `cc`'s initialized segment - its text and data - as C, `src/mutos_cc/ccport/ccdata.c` (generated, checked in; `--check-c` checks it is current); `--strings`: its strings. |
 | `ccstub.c` | A pass for `cccmp.py`: copied to every pass's place in the port's MUTOS root, it logs its path and arguments, marks its place in `cc`'s stdout and stderr, ends with the status a case gives it - or hands itself to `cccmp.py --pass`, which runs the pass for real - and else leaves the files the pass would write. |
-| `cccmp.py` | `mutos_cc` against the original: the same command line in two copies of one directory, each with a MUTOS root of its own; the passes run (their MUTOS paths and arguments), what `cc` and the passes wrote to stdout and stderr before, between and after them, the exit status and the files left (in the directory and the root's `tmp/`; `cc`'s temporary names counted as one) compared. The original under the emulator, its passes traced (`cases`, `files`) or run as emulated originals (`run`, `files --run`); the port with `ccstub.c` as every pass, traced likewise, or running the emulated originals (`run`), or the ported tools (`programs`: against the original chain; `goldens`: the ported chain against the real-hardware goldens, with the original `c2`). A refusal of the port must have run and written what the original had up to there. |
+| `cccmp.py` | `mutos_cc` against the original: the same command line in two copies of one directory, each with a MUTOS root of its own; the passes run (their MUTOS paths and arguments), what `cc` and the passes wrote to stdout and stderr before, between and after them, the exit status and the files left (in the directory and the root's `tmp/`; `cc`'s temporary names counted as one) compared. The original under the emulator, its passes traced (`cases`, `files`) or run as emulated originals (`run`, `files --run`); the port with `ccstub.c` as every pass, traced likewise, or running the emulated originals (`run`), or the ported tools (`programs`: against the original chain; `goldens`: the ported chain against the real-hardware goldens - `mutos_c2` since 2026-10-25, the original `c2` until then). A refusal of the port must have run and written what the original had up to there. |
 | `ccfuzz.py` | Differential fuzzing of `mutos_cc` with `cccmp.py`'s comparison, the passes traced: random command lines of every option the original knows and some it does not, names of every kind (sources, objects, archives, absent files, names of 14 and 15 characters, long paths to short sources, which `cc` copies whole), the limits (`-D`, `-P`, files, `av[]`, `ts[]` and `malloc()`, `-K`, `-B`) and passes that fail or are killed. |
+| `c2map.txt` | A map of the stripped `c2`: its functions (v7's `c20.c` and `c21.c` in source order, `reducelit()`, `source()`, `setcc()` gone, twelve new, then `libc.a` from text 3484) with their text offsets, how each compares with v7 (`same`, `delta`, `x86`, `new`) and what the binary does differently, and the data offsets of its globals - the port's memory image follows them. |
+| `c2dis.py` | `c1dis.py` switched to `c2` (`c1dis.use('c2')`): the annotated disassembly by function name from `c2map.txt`. |
+| `c2tables.py` | `--c`: the original `c2`'s initialized data segment as C - `src/mutos_cc/c2port/c2data.c` (generated, checked in; `--check-c` checks it is current); `--strings`: its strings; `--optab`: its opcode table. |
+| `c2cmp.py` | `mutos_c2` against the original: the same command line in two copies of one directory - `c2 in out`, `c2 - in out` (the statistics), `c2 <in >out`, the hand-written ones -, the output, the messages and the exit status compared byte for byte - `goldens` (every `.s` golden of `tests/mutos_cc` three ways; the nine `11_kernel` outputs also against `tests/mutos_as/kernel_opt/`), `cases` (hand-written: the command lines, the input's form, the line buffer's end, long tokens and operands over the fixed buffers, many chunks, a large function, the heap's end, label numbers, the original's bugs) or `files`. A refusal of the port must have written a prefix of the original's output, and where the original does not finish the port must have refused; where both run into the limits their outputs must agree as far as the shorter goes (`endless`). |
+| `c2fuzz.py` | Differential fuzzing of `mutos_c2` with `c2cmp.py`'s comparison. Generators: the real compiler's output for `c1fuzz.py`'s programs (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`), through the ported chain; assembly in `c1`'s style made to reach every pass of `c2` (`--gen asm`: register moves and renames, `push`/`pop`, index patterns, constants, branches near and far, jumps to jumps, unreachable code, `.data`/`.bss`, several functions); `--gen mix` all three; `--mutate P` damages the cases (long operands and first tokens, odd bytes, lines deleted, doubled, swapped or cut, branches to undefined labels or to code, empty lines, a missing last linefeed, a line past the buffer). |
 | `ldfuzz.py` | Differential fuzzing of `mutos_ld` with `ldcmp.py`'s comparison: random objects (text and data words with every relocation kind, the pc-relative and byte-shift bits; external definitions in every segment, absolutes, undefined, commons, locals, "L" locals, file names, shared names, a spare byte, an odd size, no relocation bits, another magic), real `crt0.o` and `libc.a` members, archives plain, current and out of date - by name or through `-l` from the root -, random options; `--mutate P` damages files for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
@@ -65,6 +71,8 @@ make check-realbin            # from the repo root: tables, goldens, coverage,
                               # the original cc traced (cctrace.py goldens),
                               # mutos_cc against it (cccmp.py cases, run,
                               # programs, goldens; a ccfuzz.py run),
+                              # mutos_c2 on the goldens, the cases and
+                              # four fuzz runs,
                               # the original ld through mutos_root/
                               # (tests/mutos_root/check_root.py --realbin)
 python3 tests/realbin/check_real.py goldens
@@ -87,6 +95,12 @@ python3 tests/realbin/cccmp.py files -c -O x.c y.o   # one line, traced
 python3 tests/realbin/cccmp.py files --run -o x x.c  # one line, passes run
 python3 tests/realbin/ccfuzz.py -n 5000 -s 7 --keep /tmp/ccdiff
 python3 tests/realbin/ccdis.py _copy
+python3 tests/realbin/c2cmp.py goldens
+python3 tests/realbin/c2cmp.py cases --show 100
+python3 tests/realbin/c2cmp.py files - x.s     # one file, "c2 - x.s out"
+python3 tests/realbin/c2fuzz.py -n 500 -s 7 --gen asm --keep /tmp/c2diff
+python3 tests/realbin/c2fuzz.py -n 500 -s 7 --gen mix --mutate 0.5
+python3 tests/realbin/c2dis.py _pushopt
 ```
 
 The original `cc` (since 2026-10-20, `cctrace.py`):
@@ -222,6 +236,20 @@ operator and type, and the register returned, `d`: every `delay()` call;
   evaluation that cannot meet, a `malloc()` arena that ends up the same).
 - The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`,
   CC-01 ..
+
+## The port of `c2` against it (2026-10-25)
+
+- `c2cmp.py goldens`: every `.s` golden, 132 files three ways - `c2 in
+  out`, `c2 - in out`, `c2 <in >out` -: 396/396 the same (the output, the
+  statistics, the exit status); the nine `11_kernel` outputs are
+  `kernel_opt/`'s.
+- `c2cmp.py cases`: 66 hand-written cases - 59 the same, 6 where the
+  original never ends and the port refuses (C2-01, C2-07: `dest()`'s and
+  `iterate()`'s endless loops), 1 refused (a directory as the input).
+- `c2fuzz.py`: see `STATUS.md` (Milestone 5); `make check-realbin` runs 100
+  cases of each generator and 100 damaged ones (seed 1).
+- The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`,
+  C2-01 .. C2-07.
 
 ## The other originals (2026-10-20)
 

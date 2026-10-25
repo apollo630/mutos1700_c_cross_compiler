@@ -4,9 +4,10 @@ ported passes, against the real-hardware goldens (part of "make test").
 
 mutos_cc runs the passes it finds through the MUTOS root - its compiled-in
 default, the build tree's mutos_root/, unless MUTOS_ROOT is set: there
-lib/cpp, lib/c0, lib/c1, bin/as and bin/ld are mutos_cpp, mutos_c0,
-mutos_c1, mutos_as and mutos_ld. In a scratch copy of each tests/mutos_cc
-directory, as the goldens were made on the hardware:
+lib/cpp, lib/c0, lib/c1, lib/c2, bin/as and bin/ld are mutos_cpp,
+mutos_c0, mutos_c1, mutos_c2, mutos_as and mutos_ld. In a scratch copy
+of each tests/mutos_cc directory, as the goldens were made on the
+hardware:
 
   * "cc -S x.c" for every source with an .s golden: the .s is the
     golden, byte for byte; the messages (stdout and stderr together) are
@@ -17,10 +18,14 @@ directory, as the goldens were made on the hardware:
     status 1;
   * "cc -P x.c" for every source with an .i golden: the .i is the golden,
     exit status 0, nothing written to stdout or stderr;
-  * "cc -o x x.c" for every program of the construct corpus (00_smoke ..
-    10_integ): exit status 0, x a 0407 or 0411 a.out, x.o removed as the
-    original cc removes a single source's object, nothing else left in
-    the directory.
+  * "cc -O -S x.c" for the nine 11_kernel sources: the .s is the real
+    hardware's optimized kernel source in tests/mutos_as/kernel_opt/
+    (the original c2's output), byte for byte; exit status 0, nothing
+    written to stdout or stderr;
+  * "cc -o x x.c" and "cc -O -o x x.c" for every program of the
+    construct corpus (00_smoke .. 10_integ): exit status 0, x a 0407 or
+    0411 a.out, x.o removed as the original cc removes a single source's
+    object, nothing else left in the directory.
 
 Afterwards the root's tmp/ must hold no temporary file of cc's
 (/tmp/ctm...).
@@ -46,6 +51,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
 CC = os.path.join(REPO, 'src', 'mutos_cc', 'mutos_cc')
+KERNEL_OPT = os.path.join(REPO, 'tests', 'mutos_as', 'kernel_opt')
 
 
 def listed(name):
@@ -76,7 +82,7 @@ def read(path):
 
 
 def one(job):
-    cc, d, base, invalid, messages, link = job
+    cc, d, base, invalid, messages, link, kopt = job
     label = '%s/%s' % (os.path.basename(d), base)
     bad = []
     counts = {}
@@ -123,9 +129,24 @@ def one(job):
                 bad.append('cc -P %s: %s' % (label, why))
             if got is not None:
                 os.unlink(os.path.join(tmp, base + '.i'))
-        if link:
+        if kopt:
+            st, msgs = run(cc, ['-O', '-S', src], tmp)
+            got = read(os.path.join(tmp, base + '.s'))
+            why = ''
+            if got != read(kopt):
+                why = 'no .s' if got is None else \
+                    '.s differs from kernel_opt/%s' % os.path.basename(kopt)
+            elif st != 0 or msgs:
+                why = 'exit status %d, messages %r' % (st, msgs[:2])
+            counts['cc -O -S'] = counts.get('cc -O -S', 0) + 1
+            if why:
+                bad.append('cc -O -S %s: %s' % (label, why))
+            if got is not None:
+                os.unlink(os.path.join(tmp, base + '.s'))
+        for opts in (['-o'], ['-O', '-o']) if link else ():
+            kind = 'cc ' + ' '.join(opts)
             before = set(os.listdir(tmp))
-            st, msgs = run(cc, ['-o', base, src], tmp)
+            st, msgs = run(cc, opts + [base, src], tmp)
             after = set(os.listdir(tmp))
             why = ''
             img = read(os.path.join(tmp, base))
@@ -136,9 +157,11 @@ def one(job):
                 why = 'no a.out %s' % base
             elif after - before != {base}:
                 why = 'files left: %s' % sorted(after - before)
-            counts['cc -o'] = counts.get('cc -o', 0) + 1
+            counts[kind] = counts.get(kind, 0) + 1
             if why:
-                bad.append('cc -o %s: %s' % (label, why))
+                bad.append('%s %s: %s' % (kind, label, why))
+            if img is not None:
+                os.unlink(os.path.join(tmp, base))
     return counts, bad
 
 
@@ -164,8 +187,11 @@ def main(argv):
                 continue
             base = f[:-2]
             key = '%s/%s' % (cat, base)
+            kopt = None
+            if cat == '11_kernel':
+                kopt = os.path.join(KERNEL_OPT, base.split('_', 1)[1] + '.s')
             jobs.append((cc, d, base, invalid.get(key), errors.get(key, []),
-                         cat[:2].isdigit() and cat != '11_kernel'))
+                         cat[:2].isdigit() and cat != '11_kernel', kopt))
     counts, bad = {}, []
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 1) as ex:
         for c, b in ex.map(one, jobs):
@@ -178,16 +204,19 @@ def main(argv):
     if left:
         bad.append('%s/tmp: temporary files left: %s' % (root, left[:5]))
     nbad = {k: sum(1 for b in bad if b.startswith(k + ' ')) for k in
-            ('cc -S', 'cc -P', 'cc -o')}
+            ('cc -S', 'cc -P', 'cc -O -S', 'cc -o', 'cc -O -o')}
     print('mutos_cc -S x.c: %d/%d as the .s goldens (c1\'s messages and exit '
           'status included), %d refused as invalid_goldens.txt says'
           % (counts.get('cc -S', 0) - nbad['cc -S'], counts.get('cc -S', 0),
              counts.get('cc -S (refused)', 0)))
     print('mutos_cc -P x.c: %d/%d as the .i goldens'
           % (counts.get('cc -P', 0) - nbad['cc -P'], counts.get('cc -P', 0)))
-    print('mutos_cc -o x x.c: %d/%d linked (the object removed, nothing else '
-          'left)' % (counts.get('cc -o', 0) - nbad['cc -o'],
-                     counts.get('cc -o', 0)))
+    print('mutos_cc -O -S x.c: %d/%d as the optimized kernel sources of '
+          'kernel_opt/' % (counts.get('cc -O -S', 0) - nbad['cc -O -S'],
+                           counts.get('cc -O -S', 0)))
+    for k in ('cc -o', 'cc -O -o'):
+        print('mutos_%s x x.c: %d/%d linked (the object removed, nothing else '
+              'left)' % (k, counts.get(k, 0) - nbad[k], counts.get(k, 0)))
     for b in bad:
         print('  ' + b)
     return 1 if bad else 0

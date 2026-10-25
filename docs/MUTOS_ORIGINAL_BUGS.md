@@ -13,7 +13,8 @@ Each entry says what goes wrong (with a minimal trigger where one is
 known), why (the mechanism, with the text or data offset in the binary as
 `tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
 and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
-`ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`), how it was
+`ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`,
+`c2map.txt` and `c2dis.py` for `c2`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -23,7 +24,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-25.
 
 ## Overview
 
@@ -89,6 +90,13 @@ Last updated: 2026-10-24.
 | CC-04 | `cc` | a `-B` prefix of more than 17 characters runs into the next pass's path | emulator | reproduced |
 | CC-05 | `cc` | `-o` before an option, and no object after it: `ld` gets the string at address ffff as the output name | emulator | reproduced |
 | CC-06 | `cc` | with `-P`, `tmp1` .. `tmp3` are copies of a null pointer (crt0's code) | code reading, emulator | reproduced |
+| C2-01 | `c2` | `dest()` clears the register of a matching constant, not the constant, and an empty entry stays empty: a destination equal to a constant or empty loops for ever | emulator, fuzzing | refused |
+| C2-02 | `c2` | "mov/push converted to push" is never counted (the conversions count as redundant moves) | emulator | reproduced |
+| C2-03 | `c2` | operands and the first token copied without a check into `regs[12]`/`regs[13]` (32 bytes), `tmpop[32]`, `rt1[50]`/`rt2[50]`: from 32 characters the destination is lost, further on the opcode hash table and the nodes are overwritten | emulator, fuzzing | reproduced; refused where the opcode lookup follows text past the break |
+| C2-04 | `c2` | a `test` without a comma is removed as a redundant test (`ccloc` is never set) | emulator | reproduced |
+| C2-05 | `c2` | `lea` into memory clears `regs[-1]`: the low byte of the "redundant jumps" counter | emulator | reproduced |
+| C2-06 | `c2` | a branch to a label followed by a jump to an undefined label: `iterate()` increments the "node" at address 0 - `optab[0]`'s opcode: `br` becomes `beq` for the rest of the run | emulator | reproduced |
+| C2-07 | `c2` | an empty line (after a label alone on its line) equals the list's head: `xjump()` jumps to a label put before the head, never written, or leaves the list in a circle | emulator | reproduced; refused where the deletion after a branch never ends |
 
 ## `c1`
 
@@ -1105,6 +1113,176 @@ MUTOS deltas (`-K`, the new `-o`). One more behaviour is listed under
   same names in `ts[]`).
 - **This project.** Reproduced (the text is in the image, read only).
 - **Fix idea.** Make the copies only when `tmp0` is set.
+
+## `c2`
+
+Read in full on 2026-10-25 for its port (`src/mutos_cc/c2port/`,
+`tests/realbin/c2map.txt`, `c2dis.py`); every entry was run under the
+emulator - each is a case of `tests/realbin/c2cmp.py cases` -, and the
+port does the same. None needs input that `c1` writes: `c1` puts no label
+alone on a line, no `test` without a comma, no `lea` into memory, no
+operand of 32 characters (C2-03 needs a long name, C2-06 a jump to a label
+that is not defined). C2-03, C2-06, C2-07 and the empty destination of
+C2-01 are v7's own (`v7/cc/c20.c`, `c21.c` have the same code; what C2-06
+hits is the MUTOS layout's); C2-01's constants, C2-02, C2-04 and C2-05
+come with the MUTOS deltas.
+
+### C2-01 A destination equal to a constant, or empty, loops for ever
+
+- **Symptom.** `mov ax,*5.` / `mov *5.,bx` - an immediate as a
+  destination -, or an instruction without operands (`mov` alone on its
+  line) where a register's entry is empty, and `c2` never ends. A source
+  operand of exactly 32 characters gets there too (C2-03).
+- **Mechanism.** `dest()` (text 1b96) forgets every register that holds
+  the destination: as long as `findrand()` (text 1cb2) finds the
+  destination among `regs[]`, it clears the entry found. v7's
+  `findrand()` searched the six registers' entries and returned the
+  index; the MUTOS one searches all twelve - the registers' contents and,
+  in `regs[6..11]`, their constants - and returns the index modulo 6, the
+  register's number (what `repladdr()` wants). So a match on a constant
+  clears the register's other entry, never the matching one, and the loop
+  finds it again. An empty destination matches an empty entry, and
+  clearing an empty entry leaves it empty - v7's loop does the same.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-01: a destination equal
+  to a register's constant`, `C2-01: an instruction without operands`,
+  `C2-03: a source operand of 32 characters`, `an operand of 32
+  characters`); the emulator stops the original inside the loop.
+  Differential fuzzing: 24 of 500 damaged cases (seed 3) ran into it.
+- **This project.** Refused: the port stops when the entry it just
+  cleared still matches.
+- **Fix idea.** Clear `regs[j]` itself, the entry that matched, and skip
+  an empty destination.
+
+### C2-02 "mov/push converted to push" is never counted
+
+- **Symptom.** `c2 -` reports `0 mov/push converted to push` whatever it
+  converted: on `mov ax,*4.(bp)` / `mov dx,ax` / `push dx`, which becomes
+  `push *4.(bp)`, it says `2 redundant moves` and `0 mov/push converted to
+  push`.
+- **Mechanism.** `pushopt()` (text 2362) turns `mov r,x` / `push r` into
+  `push x` and increments `redunm` (data 07dc), the counter of redundant
+  moves; `npush` (07f8), the counter `main()` prints for the conversion,
+  is never incremented.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-02: mov/push not
+  counted`).
+- **This project.** Reproduced.
+- **Fix idea.** Increment `npush` there.
+
+### C2-03 Fixed buffers filled without a check
+
+- **Symptom.** With a source operand of 31 characters, `mov ax,_zz...z` /
+  `mov bx,ax` / `mov cx,_zz...z` / `add dx,cx` / `mov si,ax` is
+  optimized to three lines; with 33 or more nothing changes. At exactly 32
+  `c2` never ends (C2-01). Longer operands overwrite the opcode hash
+  table - a destination from 160 characters on, a source from 192 - and,
+  through `repladdr()`, from about 220 characters the first nodes: later
+  lines are read as other instructions or through pointers made of
+  characters, or `oplook()` goes round the table for ever.
+- **Mechanism.** `dualop()` (text 1c6a) copies the destination into
+  `regs[13]` (data 09ac) and then the source into `regs[12]` (098c), 32
+  bytes each, without a check: a source of 32 characters puts its 0 on
+  `regs[13][0]` - an empty destination -, a longer one its tail, so that
+  the destination looks like a name and nothing about the register is
+  kept. A destination runs over the 32 unused bytes at 09cc, `conloc`,
+  `conval`, `ccloc` and into `ophash[]` at 0a4c; `oplook()` (text 081a)
+  then follows those words as pointers to the opcode table. `oplook()`
+  copies the first token into `tmpop[32]` (0eee), over `labhash[]`
+  (0f0e), which `refcount()` fills anew before it is read; `repladdr()`
+  (text 1dee) copies the operands into `rt1[50]` (100c) and `rt2[50]`
+  (103e), over libc.a's one-byte buffers (1070), `_doprnt()`'s work area
+  (1084) and, from 1120, the heap - the nodes.
+- **Evidence.** Emulator (`c2cmp.py cases`: `a first token of 30 .. 40
+  characters`, `an operand of 31 .. 100 characters`); differential
+  fuzzing with operands of up to 480 characters (500 damaged cases, seed
+  3: 49 refused by the port, 26 where the original never ends).
+- **This project.** Reproduced - the whole data segment and the heap are
+  in the image; refused where `oplook()` follows a pointer made of text
+  past the break (what MUTOS has there is not known; the emulator gives
+  zeros).
+- **Fix idea.** Bounded copies, and "operand too long" for the rest.
+
+### C2-04 A `test` without a comma is removed
+
+- **Symptom.** `mov ax,bx` / `test ax` / `beq L1` becomes `mov ax,bx` /
+  `je L1` - the branch then tests the flags of whatever came before -,
+  and `c2 -` counts `1 redundant tst's`.
+- **Mechanism.** `rmove()`'s `test` case (text 0fb8, jump table 1441)
+  removes a `test` whose operand equals `ccloc`, the place the flags were
+  last set from. v7's `setcc()` filled `ccloc`; the MUTOS `c2` has no
+  `setcc()`, `ccloc` (0a2c) is only ever cleared, so only an empty operand
+  matches - and `dualop()` leaves the second operand of `test ax` empty.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-04: test without a
+  comma`).
+- **This project.** Reproduced.
+- **Fix idea.** Leave a `test` with an empty operand alone (or set
+  `ccloc` as v7 did).
+
+### C2-05 `lea` into memory clears `regs[-1]`
+
+- **Symptom.** `c2 -` on `mov ax,*1.` / `jmp L1` / `L3:inc bx` /
+  `L1:cmp ax,*1.` / `beq L9` / `lea _x,(si)` / `L9:inc cx` / `jmp L3`
+  reports `0 redundant jumps`; with `lea bx,(si)` it reports 1 - the
+  same jump was redirected in both. `lea _x,(si)` itself becomes `mov
+  _x,si`.
+- **Mechanism.** `rmove()` turns `lea d,(r)` (`r` one of di, si, bp, bx)
+  into `mov d,r` and then forgets the destination register:
+  `regs[isreg(d)][0] = 0` and the same for `regs[isreg(d) + 6]`. For a
+  destination that is no register `isreg()` is -1: `regs[-1]` is data
+  07ec, the low byte of `nredunj`, the "redundant jumps" counter; and
+  `regs[5]`, cx, is forgotten.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-05: lea into memory`,
+  `C2-05: lea into a register`).
+- **This project.** Reproduced.
+- **Fix idea.** Forget a register only when `isreg()` found one.
+
+### C2-06 A jump to an undefined label changes `br`
+
+- **Symptom.** `br L5` / `inc ax` / `L5:br L99` (no `L99:`), then after a
+  `.globl` `br L5` / `inc ax` / `L5:` - the second `br L5` is written `je
+  L5`, a conditional branch; every `br` read after that point is one.
+- **Mechanism.** A branch to a label that is not defined keeps a null
+  `ref`. `iterate()` (text 0a7a) redirects a branch whose label is
+  followed by a `br` to that `br`'s target and increments the target
+  label's `refc` - for an undefined target the `refc` of the "node" at
+  address 0, the word at data 000c: `optab[0]`'s opcode, `br`'s JBR (1),
+  which becomes CBR (2) - each further such redirection adds one.
+  `oplook()` reads the opcode from `optab[]` at each line, so from then
+  on `br` is CBR with condition 0, `beq` (`shortbr()` writes `je` for a
+  short one). v7's `iterate()` has the same increment; on the PDP-11 it
+  hit whatever v7's `c2` had at address 0. The other use of a null `ref`
+  only reads: for a conditional branch before a `br`, `iterate()` goes
+  back from it through crt0's word 4.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-06: a jump to an
+  undefined label`, `C2-06: an empty line between`, `C2-06: a branch to
+  code`).
+- **This project.** Reproduced: the image holds crt0's words and
+  `optab[]` at their addresses.
+- **Fix idea.** Test `rp->ref` before the increment.
+
+### C2-07 An empty line is taken for the list's head
+
+- **Symptom.** `L13:` alone on a line, then `jmp L13`, gives `j L20000`
+  and no label `L20000` - the assembler or `ld` then fails. With two
+  such labels (`L10:` / `L13:` / `jmp L13`) `c2` never ends.
+- **Mechanism.** `getline()` (text 04e6) returns a label at its `:`; the
+  rest of the line, here only the linefeed, is read as a line of its own
+  - an empty line, a node with op 0 and no code, as the list's head
+  `first` (data 07c6) has. (The MUTOS `getline()` drops an empty line
+  after a line, not after a label.) `xjump()` (text 0c3c) goes back from
+  a jump and from its target as long as `equop()` (text 19d2) finds the
+  nodes equal: the empty line before `jmp L13` equals `first` before
+  `L13:`. So `insertl()` puts a new label `L20000` before `first` - its
+  links into crt0's words at address 0 - and the empty line becomes `br
+  L20000`; `output()` starts after `first` and never writes the label.
+  With two labels the steps leave the list in a circle, and `iterate()`
+  deletes the code after a branch for ever.
+- **Evidence.** Emulator (`c2cmp.py cases`: `C2-07: an empty line taken
+  for the head`, `C2-07: endless`).
+- **This project.** Reproduced; refused where `iterate()` would delete
+  for ever - once it has deleted more nodes after one branch than the
+  data segment can hold.
+- **Fix idea.** Drop the empty line after a label too, or stop
+  `xjump()` at `first`.
 
 ## Suspect, no wrong output found
 
