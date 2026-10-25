@@ -1,7 +1,7 @@
 # Makefile - MUTOS 1700 Cross Linker (mutos_ld)
 #
 # mutos_ld is a port of the original MUTOS 1700 ld binary (v7's ld with
-# the MUTOS deltas), read from mutos_bin/ld.golden.base64.txt with
+# the MUTOS deltas), read from mutos/mutos_bin/ld.golden.base64.txt with
 # v7/ld/ld.c as the skeleton; it runs on an image of the original's data
 # segment (ld.h). lddata.c is generated from the binary by
 # tests/realbin/ldtables.py --c and checked in. See README.md.

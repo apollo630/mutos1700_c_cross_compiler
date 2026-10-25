@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c1dis.py - annotated 8086 disassembly of the real MUTOS 1700 c1.
 
-Reads the binary from ../../mutos_bin/c1.golden.base64.txt, names its
+Reads the binary from ../../mutos/mutos_bin/c1.golden.base64.txt, names its
 functions and data from c1map.txt, names the libc.a functions linked in
 by matching every libc.a object (../mutos1700_libc/libc.a.base64.txt)
 against the text, relocated words as wildcards, and prints a listing
@@ -40,15 +40,15 @@ def _aout(path):
     return text, data
 
 
-TEXT, DATA = _aout(os.path.join(ROOT, 'mutos_bin', 'c1.golden.base64.txt'))
+TEXT, DATA = _aout(os.path.join(ROOT, 'mutos', 'mutos_bin', 'c1.golden.base64.txt'))
 MAP = 'c1map.txt'
 
 
 def use(binary):
-    """Switch to another binary of mutos_bin/ and its map, <binary>map.txt
+    """Switch to another binary of mutos/mutos_bin/ and its map, <binary>map.txt
     (c0dis.py uses this for c0)."""
     global TEXT, DATA, MAP
-    TEXT, DATA = _aout(os.path.join(ROOT, 'mutos_bin', binary + '.golden.base64.txt'))
+    TEXT, DATA = _aout(os.path.join(ROOT, 'mutos', 'mutos_bin', binary + '.golden.base64.txt'))
     MAP = binary + 'map.txt'
 
 

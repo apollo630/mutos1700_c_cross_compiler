@@ -2,7 +2,7 @@
  * c2.h - the MUTOS 1700 object code improver (the optimizer, "cc -O"),
  * ported from the original binary.
  *
- * This is the original MUTOS 1700 c2 (mutos_bin/c2.golden.base64.txt,
+ * This is the original MUTOS 1700 c2 (mutos/mutos_bin/c2.golden.base64.txt,
  * 0411, text 17,792 bytes, stripped of its symbols): v7's c2 (v7/cc/c2.h,
  * c20.c, c21.c) rewritten for the 8086 and the MUTOS assembler's syntax,
  * with new passes of its own. The port follows the method of the c0, c1,

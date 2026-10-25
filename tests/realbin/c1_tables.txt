@@ -1,5 +1,5 @@
 / MUTOS 1700 c1 code tables, read from the original binary
-/ (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py - generated,
+/ (mutos/mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py - generated,
 / do not edit; "make check-realbin" checks it is up to date.
 /
 / Notation: v7/cc/table.s (the inverse of v7/cc/cvopt.c).

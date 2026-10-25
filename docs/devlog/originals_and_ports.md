@@ -47,8 +47,9 @@ disassembling anything, and the few key functions can be compared with
 ## The original binaries (2026-10-12)
 
 The binaries came from the hardware in commit `e8c7516` -
-`mutos_bin/<name>.golden.base64.txt` for `as`, `c0`, `c1`, `c2`, `cc`,
-`cpp` and `ld` (headers in `mutos_bin/README.md`): all stripped of
+`mutos/mutos_bin/<name>.golden.base64.txt` (at the top as `mutos_bin/`
+until 2026-10-25) for `as`, `c0`, `c1`, `c2`, `cc`,
+`cpp` and `ld` (headers in `mutos/mutos_bin/README.md`): all stripped of
 relocation, all but `cpp` stripped of symbols, all 0411 (separate I&D)
 but `cc` (0407). This section is what reading them showed; the tools are
 in `tests/realbin/` (`make check-realbin`), the consequence is
@@ -368,7 +369,7 @@ binary held.
 
 ### `c0` is v7's `c0`
 
-The stripped binary (`mutos_bin/c0.golden.base64.txt`, 0411, 23,168 bytes
+The stripped binary (`mutos/mutos_bin/c0.golden.base64.txt`, 0411, 23,168 bytes
 of text) is `crt0`, then 73 functions in v7's source order - `c00.c` to
 `c04.c`, v7's 72 and `werror()`, which nothing calls - then `libc.a` from
 text 4a1e (`tests/realbin/c0map.txt`, `c0dis.py`). 60 functions do what
@@ -511,7 +512,7 @@ It is v7's `cc` changed, not v7's `cc` (`v7/cc/cc.c`):
   in place of `-lc`.
 - **`-f`** keeps `crt0.o`, runs `/lib/c0f`, `/lib/c1f` and `/bin/asf`
   instead of `c0`, `c1`, `as`, and adds `-lf` before `-lc` (v7:
-  `fcrt0.o`, `-lfpsim`). None of these files is in `mutos_bin/`, nor are
+  `fcrt0.o`, `-lfpsim`). None of these files is in `mutos/mutos_bin/`, nor are
   `mcrt0.o`, `crt2.o`, `crt20.o`, `libf.a`, `lib2.a`.
 - **`as` is called as `as -gC -o <name>.o <temp>`** (v7: `as -u`).
 - `cpp <file> <temp>` without `-P` for a compile (so the real `cpp` writes
@@ -1231,3 +1232,66 @@ With `mutos_c2` the whole chain is ported: `mutos_cc -O -S` gives `kernel_opt/`'
 nine sources from `11_kernel` (`tests/mutos_cc/check_driver.py`, in `make test`
 since), and `tests/realbin/cccmp.py`'s `goldens` and `programs` run `mutos_c2` where
 they ran the emulated original `c2` before.
+
+## The originals of 2026-10-25
+
+The project owner brought more of MUTOS 1700 from the hardware (commit
+`c4e8b6b`) and moved every original file into one top-level directory,
+`mutos/` (commit `a53afdc`): the binaries `mutos/mutos_bin/` (until then
+`mutos_bin/`), the header files `mutos/mutos_include/`, the manual pages
+`mutos/mutos_man/`; v7's sources of the tools that came with them went
+into `v7/`. What reading them showed, on the day:
+
+- **The binaries.** `make`, `ar`, `ranlib`, `nm`, `size`, `strip`,
+  `tsort` (the tools MUTOS makefiles need, `docs/TOOLCHAIN_PLAN.md`,
+  decision 11) and the editors `ed` and `em`; headers in
+  `mutos/mutos_bin/README.md`. Like the toolchain's, all are stripped of
+  relocation and symbols; `ar`, `ed`, `nm`, `ranlib`, `size`, `strip`
+  and `tsort` are 0407, `make` and `em` 0411. Each file is exactly
+  header, text and data. `lorder` is no binary: a 400-byte shell script
+  (`nm -g`, `sed`, `sort`, `join`), stored as base64 text like the
+  rest. `em` ("erweiterter Texteditor", `ed.1.d`) has no v7 source.
+- **`make`'s built-in rules.** The original's data segment holds v7's
+  `builtin[]` (`v7/make/files.c`, the branch for other machines than the
+  VAX: `AS=as -`) string for string - all 67, `.SUFFIXES` to the last
+  rule. The rules file the `mutos_make` wrapper is to give the host's
+  `make` (decision 10) is therefore v7's table; read from the strings
+  only, the code is not read yet.
+- **The headers.** `usr/include/` (26 files, `local/uparm.h`, and 46 in
+  `sys/`) is what C programs include; `sys/h/` (43) is the kernel's.
+  The two `sys` directories agree but for `k5170.h` (`sys/h/`'s has
+  comments and a `HLT8` more) and the files only `usr/include/sys/`
+  has (`kbd.h`, `times.h`, `mch.awk`, `mch.sed`) or only `sys/h/`
+  (`v30ide.h`). `tests/mutos_cpp/h/` is `sys/h/` file for file. They
+  confirm what the project had derived: `a.out.h` is the 16-byte header
+  of eight words and the 12-byte `nlist` with `n_name[8]`
+  (`src/h/mutos_aout.h`), its `FORMAT` is `"%04x"` (v7: `"%06o"`) with
+  a new `FWIDTH`; `sys/dir.h` has `DIRSIZ` 14; `ar.h` is v7's (`ARMAG`
+  0177545, `long` `ar_date` and `ar_size`). `sys/h/a.out.h` (and
+  `usr/include/sys/a.out.h`) is not that header but the x.out one - the
+  file `v7/ld/a.out.h` is a copy of.
+- **v7's header copies are not MUTOS's.** The copies beside the new v7
+  sources are partly v7's own: `a.out.h` (in `make/`, `nm/`, `ranlib/`,
+  `size/`, `strip/`: the octal `FORMAT`), `types.h` (in `make/`, `ar/`:
+  `label_t[6]`, MUTOS `label_t[16]`), `errno.h` (MUTOS adds `EUCLEAN`
+  35), `setjmp.h` (`jmp_buf[3]`, MUTOS `jmp_buf[3+15]`), `sgtty.h` (MUTOS
+  has delays and the screen size in `sgttyb`); `ctype.h` differs in white
+  space only, the others are identical. A port follows the binary, so
+  where a v7 tool prints with `FORMAT` the MUTOS one is expected to print
+  hexadecimal.
+- **The MUTOS root has no headers yet.** `scripts/mutos_root.sh` leaves
+  `usr/include/` empty, so `mutos_cc -c` on a source with `#include
+  <stdio.h>` stops with `Can't find include file stdio.h` (2026-10-25).
+- **The manual pages** (German, terminal format: `ESC G`/`ESC H` around
+  highlighted text, `ESC 9`/`ESC 8` around subscripts, overstrikes with
+  backspace - `a`, BS, `"` for `ä`, `p`, BS, `8` for `ß`, `_`, BS, a
+  letter for underlining) set what the manuals promise beside what the
+  binaries do. `as.1.d` documents `-L` and `-W` only
+  (`docs/MUTOS1700_Assembler_as.pdf` also `-D`, `-T`; the binary none of
+  the four, AS-01) and names `/lib/as`, `/lib/asf`, where the original
+  `cc` runs `/bin/as`, `/bin/asf`. `ld.1.d` documents `-s`, `-u`, `-l`,
+  `-x`, `-X`, `-n` (a message, then as `-i`), `-i`, `-o`, `-e`, `-O`,
+  `-D` - no `-r`, no `-d`, which the binary refuses. `cc.1.d` has no
+  `-a`, `-K`, `-2`, `-20`, and names `/usr/c/` for `-B`/`-t`, where the
+  binary has `/usr/src/cmd/c/` (`src/mutos_cc/README.md`). The `make`
+  page, which decision 11 asked for, is not among them.

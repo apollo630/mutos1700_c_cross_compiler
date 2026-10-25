@@ -2,7 +2,7 @@
  * ld.h - the MUTOS 1700 link editor, ported from the original binary.
  *
  * This is v7's ld (v7/ld/ld.c) as the original MUTOS 1700 binary has it
- * (mutos_bin/ld.golden.base64.txt, 0411, text 12,480 bytes, stripped of
+ * (mutos/mutos_bin/ld.golden.base64.txt, 0411, text 12,480 bytes, stripped of
  * its symbols). The port follows the method of the c0, c1 and cpp ports
  * (docs/C0_PORT_PLAN.md): the binary is the specification, v7's source
  * the skeleton. tests/realbin/ldmap.txt maps every function to its text

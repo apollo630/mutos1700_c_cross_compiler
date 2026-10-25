@@ -376,7 +376,8 @@ the mnemonics at all - see "The original binaries" below.)
 
 ## CLI reference
 
-Based on the real `as_1.d` man page (a flattened/rendered nroff page). Implemented:
+Based on the real `as_1.d` man page (a flattened/rendered nroff page; in the tree
+since 2026-10-25 as `mutos/mutos_man/as.1.d`). Implemented:
 `-o output` (both `-o file` and attached `-ofile`; default without `-o` is `a.out` in
 the cwd); `-W` (suppress diagnostics, errors still tracked/still block success);
 multiple file arguments concatenated as one continuous source (like `cat`), with a

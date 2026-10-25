@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c1tables.py - the real MUTOS 1700 c1's code tables, read from the binary.
 
-The original c1 (../../mutos_bin/c1.golden.base64.txt) is v7's c1 ported
+The original c1 (../../mutos/mutos_bin/c1.golden.base64.txt) is v7's c1 ported
 to the 8086: its code tables are v7's data structures (v7/cc/c1.h:
 struct table {int tabop; struct optab *tabp;}, struct optab {char
 tabdeg1, tabtyp1, tabdeg2, tabtyp2; char *tabstring;}), compiled by
@@ -38,7 +38,7 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-C1 = os.path.normpath(os.path.join(HERE, '..', '..', 'mutos_bin',
+C1 = os.path.normpath(os.path.join(HERE, '..', '..', 'mutos', 'mutos_bin',
                                    'c1.golden.base64.txt'))
 
 TABLES = [('regtab', 0x334a), ('efftab', 0x3c9e), ('cctab', 0x3e66),
@@ -61,7 +61,7 @@ MACRO = {'A': 'A1', 'B': 'A2', 'C': 'B1', 'D': 'B2', 'L': 'BE', 'P': 'BF',
 
 HEADER = """\
 / MUTOS 1700 c1 code tables, read from the original binary
-/ (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py - generated,
+/ (mutos/mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py - generated,
 / do not edit; "make check-realbin" checks it is up to date.
 /
 / Notation: v7/cc/table.s (the inverse of v7/cc/cvopt.c).
@@ -251,7 +251,7 @@ MAPREL, NOTREL, REGNAME, NOPDOPE, LRTAB = 0x000c, 0x0016, 0x0020, 124, 0x0536
 C_HEADER = """\
 /*
  * c1tab.c - the real MUTOS 1700 c1's tables, read from the original binary
- * (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py --c.
+ * (mutos/mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py --c.
  * GENERATED - do not edit; "make check-realbin" checks it is up to date.
  *
  * The code tables (regtab, efftab, cctab, sptab) are v7's struct table

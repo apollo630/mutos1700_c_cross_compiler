@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cctrace.py - the original MUTOS 1700 cc under the emulator, traced.
 
-The original driver (mutos_bin/cc, 0407) forks and execs its passes.
+The original driver (mutos/mutos_bin/cc, 0407) forks and execs its passes.
 mutosemu.py fakes fork, exece and wait (see its docstring), so cc runs
 there; this tool records what it does - every exece with its path and
 argv, in order with what cc and its passes write to stdout and stderr,
@@ -25,7 +25,7 @@ are looked up under a root directory (mutosemu.py's --root). By default
 cctrace.py makes a fresh oracle root for the run and removes it after:
 lib/crt0.o and lib/libc.a from tests/ (libc.a's time set to its
 __.SYMDEF's, as decision 3 of the plan has it for mutos_root/), the
-originals of mutos_bin/ as lib/cpp, lib/c0, lib/c1, lib/c2, bin/as,
+originals of mutos/mutos_bin/ as lib/cpp, lib/c0, lib/c1, lib/c2, bin/as,
 bin/ld, bin/cc, empty usr/lib and usr/include, and tmp/. --make-root DIR
 writes one to keep; --root DIR uses a given one - mutos_root/, say, to
 see the paths cc asks for there.
@@ -73,7 +73,7 @@ REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
 ENOEXEC = 8
 
 # The originals' MUTOS paths (the ones cc has compiled in) and their
-# names in mutos_bin/
+# names in mutos/mutos_bin/
 ORIGINALS = (('lib/cpp', 'cpp'), ('lib/c0', 'c0'), ('lib/c1', 'c1'),
              ('lib/c2', 'c2'), ('bin/as', 'as'), ('bin/ld', 'ld'),
              ('bin/cc', 'cc'))

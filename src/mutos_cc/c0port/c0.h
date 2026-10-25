@@ -2,7 +2,7 @@
  * c0.h - the MUTOS 1700 C front end, ported from the original binary.
  *
  * This is v7's c0 (v7/cc/c00.c .. c05.c, c0.h) with the MUTOS 1700 deltas
- * the original c0 (mutos_bin/c0.golden.base64.txt) shows. The port follows
+ * the original c0 (mutos/mutos_bin/c0.golden.base64.txt) shows. The port follows
  * docs/C0_PORT_PLAN.md: the binary is the specification, v7's source the
  * skeleton; tests/realbin/c0map.txt maps every function to its text
  * offset in the binary, and each function's comment names what the

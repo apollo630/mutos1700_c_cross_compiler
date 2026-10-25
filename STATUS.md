@@ -23,8 +23,10 @@ A repo-root `Makefile` builds every component - through each one's own
 since 2026-10-25) - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
-`src/`, `usr/lib/`, `usr/include/`, and since 2026-10-22 `tmp/`; `make clean` removes
-it). Every component is
+`src/`, `usr/lib/`, `usr/include/` - empty: the original headers, in the tree since
+2026-10-25 (`mutos/mutos_include/`), are not in the root yet, so `#include <stdio.h>`
+is not found (`docs/TOOLCHAIN_PLAN.md`, section 6) -, and since 2026-10-22 `tmp/`;
+`make clean` removes it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
 `src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
 use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
@@ -72,6 +74,16 @@ change applied: `make clean && make all` with zero warnings, `make test` - its o
 as before, line for line, but `check_root.py` without the dangling `lib/c2` and with
 `check_driver.py`'s two new lines (`cc -O -S` 9/9, `cc -O -o` 62/62) -, `make
 check-realbin` with the port's new checks, `make check-libcatof`, `make check-docs`.
+
+Verified 2026-10-25 after the original files moved into `mutos/` (commit `a53afdc`:
+`mutos_bin/` became `mutos/mutos_bin/`): `tests/realbin/`'s scripts
+(`mutosemu.py` and the `*tables.py`, `c1dis.py`) read the binaries from
+`mutos/mutos_bin/` - after the move `make check-realbin` stopped at its first check,
+the binary not found. On a copy of the tree with the change: `make clean && make all`
+with zero warnings, `make test` - its output the same as before, line for line -,
+`make check-realbin` (all checks passed, no difference against the originals),
+`make check-libcatof`,
+`make check-docs`.
 
 ---
 
@@ -665,7 +677,8 @@ re-enacted as the binary has them (`c1lib.c`). `c1_gen.c` (15,143 lines),
 ### The original binaries: an emulated oracle, `c1`'s tables (verified 2026-10-12, re-run 2026-10-20)
 
 The original `as`, `c0`, `c1`, `c2`, `cc`, `cpp` and `ld` came from the
-hardware (`mutos_bin/`, commit `e8c7516`; see its `README.md`). They run on
+hardware (commit `e8c7516`; since 2026-10-25 in `mutos/mutos_bin/`, until then
+`mutos_bin/` - see its `README.md`). They run on
 the modern host under an 8086 emulator - `tests/realbin/` (`make
 check-realbin`, needs the Python module `unicorn`, not part of `make
 test`) - and give the project's goldens back:
@@ -772,7 +785,8 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    Every pass `mutos_cc` runs is a port of the original now.
 5. **`mutos_as`**: differential fuzzer against the original, the `-1` switch for the
    80186 instructions; then the decision on a port. **Next.**
-6. **MUTOS makefiles**: ports of `ar` and `ranlib`, the `mutos_make` wrapper.
+6. **MUTOS makefiles**: ports of `ar` and `ranlib`, the `mutos_make` wrapper (the
+   originals in `mutos/mutos_bin/` since 2026-10-25, see "Further tools" below).
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
 the limits it had for `c1_gen.c`'s sake (no constant divisor, no `x = y;`, simple
@@ -879,10 +893,21 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 MUTOS-compatible makefiles are to run on the host through a wrapper `mutos_make`
 around the host's `make` (built-in rules off, the MUTOS `make`'s own rules and
 macros, `$MUTOS_ROOT/bin` first in `PATH`); `ar` and `ranlib` are to be ported from
-their binaries. Those binaries - `make`, `ar`, `ranlib`, and `lorder`, `tsort`, `nm`,
-`size`, `strip` as needed - and the MUTOS `make` manual page are to come from the
-hardware (`mutos_bin/`, `docs/mutos_man/`). What the real `make` is known to do and
-not do is in `docs/devlog/m4_foundations.md`, "MUTOS 1700 host-tooling findings".
+their binaries.
+
+The material is in the tree since 2026-10-25 (decision 11): the binaries `make`,
+`ar`, `ranlib`, `nm`, `size`, `strip`, `tsort` and the shell script `lorder`
+(`mutos/mutos_bin/`, headers in its `README.md`), their manual pages but `make`'s
+(`mutos/mutos_man/`, German), the original headers (`mutos/mutos_include/`) and v7's
+sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`, `v7/strip/`,
+`v7/tsort/`; their header copies are partly v7's, not MUTOS's). Still missing: the
+MUTOS `make` manual page. Read so far (2026-10-25, from the binary's strings, not its
+code): the original `make`'s built-in rules and macros are v7's `builtin[]`
+(`v7/make/files.c`, `AS=as -`) string for string - the rules file of the wrapper. None
+of these binaries runs under `tests/realbin/` yet. What the real `make` is known to
+do and not do on the hardware is in `docs/devlog/m4_foundations.md`, "MUTOS 1700
+host-tooling findings"; what the new files showed in
+`docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
 
 ---
 

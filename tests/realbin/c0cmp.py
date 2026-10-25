@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c0cmp.py - mutos_c0, the port of the real c0, against the original.
 
-The original MUTOS 1700 c0 (mutos_bin/c0.golden.base64.txt) runs under
+The original MUTOS 1700 c0 (mutos/mutos_bin/c0.golden.base64.txt) runs under
 mutosemu.py; mutos_c0 (src/mutos_cc/c0port/, docs/C0_PORT_PLAN.md) runs
 on the host. Both get the same .i file; their temp1 (.1), temp2 (.2),
 messages and exit status must be the same, byte for byte.

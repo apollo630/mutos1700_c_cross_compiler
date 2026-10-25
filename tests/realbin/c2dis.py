@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """c2dis.py - annotated 8086 disassembly of the real MUTOS 1700 c2.
 
-c1dis.py on mutos_bin/c2.golden.base64.txt with c2map.txt: names the
+c1dis.py on mutos/mutos_bin/c2.golden.base64.txt with c2map.txt: names the
 functions and data from the map (the binary is stripped: the names are
 v7's where there is a counterpart in v7/cc/c20.c and c21.c, see
 c2map.txt), the libc.a functions linked in by matching libc.a's objects

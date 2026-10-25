@@ -1,6 +1,6 @@
 /*
  * c1tab.c - the real MUTOS 1700 c1's tables, read from the original binary
- * (mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py --c.
+ * (mutos/mutos_bin/c1.golden.base64.txt) by tests/realbin/c1tables.py --c.
  * GENERATED - do not edit; "make check-realbin" checks it is up to date.
  *
  * The code tables (regtab, efftab, cctab, sptab) are v7's struct table

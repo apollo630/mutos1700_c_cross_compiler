@@ -1,4 +1,4 @@
-# ldmap.txt - a map of the real MUTOS 1700 ld (mutos_bin/ld.golden.base64.txt)
+# ldmap.txt - a map of the real MUTOS 1700 ld (mutos/mutos_bin/ld.golden.base64.txt)
 #
 # The binary (0411, text 12480, data 952, BSS 36382 bytes) is stripped;
 # the names below are v7's (v7/ld/ld.c), found by the strings each

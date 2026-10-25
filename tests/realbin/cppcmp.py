@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cppcmp.py - mutos_cpp, the port of the real cpp, against the original.
 
-The original MUTOS 1700 cpp (mutos_bin/cpp.golden.base64.txt) runs under
+The original MUTOS 1700 cpp (mutos/mutos_bin/cpp.golden.base64.txt) runs under
 mutosemu.py; mutos_cpp (src/mutos_cpp/) runs on the host. Both get the
 same command line in the same directory; their output (stdout, or the
 output file named second), messages and exit status must be the same,

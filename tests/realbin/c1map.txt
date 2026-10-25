@@ -1,4 +1,4 @@
-# c1map.txt - a map of the real MUTOS 1700 c1 (mutos_bin/c1.golden.base64.txt)
+# c1map.txt - a map of the real MUTOS 1700 c1 (mutos/mutos_bin/c1.golden.base64.txt)
 #
 # The binary is stripped (no symbol table). Names come from the strings each
 # function prints, its calls, and its position: the functions follow

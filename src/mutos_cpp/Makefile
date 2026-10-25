@@ -1,7 +1,7 @@
 # Makefile - MUTOS 1700 Cross C Preprocessor (mutos_cpp)
 #
 # mutos_cpp is a port of the original MUTOS 1700 cpp binary (Reiser's cpp,
-# "cpp.c 1.6 12/12/86"), read from mutos_bin/cpp.golden.base64.txt with
+# "cpp.c 1.6 12/12/86"), read from mutos/mutos_bin/cpp.golden.base64.txt with
 # v7/cpp as the skeleton; it runs on an image of the original's data
 # segment (cpp.h). cppdata.c is generated from the binary by
 # tests/realbin/cpptables.py --c and checked in. See README.md.

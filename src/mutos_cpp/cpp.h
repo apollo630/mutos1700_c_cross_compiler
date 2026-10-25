@@ -2,7 +2,7 @@
  * cpp.h - the MUTOS 1700 C preprocessor, ported from the original binary.
  *
  * This is John F. Reiser's cpp (v7/cpp/cpp.c, cpy.y, yylex.c) as the
- * original MUTOS 1700 binary has it (mutos_bin/cpp.golden.base64.txt,
+ * original MUTOS 1700 binary has it (mutos/mutos_bin/cpp.golden.base64.txt,
  * "@(#)cpp.c 1.6 12/12/86" and "@(#)yylex.c 1.3 12/12/86"). The port
  * follows the method of the c0 and c1 ports (docs/C0_PORT_PLAN.md): the
  * binary is the specification, v7's source the skeleton.

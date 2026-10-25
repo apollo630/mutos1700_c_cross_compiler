@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cccmp.py - mutos_cc, the port of the real cc, against the original.
 
-The original MUTOS 1700 cc (mutos_bin/cc.golden.base64.txt) runs under
+The original MUTOS 1700 cc (mutos/mutos_bin/cc.golden.base64.txt) runs under
 mutosemu.py, which fakes fork/exece/wait and records every exece with its
 path and arguments (cctrace.py); mutos_cc (src/mutos_cc/ccport/) runs on
 the host and forks real processes. To see what the port runs, each one
@@ -102,7 +102,7 @@ LIBC_SYMDEF_TIME = 602282477      # 1989-01-31 20:41:17 UTC
 CC_DIR = os.path.join(ROOT, 'tests', 'mutos_cc')
 KERNEL_OPT = os.path.join(ROOT, 'tests', 'mutos_as', 'kernel_opt')
 
-# the passes: MUTOS path, original (mutos_bin/), port (under src/)
+# the passes: MUTOS path, original (mutos/mutos_bin/), port (under src/)
 PASSES = (('lib/cpp', 'cpp', 'mutos_cpp/mutos_cpp'),
           ('lib/c0', 'c0', 'mutos_cc/mutos_c0'),
           ('lib/c1', 'c1', 'mutos_cc/mutos_c1'),
@@ -112,7 +112,7 @@ PASSES = (('lib/cpp', 'cpp', 'mutos_cpp/mutos_cpp'),
 
 
 def orig_of(path):
-    """The original (mutos_bin/) a pass path stands for, by the end of its
+    """The original (mutos/mutos_bin/) a pass path stands for, by the end of its
     name: lib/c0, lib/c0f, usr/src/cmd/c/oc0 are c0."""
     name = os.path.basename(path)
     for suffix, tool in (('cpp', 'cpp'), ('c0', 'c0'), ('c0f', 'c0'),
@@ -168,7 +168,7 @@ def _base_root(path):
 
 
 def oracle_root(path, extra=()):
-    """The original's root: its passes from mutos_bin/ at their paths (and
+    """The original's root: its passes from mutos/mutos_bin/ at their paths (and
     at extra paths, by their names: usr/src/cmd/c/c0 is c0)."""
     _base_root(path)
     for mpath in [p for p, _, _ in PASSES] + list(extra):
