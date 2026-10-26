@@ -26,7 +26,11 @@ that do what the 8086 (and the V30) does (Emu._hook_8086()).
 
 System calls served: exit, fork, read, write, open, close, wait, creat,
 link, unlink, exece (and exec), chmod, break, stat, lseek, getpid,
-fstat, access, kill, signal, ioctl (always "not a tty"), umask.
+fstat, access, kill, signal, ioctl (always "not a tty"), umask, time
+(the host's clock, or Emu's now) and ftime (the same time; the time
+zone Emu's tz in minutes west of Greenwich and its dst flag, 0 and 0 -
+UTC - unless a run says otherwise; until 2026-10-26 ftime was not
+served and libc's ctime() took the zone from the stack).
 Signals: signal() records the handler (libc.a's per-signal trampoline);
 kill() of the process itself delivers the signal as v7's kernel does -
 a caught one through an interrupt frame into its trampoline, the handler
@@ -87,6 +91,7 @@ import io
 import os
 import struct
 import sys
+import time
 
 from unicorn import Uc, UcError, UC_ARCH_X86, UC_MODE_16, UC_HOOK_CODE
 from unicorn.x86_const import (UC_X86_REG_AX, UC_X86_REG_BX, UC_X86_REG_CX,
@@ -154,7 +159,7 @@ class Emu:
 
     def __init__(self, image, args, cwd='.', stdin=None, stdout=None,
                  stderr=None, root=None, eof_limit=None, pid=None, fds=None,
-                 on_exec=None, umask=None, envp=()):
+                 on_exec=None, umask=None, envp=(), now=None, tz=0, dst=0):
         magic, tsize, dsize, bsize = struct.unpack_from('<4H', image, 0)
         if magic not in (0o407, 0o411):
             raise ValueError('not a 0407/0411 a.out (magic %o)' % magic)
@@ -219,6 +224,10 @@ class Emu:
         self.killed = None
         self.pid = pid if pid is not None else (os.getpid() & 0x7FFF) or 1
         self.umask = host_umask() if umask is None else umask
+        # time() and ftime() (ar, ranlib): the host's clock unless now is
+        # given; ftime's time zone in minutes west of Greenwich and its
+        # dstflag - 0 and 0, UTC, unless a run says otherwise
+        self.now, self.tz, self.dst = now, tz, dst
         # fork/exece/wait (faked, see the module's docstring)
         self.on_exec = on_exec if on_exec is not None else default_on_exec
         self.forks = []         # saved parents, innermost last
@@ -479,6 +488,10 @@ class Emu:
         self.uc.reg_write(UC_X86_REG_IP, h)
 
     def _path(self, name):
+        # the name is the program's bytes as latin-1 characters: the host
+        # file gets those bytes (os.fsdecode's surrogate escapes), not
+        # their UTF-8 encoding
+        name = os.fsdecode(name.encode('latin1'))
         if os.path.isabs(name):
             # an absolute MUTOS path (/usr/include/...) lives under root
             if self.root:
@@ -682,11 +695,19 @@ class Emu:
             f = self.fds.get(bx)
             if f is None:
                 return ret(EBADF, error=True)
-            f.write(bytes(self.uc.mem_read(self.dbase + cx, si)))
-            return ret(si)
+            try:
+                w = f.write(bytes(self.uc.mem_read(self.dbase + cx, si)))
+            except OSError as e:             # a file that cannot take it
+                return ret(v7_errno(e), error=True)
+            # a write that reaches a file size limit is short, as under Unix
+            return ret(si if not isinstance(w, int) or w > si else w)
         if n == 5:                                   # open(name, mode)
             try:
-                f = open(self._path(self.cstr(bx)), 'rb' if cx == 0 else 'r+b')
+                # unbuffered: a write is seen by every other reader of the
+                # file at once, as under Unix (ar q x.a x.a reads what it
+                # has appended)
+                f = open(self._path(self.cstr(bx)), 'rb' if cx == 0 else 'r+b',
+                         buffering=0)
             except OSError:
                 return ret(ENOENT, error=True)
             return ret(self._newfd(f))
@@ -704,7 +725,7 @@ class Emu:
             path = self._path(self.cstr(bx))
             new = not os.path.exists(path)
             try:
-                f = open(path, 'w+b')
+                f = open(path, 'w+b', buffering=0)
             except OSError:
                 return ret(EACCES, error=True)
             if new:                                  # a new file: the mode
@@ -738,6 +759,17 @@ class Emu:
             # so that scratch names built from it (the real as's
             # /tmp/AS<pid>) differ between runs side by side
             return ret(self.pid)
+        if n == 13:                                  # time(): the long in
+            t = int(time.time()) if self.now is None else self.now
+            t &= 0xFFFFFFFF                          # AX (high), BX (low)
+            return ret(t >> 16, t & 0xFFFF)
+        if n == 35:                                  # ftime(&timeb): the long
+            t = int(time.time()) if self.now is None else self.now
+            t &= 0xFFFFFFFF                          # time, millitm, timezone,
+            self.uc.mem_write(self.dbase + bx,       # dstflag (BSD's timeb)
+                              struct.pack('<HHHhh', t >> 16, t & 0xFFFF, 0,
+                                          self.tz, self.dst))
+            return ret(0)
         if n == 33:                                  # access(name, mode)
             if os.path.exists(self._path(self.cstr(bx))):
                 return ret(0)

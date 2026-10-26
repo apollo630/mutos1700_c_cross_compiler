@@ -1,0 +1,85 @@
+# ranlibmap.txt - a map of the real MUTOS 1700 ranlib (mutos/mutos_bin/ranlib.golden.base64.txt)
+#
+# The binary (0407, text 1a8a, data 1c32 bytes with the BSS to 3d54) is
+# stripped; the names below are v7's (v7/ranlib/ranlib.c, which is nm's
+# code), found by the strings each function passes, the calls it makes and
+# its position. It is crt0, then ranlib.o - v7's ranlib.c, its five
+# functions in source order -, then libc.a from text 0580 (fseek; the
+# others matched by ranlibdis.py against libc.a's objects). ranlibdis.py
+# reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/ranlib/ranlib.c): same - compared, does what v7's does
+#                                      libc - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_ranlib/ranlib.c, read from the text at that
+#       offset (libc.a's: only where the port re-enacts what ranlib sees of
+#       it, stdio's slots; the rest is the host's)
+#
+# Every function was compared instruction by instruction. Common to all:
+# the headers are bytes (ar_hdr 26, exec 16, nlist 12), the longs have
+# their high word first (arp.ar_size, off, oldoff, tab[].cloc,
+# offdelta), the symbol's type is read as a word and its N_EXT bit (040)
+# tested, the messages begin with "nm: " (v7's ranlib is nm's code), and
+# arp and exp lie one behind the other at 1c34 and 1c4e (arp.ar_name of 14
+# bytes runs on into the header when it has no 0 - "nm: %s-- no name
+# list" prints it so).
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- ranlib.o
+T 00b6 _main       same       ported  per archive: fopen "r", the magic (0177545), the members via nextel(); the a.out magics 0407 0410 0411 0405 only; the symbols with N_EXT set and a type that is not 0 into tab[700] (stash()); then fixsize(), the temporary "__.SYMDEF" written ("w"), "ar rlb %s %s %s" or "ar rl %s %s" through system(), fixdate()
+T 0346 _nextel     same       ported  oldoff = off; fseek(fi, off, 0); fread 26 bytes into arp; off = ftell() + size, an odd size rounded up
+T 03d8 _stash      same       ported  tab[tnum] gets the 8 bytes of the name and oldoff (tnum: "symbol table overflow" and exit 1 at 700)
+T 0448 _fixsize    same       ported  offdelta = 12 * tnum + 26 (less the old table's size and header if the first member is "__.SYMDEF"); added to every cloc; the first member's name copied to firstname[17] otherwise; returns "new"
+T 04fc _fixdate    same       ported  open(archive, 1), write time() + 5 at offset 16 (the date of the first member); "can't reopen %s" otherwise
+# ---- libc.a from 0580 (ranlibdis.py names the functions it can match)
+T 0580 _fseek     libc       ported  rl_fseek(): the host's fseek(); a seek to a negative offset (the original's lseek() fails) is refused
+T 06ca _ftell     libc       -       the host's stdio
+T 0782 _fread     libc       -       the host's stdio
+T 07dc _fwrite    libc       -       the host's stdio
+T 083c _system    libc       ported  fork, execl("/bin/sh", "sh", "-c", cmd), wait - the port: fork and execv of $MUTOS_ROOT/bin/ar with the command's words (names the shell would take apart are refused)
+T 08ce _fopen     libc       ported  rl_fopen(): the stdio slot model - 20 slots, stdin, stdout and stderr taken, a file left open holds its slot (the 18th is "cannot open"); an opened directory is refused
+T 08e6 _fprintf    libc       -       the host's: "%s" only
+T 0928 _sprintf    libc       -       the command line into buf[256]: no check (the port refuses 256 characters and more)
+T 0976 __filbuf   libc       -       the host's stdio
+T 0a34 __doprnt    libc       -
+T 0d50 _crack      libc       -       _doprnt's helpers to 1016
+T 1016 __flsbuf   libc       -       the host's stdio
+T 10fe _fflush    libc       -       the host's stdio
+T 1154 __cleanu   libc       -       the host's stdio
+T 1172 _fclose    libc       -       the host's stdio
+T 11d8 __stbuf     libc       -
+T 1212 __ftbuf     libc       -
+T 1238 __endope   libc       -       the host's stdio
+T 1310 _create     libc       -
+T 134a __findio   libc       -       the host's stdio
+T 1372 _exit      libc       -       the host's exit()
+T 137c _malloc     libc       -       stdio's buffers only
+T 1484 _free       libc       -
+T 149e _ialloc     libc       -
+T 152e _realloc    libc       -
+T 15de _isatty     libc       -
+T 1604 _stty       libc       -
+T 161c _gtty       libc       -
+T 1634 _strncmp   libc       -       the host's
+T 1670 _strncpy   libc       -       the host's
+T 16b6 _close      libc       -       the system calls from here: 16bc creat, 16c2 execl, 16ee fork, 170a ioctl, 1710 lseek, 173a open, 1740 read, 1746 sbrk, 1778 brk, 1796 signal, 1846 time, 185f ftime, 186c unlink, 1872 wait, 1890 write, 1a76 getpid, 1a7e kill; 1896 chkstk, 18cc almul, 1906 cret, 190e ldiv, 19b4 lrem, 1a56 the system call stub
+# ---- data (the port's image has only the 42 bytes of arp and exp)
+D 1a8a crt0        crt0's data: Isgadr 1a8c, Iscadr 1a90
+D 1a94 tempnm      "__.SYMDEF"
+D 1a9e mode_r      "r"
+D 1aa0 text        the strings: "nm: cannot open %s\n", "not archive: %s\n", "nm: %s-- no name list\n", "w", "can't create temporary\n", "ar rlb %s %s %s\n", "ar rl %s %s\n", "can't execute %s\n", "symbol table overflow\n", "can't reopen %s\n", "/bin/sh", "sh", "-c"
+D 1b5c null        libc.a's "(null)"
+D 1b64 _iob        libc.a's FILE structures (stderr at 1b74)
+D 1c32 bss         the BSS
+D 1c34 arp         struct ar_hdr (26 bytes): name 1c34, date 1c42, size 1c4a
+D 1c4e exp         struct exec (16 bytes): magic 1c4e, text 1c50, data 1c52, syms 1c56, flag 1c5c
+D 1c5e fi          FILE *
+D 1c60 fo          FILE *
+D 1c62 off         long
+D 1c66 oldoff      long
+D 1c6a tab         struct tab tab[700] (12 bytes: cname[8], long cloc), to 3d3a
+D 3d3a tnum
+D 3d3c new         fixsize()'s result
+D 3d3e firstname   char firstname[17]
+D 3d50 offdelta    long

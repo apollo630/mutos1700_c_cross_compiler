@@ -46,7 +46,8 @@ SYMDEF_TIME = 602282477
 LINKS = (('lib/cpp', 'mutos_cpp/mutos_cpp'), ('lib/c0', 'mutos_cc/mutos_c0'),
          ('lib/c1', 'mutos_cc/mutos_c1'), ('lib/c2', 'mutos_cc/mutos_c2'),
          ('bin/as', 'mutos_as/mutos_as'), ('bin/ld', 'mutos_ld/mutos_ld'),
-         ('bin/cc', 'mutos_cc/mutos_cc'))
+         ('bin/cc', 'mutos_cc/mutos_cc'), ('bin/ar', 'mutos_ar/mutos_ar'),
+         ('bin/ranlib', 'mutos_ranlib/mutos_ranlib'))
 GOLDEN_S = os.path.join(REPO, 'tests', 'mutos_cc', '08_float',
                         '01_floatbas.s.golden')
 INCLUDE = os.path.join(REPO, 'mutos', 'mutos_include', 'usr', 'include')

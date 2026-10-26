@@ -1,6 +1,6 @@
-# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc` and `c2`
+# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar` and `ranlib`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), and the measurement of `mutos_as` against the original `as` (2026-10-25).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), and the ports of `ar` and `ranlib` (2026-10-26).
 
 ---
 
@@ -1513,3 +1513,124 @@ step 6, or earlier if hand-written assembler becomes a goal; `mutos_as` stays un
 A footnote on method, because it recurs in this log: the two last findings, AS-13 and
 AS-14, and the correction of an earlier note ("a comment may be of any length", measured with
 tails that read as nothing) came from the *damaged* cases and from trying the same question with another tail. A claim about a limit holds for the inputs it was tried on.
+
+## The ports of `ar` and `ranlib` (2026-10-26)
+
+Step 6 of `docs/TOOLCHAIN_PLAN.md`, by the method of the others: the binary is the
+specification, v7's source (`v7/ar/ar.c`, `v7/ranlib/ranlib.c`) the skeleton, the
+emulated original (`tests/realbin/mutosemu.py`) the oracle. The results are in
+`STATUS.md` (Milestone 6), the behaviour in `src/mutos_ar/README.md` and
+`src/mutos_ranlib/README.md`, the bugs in `docs/MUTOS_ORIGINAL_BUGS.md` (AR-01 ..
+AR-05, RL-01 .. RL-07). What is worth keeping here is how it went.
+
+### Both are v7's, and small
+
+`ar.o` is 33 functions, `ranlib.o` five, followed by libc.a (the linked-in objects
+are found by `c1dis.py`'s matching of libc.a's members against the text: `fprintf`
+from 0f32 in `ar`, `fseek` from 0580 in `ranlib`). Read beside v7's source, none of
+them does anything different from v7 - every function is `same` in
+`tests/realbin/armap.txt` and `ranlibmap.txt`. What the port had to get right is
+therefore not logic but representation and environment:
+
+- the headers as bytes - `struct ar_hdr` of 26 bytes with `char ar_uid, ar_gid`
+  (signed: an owner of 200 is `-56` in `ar tv`) and two longs, high word first;
+  `struct exec` of 16 bytes and `struct nlist` of 12, a symbol's type a *word*
+  (the spare byte behind `n_type` counts in `ranlib`'s tests);
+- libc.a under it: `perror()` with its 41 messages and the "Unknown error" beyond
+  (the table is generated from the binary, `artables.py --c`, the way the other ports'
+  data segments are), `mktemp()` with the process number and the `a` .. `z` loop,
+  `ctime()` through `localtime()` with the zone from `ftime()`, the twenty stdio
+  slots of which `ranlib` leaks one for every argument that is no archive.
+
+No memory image of the whole data segment was needed, as `ld`, `cpp` and `c2`
+needed: the one place where the original's layout matters is `ranlib`'s `arp` and
+`exp`, adjacent in the BSS, so that `nm: %s-- no name list` reads a 14-character
+name on through the header (RL-01). The port keeps those two in one 42-byte array
+and refuses (exit status 125, "refused") when the string would not end in it.
+
+### What was refused, and why that is different here
+
+`ar` and `ranlib` act on the file system, so most of what the others refused
+(a pointer out of the image) does not arise; what is refused is the *environment*:
+an opened directory (MUTOS hands out its entries as bytes, the host does not; the
+emulator answers ENOENT), a command line past `ranlib`'s `buf[256]`, names the shell
+would take apart (the original runs `ar` through `/bin/sh -c`; the port runs
+`$MUTOS_ROOT/bin/ar` directly and so must refuse what only the shell would treat
+differently). `ranlib` calling `ar` is the new thing: the emulator's faked `exece`
+hands `ar ...` to the original `ar` in the same directory, so the comparison of
+`ranlib` is a comparison of the pair.
+
+### The comparators
+
+`arcmp.py` runs a sequence of steps - `ar` command lines, and changes of the files
+between them - in two copies of one directory, each with a MUTOS root of its own,
+and compares after *every* step the messages, the status and both trees (names,
+bytes, modes). Two things needed care. First, time: a member's date is the file's
+time, an extracted file is dated now, and `ranlib` writes `time() + 5` into the
+table's header, so a run of the original and a run of the port seconds apart cannot
+be byte-identical; `settle_times()` gives files made by a step a fixed time and
+`ranlibcmp.py` zeroes any member date within the window the case has run (the
+table's five seconds included), in *every* member, because `fixdate()` patches the
+first member whatever it is (RL-07). Second, state that persists through the
+harness itself: among the first hand-written cases the one that differed was an
+archive appended to itself (`ar q x.a x.a`), which the emulator, buffering file
+writes, did not feed back to `ar`'s own reads as a real kernel does - the emulator
+now opens its files unbuffered.
+
+Three classes beyond `same` and `refused` carry no difference: `limits` (a damaged
+header whose size is a gigabyte makes `ar` copy or print a member of that size; the
+harness caps files at 16 MB and the port is stopped there), `slow` (the same member costs
+the emulated original more than the instruction budget while the port, on the host,
+finishes; one such case was rerun with three billion instructions and finished with
+the same messages), and `endless` (RL-06, a negative member size: neither finishes).
+
+### The oracle had a bug too
+
+The damaged-archive run showed ten `DIFFERENT`: `ar write error: File too large`
+in the original, `ar write error: No such file or directory` in the port. Both hit
+the 16 MB file limit; the host's `write()` is *short* at the limit (484 of 512 bytes)
+and returns the count, which `ar` takes as an error and reports with `perror()` -
+whose `errno` was then whatever an earlier call had left. The emulator, though,
+ignored `write()`'s return value and said 512, so the next write failed outright
+with EFBIG. The kernel's behaviour is the port's; the fix was the emulator's
+(`write` returns the count). A difference at a resource limit is as likely the
+oracle's as the port's, and the way to tell is to look at what the host's call
+returned.
+
+### What the second damaged-archive run still found
+
+With the emulator mended, 600 damaged archives (seed 3) still gave four `DIFFERENT`,
+and none of them was the oracle's.
+
+- **`Not a typewriter`.** Two cases ended in `ar write error` after a short write at
+  the file limit; the original said `Not a typewriter`, the port `No such file or
+  directory`. A short write sets no `errno`, so `perror()` prints what the last failed
+  call left - and in the original that was an `ioctl()`: v7's stdio asks `isatty()`
+  when the first character goes to stdout, and on a file or a pipe it fails with
+  ENOTTY. The port's stdout is the host's, which asks nothing of the kind. `ar_out()`
+  now does it once, before the first output (it sits in front of each of the eight
+  `printf()`/`putchar()` calls).
+- **A phase error that was not one.** `ar t` on a member whose damaged header said
+  134,218,238 bytes - 262,145 blocks of 512, one of them read in part - made the port
+  say `phase error`; the original, after ten seconds of emulation, said nothing.
+  `copyfil()`'s counter `pe` is an `int`, 16 bits on the 8086 (`inc word ptr
+  [bp-6]`), and 1 + 262,143 short reads is exactly 4 x 65,536. The port's `pe` is a
+  `uint16_t` now, AR-05 is written down, and `arcmp.py cases` has the clean form of
+  it: a header that claims 65,535, 65,536 and 65,537 blocks and no data.
+- **`ar p` of a gigabyte.** The harness cuts the original's output at 1 MB (it would
+  never end otherwise) and the file limit cuts the port's at 16 MB - a write that
+  crosses the limit comes back short, which is a `write error` and exit 1 - so the
+  two disagreed about how a run ends. The judge counts it among `limits` when what both
+  wrote is the same as far as the shorter goes.
+
+### libc.a, rebuilt
+
+The test the plan asked for: `ar rc libc2.a` of the 167 objects in libc.a's order,
+then `ranlib`, gives libc.a byte for byte but for the table's header - its time
+(five seconds past the clock; the original's is the 1989 time it was made), its
+group and its mode (the original's are those of the file the hardware's `ranlib`
+left, 1 and 0100664; the port's those of the file `ranlib` wrote here, made with the
+user's umask and group). Every symbol table entry, every offset and the order of the
+entries agree, which is the proof that `ranlib`'s `tab[]` and its `offdelta` are
+right. `tests/mutos_ar/check_libc.py` does this without an emulator and is part of
+`make test`; `ranlibcmp.py libc` does it against the emulated originals.
