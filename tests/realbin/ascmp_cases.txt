@@ -1,0 +1,125 @@
+(bp) after a displacement [-o y.o x.s]: OBJ-DIFF bytes
+-o before and after [-o y.o x.s -o z.o]: obj-same mode
+-o is an option letter [-eo y.o x.s]: PORT-REJECTS files,status,stderr
+-o last, no name [x.s -o]: PORT-REJECTS files,status,stderr
+-o name [-o y.o x.s]: obj-same mode
+-o twice [-o y.o -o z.o x.s]: obj-same mode
+-oNAME attached [-oy.o x.s]: PORT-ACCEPTS files,status,stderr
+-oy.o -e [-oy.o -e x.s]: PORT-REJECTS bytes,status,stderr
+.ascii [-o y.o x.s]: obj-same mode
+.asciz comment after [-o y.o x.s]: obj-same mode
+.asciz escapes [-o y.o x.s]: obj-same mode
+.asciz not closed [-o y.o x.s]: both-reject files,status,stderr,stdout
+.asciz odd digits [-o y.o x.s]: obj-same mode
+.asciz text after [-o y.o x.s]: both-reject files,status,stderr,stdout
+.blkw in each segment [-o y.o x.s]: obj-same mode
+.dlptr [-o y.o x.s]: both-reject files,status,stderr,stdout
+.globl L twice, -C [-C -o y.o x.s]: OBJ-DIFF bytes
+.insrt 10 deep [-o y.o x.s]: obj-same mode
+.insrt 11 deep [-o y.o x.s]: both-reject files,status,stderr,stdout
+.insrt [-o y.o x.s]: obj-same mode
+.insrt missing file [-o y.o x.s]: both-reject files,status,stderr,stdout
+.insrt nested [-o y.o x.s]: obj-same mode
+.insrt without quotes [-o y.o x.s]: both-reject files,status,stderr,stdout
+.name with an operand [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: bound [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: enter [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: imul 3 operands [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: imul imm [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: push imm byte [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: push imm word [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: rol imm [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: shl imm [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: shl mem imm [-o y.o x.s]: both-reject files,status,stderr,stdout
+186: shr imm [-o y.o x.s]: both-reject files,status,stderr,stdout
+@ on a data instruction [-o y.o x.s]: both-reject files,status,stderr,stdout
+@ with a marker and a direct address [-o y.o x.s]: both-reject files,status,stderr,stdout
+@(reg) on a data instruction [-o y.o x.s]: both-reject files,status,stderr,stdout
+CR LF [-o y.o x.s]: PORT-ACCEPTS mode,status,stderr,stdout
+NUL byte [-o y.o x.s]: PORT-REJECTS files,status,stderr
+a name with a dot alone (mov.b) [-o y.o x.s]: PORT-REJECTS files,status,stderr
+a number alone in .bss [-o y.o x.s]: obj-same mode
+a sum of 40 terms [-o y.o x.s]: PORT-REJECTS files,status,stderr
+a symbol plus a number alone [-o y.o x.s]: PORT-REJECTS files,status,stderr
+bad character [-o y.o x.s]: both-reject files,status,stderr,stdout
+bad operand count [-o y.o x.s]: both-reject files,status,stderr,stdout
+bc and bnc [-o y.o x.s]: PORT-REJECTS files,status,stderr
+byte 0200 [-o y.o x.s]: PORT-REJECTS files,status,stderr
+byte 0247, a syntax error [-o y.o x.s]: both-reject files,status,stderr,stdout
+byte 0351, the original crashes [-o y.o x.s]: both-reject status,stderr
+call (reg) without @ [-o y.o x.s]: both-reject files,status,stderr,stdout
+call disp(reg) without @ [-o y.o x.s]: both-reject files,status,stderr,stdout
+calli of an address [-o y.o x.s]: PORT-REJECTS files,status,stderr
+character constant not closed [-o y.o x.s]: both-reject files,status,stderr,stdout
+character constant of three [-o y.o x.s]: both-reject files,status,stderr,stdout
+character constant, empty [-o y.o x.s]: PORT-REJECTS files,status,stderr
+character constants [-o y.o x.s]: obj-same mode
+cmpb without an operand [-o y.o x.s]: PORT-REJECTS files,status,stderr
+comment line of 128 characters [-o y.o x.s]: OBJ-DIFF bytes
+conditional branch to a register [-o y.o x.s]: PORT-REJECTS files,status,stderr
+conditional branch to memory [-o y.o x.s]: PORT-REJECTS files,status,stderr
+default name [x.s]: obj-same files
+displacement from a difference, other segments [-o y.o x.s]: obj-same mode
+displacement from an assigned constant [-o y.o x.s]: obj-same mode
+displacement from label differences [-o y.o x.s]: obj-same mode
+eight labels in front [-o y.o x.s]: obj-same mode
+empty input [-o y.o x.s]: obj-same mode
+input a.out-like name [prog]: obj-same files,stderr
+input in a dir, -o [-o y.o d/x.s]: obj-same mode
+input is a directory [-o y.o d.s]: PORT-ACCEPTS files,status,stderr
+input with a directory [d/x.s]: obj-same files
+input without .s [-o y.o x.c]: obj-same mode,stderr
+input without .s, no -o [x.c]: obj-same files,stderr
+input, dot only [.s]: obj-same files
+jmp *disp(reg) without @ [-o y.o x.s]: both-reject files,status,stderr,stdout
+jmpi of an address [-o y.o x.s]: PORT-REJECTS files,status,stderr
+lea into a byte register [-o y.o x.s]: PORT-REJECTS files,status,stderr
+long names [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.s]: obj-same files
+missing input [-o y.o nofile.s]: both-reject status,stderr
+movb without an operand [-o y.o x.s]: PORT-REJECTS files,status,stderr
+no input, empty stdin []: PORT-ACCEPTS files,status,stderr
+no last linefeed [-o y.o x.s]: PORT-ACCEPTS bytes,mode,status,stderr,stdout
+odd .data then .bss [-o y.o x.s]: OBJ-DIFF bytes,mode
+odd .data, .bss, then more .data [-o y.o x.s]: obj-same mode
+odd bss size is made even [-o y.o x.s]: obj-same mode
+only comments [-o y.o x.s]: obj-same mode
+option - [- -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -- [-- -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -1 [-1 -o y.o x.s]: obj-same mode,stderr
+option -C [-C -o y.o x.s]: obj-same mode
+option -Cg [-Cg -o y.o x.s]: obj-same mode
+option -D [-D -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -L [-L -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -T [-T -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -W [-W -o y.o x.s]: obj-same mode,stderr
+option -X [-X -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -e [-e -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -g [-g -o y.o x.s]: obj-same mode
+option -gC [-gC -o y.o x.s]: obj-same mode
+option -gCel [-gCel -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -gx [-gx -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -l [-l -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -u [-u -o y.o x.s]: PORT-REJECTS files,status,stderr
+option -v [-v -o y.o x.s]: obj-same mode,stderr
+options after the input [-o y.o x.s -g]: obj-same mode
+options split [-g -C -o y.o x.s]: obj-same mode
+parentheses in an expression [-o y.o x.s]: both-reject files,status,stderr,stdout
+pop cs [-o y.o x.s]: PORT-REJECTS files,status,stderr
+pop of a byte register [-o y.o x.s]: PORT-REJECTS files,status,stderr
+push of a byte register [-o y.o x.s]: PORT-REJECTS files,status,stderr
+redefined symbol [-o y.o x.s]: both-reject files,status,stderr,stdout
+scab and scaw [-o y.o x.s]: OBJ-DIFF bytes
+statement and comment of 128 characters [-o y.o x.s]: OBJ-DIFF bytes
+stdin []: PORT-ACCEPTS files,status,stderr
+stdin and -o [-o y.o]: obj-same mode,stderr
+sums of many terms [-o y.o x.s]: obj-same mode
+symbols, -e [-e -o y.o x.s]: both-reject files,status,stderr,stdout
+symbols, no -e [-o y.o x.s]: PORT-ACCEPTS bytes,mode,status,stderr,stdout
+syntax error [-o y.o x.s]: both-reject files,status,stderr,stdout
+three inputs [a.s b.s c.s]: PORT-REJECTS files,status,stderr
+twenty labels in front [-o y.o x.s]: obj-same mode
+two errors [-o y.o x.s]: both-reject files,status,stderr,stdout
+two inputs [-o y.o a.s b.s]: OBJ-DIFF bytes,mode,stderr
+two numbers in one operand [-o y.o x.s]: both-reject files,status,stderr,stdout
+unknown mnemonic, operand [-o y.o x.s]: both-reject files,status,stderr,stdout
+unknown mnemonic, two operands [-o y.o x.s]: both-reject files,status,stderr,stdout

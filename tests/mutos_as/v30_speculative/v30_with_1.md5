@@ -1,0 +1,7 @@
+56e5a2860bd3a584b60e33eaf9d82f7c  bound_test.o
+e844aafd50d0a271b46910a98fdec958  enter_leave_test.o
+93f36168dd85e2f1bef2f96499a9bc47  imul_imm_test.o
+5a0b6659a52f26042ad7fdaadb7cc9c2  insb_outsb_test.o
+3576fa18597be6fc57fc7343b4c30e44  push_imm_test.o
+796f2e89be8a2a6981e8ccac5585e446  pusha_popa_test.o
+a98d51ab7d1155d0770bc21fbabd57f0  shift_rotate_imm_count_test.o

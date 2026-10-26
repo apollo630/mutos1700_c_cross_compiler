@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-10-25.
+Last updated: 2026-10-26.
 
 ---
 
@@ -96,6 +96,21 @@ byte. On a copy of the tree: `make clean && make all` with zero warnings, `make 
 its output as before, line for line, plus `check_root.py`'s three new lines -, `make
 check-realbin` (the same, line for line, plus the new lines), `make check-libcatof`,
 `make check-docs`.
+
+Verified 2026-10-26 with step 5 (the measurement of `mutos_as`, the work of 2026-10-25;
+`mutos_as`, `tests/realbin/` and the documentation changed, no other tool). On fresh
+clones of the commit, with and without the change: `make clean && make all` with zero
+warnings; `make test` exit 0, its output the same in both, line for line, but for the
+two lines `tests/mutos_as/check_switches.sh` adds (`-1`, `-C`) and the reason
+`mutos_as` gives for refusing the compiler's own invalid `fltprobe/p19_open3` (its line
+229 is a hundred bytes of garbage: `statement too long` now, `could not classify
+operands` before); all 76 golden objects byte for byte (`mch_insw_outsw` with `-1`);
+`make check-docs`. In the
+working tree: `make check-realbin` (all checks passed, the new ones among them:
+`ascmp.py goldens` 432 runs and `ascmp.py cases` 158 runs against their pins,
+`asfuzz.py --gen cc --strict` 300 cases, all the same object) and `make
+check-libcatof` (0 differ). The final fuzzer run (about 5,500 cases) is in "Step 5 of
+the plan", Milestone 2.
 
 ---
 
@@ -191,12 +206,15 @@ for them gone. Per function: `tests/realbin/ldmap.txt`.
 ## Milestone 2 — `mutos_as` (cross-assembler) [CURRENT FOCUS]
 
 **Status: PROVISIONALLY COMPLETE for the real corpus** - every golden object
-byte-identical. "Provisional" because, per this project's core rule, no milestone is
-ever declared permanently closed. Measured against the original `as` (2026-10-20)
-it differs in its options and in what it accepts beyond the corpus (below); the
-plan (`docs/TOOLCHAIN_PLAN.md`, decision 9) is not to port it now: accept `-g`/`-C`,
-put the 80186/V30 instructions behind `-1`, and measure the rest with a
-differential fuzzer before deciding on a port.
+byte-identical (76/76 with `-1` for the one that has an 80186 instruction), and the
+compiler's output assembled to the same object as by the original in every case the
+original accepts. "Provisional" because, per this project's core rule, no milestone is
+ever declared permanently closed. Step 5 of the plan (2026-10-25: `-C` and `-1`
+done, the differential fuzzer built and run, below) measured how far the
+re-implementation differs from the original `as`: in its options, its messages, its
+instruction words and in what it accepts beyond the corpus. The decision on a port
+(`docs/TOOLCHAIN_PLAN.md`, decision 9) is the project owner's; the measurements and a
+recommendation are in "Step 5 of the plan" below.
 
 `mutos_as` (`src/mutos_as/`: `mutos_as.h`, `lexer.c`, `parser.c`, `pass2.c`,
 `symtab.c`, `encode.c`, `objwrite.c`, `fltconst.c`, `assemble.c`; secondary tools
@@ -209,7 +227,9 @@ instructions listed under "`mutos_as` opcode coverage").
 - **Clean rebuild** (`make clean && make all`), zero warnings under
   `-std=c11 -Wall -Wextra -Wpedantic`.
 - **`-g`/`-C`**: `-gC`, `-g -C` and `-Cg -ox.o` give the object of no option
-  (`10_integ/01_wordcount.s.golden`); `-gx` and `-L` are still the usage error.
+  (`10_integ/01_wordcount.s.golden`, which has no `L` symbol to leave out; since
+  2026-10-25 `-C` does what the original's does - "Step 5 of the plan" below);
+  `-gx` and `-L` are still the usage error.
 - **Full regression (`make test`): 76/76 golden files byte-for-byte identical**,
   full file compare (header + text + data + text-reloc + data-reloc + symtab):
   `tests/mutos_as/kernel_opt/` 62/62 (with `mch_insw_outsw.s`, whose golden is the
@@ -248,16 +268,18 @@ other originals as oracles"):
   effect on the probes. Every other letter gives `Unknown option X ignored.` - the
   manual's `-L`, `-W`, `-D` and `-T` included. `mutos_as` has `-o`, `-W` and `-v`,
   and **since 2026-10-20 takes `-g` and `-C`** - alone or together (`-gC`), letter by
-  letter as the original reads them - and ignores them (plan decision 9): the
-  original `cc`'s `as -gC -o x.o tmp` works. Every other option is still its usage
-  error.
+  letter as the original reads them (plan decision 9): the original `cc`'s
+  `as -gC -o x.o tmp` works. They ignored both then; `-g` still does, `-C` leaves out the
+  `L` symbols since 2026-10-25, as the original's (below), and `-1` is the switch for
+  the 80186 instructions. Every other option is still its usage error.
 - **Output** (checked under the emulator, 2026-10-20): `mutos_as` wrote a summary
   line (`x.s: text=... -> x.o`) to stderr on every run, the original nothing -
   **since 2026-10-24 only with `-v`**, so that the driver (step 3), which runs `as`
   for every source, writes what the original's chain writes (verified: `make test`
   unchanged, `tests/realbin/cccmp.py programs` with stderr compared exactly). It
   makes an object without undefined symbols executable (0755), the original leaves
-  it as `creat` made it (0666 less the umask) - for the differential fuzzer (step 5).
+  it as `creat` made it (0666 less the umask) - the one difference in the files of
+  `ascmp.py`'s runs that is left on purpose (step 5, below).
 - **Mnemonics.** The original's table has the whole 8087 set (not needed here) and
   no 80186 mnemonic; an unknown mnemonic assembles silently to a word referring to an
   undefined external of that name (AS-02). Spellings `mutos_as` accepts that the
@@ -266,6 +288,221 @@ other originals as oracles"):
 - **Exit status**: the original exits with 2 on syntax errors and 4 on the floating
   overflow abort; `mutos_as` with 1 for both - a documented difference no test
   depends on.
+
+### Step 5 of the plan: measured against the original (2026-10-25)
+
+`mutos_as` is a re-implementation, not a port (`docs/TOOLCHAIN_PLAN.md`, decision 9), so
+the question of step 5 was not "is it the same?" but "where does it differ, and does it
+matter?". The original `as` runs under the emulator (`tests/realbin/mutosemu.py`) as the
+oracle, and two new tools in `tests/realbin/` (their `README.md`) ask it:
+
+- **`ascmp.py`** gives the original and `mutos_as` the same command line in two copies
+  of one directory and puts every pair into a class: `same`; `obj-same` (the objects
+  are equal, something else - the file mode, a message - is not); `both-reject`; and the
+  three that count - `PORT-REJECTS` (the original accepts, `mutos_as` refuses),
+  `PORT-ACCEPTS` (the other way round) and `OBJ-DIFF` (both accept, the objects
+  differ). Modes: `goldens` (every `.s` of the tree - the kernel, `libc_recon`, the
+  seven `v30_speculative` files and the 132 compiler outputs - under `-gC -o` and under
+  `-o`), `cases` (158 hand-written: output names, stdin, several inputs, every option,
+  syntax errors, the original's limits, every form fixed below), `options` (the original
+  against itself: what `-g`, `-C`, `-l`, `-e` change) and `files`. `--write`/`--check` pin
+  the runs that are not `same` in `ascmp_goldens.txt` and `ascmp_cases.txt`.
+- **`asfuzz.py`** fuzzes. Generators: `insn` (one to six instructions in every form),
+  `prog` (programs with segments, labels, directives, expressions), `corpus` (lines of
+  the real sources recombined), `cc` (the real compiler's output for `c1fuzz.py`'s
+  and `fuzz_c.py`'s programs, a third of it after `mutos_c2`) and `mix`, with `--mutate`
+  to damage the cases. A serious case is reduced to a minimal source and clustered by
+  what each tool says; `--words` runs all 273 instruction words of the original (read
+  from its binary) and of `mutos_as` through up to 30 operand shapes.
+
+**The result for what the toolchain really feeds it.** The compiler's output is
+assembled to the same object by both in every case the original accepts: all 1,284 of
+1,284 programs of the `asfuzz.py --gen cc` run (1,500 cases, 91 not compilable). Of
+the 132 compiler `.s` goldens and
+the 84 other sources, 404 of 432 runs are `same`, 16 `obj-same` (the file mode only:
+`mutos_as` makes an object without undefined symbols executable, the original leaves
+`creat`'s mode), 12 `both-reject` - the five `v30_speculative` files that need `-1` and
+`p19_open3`, the compiler's own invalid output, under both command lines; of the 76
+real-hardware golden objects the original gives 75 and `mutos_as` 75, the 76th being
+`mch_insw_outsw`, which needs `-1` (76/76 with it). The original refuses 125 of the
+1,409 compiled programs of the `cc` run (byte shifts and operations on `si`/`di`,
+`(dx)` as an index, a `j` to an undefined label: the compiler's own invalid output, as
+`p19_open3`); `mutos_as` refuses 105 of them too and takes 20.
+
+**Found and fixed in `mutos_as`** (each one a form the fuzzer showed and the original
+assembles; those marked * gave a different object without a message, which is the
+kind that matters):
+
+- *Operands.* A shift or rotate of a global (`sarb _g,cl`, `shl _g,cl`) was refused or,
+  with a displacement, wrong; `test cx,_d` took the address for an immediate*; `xchg
+  al,bl` was assembled as the word form*; `xchg`, `xchgb`, `test` and `testb` with a
+  memory operand in either order, `pop` of a memory operand, `lds`/`les` with an
+  address, `incb`/`decb` of a register, `int *3.` (the one-byte `CC`*), `ret *n.` and
+  `reti *n.` were missing or wrong.
+- *Displacements.* The size of `disp(reg)` follows the original's: a number is taken as
+  16 bits first (`65535.(bx)`, `/ff80(bx)` are short, `65536.(bx)` is 0), a `.` makes it
+  long with a relocation, and - the one that matters for hand-written code* - an
+  absolute value of symbols that are defined by then is short when it fits: `K = 5`,
+  then `mov ax,K(bx)`, or `b-a(bx)` for two labels of one segment, is `8B 47 05`, not the
+  `8B 87 05 00` that a symbol had always forced (a label alone, an external symbol
+  and a symbol defined further down stay long).
+- *`call`, `jmp`, `calli`, `jmpi`.* `call @(bx)` is the word at `[bx]` (`FF 17`), not the
+  register (`FF D3`)*, and so for `(si)`, `(di)`, `(bp)`; `@x` (the word at an address,
+  `FF 16` + relocation), `@(bx)(si)` and `@disp(bx)(si)` were refused; a bare
+  register (`call ax`, `jmp bx`) is taken; `call (bx)`, `call 10(bx)`, `call x(bx)`
+  without the `@` and an `@` on any other instruction (`mov ax,@bx`) are refused, as the
+  original does.
+- *Strings and escapes.* `.asciz` knew no backslash escapes (`\n`, `\t`, octal `\012`,
+  `\\`, `\*`: the original's rules, with the quirks at odd digits)*; `.ascii` and strings
+  delimited by `"` were missing.
+- *Labels and symbols.* More than four labels in front of one statement lost the others
+  (the original takes at least 24 and fails at 32; `08_tty` has eight)*; the symbols of
+  an instruction are made in the order they are written (`sbb _tab,#_buf2` numbered
+  `_buf2` first)*; a number alone on a line in `.text` went into the data*, in `.bss`
+  likewise; an odd `.bss` size is rounded up to even*; a name that starts with a dot
+  (`.baz`, `.foo = 3`) is a symbol unless it is one of the original's 21 directives.
+- *Directives.* `.blkw`, `.ascii`, `.end`, `.list`, `.nlist`, `.insrt "file"` (ten
+  levels), `.targref` and `.textref` were missing; `.dlptr` is an error, as in the
+  original.
+- *Expressions.* The original has no operator precedence - left to right - and the
+  operators `+ - * / & ! ^ << >>` (`!` is or, `^` the remainder), one unary `-`, `+` or
+  `~` before an operand, 16-bit signed arithmetic for the rest than `+` and `-`; numbers
+  are decimal (`010` is 10; hexadecimal starts with `/`); a shift
+  count of 16 or more saturates; `|` starts a comment; parentheses and a single `<` or
+  `>` are errors; `name = expr` takes any expression of the symbols it knows, a
+  symbol further down included (`_b = _a+1`, `_e = .+2`), and the symbol gets the kind
+  of its value.
+- *Silent wrong objects, found in the last rounds* (each one a form a person could
+  write, and each one assembled without a message to a different object): a character
+  constant (`'a'`, `'ab'`, with the escapes `\n \t \b \f \r` and `\c` for any other `c`)
+  became 0; a `.word`, `.byte`, `.blkb`, `.blkw` or data value that
+  `mutos_as` could not parse became 0; an expression of more than 16 tokens was cut
+  after the 16th (the limit is 64 tokens in an operand and 32 operands now, and an
+  error beyond it); the size of `K(bx)` for an assigned `K` (above); `call @(bx)`
+  (above); the numbering of the symbols of `sbb _tab,#_buf2`.
+- `-C` (below) and the order of `L` symbols under it.
+
+**Options, measured on the original and done.** `-g` changes nothing; `-C` leaves out
+every defined symbol that is not global and starts with a capital `L` - the compiler's
+`L<number>` labels, a `La = 5`, a label in `.data` or `.bss` - and writes an `L` name
+that stays undefined after all the others, one made external by `.globl` or `.comm`
+at that directive; the symbol numbers in the relocations follow. `mutos_cc` has passed
+`-gC` all along, so the objects `mutos_cc -c` makes have no `L` symbols now, as the
+original chain's (`libc.a`'s 167 objects have none either, while every kernel golden
+has them: the kernel was assembled without `-C` - open item 6). `-1` is the 80186/V30
+switch of the plan, section 4.
+
+**Measured, differences kept** (`ascmp_goldens.txt`, `ascmp_cases.txt`, the output of
+`asfuzz.py`; none of them is in the compiler's output or in the corpus):
+
+- *Command line.* The original reads its options letter by letter: `-e` (only external
+  symbols in the symbol table) and `-l` (a listing, `x.L`) are not in `mutos_as`;
+  `Unknown option X ignored.` and go on (`-L -D -T -X -u -`, `-W`, `-1`), where `mutos_as` has
+  the usage error or - for `-W`, `-1`, `-v`, its own - takes them; `-oNAME` (attached) is
+  `mutos_as`'s only. The default output is the input name with its last character
+  made `o` (`x.s` gives `x.o`; any name: `prog` gives `proo`), `mutos_as` writes `a.out`
+  unless `-o`; stdin and several inputs (the original: `Warning input file ... does not
+  end in .s`, `More than one input, a.s used.`, status 4) are `mutos_as`'s own;
+  the original's exit status is 2 for errors in the source, 4 for a file it cannot
+  open, `mutos_as`'s 1; it leaves a partial object after an error, `mutos_as` none.
+- *Messages.* `***ERROR*** syntax error, line N` on stdout and stderr, then `x.s: N errors.`
+  - not `mutos_as`'s `x.s:N: error: ...`.
+- *Words.* The original knows 273 words, `mutos_as` 173 (156 of them the original's):
+  the 113 words of the 8087 (`fadd`, `fld`, ...: `asf` and `cc -f`, which the project
+  does not need), `bc`, `bnc`, `scab` and `scaw`;
+  `mutos_as` has 17 the original does not (`bloss`, `bound`, `enter`, `leave`,
+  `pusha`, `popa`, `insb`, `insw`, `outsb`, `outsw` - those on `-1` -, `inb`, `outb`,
+  `movsw`, `scas`, `scasb`, `repe`, `repne`), which the original reads as
+  undefined symbols. `hlt` (AS-05) and `aam` (AS-04) are bugs of the original, which
+  `mutos_as` does not repeat.
+- *Bugs of the original, not repeated* (`docs/MUTOS_ORIGINAL_BUGS.md`, AS-04 to AS-14;
+  AS-02 and AS-03 were known): `aam` is `D6 0A` (AS-04); `hlt` is in the table and not
+  found (AS-05); `(bp)` and then the first `.float`/`.double` crashes it (AS-06); an odd
+  `.data` followed by `.bss` gives a short object (AS-07); `name = sym` before `sym` is
+  defined makes `name` an undefined external with the value `0x7870` (AS-08); a division
+  or remainder by zero in an expression crashes it (AS-09); `(bp)` with an immediate
+  after some statements gets the immediate's low byte as its displacement (AS-10);
+  a conditional branch to an indirect address (`ble @cx`) writes `EA` where the `jmp`
+  needs `FF` (AS-11); `jmpi X` and `calli X` with a plain address are seven bytes where
+  the 8086's far jump has five (AS-12); a line of 128 characters or more is cut after
+  the 127th and the rest is read as a line of its own, a comment's tail included
+  (AS-13: the tail of a long comment is assembled); a byte of `0200` or more in code
+  is read in a way that depends on its value, one of them (`0351`) jumping into unmapped
+  memory (AS-14). `ascmp_cases.txt` keeps each of them as a pinned difference where one
+  was shown.
+- *Forms*, rare by hand and absent from the compiler: `pop cs`; a byte register as the
+  operand of `push`, `pop` or `lea` (the original takes `pop al` as `pop ax`); `movb`
+  and `cmpb` without an operand (`A4`, `A6`); a branch (`bgt`, `ble`, ...) to an
+  indirect address (AS-11, which `mutos_as` refuses rather than repeat); `jmpi X` and
+  `calli X` with a plain address (AS-12); a statement that is only an expression (a symbol
+  plus a number, `_x+2`, or a name with a dot, `mov.b`); a line of 128 characters or more
+  (AS-13); an operand of more than 64 tokens (a sum of 40 terms; the original's limit is
+  the line's 127 characters); and `.globl L` twice under `-C` (the original writes the
+  `L` symbol once more for each). (`jmpi` and `calli` of a register and `br`/`call` of a
+  byte register are done.)
+- *Leniency.* `mutos_as` does not make the checks that give the original
+  `Byte instruction cannot use R`, `Relocatable values not allowed for bytes`,
+  `Illegal relocatable expression`, `Short jump to external not allowed`,
+  `Invalid index register`, `Value out of range`, `Illegal redeclaration of symbol`,
+  and takes a missing last linefeed, CR LF and the shift count `1` unmarked; it refuses a byte
+  with the high bit set (`0200` and up) in code and a NUL, which the original takes
+  (AS-14).
+
+**The last run of the fuzzer** (the final binary; the seed in brackets):
+
+| generator | cases | `same` | `obj-same` | `both-reject` | `PORT-REJECTS` | `PORT-ACCEPTS` | `OBJ-DIFF` |
+|---|---|---|---|---|---|---|---|
+| `insn` (20) | 1,200 | 169 | 533 | 356 | 26 | 89 | 27 |
+| `prog` (20) | 800 | 114 | 31 | 558 | 12 | 66 | 19 |
+| `corpus` (20) | 800 | 338 | 80 | 230 | 0 | 150 | 2 |
+| `mix --mutate 0.5` (21) | 600 (8 skipped) | 132 | 60 | 316 | 6 | 68 | 10 |
+| `cc` (20) | 1,500 (91 skipped) | 1,284 | 0 | 105 | 0 | 20 | 0 |
+| `cc --mutate 0.5` (21) | 600 (28 skipped) | 357 | 0 | 168 | 8 | 37 | 2 |
+
+Every `OBJ-DIFF` and `PORT-REJECTS` of these runs is on the list of kept differences
+above: the words only one of the two has (`aam`, `hlt`, `repe`, `repne`, `scas`, `scasb`,
+`inb`, `outb`, `movsw`, `fadd`), `(bp)` with an immediate (AS-10: `lds`/`xorb`, `rorb`,
+`and`, `cmp`, `lea`, `sub`), `.globl L` twice under `-C`, a comment line of 128 characters
+or more (AS-13), `pop cs`, `mov.b`, `push bl`, `bloss`, a branch to an indirect address
+(AS-11), `jmpi L` (AS-12), a sum of 54 terms (64 tokens in an operand), and a byte
+`0377` (`mutos_as` refuses bytes with the high bit set). `asfuzz.py --words` ran all 273
+words of the original and the 17 only `mutos_as` has through the operand shapes: its
+5,582 cells give 94 `same`, 575 `obj-same`, 4,606 `both-reject`, 124 `PORT-REJECTS`,
+133 `PORT-ACCEPTS` and 50 `OBJ-DIFF`; the 50 words with an `OBJ-DIFF` are the 39
+operand-less words of the 8087, `aam`, `hlt`, `scab`, `scaw`, `inb`, `outb`, `movsw`,
+`repe`, `repne`, `scas`, `scasb`. No cluster was unexplained; the three kinds the
+confirmation run still turned up - AS-12, AS-13 and AS-14 - are bugs of the original,
+not of `mutos_as`.
+
+**Recommendation on a port** (the decision is the project owner's). *Not now.*
+
+- *For the compiler chain a port would change nothing*: its output is assembled to the same
+  object in every case the original accepts, and the 76 golden objects are byte for
+  byte (76/76 with `-1`).
+- *Where it would matter is hand-written assembler*, and there the record is the
+  argument: every time the fuzzer was taught a new dimension - the size of `K(bx)`, `call
+  @(bx)`, the order of symbols, character constants, a long sum, an operand it could
+  not parse - it found a form that `mutos_as` assembled to a different object without
+  saying so, more than a dozen in all, none of them in the corpus; all are fixed. The
+  confirmation run on the final binary (5,500 generated cases) found none of that kind,
+  which is evidence and not proof. A re-implementation can only be as good as the
+  dimensions somebody thought to probe; a port is the original's code, its messages,
+  options (`-e`, `-l`), exit statuses, 8087 words and its bugs (AS-04 to AS-14: listed,
+  and reproduced where they can be, as the ports of `c1` and `c2` do).
+- *For a port*: the project description names the original's sources as the basis; the
+  oracle, the comparator, the pins and the 76 goldens exist, so a port is checked from
+  its first line; the earlier ports (`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`) took about one
+  session each; the instruction table (273 words) can be read from the binary.
+- *Against, or at least not urgent*: nothing the compiler writes is affected;
+  the next steps (6: `ar`/`ranlib`, 7: `make`) do not use `as`'s differences; `-1` is
+  an extension the original does not have and would be added to the port; a port
+  also repeats the original's bugs, so that a hand-written source with a long comment
+  line (AS-13) would fail as it fails on the hardware.
+- *Proposal*: keep `mutos_as` for now and schedule the port after step 6 (`ar`,
+  `ranlib`) - earlier if hand-written assembler (the kernel's `.s` files, a runtime
+  library) becomes a goal of the project, because that is the only place where the
+  present differences can matter. `mutos_as` stays until then; the tests (`make test`,
+  `ascmp.py`, `asfuzz.py --gen cc --strict`) become the regression suite of the port.
 
 ### Carried from 2026-09-29 (not re-run this session)
 
@@ -290,11 +527,17 @@ other originals as oracles"):
 - `float_coverage/libcatof.py` — `libc.a`'s own `atof` under an 8086 emulator.
 - `run_goldens.sh` / `mk_goldenbase64.sh` — batch golden-diff test runner and base64
   golden-file generator.
-- CLI: `-o output` (also `-ooutput`), `-W` (suppress diagnostics), `-v`, `-g` and `-C` (accepted, no
-  effect - the original `cc` passes `-gC`), multi-file concatenation, stdin
-  fallback, exec-bit on success, `asf` argv[0] alias. `-L` (control 'L'-prefixed
-  compiler-internal label output) was implemented, found to break golden parity, and
-  was **deliberately removed** per explicit prior user decision.
+- CLI: `-o output` (also `-ooutput`), `-W` (suppress diagnostics), `-v`, `-g` (accepted,
+  no effect) and `-C` (leaves out the compiler's `L` symbols - the original `cc` passes
+  `-gC`; since 2026-10-25), `-1` (the 80186/V30 instructions; since 2026-10-25),
+  multi-file concatenation, stdin fallback, exec-bit on success, `asf` argv[0]
+  alias. `-L` (control 'L'-prefixed compiler-internal label output) was implemented,
+  found to break golden parity, and was **deliberately removed** per explicit prior
+  user decision; the original does not have it either (it is `Unknown option L
+  ignored.`), while its `-C` is what the manual's `-L` seems to have been.
+- `tests/realbin/ascmp.py` and `asfuzz.py` - the differential comparator and fuzzer
+  against the emulated original (`tests/realbin/README.md`); `tests/mutos_as/
+  check_switches.sh` - `-g`/`-C`/`-1` (in `make test`).
 - Modified native-kernel `conf/Makefile` (`-S` instead of `-c`, retains `.s` files,
   copies output to `.o.golden`) — mechanism for generating more real hardware golden
   files from the kernel source tree in the future.
@@ -801,8 +1044,14 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    by `tests/realbin/c2cmp.py` and `c2fuzz.py` against the emulated original, and in
    `make test` by `tests/mutos_cc/check_driver.py` (`cc -O -S` against `kernel_opt/`).
    Every pass `mutos_cc` runs is a port of the original now.
-5. **`mutos_as`**: differential fuzzer against the original, the `-1` switch for the
-   80186 instructions; then the decision on a port. **Next.**
+5. ~~**`mutos_as`**~~ - **done 2026-10-25** (Milestone 2): `-C` (found to be a real
+   switch of the original) and `-1` for the 80186 instructions; the differential
+   comparator `tests/realbin/ascmp.py` and the fuzzer `asfuzz.py` against the emulated
+   original; the compiler's output is assembled to the same object in every case
+   the original accepts; the forms the fuzzer showed that matter for hand-written
+   assembler are fixed, the rest measured and listed. The decision on a port is the project owner's - see
+   "Step 5 of the plan" in Milestone 2 for the measurements and a recommendation.
+   **Next: step 6.**
 6. **Ports of `ar` and `ranlib`**, `bin/` in the root for the new tools.
 7. **Port of `make`** (decided 2026-10-25 in place of the wrapper `mutos_make` of
    2026-10-20).
@@ -992,15 +1241,16 @@ available; they now additionally carry independent-tooling cross-checks (see abo
 which is the best available substitute in the absence of a real MUTOS 1700 toolchain
 that supports them, but is explicitly NOT a replacement for that real evidence.
 
-**Planned (2026-10-20, `docs/TOOLCHAIN_PLAN.md` section 4): behind the switch
-`-1`.** Today `mutos_as` always accepts these instructions; the original `as` has
+**Behind the switch `-1` since 2026-10-25 (`docs/TOOLCHAIN_PLAN.md` section 4, step 5).**
+Until then `mutos_as` always accepted these instructions; the original `as` has
 none of them and assembles each such word, silently, as a reference to an undefined
-external (AS-02). With step 5 of the plan they need `-1`, and without it
-`mutos_as` does what the original does; `mch_insw_outsw.s` and
-`tests/mutos_as/v30_speculative/` (seven test files covering the twelve rows
-without a real sample, cross-checked with NASM and objdump - its `README.md`; the
-session that added them is recorded in
-[`docs/history/status_m2_as_v30.md`](docs/history/status_m2_as_v30.md)) get `-1`.
+external (AS-02). Without `-1` `mutos_as` does what the original does (the
+mnemonics are unknown words, the 80186 forms of `push`, `imul` and the shifts are
+refused); `mch_insw_outsw.s` and `tests/mutos_as/v30_speculative/` (seven test files
+covering the twelve rows without a real sample, cross-checked with NASM and objdump -
+its `README.md`; the session that added them is recorded in
+[`docs/history/status_m2_as_v30.md`](docs/history/status_m2_as_v30.md)) are assembled
+with `-1` (`tests/mutos_as/check_switches.sh`, in `make test`).
 
 ### Untested / unconfirmed opcodes (implemented, no real sample)
 
@@ -1026,43 +1276,55 @@ above:
 - XCHG general `reg,mem` ModRM form — only reg,reg and the AX-shortcut forms have real
   samples (see "missing" below for the case that's not implemented at all).
 
-Of these spellings, `bloss`, `scas`/`scasb`, `movsw` and `inb`/`outb` are not in the
-original `as`'s mnemonic table (read from its binary, 2026-10-20): the original
-assembles each as a word referring to an undefined external. The differential
-fuzzer (`docs/TOOLCHAIN_PLAN.md`, step 5) decides what to do with them.
+Of these spellings, `bloss`, `scas`/`scasb`, `movsw`, `inb`/`outb`, `repe` and `repne`
+are not in the original `as`'s mnemonic table (read from its binary, 2026-10-20, and
+run through all operand shapes by `asfuzz.py --words`, 2026-10-25): the original
+assembles each as a word referring to an undefined external (AS-02). They are
+`mutos_as`'s own spellings and are kept (step 5 of the plan: no source the
+toolchain makes uses them, and the object differs only where someone wrote them).
+`aam` is confirmed against the original's binary and differs from it: the original
+writes `D6 0A` (AS-04), `mutos_as` the instruction's `D4 0A`; the same for `hlt`, which
+the original does not find (AS-05) and `mutos_as` writes as `F4`. `incb`/`decb` of a
+register, `xchg` with a memory operand and the shift of a global are now confirmed
+against the original's output too.
 
 ### 8086 opcodes still missing
 
-Identified directly from `MUTOS1700_Assembler_as.pdf` Anlage A/B (the K1810WM86 base-chip
-manual) — these are documented there but have no dispatch entry in `encode.c`. Measured
-against the original binary instead (its mnemonic table, 2026-10-20), `esc`/`escb` and
-the `lods`/`stos` spelling are not missing - the original has neither; whether it
-encodes `ret N`, `int 3`, `xchg reg,mem` and Group2 with a direct address is for the
-differential fuzzer:
+Identified from `MUTOS1700_Assembler_as.pdf` Anlage A/B (the K1810WM86 base-chip
+manual) and, since 2026-10-25, measured against the original binary and its table of
+273 words (`asfuzz.py --words`, `tests/realbin/ascmp_goldens.txt`):
 
-- **`esc`/`escb`** (`0xD8`–`0xDF`, coprocessor escape) — Anlage A documents
-  `esc 2 U(063) A+W`; no implementation exists.
-- **`ret`/`reti` with an immediate operand** (`0xC2 iw` / `0xCA iw`, "return and pop N
-  bytes") — Anlage A lists this as a separate row from the bare 0-operand form; only
-  the bare form (`0xC3`/`0xCB`) is implemented.
-- **`int 3` dedicated 1-byte encoding** (`0xCC`) — Anlage A lists `int 1 3` separately
-  from the general `int 1 * U` form; the current code always emits the general 2-byte
-  `CD ib` form, even for a literal `3`.
-- **`xchg` general `reg,mem` ModRM form** (`0x86`/`0x87` with a memory operand) — only
-  register/register and the AX-shortcut forms are implemented.
-- **Shift/rotate (Group2) with a DIRECT (bare absolute-address) destination** — Group2
-  only accepts REGISTER or INDIRECT destinations; Group1/Group3/TEST all support
-  DIRECT, making this a Group2-specific asymmetry.
-- `lods`/`stos` under their literal Anlage-A spelling — functionally reachable today
-  via the confirmed-real, toolchain-diverging names `lodb`/`lodw`/`stob`/`stow`, but
-  the documented spelling itself is not accepted.
+- **Done 2026-10-25**: `ret`/`reti` with an immediate (`C2 iw`/`CA iw`), the one-byte
+  `int *3.` (`CC`; the original does that, `int *4.` is `CD 04`), `xchg`/`xchgb`
+  with a memory operand in either order, `test`/`testb` of memory and register,
+  `pop` of a memory operand, `lds`/`les` with an address, and the shifts and rotates
+  of a bare address (`shl _g,cl`; the old note that Group2 had no DIRECT destination).
+- **`esc`/`escb`** (`0xD8`-`0xDF`, coprocessor escape): not missing in the original's
+  sense - the original has neither word (it reads them as undefined symbols); its
+  8087 words (`fadd`, `fld`, ..., 113 of them, used by `asf`, the assembler
+  `cc -f` calls) are what makes the escape bytes. `mutos_as` has none of them.
+- `lods`/`stos` under their literal Anlage-A spelling: the original does not have
+  them either (it has `lodb`/`lodw`/`stob`/`stow`).
+- `bc`, `bnc` (the original's carry branches) and `scab`/`scaw`: in the original's
+  table, not in `mutos_as`.
+- Forms the original takes and `mutos_as` refuses (rare by hand, absent from the
+  compiler's output and from the corpus): `pop cs`; a byte register as the operand of
+  `push`, `pop` or `lea` (the original takes `pop al` as `pop ax`); `movb` and `cmpb`
+  without an operand (`A4`, `A6`); a conditional branch (`bgt`, `ble`, ...) to an
+  indirect address (AS-11: the original gets it wrong); `jmpi X` and `calli X` with a
+  plain address (AS-12: seven bytes); a statement that is only an expression (a symbol
+  plus a number, or a name with a dot such as `mov.b`); an operand of more than 64 tokens;
+  `.globl L` twice under `-C`. (`jmpi`/`calli` of a register and `br`/`call` of a byte register are done
+  since 2026-10-25.)
 
-Already-known, deliberately-not-implemented gap (unchanged from prior sessions):
+Already-known, deliberately-not-implemented gap (corrected 2026-10-25):
 
-- **CALLI/JMPI direct `d:s`** (segment:offset literal) form — needs a new
-  colon-separated operand syntax neither the lexer nor the operand classifier parse;
-  zero real corpus evidence of use. The indirect (`@reg`/`@disp(reg)`) form of both is
-  fully implemented.
+- **CALLI/JMPI with a direct address.** The note of earlier sessions - a `d:s`
+  (segment:offset) form needing a colon-separated operand syntax - was a guess:
+  the original has no such syntax (`jmpi 5:6` and `jmpi 5,6` are syntax errors). It
+  has a plain expression, `jmpi X`/`calli X`, which it writes as seven bytes (AS-12).
+  Not offered, no corpus evidence of use. The indirect (`@reg`/`@disp(reg)`) form of
+  both is fully implemented, and the same as the original's.
 
 ### 80186/V30 opcodes still missing
 
@@ -1091,46 +1353,41 @@ far.
    nothing, but does **not** reduce the priority of finding that real sample. In
    particular, resolve the open `imul`-immediate marker-truncation question (see the
    opcode-coverage table's footnote ²) one way or the other once real evidence exists.
-3. `esc`/`escb`, `ret`/`reti` with an immediate, and the dedicated `int 3` encoding
-   are the three remaining 8086-level gaps with enough information in
-   `MUTOS1700_Assembler_as.pdf` alone to implement without further real-hardware evidence.
-   The original binary has no `esc`/`escb` (see the opcode coverage); what it does with
-   `ret N` and `int 3` is for the differential fuzzer (plan step 5).
+3. ~~`esc`/`escb`, `ret`/`reti` with an immediate, the dedicated `int 3` encoding~~ -
+   **closed 2026-10-25** by the measurement against the original (step 5): `ret N` and
+   `int *3.` are done, `esc`/`escb` do not exist in the original. What differs
+   from the original is listed under "Step 5 of the plan" and in "8086 opcodes still
+   missing" above; whether any of it should be closed is the port decision.
 4. ~~Finish Milestone 4~~ - **done 2026-10-24**: `mutos_c1`, `mutos_c0` and the
    driver `mutos_cc` are ports of the real `c1`, `c0` and `cc` (`docs/C1_PORT_PLAN.md`,
    `docs/C0_PORT_PLAN.md`, `docs/TOOLCHAIN_PLAN.md` step 3), every golden reproduced
-   through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5); next is
-   `mutos_as`'s differential fuzzer - see "Next up".
+   through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5), then
+   `mutos_as`'s differential fuzzer (Milestone 2, step 5); next is step 6 - see
+   "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -
    CPP-10), checked against the emulated original; the old list is in
    [`docs/history/status_m3_cpp.md`](docs/history/status_m3_cpp.md).
-6. `mutos_as`'s `-L` deviation (see `CLAUDE.md` rule 3): **the "-L was used
-   for the kernel build" hypothesis is now RULED OUT by real hardware**
-   (2026-09-28). `tests/mutos_as/kernel_opt/Makefile.mutos`/
-   `kernel_nonopt/Makefile.mutos` were written to assemble every real kernel
-   `*.s` with the real `as`, both with and without `-L`, but the first
-   attempt already settled the flag question without needing a full
-   diff: `as -L -o v30ide.oL v30ide.s` printed `Unknown option L ignored`
-   and proceeded — **the real MUTOS 1700 `as` binary does not implement
-   `-L` at all**, despite `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1
-   documenting it (a manual/binary mismatch, not a MUTOS 1700
-   toolchain-version question this project can resolve). Since the flag
-   is silently ignored, "-L" and no-"-L" invocations are necessarily
-   byte-identical on this hardware, so no `.oL` goldens were generated —
-   there would be nothing to compare. This still leaves the original
-   discrepancy genuinely open (none of `libc.a`'s 167 objects — compiled
-   C such as `atof.o`/`ecvt.o` included — has an `L`-number label, while
-   every kernel golden does, e.g. `malloc.o`: 14) but rules out a
-   per-invocation flag as the cause: real `as` has exactly one behavior
-   here, unconditionally. The next angle to try is source-level, not
-   flag-level — whether `L`-labels are emitted by the *compiler* only
-   under certain conditions (so kernel `.s` sources contain them in the
-   text and libc.a's lost sources never did), not by the assembler's
-   symbol-table policy; `mutos_as`'s own always-emit-`L`-labels behavior
-   remains the pragmatic choice for golden parity either way (see
-   `CLAUDE.md` rule 3 and `tests/mutos_as/README.md`).
+6. `mutos_as`'s `-L` deviation (see `CLAUDE.md` rule 3) - **explained 2026-10-25, as far
+   as the evidence goes, by `-C`**. The 2026-09-28 experiment on the hardware had ruled
+   the flag `-L` out (`as -L -o v30ide.oL v30ide.s` printed `Unknown option L ignored`
+   and proceeded: the binary does not implement `-L`, whatever
+   `docs/MUTOS1700_Assembler_as.pdf` sect. 3.1 documents), and left a question: none
+   of `libc.a`'s 167 objects - compiled C such as `atof.o`/`ecvt.o` included - has an
+   `L`-number label, while every kernel golden does (`malloc.o`: 14). The
+   emulated original (step 5, `tests/realbin/ascmp.py options`) answers it: it has the
+   option **`-C`**, which leaves out every defined, non-global symbol that starts with a
+   capital `L`, and the original `cc` runs `as -gC` on every source. So an object made
+   by `cc -c` has no `L` symbols and one made by `as` without `-C` has them - and the
+   kernel goldens were made by the native kernel build's `cc -S` followed by a plain
+   `as` (`kernel_opt/Makefile.mutos`), `libc.a` presumably by `cc -c`. That last step is
+   a reading, not a record: nothing in the tree says how `libc.a` was built, but the
+   two facts fit and nothing else is known to. `mutos_as` does the same since
+   2026-10-25: `-C` leaves them out, without it it keeps them (every kernel golden),
+   and `mutos_cc` passes `-gC` as the original does, so its objects have none. What
+   is not done: a whole `atof.o`/`ecvt.o` as a `libc_recon/` golden (the `L` labels
+   were their last blocker, item 7) - it needs the disassembly turned into a source.
 7. **Floating constants: settled (2026-09-29), overflow included.** The real
    conversion is re-enacted (Milestone 2's "The real conversion, re-enacted",
    "Rounding pinned, zeros on both paths", "The real product, zeros at
@@ -1149,5 +1406,6 @@ far.
    such a text). Not understood but pinned by real bytes: where the digit
    loop's `ff ff ff` for an all-zero text comes from. With `atof.o`'s and
    `ecvt.o`'s floating constants all reproduced (`floatdat.s`, `ecvt.o`'s
-   `.03` included), only the `L` labels (open item 6) keep them from being
-   `libc_recon/` goldens.
+   `.03` included), only the `L` labels (open item 6; `-C`, which `mutos_as`
+   has since 2026-10-25) kept them from being `libc_recon/` goldens - what is missing
+   now is a source for each, written from the disassembly.

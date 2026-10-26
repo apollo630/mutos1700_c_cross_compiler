@@ -132,7 +132,7 @@ The optimizer and the NEC V30: why `-mv30` code must keep the ABI, and why not `
 
 ## [The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc` and `c2`](devlog/originals_and_ports.md)
 
-The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20); the ports of `cpp` and `ld` (2026-10-22); the port of `cc` (2026-10-24); the port of `c2` (2026-10-25); the originals brought on 2026-10-25 - `make`, `ar`, `ranlib` and the other tools, the headers, the manual pages - and what they showed.
+The original binaries read and run under an emulator; the ports of `c1` and `c0`; the original `cc`, `ld`, `as`, `c2` and `cpp` as oracles; step 0 of the plan - `fork`/`exece`/`wait` faked, the traced `cc`, the original `ld` against `mutos_ld`, the MUTOS root (2026-10-20); the ports of `cpp` and `ld` (2026-10-22); the port of `cc` (2026-10-24); the port of `c2` (2026-10-25); the originals brought on 2026-10-25 - `make`, `ar`, `ranlib` and the other tools, the headers, the manual pages - and what they showed. The measurement of `mutos_as` against the original `as` (2026-10-25): the comparator and the fuzzer, what they found, bugs AS-04 to AS-14, and the recommendation on a port.
 
 - Plan after round 13: read the original `c1` (2026-10-10)
 - The original binaries (2026-10-12)
@@ -145,6 +145,7 @@ The original binaries read and run under an emulator; the ports of `c1` and `c0`
 - The port of `cc` (2026-10-24)
 - The port of `c2` (2026-10-25)
 - The originals of 2026-10-25
+- The `mutos_as` measurement (2026-10-25)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

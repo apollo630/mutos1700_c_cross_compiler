@@ -18,10 +18,15 @@ used for INSW/OUTSW (`tests/mutos_as/kernel_opt/mch_insw_outsw.s`):
 `nasm_crosscheck.asm` is a supporting file, not a mutos_as test file - see
 "Independent-encoder cross-check" below.
 
-**Planned (2026-10-20, `docs/TOOLCHAIN_PLAN.md` section 4):** these
-instructions move behind `mutos_as`'s switch `-1`; without it `mutos_as`
-will do what the original `as` does with them (a word referring to an
-undefined external). The files here are then assembled with `-1`.
+**Since 2026-10-25 (`docs/TOOLCHAIN_PLAN.md` section 4, plan step 5)** these
+instructions are behind `mutos_as`'s switch `-1`: the seven files are
+assembled with `mutos_as -1 file.s`, and give the same bytes as before the
+switch (checked against the build of the day before). Without `-1`
+`mutos_as` does what the original `as` does with them - the mnemonics are
+words referring to undefined externals, the 80186 forms of `push`, `imul`
+and the shifts are refused - and `tests/realbin/ascmp.py goldens` runs
+these seven files through the original (under the emulator) and `mutos_as`
+without `-1`, which treat them alike.
 
 ## Verification already performed on these seven files
 

@@ -67,6 +67,15 @@ typedef struct Symbol {
                            * compiler-internal labels) always gets a real
                            * out_index and is always written - matching
                            * every golden reference .o unconditionally. */
+    int      main_seq;   /* -C only (see symtab_finalize): the place in the
+                          * output order of a symbol that is not left to
+                          * the end - every name but an "L..." one at its
+                          * creation, an "L..." name when it is declared
+                          * .globl or .comm; 0 while it is not */
+    int      def_seq;    /* the number of the statement that defined it in
+                          * pass 1 (INT_MAX: first defined in pass 2, i.e.
+                          * by an assignment that needed a later symbol);
+                          * see symtab_cur_seq */
     struct Symbol *next;       /* hash-chain link (bucket lookup only) */
     struct Symbol *create_next;/* creation-order list link (output order) */
 } Symbol;
@@ -74,10 +83,19 @@ typedef struct Symbol {
 #define SYMTAB_BUCKETS 256
 
 typedef struct {
+    int     seq;          /* counter for Symbol.main_seq */
     Symbol *buckets[SYMTAB_BUCKETS];
     Symbol *create_head;  /* first-created symbol (output order head) */
     Symbol *create_tail;  /* last-created symbol, for O(1) append */
 } SymTab;
+
+/* The number of the statement being assembled (counted from 1 in both
+ * passes, the same in each). A symbol is "known" to an instruction of
+ * pass 1 when it was defined at a statement not after it, i.e. its
+ * def_seq <= symtab_cur_seq: the original's decisions that depend on a
+ * value (a one-byte displacement for "K(bx)" with an assigned K) see
+ * only what is defined by then, and pass 2 must repeat them. */
+extern int symtab_cur_seq;
 
 void    symtab_init(SymTab *st);
 void    symtab_free(SymTab *st);
@@ -88,12 +106,23 @@ Symbol *symtab_find_or_create(SymTab *st, const char *name, size_t len);
 /* Finds an existing symbol, or NULL. */
 Symbol *symtab_find(SymTab *st, const char *name, size_t len);
 
+/* Declares `s` external (.globl, .comm). Besides setting the flag it
+ * fixes the place of an "L..." name in the order -C writes (below). */
+void    symtab_mark_extern(SymTab *st, Symbol *s);
+
 /* Assigns `out_index` to every symbol, in creation order (order of
  * first mention - see the out_index field comment above), and returns
  * the total count. Every symbol - including 'L'-prefixed compiler-
- * internal labels - is always written to the object file, matching
- * every golden reference .o this project validates against. */
-int symtab_finalize(SymTab *st);
+ * internal labels - is written to the object file, matching every
+ * golden reference .o this project validates against (made by a plain
+ * "as", without -C) - except with `drop_local_L` (the option -C), which
+ * the original's does like this (measured 2026-10-25, tests/realbin/
+ * ascmp.py): a defined, non-global symbol whose name starts with 'L'
+ * gets out_index -1 and is not written; an "L..." name that is
+ * undefined (a branch to a label that is never defined) is written
+ * after all the others, in creation order, while one made external by
+ * .globl or .comm takes its place at that directive. */
+int symtab_finalize(SymTab *st, bool drop_local_L);
 
 /* Calls `fn(sym, ctx)` once per symbol, in the same creation order
  * symtab_finalize() assigned indices in - used to actually write the

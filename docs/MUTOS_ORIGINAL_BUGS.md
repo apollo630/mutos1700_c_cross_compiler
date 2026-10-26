@@ -26,7 +26,7 @@ project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 where the original's output
 depends on state that is not modelled.
 
-Last updated: 2026-10-25.
+Last updated: 2026-10-26.
 
 ## Overview
 
@@ -50,9 +50,20 @@ Last updated: 2026-10-25.
 | L-05 | `libc.a` `dmath.o` | `pmuld` takes one partial product from the wrong word: `dmul` not correctly rounded | golden, emulator | modelled (`as`) |
 | L-06 | `libc.a` `ldexp` | the exponent wraps silently | golden | modelled (`as`) |
 | L-07 | `libc.a` `atof` | 5\*\*k overflows from k = 55: valid constants below about 1e-38 raise SIGFPE | golden | reproduced (`as`), modelled (`c1`) |
-| AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g`/`-C` accepted, no effect) |
-| AS-02 | `as` | an unknown mnemonic (`insw`, `pusha`, `enter`, ...) assembled silently as a word with an undefined external | emulator | not reproduced (`mutos_as` knows the 80186 ones; planned: as the original without `-1`) |
+| AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g` as the original, `-C` implemented; `-e`, `-l` missing) |
+| AS-02 | `as` | an unknown mnemonic (`insw`, `pusha`, `enter`, ...) assembled silently as a word with an undefined external | emulator | reproduced for the 80186 words (`mutos_as` without `-1`); not for the 8086 spellings |
 | AS-03 | `as` | the floating-overflow abort message prints garbage where a file name belongs | real hardware | not reproduced |
+| AS-04 | `as` | `aam` assembles to `D6 0A`; the 8086's AAM is `D4 0A` | emulator | not reproduced (`mutos_as` writes `D4 0A`) |
+| AS-05 | `as` | `hlt` is in the keyword table but not found: it assembles as an undefined symbol (like AS-02) | emulator | not reproduced (`mutos_as` writes `F4`) |
+| AS-06 | `as` | an operand `(bp)` with no displacement, then the first `.float` or `.double` of the file: the assembler jumps into unmapped memory | emulator, fuzzing | not reproduced (`mutos_as` assembles it) |
+| AS-07 | `as` | an odd-sized `.data` followed by `.bss`: the object is shorter than its header says (the data's pad byte and part of the relocation table are not written), `ld` would read the symbol table too early | emulator, fuzzing | not reproduced (`mutos_as` writes the whole object) |
+| AS-08 | `as` | `name = sym` before `sym` is defined: `name` becomes an undefined external symbol with the value `0x7870` (`name = sym+0` is right) | emulator, fuzzing | not reproduced (`mutos_as` gives the value; refuses an undefined or external `sym`) |
+| AS-09 | `as` | a division or remainder by zero in an expression (`.word 7/0`, `5^0`), and `-32768/-1`, is a CPU divide error: the assembler dies, no message | emulator | not reproduced (`mutos_as`: `division by zero in an expression`, exit status 1) |
+| AS-10 | `as` | an operand `(bp)` with no displacement and an immediate second operand: after some statements the displacement byte is the immediate's low byte, not 0 (`mov ax,10(bx)` / `sub (bp),#16.` is `[bp+16]`) | emulator, fuzzing | not reproduced (`mutos_as` writes the 0) |
+| AS-11 | `as` | a conditional branch to an indirect address (`ble @cx`, `beq @(bx)`) writes `EA` where the `jmp` part needs `FF` (`7F 02 EA E1`, not `7F 02 FF E1`) | emulator, fuzzing | not reproduced (`mutos_as` refuses the form) |
+| AS-12 | `as` | `jmpi X` and `calli X` with a plain expression (`jmpi 5`, `calli _f`) are seven bytes - the opcode, the word, four zero bytes - where the 8086's direct far jump has five (`EA off seg`) | emulator, fuzzing | not reproduced (`mutos_as` refuses the form) |
+| AS-13 | `as` | a source line of 128 characters or more is cut after the 127th and the rest is read as a line of its own - also when the line is a comment, so that the tail of a long comment is assembled as a statement (a symbol, an instruction, a syntax error) | emulator, fuzzing | not reproduced (`mutos_as` reads the whole line) |
+| AS-14 | `as` | a byte of `0200` or more in code (outside a comment or a string) is read in a way that depends on its value: most are taken without a message and some make the assembler lose the code of the file, `0247`, `0356`, `0366` are a syntax error, `0351` jumps into unmapped memory | emulator | not reproduced (`mutos_as` refuses the byte) |
 | C0-01 | `c0` | folding `-32768 / -1`, `-32768 / 1` (or `%`) faults (8086 divide error) | emulator | refused |
 | C0-02 | `c0` | reads past the end of the file for ever: a name, a comment or a `#` line that runs into it | emulator, fuzzing | refused |
 | C0-03 | `c0` | an initialized array of zero-length elements divides by 0 | emulator, fuzzing | refused |
@@ -417,17 +428,29 @@ up in the output, and into every MUTOS program. The text offsets are
   (no error messages), `-D` and `-T` (debug and trace output) - each
   gives "Unknown option ... ignored." too. The manual page as(1)
   (`mutos/mutos_man/as.1.d`, 3/89) has `-L` and `-W` (`as [-LW] [-o
-  output] file ...`). The binary instead knows
-  `-e` (only external symbols in the symbol table), `-g`, `-C` and `-l`
-  (no effect seen yet; the original `cc` always passes `-gC`). Options
-  are read letter by letter.
+  output] file ...`). The binary instead knows `-e`, `-g`, `-C` and `-l`,
+  none of them in either manual. Options are read letter by letter.
+  What they do (measured 2026-10-25 on the 216 runs of the corpus
+  and the compiler's goldens, `tests/realbin/ascmp.py options`):
+  `-g` nothing; `-C` leaves out of the symbol table every symbol that is
+  defined, not `.globl` and whose name starts with a capital `L` (the
+  compiler's `L<number>` labels, an assignment `La = 5`, a label in
+  `.data` or `.bss`) - undefined symbols, `.comm`s and `.globl`s stay,
+  and the indices of the later ones move up (an `L` name that stays
+  undefined is written after all the others; one made external by `.globl`
+  or `.comm` takes its place at that directive); `-e` writes only the
+  external symbols; `-l` writes a listing (line number, address, bytes,
+  source line) to the input's name with its last character replaced by
+  `L` (`x.s` -> `x.L`).
 - **Evidence.** Real hardware for `-L` (`docs/DEVLOG.md`, the `-L`
-  experiment); emulator for the others (2026-10-20,
+  experiment); emulator for the others (2026-10-20 and 2026-10-25,
   `docs/devlog/originals_and_ports.md`).
 - **This project.** Nothing depends on `-L`. `mutos_as` implements `-W`
-  as the manual describes it; it accepts `-g` and `-C` and ignores them
-  (since 2026-10-20, `docs/TOOLCHAIN_PLAN.md`, decision 9). What `-g`,
-  `-C` and `-l` do is to be read in the binary.
+  as the manual describes it; it accepts `-g` (as the original, no
+  effect) and **since 2026-10-25 implements `-C`** (`symtab_finalize()`),
+  so the original `cc`'s `as -gC` gives the original's symbol table.
+  `-e` and `-l` are not implemented (usage error): the chain does not
+  use them.
 - **Fix idea.** Implement the manual's options, or correct the manual.
 
 ### AS-02 Unknown mnemonics become undefined symbols
@@ -437,11 +460,19 @@ up in the output, and into every MUTOS program. The text offsets are
   `outsw` - and so does every identifier the original does not know as an
   instruction at the start of a statement (`pusha`, `enter`, 2026-10-20):
   it is read as an expression. The link then fails with "Undefined".
+  The same holds for the 8086 spellings the original's table lacks
+  (`inb`, `outb`, `movsw`, `scas`, `scasb`, `repe`, `repne`, 2026-10-25;
+  it has `scab`, `scaw`, `repz`, `repnz`).
 - **Evidence.** Emulator (`tests/mutos_as/kernel_opt/mch_insw_outsw`,
-  `check_real.py` lists it apart; the other mnemonics 2026-10-20).
-- **This project.** `mutos_as` assembles the 80186 instructions it knows
-  (an extension); planned (`docs/TOOLCHAIN_PLAN.md`, section 4): only
-  with `-1`, without it as the original.
+  `check_real.py` lists it apart; the other mnemonics 2026-10-20 and
+  2026-10-25, `tests/realbin/asfuzz.py --words`).
+- **This project.** `mutos_as` does what the original does since
+  2026-10-25: without `-1` the 80186 mnemonics (`pusha`, `popa`, `leave`,
+  `enter`, `bound`, `insb`, `insw`, `outsb`, `outsw`) are unknown words,
+  the 80186 forms of `push`, `imul` and the shifts are refused (a count
+  other than 1 or `cl`: "Value error" in the original); with `-1` they
+  assemble. The 8086 spellings above `mutos_as` still assembles as
+  instructions - a measured difference (`STATUS.md`, Milestone 2).
 - **Fix idea.** Report an unknown mnemonic in operator position.
 
 ### AS-03 Garbage in the floating-overflow message
@@ -453,7 +484,232 @@ up in the output, and into every MUTOS program. The text offsets are
 - **This project.** Not reproduced: `mutos_as` prints its own message
   (and exits with 1, not 4).
 
+### AS-04 `aam` assembles to `D6 0A`
+
+- **Symptom.** `aam` gives the bytes `D6 0A`; the 8086's AAM is `D4 0A`
+  (`D6` is not an 8086 instruction; the V30 reads it as SALC). `aad` is
+  right (`D5 0A`).
+- **Evidence.** Emulator (`asfuzz.py --words`, 2026-10-25: the one word
+  of the 8086 set whose object differs from `mutos_as`'s, which writes
+  `D4 0A`).
+- **This project.** Not reproduced; nothing in the corpus uses `aam`.
+- **Fix idea.** Correct the table entry's opcode byte.
+
+### AS-05 `hlt` is not found in the keyword table
+
+- **Symptom.** `hlt` assembles, without a message, as a word referring to
+  an undefined external `hlt` (like AS-02), although the word is in the
+  table of instruction names. The 8087 word `fcomsp` is lost the same
+  way.
+- **Why (a guess, not read in the code).** The table is in alphabetical
+  order but for three entries: `hlt` stands between `divb` and `f16add`,
+  `fcomsp` before `fcoms`, `fstsp` before `fstpt`; if it is searched by
+  bisection, a word that is out of place is not found. Of the three, `hlt`
+  and `fcomsp` are missed; `fstsp` and `fstpt` are found.
+- **Evidence.** Emulator (`asfuzz.py --words`, 2026-10-25), the table read
+  from the binary's data segment.
+- **This project.** Not reproduced: `mutos_as` writes `F4`.
+- **Fix idea.** Put the entries in their places.
+
+### AS-06 `(bp)` followed by the first `.float` or `.double` crashes
+
+- **Symptom.** The assembler stops with a fetch from unmapped memory (under the
+  emulator; the hardware's message was not seen) on
+  `.text` / `mov ax,(bp)` / `.data` / `.float 1.5`. Any instruction with the
+  operand `(bp)` - no displacement written, which the 8086 can only express as
+  `0(bp)`, mod 01 with a displacement byte of 0 -, at any distance before the
+  first `.float` or `.double` of the file; the constant does not matter (1.5, 2.0,
+  0.0). It does not happen with `*0.(bp)`, `(bp)(si)`, `(si)`, with a `.byte`,
+  `.word` or `.asciz` after it, or when a `.float` comes first and the `(bp)`
+  after it. A second, endless-looking run (more than 200 s for 200 million
+  instructions, a loop in the unmapped region) is the same bug with other
+  statements around it.
+- **Evidence.** Emulator: found by `asfuzz.py --gen prog` (2026-10-25) in a
+  generated program, reduced to `sub (bp),cx` / `.float 1.0` and then to the
+  two lines above.
+- **This project.** Not reproduced: `mutos_as` assembles every one of these.
+  Nothing in the corpus has `(bp)` without a displacement; the compiler writes
+  `*n.(bp)`.
+- **Fix idea.** The state `.float` relies on (a pointer or flag set up by the
+  first use) is spoiled by the `(bp)` case's zero displacement; find the store.
+
+### AS-07 An odd `.data` followed by `.bss` gives a short object
+
+- **Symptom.** `.data` / `.byte 1` / `.bss` / `.blkb 4.` gives a 17-byte file whose
+  header says `a_data` 2, `a_bss` 4 and no symbols: 16 (header) + 1 byte of
+  data, where the well-formed object has 16 + 2 (data, padded) + 2
+  (relocation table of the data) = 20. With a label in the `.bss`
+  (`b: .blkb 4.`) the file is 30 bytes and not 32: the symbol table starts
+  2 bytes too early, at 18 instead of 20. Three bytes of data
+  (`.byte 1`, `.byte 2`, `.byte 3`) before the `.bss`: 34 bytes and not 36. An even
+  `.data`, an odd `.text` before `.bss`, an odd `.data` that is last or is
+  followed by `.text`, and an odd `.data` made even by `.even` are written
+  whole. The odd data followed by `.bss` is the trigger.
+- **Why.** Not read in the code. It looks as if the pad byte of the
+  data segment and the padding of its relocation table, which the assembler
+  adds when it closes the segments, are lost when the `.bss` has been
+  opened after an odd `.data`.
+- **Evidence.** Emulator: found by `asfuzz.py --gen prog` (2026-10-25),
+  `ascmp.py cases` ("odd .data then .bss"). The compiler's output does not
+  trigger it: the 1,284 programs of `asfuzz.py --gen cc` the original
+  assembles give the same objects.
+- **This project.** Not reproduced: `mutos_as` writes the padded data and the
+  complete relocation table (so `ascmp_cases.txt` pins the difference as `OBJ-DIFF`).
+- **Fix idea.** Pad the data segment and its relocation table when the
+  segments are closed whatever segment was opened last.
+
+### AS-08 `name = sym` before `sym` is defined
+
+- **Symptom.** A plain `name = sym` - no operator on the right - on a line before
+  `sym` is defined (`foo = bar` / `bar = 5`, or `bar:` further down, or a
+  `bar` that is never defined or is `.globl`) writes `name` as a symbol of
+  type 0x20 (undefined, external) with the value `0x7870` - nothing the source
+  gives -, and a use of `name` becomes a reference to an external `foo`. With
+  an operator, `foo = bar+0` or `foo = bar+1`, the same lines give the right
+  value (5, or the address of `bar` plus 1); and `bar = 5` / `foo = bar` in
+  this order is right too. No message.
+- **Evidence.** Emulator: found while measuring the assignments for
+  `asfuzz.py` (2026-10-25); the value is the same in every run.
+- **This project.** Not reproduced: `mutos_as` evaluates the assignment in both
+  passes, so a symbol that is defined further down gives its value, and an
+  expression of an undefined or external symbol is refused with
+  `cannot evaluate the assignment` (`_b = _a+1`, `_d = _y-_x`, `_e = .+2` and
+  the kinds of values the original gives - absolute, text, data, bss - work).
+- **Fix idea.** Evaluate a plain symbol on the right in the second pass like
+  any other expression.
+
+### AS-09 A division by zero in an expression kills the assembler
+
+- **Symptom.** `.word 7/0`, `.word 5^0` (`^` is the remainder) and `.word /8000/-1`
+  stop the emulated `as` with an unhandled divide exception (at `1000:3745` for
+  the division, `1000:3798` for the remainder), without a message or an object
+  file. The 8086's `idiv` is used on 16-bit operands, so a quotient that does
+  not fit (`-32768 / -1`) is the same trap as a zero divisor. On the hardware
+  this would be a signal (a `SIGFPE`) and no output.
+- **Evidence.** Emulator: found by the expression probes of `asfuzz.py`
+  (2026-10-25); the two addresses are in the routines of `/` and `^`.
+- **This project.** Not reproduced: `mutos_as` prints
+  `division by zero in an expression (the original crashes)` and exits with 1.
+- **Fix idea.** Test the divisor before the `idiv`.
+
+### AS-10 `(bp)` with an immediate gets a stale displacement byte
+
+- **Symptom.** The 8086 has no `[bp]` without a displacement, so `sub (bp),#16.`
+  is `81 6E 00 10 00` (mod 01, displacement byte 0, then the immediate). The
+  original writes that when nothing special came before it, and
+  `81 6E 10 10 00` - the displacement byte is the low byte of the
+  immediate, the instruction addresses `[bp+16]` - after some other statements:
+  - `mov ax,10(bx)` / `sub (bp),#16.`: `8B 47 0A 81 6E 10 10 00` (wrong);
+    `mov ax,20(bx)` first gives `.. 81 6E 10 10 00` as well - the 16 is the
+    immediate, not the 10 or the 20;
+  - `sub (bp),#16.` / `sub (bp),#17.`: the first is right, the second
+    `81 6E 11 11 00`; `add (bp),#9.` / `#10.` / `#11.` gives `00`, `0A`, `0B`;
+  - `mov ax,10(bx)` / `mov (bp),#16.`: `C7 46 10 10 00`;
+  - right again after a `nop`, after `sub 10(bx),#3` (a displacement and an
+    immediate in one instruction), after `mov ax,(bp)`; and `mov (bp),ax`,
+    `sub (bp),ax`, `inc (bp)`, `(bp)(si)` are right wherever they stand.
+  No message. Which statements arm it was not worked out; it is some state that an
+  instruction with a displacement in its second operand, or a `(bp)` with an
+  immediate, leaves and the next `(bp)` with an immediate takes for its own displacement.
+- **Evidence.** Emulator: found by `asfuzz.py --gen insn` (2026-10-25: `lds`,
+  `xorb (bp),*189.`, `sub (bp),#16.` after a `call @*/a(bx)`), reduced by hand
+  to the lines above.
+- **This project.** Not reproduced: `mutos_as` writes the 0. The compiler never
+  writes `(bp)` without a displacement (`*n.(bp)`), and the 1,284 compiled
+  programs of `asfuzz.py --gen cc` the original assembles give the same objects.
+- **Fix idea.** Clear the displacement when an operand has none.
+
+### AS-11 A conditional branch to an indirect address writes `EA` for `FF`
+
+- **Symptom.** The branches `beq`, `bne`, `ble`, `bhis`, `bc`, ... are a short
+  conditional jump over a `jmp` (the manual: `beq lab` is `jne *3; jmp lab`).
+  With a direct target the `jmp` is `E9 rel16`, right. With an indirect target
+  the original writes the `jmp` as `EA` plus the ModRM byte, where `jmp @cx`
+  itself gives `FF E1`: `ble @cx` is `7F 02 EA E1`, `ble @(bx)` `7F 02 EA 27`,
+  `ble @10(bx)` `7F 03 EA 67 0A`, `ble @x` `7F 04 EA 26 <address>` (with the
+  relocation). The skip distance (the jump over the following bytes) is right.
+  `EA` is the 8086's far jump to an immediate address, so the CPU takes the
+  ModRM byte and the bytes after it for an offset and a segment.
+- **Evidence.** Emulator: `asfuzz.py --gen insn` (2026-10-25: `ble @cx`,
+  `bgt @*1000.(bx)`, `blo @cx`, `bhis @bx`), then by hand over the branch words.
+- **This project.** Not reproduced, and not offered: `mutos_as` refuses a
+  conditional branch to an indirect operand (`ascmp_cases.txt` and the output of
+  `asfuzz.py` list them as `PORT-REJECTS`). Nothing in the corpus or in the
+  compiler's output has one.
+- **Fix idea.** Use the `jmp` encoder's `FF /4` for the indirect forms.
+
+### AS-12 `jmpi X` and `calli X` are seven bytes
+
+- **Symptom.** The only direct form the original has for the far jump and call is a
+  plain expression (`jmpi 5`; `jmpi 5,6` and `jmpi 5:6` are syntax errors). It writes
+  the opcode (`EA` for `jmpi`, `9A` for `calli`), the expression as a word, and four
+  zero bytes: `jmpi 5` followed by `nop` is `EA 05 00 00 00 00 00 90`, the `nop` at byte
+  7. For a symbol the word is relocated (`calli _f`: `9A`, the address, `00 00 00 00`).
+  The 8086's `EA off seg` and `9A off seg` are five bytes; the following instruction
+  would be read from byte 5, and after a `calli` the CPU, back from the call, would
+  execute the two zero bytes `00 00` (`add [bx+si],al`) before the next instruction.
+  (The segment word the CPU takes is the first two of the four zero bytes: 0.)
+- **Evidence.** Emulator: `asfuzz.py --gen prog` (2026-10-25, `jmpi L2`), then by hand
+  with a `nop` after the instruction to see where the next one starts;
+  `ascmp_cases.txt` pins `jmpi of an address` and `calli of an address`.
+- **This project.** Not reproduced, and not offered: `mutos_as` refuses `jmpi`/`calli`
+  of a plain address (the `@` forms, which are `FF /5` and `FF /3`, and the register
+  forms are done and the same as the original's). Nothing in the corpus or in the
+  compiler's output has the form.
+- **Fix idea.** If the form is ever wanted: emit `EA`/`9A`, the offset and a
+  segment word of 0 (five bytes), and keep the relocation on the offset.
+
+### AS-13 A line of 128 characters or more is cut, a comment too
+
+- **Symptom.** The original reads a source line in pieces of 127 characters: what
+  follows the 127th character is read as a line of its own. A statement that long is
+  cut in the middle of an operand (nearly always a `syntax error` for the tail); a
+  *comment* that long, or a short statement with a long comment (`nop | ...`), has the
+  tail of the comment from the 128th character on assembled as code. `|` followed by
+  125 `c` and a `T` (127 characters) is a comment; with one more `c` (128) the
+  object has a symbol `T`, an undefined external, as a line `T` would give; a tail
+  such as `and some words` is a syntax error, one that is an instruction word is
+  assembled. A line of 127 characters or fewer is read as it is written (the character
+  count is that of the line before its linefeed, a tab is one character).
+- **Evidence.** Emulator: `asfuzz.py --gen cc --mutate 0.5 -s 21` (2026-10-25: a
+  comment line of 213 characters whose tail made a symbol), then the lengths 124 to
+  133 by hand, for a comment line and for a statement with a comment.
+  `ascmp_cases.txt` pins `comment line of 128 characters` and `statement and comment of
+  128 characters`. (An earlier note in this project's records said that a comment
+  could be of any length; that was tried with tails that read as nothing.)
+- **This project.** Not reproduced: `mutos_as` reads the whole line and a comment is a
+  comment. Nothing in the corpus (no line of the kernel sources, `libc_recon` or the
+  compiler's output has more than 127 characters) has the problem, so the objects
+  agree; a hand-written source with a long comment line is assembled differently by the
+  two tools - or refused by the original.
+- **Fix idea.** Cut the lines at 127 characters in the reader, before the lexer, and
+  warn about the cut; the 64-token limit of an operand in `mutos_as` is then no longer
+  the lower of the two limits.
+
+### AS-14 Bytes of 0200 and up in code
+
+- **Symptom.** The source is read as characters; one with the high bit set is not
+  an error in the original, and what happens depends on the value (all 128 tried, a
+  line with that byte alone between two `nop`s): 124 are accepted with status 0, 3
+  (`0247`, `0356`, `0366`) are a `syntax error`, and `0351` makes the assembler jump
+  to unmapped memory (the emulator: `UC_ERR_FETCH_UNMAPPED` at `785e:79d4`; on the
+  hardware presumably a crash). Taken without a message is not taken as written:
+  after `0200` the object is empty - both `nop`s are gone, with status 0 -, and in
+  `ab<0377>cd` the name ends at the byte (symbol `ab`, then a syntax error). In a
+  comment (`| caf<0351>`) or a string (`.asciz *caf<0351>*`) the byte is an
+  ordinary character (checked: the same object from `mutos_as`).
+- **Evidence.** Emulator: `asfuzz.py --gen mix --mutate 0.5` (2026-10-25: `<0377>    std`
+  accepted), then by hand over the 128 values. `ascmp_cases.txt` pins `byte 0200`,
+  `byte 0247` and `byte 0351`. The mechanism was not analysed; a character
+  table indexed with a signed `char` would explain a value-dependent result.
+- **This project.** Not reproduced: `mutos_as` refuses the byte in code with a message
+  (`unexpected token at start of statement`). Nothing in the corpus has one.
+- **Fix idea.** If the original's behaviour were wanted, the cause would have to be
+  found in the disassembly first (`tests/realbin/` has the `as` image; no `asdis.py`
+  exists yet).
+
 ## `c0`
+
 
 ### C0-01 Folding a division that overflows
 

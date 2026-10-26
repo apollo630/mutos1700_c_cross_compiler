@@ -112,6 +112,12 @@ typedef enum {
     TOK_EQUALS,         /* '=' - assignment form */
     TOK_SEMI,           /* ';' - explicit statement separator (folded into TOK_NEWLINE by lexer) */
     TOK_AT,             /* '@' - register-indirect jump/call target, e.g. "call @si", "jmp @bx" (mch.s) */
+    TOK_AMP,            /* '&' - bitwise and */
+    TOK_BANG,           /* '!' - bitwise or (the '|' starts a comment) */
+    TOK_CARET,          /* '^' - remainder */
+    TOK_TILDE,          /* '~' - complement (prefix) */
+    TOK_SHL,            /* '<<' */
+    TOK_SHR,            /* '>>' */
     TOK_UNKNOWN         /* unrecognized character, kept for diagnostics instead of hard-failing */
 } TokenType;
 
@@ -178,7 +184,8 @@ Token lexer_next(Lexer *lx);
  * encoding) - true instructions never need more than 2 operands, so
  * this only matters for directives, but the array is shared. */
 #define MAX_OPERANDS   32
-#define MAX_TOKENS_PER_OPERAND 16
+#define MAX_STMT_LABELS 64
+#define MAX_TOKENS_PER_OPERAND 64
 
 typedef struct {
     Token tokens[MAX_TOKENS_PER_OPERAND];
@@ -199,9 +206,20 @@ typedef struct {
 
     /* Label(s), if any. A statement may carry MULTIPLE colon-terminated
      * labels before the actual mnemonic (seen in real c1 output, e.g.
-     * "L10:L8:mov dx,di" from malloc.s - two labels on one instruction). */
-    Token labels[4];
+     * "L10:L8:mov dx,di" from malloc.s - two labels on one instruction;
+     * up to eight in tests/mutos_cc/11_kernel/08_tty.s.golden, where this
+     * array held four and silently dropped the rest, 2026-10-25, found by
+     * tests/realbin/ascmp.py). More than MAX_STMT_LABELS: too_many_labels,
+     * which the assembler reports - never a label dropped. */
+    Token labels[MAX_STMT_LABELS];
     int   nlabels;
+    bool  too_many_labels;
+    /* More tokens in one operand than MAX_TOKENS_PER_OPERAND, or more
+     * operands than MAX_OPERANDS: reported, never silently cut short (until
+     * 2026-10-25 an expression of nine terms lost its tail). The original
+     * takes up to 127 characters of a line (it cuts a longer line there,
+     * AS-13), so up to about 60 terms of a sum. */
+    bool  too_long;
     bool  has_local_label_def;
     int   local_label_digit; /* valid if has_local_label_def */
 
@@ -224,6 +242,7 @@ typedef struct {
     Token   queue[PARSER_LOOKAHEAD_MAX];
     int     queued;         /* number of valid tokens currently sitting in queue[] */
     int     error_count;
+    bool    at_end;         /* a bare ".end" was read: no more statements */
     const char *filename;
 } Parser;
 

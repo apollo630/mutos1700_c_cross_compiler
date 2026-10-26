@@ -90,8 +90,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   independent assembler (NASM) and disassembler (objdump) only. Do **not** name any
   file in here `*.o.golden` — that suffix is reserved project-wide for real
   hardware-linked references (see Workflow Guideline 2's `.o`-ambiguity caution below);
-  use `*.o.crosschecked` instead if/when reference bytes are added. See this directory's
-  own `README.md`.
+  use `*.o.crosschecked` instead if/when reference bytes are added. Since 2026-10-25 the
+  opcodes are behind `mutos_as -1`; `v30_with_1.md5` and `../check_switches.sh` (in
+  `make test`) pin that the seven sources give the recorded objects with `-1` and not
+  without it. See this directory's own `README.md`.
 * `/tests/mutos_cc/`: the K&R C construct-coverage corpus for `mutos_cc`/`mutos_c0`/
   `mutos_c1` - 62 small `.c` files across 11 numbered categories (`00_smoke/` …
   `10_integ/`) - with real-hardware goldens for every stage: `*.i.golden` (`cpp -P`),
@@ -132,7 +134,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   (`ldmap.txt`, `lddis.py`, `ldtables.py`, `ldcmp.py`, `ldfuzz.py`), since 2026-10-24 for
   `cc` (`ccmap.txt`, `ccdis.py`, `cctables.py`, `cccmp.py`, `ccfuzz.py`, and
   `ccstub.c`, the pass that logs what the port runs), since 2026-10-25 for `c2`
-  (`c2map.txt`, `c2dis.py`, `c2tables.py`, `c2cmp.py`, `c2fuzz.py`). The
+  (`c2map.txt`, `c2dis.py`, `c2tables.py`, `c2cmp.py`, `c2fuzz.py`), and the same
+  measurement for `mutos_as`, a re-implementation (`ascmp.py`, `asfuzz.py`, the pinned
+  `ascmp_goldens.txt`/`ascmp_cases.txt`). The
   emulator shifts by CL, and
   faults on a quotient of -32768, as the 8086 does, not as the 80386 Unicorn emulates.
   See its `README.md`, `docs/C1_PORT_PLAN.md` and `docs/C0_PORT_PLAN.md`.
@@ -272,9 +276,16 @@ You act as an expert systems programmer, compiler architect, and operating syste
      sources, not the assembler's symbol-table policy).
      **Found 2026-10-20 (emulated original)**: the binary does not implement the
      manual's `-W`, `-D` and `-T` either, but has `-e`, `-g`, `-C` and `-l`; the
-     original `cc` always passes `-gC`, which `mutos_as` accepts and ignores since
-     2026-10-20 (`docs/TOOLCHAIN_PLAN.md`, decision 9). Its 80186/V30 opcodes - an extension
-     the original lacks - are to move behind the switch `-1` (section 4 there).
+     original `cc` always passes `-gC`, which `mutos_as` accepted and ignored from
+     2026-10-20 (`docs/TOOLCHAIN_PLAN.md`, decision 9).
+     **Measured and done 2026-10-25 (step 5)**: the original's `-C` leaves every
+     defined, non-global symbol that starts with a capital `L` out of the symbol table
+     (the compiler's `L<number>` labels), and `mutos_as -C` does the same now - which
+     is what `mutos_cc` has been passing all along; `-g` has no effect in the original
+     either. `-e` (externals only) and `-l` (a listing `x.L`) are **not**
+     implemented in `mutos_as` - measured differences, see `STATUS.md`. The 80186/V30
+     opcodes - an extension the original lacks - are behind the switch `-1` now
+     (without it `mutos_as` refuses them, as the original does).
    * **Ended 2026-10-22 - `mutos_cpp`'s `# N "file"` lines**: until then `mutos_cpp`
      (a re-implementation) never wrote them, regardless of `-P`, since every real
      `.i` golden was made with `-P`. The original `cc` runs `cpp` *without* `-P` for
@@ -492,12 +503,17 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
 * NEC V30/80186 instruction-set support: a set of 80186/V30 opcodes (PUSHA/POPA, PUSH
   imm, INSB/INSW/OUTSB/OUTSW, ENTER/LEAVE/BOUND, IMUL-immediate forms,
   shift/rotate-with-immediate-count) is implemented; the original `as` has none of
-  them. **Decided 2026-10-20**: they move behind the switch `-1`
-  (`docs/TOOLCHAIN_PLAN.md`, section 4).
-* `-g`/`-C` (the original `cc` passes `-gC`): accepted and ignored since 2026-10-20.
-* **Next** (`docs/TOOLCHAIN_PLAN.md`, step 5 - the next step of the plan since the port
-  of `c2`): a differential fuzzer against the original; then the decision whether to
-  port it. No 8087 support needed.
+  them. **Done 2026-10-25** (decided 2026-10-20): they are behind the switch `-1`
+  (`docs/TOOLCHAIN_PLAN.md`, section 4; `tests/mutos_as/check_switches.sh`).
+* `-g`/`-C` (the original `cc` passes `-gC`): `-g` is ignored, as in the original;
+  `-C` drops the defined, non-global `L` symbols, as measured on the original
+  (2026-10-25).
+* **Step 5 of `docs/TOOLCHAIN_PLAN.md` done 2026-10-25**: a differential fuzzer
+  (`tests/realbin/asfuzz.py`) and a comparator (`tests/realbin/ascmp.py`) against the
+  emulated original `as`. The compiler's own output is assembled byte-identically; the
+  remaining differences (an assembler for hand-written code only) are listed in
+  `STATUS.md`. **Open: the decision whether to port `as`** - the user's, with the
+  measurements and a recommendation in `STATUS.md`. No 8087 support needed.
 
 ### Milestone 3: The C Preprocessor (`mutos_cpp`)
 * **A port of the original `cpp` binary since 2026-10-22** (`cpp.c 1.6 12/12/86`, with

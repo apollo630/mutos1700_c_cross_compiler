@@ -277,6 +277,78 @@ static Token lexer_next_raw(Lexer *lx)
         case '-': t.type = TOK_MINUS;  advance(lx); t.text="-"; t.len=1; return t;
         case '=': t.type = TOK_EQUALS; advance(lx); t.text="="; t.len=1; return t;
         case '@': t.type = TOK_AT;     advance(lx); t.text="@"; t.len=1; return t;
+        case '\'': {
+            /* A character constant, 'a' or 'ab' (found by asfuzz.py,
+             * 2026-10-25; measured on the original): one or two characters
+             * between quotes, each plain or a backslash and one character
+             * (\n 10, \t 9, \b 8, \f 12, \r 13; any other is itself,
+             * so \0 is the digit and \\ and \' are what they say). One
+             * character is its value as a signed char, two are
+             * first * 256 + second. Anything else - none, three, no closing
+             * quote - is an error: the quote stays a stray character. */
+            long v[3];
+            int n = 0;
+            size_t off = 1;
+            bool closed = false;
+            for (;;) {
+                int ch = (unsigned char)peek_at(lx, off);
+                if (ch == 0 || ch == '\n') break;
+                if (ch == '\'') { closed = true; break; }
+                int val;
+                if (ch == '\\') {
+                    int nx = (unsigned char)peek_at(lx, off + 1);
+                    if (nx == 0 || nx == '\n') break;
+                    switch (nx) {
+                        case 'n': val = 10; break;
+                        case 't': val = 9; break;
+                        case 'b': val = 8; break;
+                        case 'f': val = 12; break;
+                        case 'r': val = 13; break;
+                        default:  val = (signed char)nx; break;
+                    }
+                    off += 2;
+                } else {
+                    val = (signed char)ch;
+                    off += 1;
+                }
+                if (n < 3) v[n] = val;
+                n++;
+            }
+            if (closed && (n == 1 || n == 2)) {
+                t.type = TOK_NUMBER;
+                t.num_base = NUMBASE_DECIMAL;
+                t.text = lx->src + lx->pos;
+                t.len = off + 1;
+                t.num_value = (n == 1) ? v[0] : (((v[0] & 0xFF) << 8) | (v[1] & 0xFF));
+                for (size_t i = 0; i <= off; i++) advance(lx);
+                return t;
+            }
+            t.type = TOK_UNKNOWN;
+            t.text = lx->src + lx->pos;
+            t.len = 1;
+            advance(lx);
+            return t;
+        }
+        case '&': t.type = TOK_AMP;    advance(lx); t.text="&"; t.len=1; return t;
+        case '!': t.type = TOK_BANG;   advance(lx); t.text="!"; t.len=1; return t;
+        case '^': t.type = TOK_CARET;  advance(lx); t.text="^"; t.len=1; return t;
+        case '~': t.type = TOK_TILDE;  advance(lx); t.text="~"; t.len=1; return t;
+        case '<':
+        case '>':
+            /* only the doubled forms are operators; a single one is an
+             * error in the original, kept as an unknown character */
+            if (peek_at(lx, 1) == c) {
+                t.type = (c == '<') ? TOK_SHL : TOK_SHR;
+                t.text = lx->src + lx->pos;
+                t.len = 2;
+                advance(lx); advance(lx);
+                return t;
+            }
+            t.type = TOK_UNKNOWN;
+            t.text = lx->src + lx->pos;
+            t.len = 1;
+            advance(lx);
+            return t;
         default:
             t.type = TOK_UNKNOWN;
             t.text = lx->src + lx->pos;
@@ -289,6 +361,13 @@ static Token lexer_next_raw(Lexer *lx)
 Token lexer_next(Lexer *lx)
 {
     Token t = lexer_next_raw(lx);
+    /* A ".name" is a directive only where a statement can start (after
+     * a separator or a label); anywhere else it is a symbol like any
+     * other, e.g. ".word .e" (measured on the original, 2026-10-25). */
+    if (t.type == TOK_DOT_IDENT && lx->last_type != TOK_NEWLINE &&
+        lx->last_type != TOK_SEMI && lx->last_type != TOK_COLON &&
+        lx->last_type != TOK_LOCAL_LABEL_DEF)
+        t.type = TOK_IDENT;
     lx->last_type = t.type;
     return t;
 }

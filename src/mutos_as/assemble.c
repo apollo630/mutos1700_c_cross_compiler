@@ -82,6 +82,74 @@ static RelocList *seg_relocs(AsmState *as, RelocList *text_relocs, RelocList *da
     return NULL;
 }
 
+/* ".asciz *string*" or ".asciz "string"": the bytes of the text after the
+ * opening delimiter, up to the closing one - a star or a double quote,
+ * the same on both ends, the other one is an ordinary character in the
+ * string (the double quote found 2026-10-25 by asfuzz.py --words: the
+ * original takes both, the corpus - mch.s - only has stars). The escapes are the original's (measured 2026-10-25 under
+ * the emulator, tests/realbin/ascmp.py and asfuzz.py): \b \f \n \r \t are
+ * the control characters, \ and up to three octal digits one byte (a
+ * third digit only while the value stays below 256; a non-octal digit 8 or
+ * 9 after at least one octal digit is read and dropped, and ends the
+ * escape), \* the star, and a backslash before any other character that
+ * character itself (\\, \", \e, \x ...). A newline (or the end of the
+ * text, or a backslash right before it) before the closing star: not
+ * closed - the original says "newline in string". Writes the bytes to out
+ * unless it is NULL; returns their number; *after is the text after the
+ * closing star (or where the scan stopped). */
+static size_t asciz_decode(const char *p, unsigned char *out, char delim, bool *closed, const char **after)
+{
+    size_t n = 0;
+    *closed = false;
+    for (;;) {
+        unsigned char c = (unsigned char)*p++;
+        if (c == '\0' || c == '\n') { p--; break; }
+        if (c == (unsigned char)delim) { *closed = true; break; }
+        if (c == '\\') {
+            c = (unsigned char)*p++;
+            if (c == '\0' || c == '\n') { p--; break; }
+            if (c >= '0' && c <= '7') {
+                unsigned v = (unsigned)(c - '0');
+                for (int i = 1; i < 3; i++) {
+                    unsigned char d = (unsigned char)*p;
+                    if (d >= '0' && d <= '7') {
+                        if (v * 8 + (unsigned)(d - '0') > 255) break;
+                        v = v * 8 + (unsigned)(d - '0');
+                        p++;
+                    } else if (d == '8' || d == '9') {
+                        p++;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+                c = (unsigned char)v;
+            } else {
+                switch (c) {
+                    case 'b': c = '\b'; break;
+                    case 'f': c = '\f'; break;
+                    case 'n': c = '\n'; break;
+                    case 'r': c = '\r'; break;
+                    case 't': c = '\t'; break;
+                    default: break;       /* the character itself */
+                }
+            }
+        }
+        if (out) out[n] = c;
+        n++;
+    }
+    *after = p;
+    return n;
+}
+
+/* What may follow the closing star: blanks, then the end of the line, a
+ * comment or a ';' - the original makes anything else a syntax error. */
+static bool asciz_tail_ok(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    return *p == '\0' || *p == '\n' || *p == '|' || *p == ';';
+}
+
 static void define_label(AsmState *as, const Token *label)
 {
     Symbol *s = symtab_find_or_create(&as->st, label->text, label->len);
@@ -96,6 +164,7 @@ static void define_label(AsmState *as, const Token *label)
         case SEG_BSS:  s->type = SYM_LOCALBSS; s->value = as->bss_loc; break;
     }
     s->defined = true;
+    s->def_seq = symtab_cur_seq;
 }
 
 /* Parses a raw (unclassified) operand as a plain expression - used for
@@ -111,7 +180,24 @@ static ExprNode *parse_raw_operand_expr(const Operand *op)
     int idx = 0;
     if (op->ntokens > 0 && (op->tokens[0].type == TOK_STAR || op->tokens[0].type == TOK_HASH))
         idx = 1;
-    return expr_parse(op->tokens, op->ntokens, &idx);
+    ExprNode *e = expr_parse(op->tokens, op->ntokens, &idx);
+    /* Everything of the operand must be part of the expression: "5 6" or
+     * "1+(2)" is a syntax error in the original, and used to give 5 and 0
+     * here without a word (the same hole let a character constant, 'a',
+     * be 0 until 2026-10-25). */
+    if (e && idx != op->ntokens) {
+        expr_free(e);
+        return NULL;
+    }
+    return e;
+}
+
+/* The message for a data operand that is no expression (pass 1 only). */
+static void bad_expr(AsmState *as, int line, const char *where, bool pass2)
+{
+    if (pass2) return;
+    fprintf(stderr, "error: bad expression in %s at line %d\n", where, line);
+    as->errors++;
 }
 
 static void handle_directive(AsmState *as, const Statement *s)
@@ -124,7 +210,7 @@ static void handle_directive(AsmState *as, const Statement *s)
                 continue;
             const Token *nm = &s->operands[i].tokens[0];
             Symbol *sym = symtab_find_or_create(&as->st, nm->text, nm->len);
-            sym->is_extern = true;
+            symtab_mark_extern(&as->st, sym);
         }
         return;
     }
@@ -150,7 +236,7 @@ static void handle_directive(AsmState *as, const Statement *s)
             sym->type = SYM_BSS;
             sym->value = size; /* BSS "value" is the requested SIZE, not
                                  * an address - see symtab.h */
-            sym->is_extern = true;
+            symtab_mark_extern(&as->st, sym);
             sym->defined = true; /* defined-as-a-common, not a hard error
                                    * if referenced; real linker still
                                    * merges multiple .comm decls for the
@@ -181,9 +267,26 @@ static void handle_directive(AsmState *as, const Statement *s)
     /* .float/.double are handled by the caller (run_pass), which has
      * the output buffers - see its STMT_DIRECTIVE case. */
 
-    /* .asciz / .end etc.: not needed by the current corpus subset this
-     * driver targets - silently ignored so it degrades gracefully
-     * rather than erroring on files outside its scope. */
+    /* .list / .nlist (listing control, which mutos_as does not write) and
+     * .targref / .textref (no effect without an operand; measured on
+     * the original, 2026-10-25): nothing to do. Every other name the
+     * parser lets through as a directive is handled by run_pass(). */
+}
+
+/* Value and kind of the right side of "name = expr": SYM_ABS, or
+ * SYM_TEXT/SYM_DATA/SYM_LOCALBSS for an address in that segment. Fails
+ * for what is not known (yet): an undefined or external symbol, a
+ * numeric local label, a sum of two addresses, a product of an address. */
+static bool assign_eval(const ExprNode *e, const AsmState *as, SymType *ty, long *v)
+{
+    SymType dty;
+    long dv;
+    switch (as->seg) {
+        case SEG_TEXT: dty = SYM_TEXT; dv = as->text_loc; break;
+        case SEG_DATA: dty = SYM_DATA; dv = as->data_loc; break;
+        default:       dty = SYM_LOCALBSS; dv = as->bss_loc; break;
+    }
+    return expr_eval_known(e, (SymTab *)&as->st, -1, dty, dv, ty, v);
 }
 
 static void handle_assignment(AsmState *as, const Statement *s, CodeBuf *text_out, CodeBuf *data_out, bool pass2)
@@ -208,6 +311,7 @@ static void handle_assignment(AsmState *as, const Statement *s, CodeBuf *text_ou
         ExprNode *e = parse_raw_operand_expr(&s->operands[0]);
         long v = 0;
         if (e) v = resolve_expr_pub(e, *lc, &as->st);
+        else bad_expr(as, s->line, "an assignment to '.'", pass2);
         expr_free(e);
         long old = *lc;
         if (pass2 && v > old) {
@@ -220,17 +324,33 @@ static void handle_assignment(AsmState *as, const Statement *s, CodeBuf *text_ou
         return;
     }
 
-    /* Plain "name = expr" - not exercised by malloc.s; define as an
-     * absolute symbol if the RHS is already constant-foldable. */
+    /* Plain "name = expr". The original takes any expression of the
+     * symbols it knows (found by asfuzz.py, 2026-10-25: "_b = _a+1",
+     * "_n = _m*2", "_e = .+2", and a forward "_b = _c+1" before "_c = 5"
+     * all work, where mutos_as dropped everything but a plain constant
+     * without a word). The symbol gets the kind of its value: absolute
+     * for a number or a difference of two addresses of one segment, an
+     * address of that segment for "label+n". Both passes evaluate it, so
+     * that a symbol defined further down is there in the second. What
+     * the original does with an external or undefined symbol on the right
+     * (a symbol of type undefined with the right-hand name's garbage as
+     * value, 2026-10-25) is refused here. */
     ExprNode *e = parse_raw_operand_expr(&s->operands[0]);
+    Symbol *sym = symtab_find_or_create(&as->st, s->mnemonic_or_name.text, s->mnemonic_or_name.len);
+    if (e) register_expr_symbols(e, &as->st);
+    SymType ty = SYM_ABS;
     long v = 0;
-    bool ok = e && expr_try_eval_const(e, &v);
+    bool ok = e && assign_eval(e, as, &ty, &v);
     expr_free(e);
     if (ok) {
-        Symbol *sym = symtab_find_or_create(&as->st, s->mnemonic_or_name.text, s->mnemonic_or_name.len);
-        sym->type = SYM_ABS;
+        if (!sym->defined) sym->def_seq = pass2 ? 0x7fffffff : symtab_cur_seq;
+        sym->type = ty;
         sym->value = v;
         sym->defined = true;
+    } else if (pass2) {
+        fprintf(stderr, "error: cannot evaluate the assignment to '%.*s' at line %d\n",
+                (int)s->mnemonic_or_name.len, s->mnemonic_or_name.text, s->line);
+        as->errors++;
     }
 }
 
@@ -265,7 +385,9 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
     as->seg = SEG_TEXT;
 
     Statement s;
+    symtab_cur_seq = 0;
     while (parser_next_statement(&p, &s)) {
+        symtab_cur_seq++;
         long *lc = seg_lc(as);
 
         if (s.kind == STMT_EMPTY)
@@ -277,6 +399,16 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
              * matching "label: instruction" semantics). */
             for (int i = 0; i < s.nlabels; i++)
                 define_label(as, &s.labels[i]);
+            if (s.too_long) {
+                fprintf(stderr, "error: statement too long at line %d (more than %d tokens in an operand or %d operands)\n",
+                        s.line, MAX_TOKENS_PER_OPERAND, MAX_OPERANDS);
+                as->errors++;
+            }
+            if (s.too_many_labels) {
+                fprintf(stderr, "error: more than %d labels in front of one statement at line %d\n",
+                        MAX_STMT_LABELS, s.line);
+                as->errors++;
+            }
         }
 
         switch (s.kind) {
@@ -306,6 +438,21 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                  * the 136 .s files mutos_as assembled before (the 67
                  * kernel goldens among them) gives a different object. */
                 const Token *d = &s.mnemonic_or_name;
+                /* .dlptr is an error in the original whatever follows
+                 * ("long pointers not supported"); a .insrt that
+                 * expand_insrt() left is not the `.insrt "file"` form,
+                 * which the original refuses as a syntax error. Both
+                 * were silently dropped before 2026-10-25. */
+                if (d->len == 6 && (strncmp(d->text, ".dlptr", 6) == 0 ||
+                                    strncmp(d->text, ".insrt", 6) == 0)) {
+                    if (!pass2) {
+                        fprintf(stderr, "error: %.*s%s at line %d\n", (int)d->len, d->text,
+                                d->text[1] == 'd' ? ": long pointers not supported"
+                                                  : " needs a quoted file name", s.line);
+                        as->errors++;
+                    }
+                    break;
+                }
                 /* .word <expr>[,<expr>...] / .byte <expr>[,<expr>...] -
                  * emit raw data into whichever segment is current. */
                 if (d->len == 5 && (strncmp(d->text, ".word", 5) == 0 ||
@@ -316,6 +463,7 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                     for (int i = 0; i < s.noperands; i++) {
                         ExprNode *e = parse_raw_operand_expr(&s.operands[i]);
                         long v;
+                        if (!e) bad_expr(as, s.line, is_word ? ".word" : ".byte", pass2);
                         if (pass2) {
                             v = e ? resolve_expr_pub(e, *lc, &as->st) : 0;
                         } else {
@@ -359,8 +507,14 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                  * degrades to the same zero-fill-via-explicit-bytes
                  * behavior as ".=.+N" for consistency, though no real
                  * sample of that combination exists in the corpus. */
-                if (d->len == 5 && strncmp(d->text, ".blkb", 5) == 0) {
+                if (d->len == 5 && (strncmp(d->text, ".blkb", 5) == 0 ||
+                                    strncmp(d->text, ".blkw", 5) == 0)) {
+                    /* .blkw is the same in words (measured on the original,
+                     * 2026-10-25: ".blkw 5" is ten bytes, in .text, .data
+                     * and .bss alike; there is no alignment). */
+                    long unit = (d->text[4] == 'w') ? 2 : 1;
                     ExprNode *e = s.noperands >= 1 ? parse_raw_operand_expr(&s.operands[0]) : NULL;
+                    if (s.noperands >= 1 && !e) bad_expr(as, s.line, ".blkb/.blkw", pass2);
                     long n = 0;
                     if (pass2) {
                         n = e ? resolve_expr_pub(e, *lc, &as->st) : 0;
@@ -369,6 +523,7 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                         expr_try_eval_const(e, &n); /* best-effort Pass 1 size (real
                                                        * corpus uses only plain constants) */
                     }
+                    n *= unit;
                     CodeBuf *target = pass2 ? seg_target(as, text_out, data_out) : NULL;
                     if (pass2 && target)
                         for (long i = 0; i < n; i++)
@@ -412,21 +567,37 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                  * mnemonic token's pointer into the original buffer)
                  * rather than through the parsed Operand tokens, which
                  * would be garbage for this directive. */
-                if (d->len == 6 && strncmp(d->text, ".asciz", 6) == 0) {
+                if (d->len == 6 && (strncmp(d->text, ".asciz", 6) == 0 ||
+                                    strncmp(d->text, ".ascii", 6) == 0)) {
+                    /* .ascii is the same without the NUL (measured on the
+                     * original, 2026-10-25). */
+                    bool with_nul = (d->text[5] == 'z');
                     const char *p = d->text + d->len;
                     while (*p == ' ' || *p == '\t') p++;
-                    if (*p == '*') {
-                        p++;
-                        const char *start = p;
-                        while (*p && *p != '*' && *p != '\n') p++;
-                        size_t slen = (size_t)(p - start);
+                    if (*p == '*' || *p == '"') {
+                        const char delim = *p;
+                        const char *str = p + 1;
+                        const char *after = NULL;
+                        bool closed = false;
+                        size_t slen = asciz_decode(str, NULL, delim, &closed, &after);
+                        if (!pass2 && (!closed || !asciz_tail_ok(after))) {
+                            fprintf(stderr, closed ? "error: syntax error after the string at line %d\n"
+                                                    : "error: newline in string at line %d\n", s.line);
+                            as->errors++;
+                        }
                         CodeBuf *target = pass2 ? seg_target(as, text_out, data_out) : NULL;
                         if (pass2 && target) {
-                            for (size_t i = 0; i < slen; i++)
-                                codebuf_put(target, (unsigned char)start[i]);
-                            codebuf_put(target, 0x00); /* NUL terminator */
+                            unsigned char *buf = malloc(slen ? slen : 1);
+                            if (buf) {
+                                asciz_decode(str, buf, delim, &closed, &after);
+                                for (size_t i = 0; i < slen; i++)
+                                    codebuf_put(target, buf[i]);
+                                free(buf);
+                            }
+                            if (with_nul)
+                                codebuf_put(target, 0x00); /* NUL terminator */
                         }
-                        *lc += (long)slen + 1;
+                        *lc += (long)slen + (with_nul ? 1 : 0);
                     }
                     break;
                 }
@@ -516,14 +687,25 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                  * passes (see register_expr_symbols()'s doc comment) -
                  * only actually resolve/emit the value in Pass 2. */
                 ExprNode *e = parse_raw_operand_expr(&s.operands[0]);
-                if (pass2 && data_out) {
+                if (!e) bad_expr(as, s.line, "a data word", pass2);
+                /* The word goes into the current segment, text as well as
+                 * data (until 2026-10-25 it always went into data, while
+                 * the text counter moved on - "nop", a word, "nop" gave
+                 * the original's 90 05 00 90 and here 90 90; found by
+                 * asfuzz.py). In .bss it only moves the counter (also found
+                 * by asfuzz.py: a number alone on a line there went into
+                 * the data). */
+                CodeBuf *tgt = (as->seg == SEG_TEXT) ? text_out
+                             : (as->seg == SEG_DATA) ? data_out : NULL;
+                RelocList *trl = (as->seg == SEG_TEXT) ? text_relocs : data_relocs;
+                if (pass2 && tgt) {
                     long v = e ? resolve_expr_pub(e, *lc, &as->st) : 0;
-                    if (data_relocs && e) {
+                    if (trl && e) {
                         unsigned char low4; int symidx;
                         if (classify_word_reloc_pub(e, &as->st, as->seg == SEG_TEXT, &low4, &symidx))
-                            reloclist_add(data_relocs, (long)data_out->len, symidx, low4);
+                            reloclist_add(trl, (long)tgt->len, symidx, low4);
                     }
-                    codebuf_put16le(data_out, (unsigned int)(v & 0xFFFF));
+                    codebuf_put16le(tgt, (unsigned int)(v & 0xFFFF));
                 } else if (e) {
                     register_expr_symbols(e, &as->st);
                 }
@@ -667,6 +849,11 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
      * errors detected -> mark executable" behavior to be correct in
      * the presence of a syntax error, not just an encoding error. */
     as->errors += p.error_count;
+    if (expr_div_errors) {
+        fprintf(stderr, "error: division by zero in an expression (the original crashes)\n");
+        as->errors++;
+        expr_div_errors = 0;
+    }
 }
 
 /* Reads all of `f` into a freshly malloc'd, NUL-terminated buffer,
@@ -689,6 +876,86 @@ static void read_append(FILE *f, char **buf, size_t *len, size_t *cap)
     }
 }
 
+/* The original's `.insrt "file"` (found in its binary, 2026-10-25; the
+ * manual does not have it): the file's text stands in place of the line.
+ * Done on the text before the passes, so both see the same source; the
+ * line numbers of messages after an insert are shifted by it. Returns a
+ * new buffer (the old one is freed) or NULL with a message printed when
+ * a file cannot be opened or the nesting is too deep. Only the plain
+ * form, a line that starts with `.insrt` and a quoted name, is
+ * expanded; any other `.insrt` is left to run_pass(), which refuses it. */
+#define INSRT_MAX_DEPTH 10
+
+static char *expand_insrt(char *src, size_t *len, int depth, const char *from)
+{
+    bool any = false;
+    for (size_t i = 0; i + 6 <= *len && !any; i++)
+        if (src[i] == '.' && strncmp(src + i, ".insrt", 6) == 0) any = true;
+    if (!any) return src;
+
+    size_t cap = *len + 1, n = 0;
+    char *out = malloc(cap);
+    size_t i = 0;
+    while (i < *len) {
+        size_t eol = i;
+        while (eol < *len && src[eol] != '\n') eol++;
+        const char *l = src + i;
+        size_t ll = eol - i;
+        size_t k = 0;
+        while (k < ll && (l[k] == ' ' || l[k] == '\t')) k++;
+        bool done = false;
+        if (ll - k > 6 && strncmp(l + k, ".insrt", 6) == 0 && (l[k + 6] == ' ' || l[k + 6] == '\t')) {
+            size_t q = k + 6;
+            while (q < ll && (l[q] == ' ' || l[q] == '\t')) q++;
+            if (q < ll && l[q] == '"') {
+                size_t e = q + 1;
+                while (e < ll && l[e] != '"') e++;
+                if (e < ll) {
+                    char name[1024];
+                    size_t nl = e - (q + 1);
+                    if (nl >= sizeof(name)) nl = sizeof(name) - 1;
+                    memcpy(name, l + q + 1, nl);
+                    name[nl] = '\0';
+                    if (depth >= INSRT_MAX_DEPTH) {
+                        fprintf(stderr, "error: .insrt nested more than %d deep (%s)\n",
+                                INSRT_MAX_DEPTH, name);
+                        free(out); free(src);
+                        return NULL;
+                    }
+                    FILE *f = fopen(name, "rb");
+                    if (!f) {
+                        fprintf(stderr, "error: cannot open insert file %s (in %s)\n", name, from);
+                        free(out); free(src);
+                        return NULL;
+                    }
+                    char *ib = NULL; size_t il = 0, ic = 0;
+                    read_append(f, &ib, &il, &ic);
+                    fclose(f);
+                    if (!ib) { ib = malloc(1); }
+                    ib[il] = '\0';
+                    ib = expand_insrt(ib, &il, depth + 1, name);
+                    if (!ib) { free(out); free(src); return NULL; }
+                    if (n + il + 2 > cap) { cap = (n + il + 2) * 2; out = realloc(out, cap); }
+                    memcpy(out + n, ib, il); n += il;
+                    if (il == 0 || ib[il - 1] != '\n') out[n++] = '\n';
+                    free(ib);
+                    done = true;
+                }
+            }
+        }
+        if (!done) {
+            size_t take = ll + (eol < *len ? 1 : 0);
+            if (n + take + 2 > cap) { cap = (n + take + 2) * 2; out = realloc(out, cap); }
+            memcpy(out + n, l, take); n += take;
+        }
+        i = eol + 1;
+    }
+    free(src);
+    *len = n;
+    out[n] = '\0';
+    return out;
+}
+
 int main(int argc, char **argv)
 {
     /* as.1: "as [-LW] [-o output] file ..." / "asf [-LW] [-o output]
@@ -706,7 +973,7 @@ int main(int argc, char **argv)
      * would mean fabricating coprocessor opcodes with no source to
      * confirm them against - the same category of risk this project
      * has consistently avoided elsewhere (e.g. deliberately not
-     * implementing CALLI/JMPI's direct "d:s" form). is_asf is tracked
+     * implementing CALLI/JMPI's direct form, see encode_calli). is_asf is tracked
      * for when/if real FPU documentation or a golden sample becomes
      * available. */
     const char *prog = argv[0];
@@ -738,17 +1005,33 @@ int main(int argc, char **argv)
      *
      * "-g" and "-C" (2026-10-20, docs/TOOLCHAIN_PLAN.md decision 9):
      * the original binary knows them, and the original cc always runs
-     * "as -gC -o x.o tmp". No effect of either is known yet (none on
-     * the probes run under the emulator), so they are accepted and
-     * ignored. The original reads its options letter by letter ("-gC"
-     * is g, then C), so an argument made only of the letters this
-     * assembler knows without an operand - g, C, v, W - is read the
+     * "as -gC -o x.o tmp". Measured 2026-10-25 by running the original
+     * against itself on 216 sources (tests/realbin/ascmp.py options):
+     * "-g" changes nothing on any of them, so it is accepted and
+     * ignored; "-C" leaves the defined local symbols named L... out of
+     * the symbol table - the effect the manual gives to "-L", which the
+     * binary does not have (symtab_finalize()). The real-hardware
+     * goldens were made without -C, which is why they keep their L
+     * labels and libc.a's objects (compiled through cc, so with -C) have
+     * none. The original reads its options letter by letter ("-gC" is
+     * g, then C), so an argument made only of the letters this
+     * assembler knows without an operand - g, C, v, W, 1 - is read the
      * same way: "-gC", "-Cg", "-g -C" and "-gCW" all work. "-o" keeps
      * its two forms below; any other letter is still the usage error
-     * it was (the original's "Unknown option X ignored." and the other
-     * letters it knows are for the differential fuzzer, plan step 5). */
+     * it was. The original's "Unknown option X ignored." for those, its
+     * "-e" (only external symbols in the table) and "-l" (a listing file
+     * with the last character of the output name replaced by L) are
+     * measured, not implemented - the decision on a port of this
+     * assembler is open (docs/TOOLCHAIN_PLAN.md, step 5).
+     *
+     * "-1" (2026-10-25, docs/TOOLCHAIN_PLAN.md section 4): the 80186/V30
+     * instructions. The original has none of them and calls the letter
+     * "Unknown option 1 ignored."; here it is the extension that switches
+     * them on (encode_set_186()). */
     bool verbose = false;
     bool opt_W = false;
+    bool opt_1 = false;
+    bool opt_C = false;
     const char *opt_o = NULL;
     const char *filenames[128];
     int nfilenames = 0;
@@ -757,7 +1040,7 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if (strcmp(a, "-o") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: %s [-gCW] [-o output] [file ...]\n", argv[0]);
+                fprintf(stderr, "usage: %s [-gCW1] [-o output] [file ...]\n", argv[0]);
                 return 1;
             }
             opt_o = argv[++i];
@@ -767,21 +1050,24 @@ int main(int argc, char **argv)
             opt_o = a + 2; /* attached form, e.g. "-ofoo.o" */
             continue;
         }
-        if (a[0] == '-' && a[1] != '\0' && strspn(a + 1, "gCvW") == strlen(a + 1)) {
+        if (a[0] == '-' && a[1] != '\0' && strspn(a + 1, "gCvW1") == strlen(a + 1)) {
             for (const char *p = a + 1; *p; p++) {
                 if (*p == 'v') verbose = true;
                 else if (*p == 'W') opt_W = true;
-                /* 'g', 'C': accepted, no effect (see above) */
+                else if (*p == '1') opt_1 = true;
+                else if (*p == 'C') opt_C = true;
+                /* 'g': accepted, no effect (see above) */
             }
             continue;
         }
         if (a[0] == '-' && a[1] != '\0') {
-            fprintf(stderr, "usage: %s [-gCW] [-o output] [file ...]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-gCW1] [-o output] [file ...]\n", argv[0]);
             return 1;
         }
         if (nfilenames < (int)(sizeof(filenames) / sizeof(filenames[0])))
             filenames[nfilenames++] = a;
     }
+    encode_set_186(opt_1);
 
     /* as.1: "Die Eingabe des zu assemblierenden Quellprogramms erfolgt
      * entweder über Standardeingabe, oder es werden die miteinander
@@ -815,6 +1101,8 @@ int main(int argc, char **argv)
         display_name = filenames[0];
     }
     src[srclen] = '\0';
+    src = expand_insrt(src, &srclen, 0, display_name);
+    if (!src) return 1;
     size_t rd = srclen;
     const char *path = display_name;
 
@@ -851,8 +1139,10 @@ int main(int argc, char **argv)
      * symbol, including compiler-internal 'L'-prefixed labels, is
      * always included in the written symbol table - matching every
      * golden reference .o this project validates against, which all
-     * have them present unconditionally. */
-    int nsyms = symtab_finalize(&as.st);
+     * have them present unconditionally - except with -C, which the
+     * original cc always passes (as -gC): then the defined local
+     * symbols named L... are left out (symtab_finalize()). */
+    int nsyms = symtab_finalize(&as.st, opt_C);
 
     /* Pass 2: real encoding. */
     CodeBuf text_out, data_out;
@@ -875,7 +1165,10 @@ int main(int argc, char **argv)
      * tool's documented default). */
     const char *objpath = opt_o ? opt_o : "a.out";
 
-    bool wrote = objwrite_write(objpath, &as.st, nsyms, &text_out, &data_out, (size_t)as.bss_loc,
+    /* The size of the bss segment is made even, as the original does
+     * (".blkb 3." gives a_bss 4; found by asfuzz.py, 2026-10-25). */
+    bool wrote = objwrite_write(objpath, &as.st, nsyms, &text_out, &data_out,
+                                ((size_t)as.bss_loc + 1) & ~(size_t)1,
                                  &text_relocs, &data_relocs);
     if (!wrote) {
         fprintf(stderr, "error: could not write '%s'\n", objpath);

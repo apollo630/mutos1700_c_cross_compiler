@@ -56,6 +56,7 @@ typedef struct {
 static void write_one_symbol(Symbol *s, void *ctx_)
 {
     SymWriteCtx *ctx = (SymWriteCtx *)ctx_;
+    if (s->out_index < 0) return;   /* left out (-C) */
     uint8_t *dst = ctx->buf + (size_t)s->out_index * MUTOS_SYM_SIZE;
     mutos_sym_t sym;
     memset(&sym, 0, sizeof(sym));

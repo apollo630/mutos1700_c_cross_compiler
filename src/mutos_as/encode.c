@@ -48,6 +48,32 @@ void codebuf_put16le(CodeBuf *cb, unsigned int w)
 }
 
 /* ------------------------------------------------------------------ */
+/* The switch -1: the 80186/V30 instructions (encode.h)                 */
+/* ------------------------------------------------------------------ */
+
+static bool g_opt_186 = false;
+
+void encode_set_186(bool on) { g_opt_186 = on; }
+
+/* The mnemonics that exist only with -1. The operand forms of mnemonics
+ * the 8086 has (push of an immediate, imul with two or three operands,
+ * a shift or rotate count other than 1 or CL) are checked where they are
+ * encoded. */
+static const char *const ONLY_186[] = {
+    "pusha", "popa", "leave", "enter", "bound",
+    "insb", "insw", "outsb", "outsw",
+};
+
+static bool is_only_186(const Token *mnemonic)
+{
+    for (size_t i = 0; i < sizeof(ONLY_186)/sizeof(ONLY_186[0]); i++)
+        if (strlen(ONLY_186[i]) == mnemonic->len &&
+            strncmp(ONLY_186[i], mnemonic->text, mnemonic->len) == 0)
+            return true;
+    return false;
+}
+
+/* ------------------------------------------------------------------ */
 /* RelocList - trivial growable relocation-entry list                   */
 /* ------------------------------------------------------------------ */
 
@@ -127,19 +153,43 @@ static long resolve_expr(const ExprNode *e, long cur_addr, SymTab *st, bool reso
         }
         case EX_NEG:
             return -resolve_expr(e->lhs, cur_addr, st, resolve);
-        case EX_ADD:
-            return resolve_expr(e->lhs, cur_addr, st, resolve) + resolve_expr(e->rhs, cur_addr, st, resolve);
-        case EX_SUB:
-            return resolve_expr(e->lhs, cur_addr, st, resolve) - resolve_expr(e->rhs, cur_addr, st, resolve);
-        case EX_MUL:
-            return resolve_expr(e->lhs, cur_addr, st, resolve) * resolve_expr(e->rhs, cur_addr, st, resolve);
-        case EX_DIV: {
+        case EX_NOT:
+            return resolve ? expr_apply_not(resolve_expr(e->lhs, cur_addr, st, resolve))
+                           : (resolve_expr(e->lhs, cur_addr, st, resolve), 0);
+        default: {
+            /* every binary operator: see expr_apply() */
             long a = resolve_expr(e->lhs, cur_addr, st, resolve);
             long b = resolve_expr(e->rhs, cur_addr, st, resolve);
-            return (resolve && b) ? a / b : 0;
+            if (!resolve) return 0;
+            bool ok;
+            long v = expr_apply(e->op, a, b, &ok);
+            if (!ok) expr_div_errors++;
+            return v;
         }
     }
     return 0;
+}
+
+/* True if `e` is built from numbers only (no symbol, no "."), with its
+ * value in *out. Unlike resolve_expr() this also works in Pass 1, which
+ * the one-byte "int 3" form needs: the size must be known there. */
+static bool const_value(const ExprNode *e, long *out)
+{
+    long a, b;
+    if (!e) return false;
+    switch (e->op) {
+        case EX_NUM: *out = e->num; return true;
+        case EX_NEG: if (!const_value(e->lhs, &a)) return false; *out = -a; return true;
+        case EX_NOT: if (!const_value(e->lhs, &a)) return false; *out = expr_apply_not(a); return true;
+        case EX_ADD: case EX_SUB: case EX_MUL: case EX_DIV: case EX_AND: case EX_OR:
+        case EX_MOD: case EX_SHL: case EX_SHR: {
+            bool ok;
+            if (!const_value(e->lhs, &a) || !const_value(e->rhs, &b)) return false;
+            *out = expr_apply(e->op, a, b, &ok);
+            return ok;
+        }
+        default: return false;
+    }
 }
 
 long resolve_expr_pub(const ExprNode *e, long cur_addr, SymTab *st)
@@ -341,23 +391,82 @@ static int base_index_rm(const Token *r1, const Token *r2)
     return -1;
 }
 
-/* True if `e` contains an EX_SYM or EX_LOCALREF leaf anywhere in the
- * tree - i.e. the expression's value depends on a symbol/label address
- * rather than being a pure numeric literal. EX_LOCCTR ('.') does NOT
- * count: the current location counter is always exactly known at the
- * point of use, unlike a symbol/label whose address may not be. */
+/* True if `e` contains an EX_SYM, EX_LOCALREF or EX_LOCCTR leaf anywhere
+ * in the tree - i.e. the expression's value depends on an address
+ * rather than being a pure numeric literal. EX_LOCCTR ('.') counts
+ * since 2026-10-25: the location counter is relocatable like a label,
+ * and the original gives a displacement with a '.' in it the long form
+ * with a relocation ("mov ax,.-1.(bx)" - found by asfuzz.py). */
 static bool expr_has_symbol(const ExprNode *e)
 {
     if (!e) return false;
     switch (e->op) {
         case EX_SYM:
         case EX_LOCALREF:
+        case EX_LOCCTR:
             return true;
         case EX_NEG:
             return expr_has_symbol(e->lhs);
-        case EX_ADD: case EX_SUB: case EX_MUL: case EX_DIV:
+        case EX_NOT:
+            return expr_has_symbol(e->lhs);
+        case EX_ADD: case EX_SUB: case EX_MUL: case EX_DIV: case EX_AND: case EX_OR:
+        case EX_MOD: case EX_SHL: case EX_SHR:
             return expr_has_symbol(e->lhs) || expr_has_symbol(e->rhs);
         default:
+            return false;
+    }
+}
+
+bool expr_eval_known(const ExprNode *e, SymTab *st, int cur_seq,
+                     SymType dot_ty, long dot_v, SymType *ty, long *v)
+{
+    switch (e->op) {
+        case EX_NUM:
+            *ty = SYM_ABS; *v = e->num; return true;
+        case EX_LOCCTR:
+            if (dot_ty == SYM_UNDEF) return false;
+            *ty = dot_ty; *v = dot_v; return true;
+        case EX_SYM: {
+            Symbol *s = symtab_find(st, e->sym, e->sym_len);
+            if (!s || !s->defined || s->type == SYM_UNDEF || s->type == SYM_BSS)
+                return false;
+            if (cur_seq >= 0 && s->def_seq > cur_seq) return false;
+            *ty = s->type; *v = s->value; return true;
+        }
+        case EX_NEG: {
+            SymType t; long x;
+            if (!expr_eval_known(e->lhs, st, cur_seq, dot_ty, dot_v, &t, &x) || t != SYM_ABS)
+                return false;
+            *ty = SYM_ABS; *v = -x; return true;
+        }
+        case EX_NOT: {
+            SymType t; long x;
+            if (!expr_eval_known(e->lhs, st, cur_seq, dot_ty, dot_v, &t, &x) || t != SYM_ABS)
+                return false;
+            *ty = SYM_ABS; *v = expr_apply_not(x); return true;
+        }
+        case EX_ADD: case EX_SUB: case EX_MUL: case EX_DIV: case EX_AND: case EX_OR:
+        case EX_MOD: case EX_SHL: case EX_SHR: {
+            SymType ta, tb; long a, b;
+            if (!expr_eval_known(e->lhs, st, cur_seq, dot_ty, dot_v, &ta, &a) ||
+                !expr_eval_known(e->rhs, st, cur_seq, dot_ty, dot_v, &tb, &b))
+                return false;
+            if (e->op == EX_ADD) {
+                if (ta != SYM_ABS && tb != SYM_ABS) return false;
+                *ty = (ta == SYM_ABS) ? tb : ta; *v = a + b; return true;
+            }
+            if (e->op == EX_SUB) {
+                if (tb == SYM_ABS) { *ty = ta; *v = a - b; return true; }
+                if (ta == tb) { *ty = SYM_ABS; *v = a - b; return true; }
+                return false;
+            }
+            if (ta != SYM_ABS || tb != SYM_ABS) return false;
+            bool ok;
+            long r = expr_apply(e->op, a, b, &ok);
+            if (!ok) return false;
+            *ty = SYM_ABS; *v = r; return true;
+        }
+        default: /* EX_LOCALREF and anything else */
             return false;
     }
 }
@@ -396,7 +505,21 @@ static void emit_modrm_indirect(CodeBuf *out, int reg_field, const ParsedOperand
     int rm = mem->has_index ? base_index_rm(&mem->reg, &mem->reg2) : indirect_rm(&mem->reg);
     int mod;
     long disp = 0;
+    /* A displacement that is absolute and made of symbols defined by now
+     * (found by asfuzz.py, 2026-10-25: "K = 5" then "mov ax,K(bx)", or
+     * "b-a(bx)" for two labels of one segment) is sized by its value like
+     * a number: a byte when it fits. A symbol defined further down, an
+     * external one, an address (a label alone) keeps the full word. */
+    bool known_abs = false;
     if (mem->expr && expr_has_symbol(mem->expr)) {
+        SymType kt; long kv;
+        if (expr_eval_known(mem->expr, st, symtab_cur_seq, SYM_UNDEF, 0, &kt, &kv) &&
+            kt == SYM_ABS) {
+            known_abs = true;
+            disp = kv;
+        }
+    }
+    if (mem->expr && expr_has_symbol(mem->expr) && !known_abs) {
         mod = 2;
         /* Always call resolve_expr(), even in Pass 1 (resolve=false) -
          * this matches the established pattern used everywhere else in
@@ -417,12 +540,16 @@ static void emit_modrm_indirect(CodeBuf *out, int reg_field, const ParsedOperand
          * way. */
         disp = resolve_expr(mem->expr, cur_addr, st, resolve);
     } else {
-        bool have_const = false;
-        if (mem->expr)
+        bool have_const = known_abs;
+        if (mem->expr && !known_abs)
             have_const = expr_try_eval_const(mem->expr, &disp);
         if (have_const) {
             /* Pure numeric literal (no symbol anywhere in the tree) -
-             * size by actual value, in both Pass 1 and Pass 2. */
+             * size by actual value, in both Pass 1 and Pass 2. The
+             * original takes the value as a 16-bit number first (found
+             * 2026-10-25 by asfuzz.py): "65535.(bx)" and "/ff80(bx)" are
+             * -1 and -128, a short displacement, and "65536.(bx)" is 0. */
+            disp = (int16_t)(disp & 0xFFFF);
             mod = (disp >= -128 && disp <= 127) ? 1 : 2;
         } else if (!mem->expr) {
             mod = 0; /* no displacement written at all, e.g. "(bp)"/"(si)" */
@@ -564,10 +691,16 @@ static bool encode_group2(CodeBuf *out, int opidx, const ParsedOperand *dst,
                                            * count==1 or "cl" anyway. */
     }
 
+    /* A memory destination by register(s) or by an address ("sarb 2.+_gs,cl"
+     * - found by tests/realbin/asfuzz.py 2026-10-25: the compiler writes it
+     * for a shift of a global char, and this encoder had only the register
+     * forms; the original's bytes are the same ModRM direct form every other
+     * instruction uses). */
     void (*emit_modrm)(CodeBuf*, int, const ParsedOperand*, long, SymTab*, bool, RelocList*) =
-        (dst->mode == ADDR_INDIRECT) ? emit_modrm_indirect : NULL;
+        (dst->mode == ADDR_INDIRECT) ? emit_modrm_indirect : emit_modrm_direct;
 
-    if (dst->mode != ADDR_REGISTER && dst->mode != ADDR_INDIRECT) return false;
+    if (dst->mode != ADDR_REGISTER && dst->mode != ADDR_INDIRECT && dst->mode != ADDR_DIRECT)
+        return false;
     int rn = (dst->mode == ADDR_REGISTER) ? reg_number(&dst->reg) : 0;
     if (dst->mode == ADDR_REGISTER && rn < 0) return false;
 
@@ -585,6 +718,11 @@ static bool encode_group2(CodeBuf *out, int opidx, const ParsedOperand *dst,
      * documents rolb/rorb/rclb/rcrb/shlb/salb/shrb/sarb as distinct
      * mnemonics) needed for memory destinations specifically. */
     bool bm = byte_mode || (dst->mode == ADDR_REGISTER && dst->reg_class == REG_BYTE);
+
+    /* A count other than 1 or CL (C0/C1 /digit ib) is an 80186 form - the
+     * original `as` refuses it ("Value error"), as does this one without
+     * -1. Checked before a byte is written. */
+    if (!is_cl && !is_one && !g_opt_186) return false;
 
     if (is_cl) {
         codebuf_put(out, bm ? 0xD2 : 0xD3);
@@ -823,7 +961,11 @@ static bool encode_test(CodeBuf *out, const ParsedOperand *dst, const ParsedOper
         return true;
     }
 
-    if (src->mode == ADDR_IMMEDIATE || (src->mode == ADDR_DIRECT && dst->mode != ADDR_DIRECT)) {
+    /* (Until 2026-10-25 a bare symbol as the source - "test cx,_d", a
+     * memory operand - was taken for an immediate here, giving F7 C1 imm16
+     * where the original writes 85 0E addr16; found by asfuzz.py. The
+     * immediate forms are marked: "test cx,#_d".) */
+    if (src->mode == ADDR_IMMEDIATE) {
         long imm = resolve_expr(src->expr, cur_addr, st, resolve);
         /* Byte form applies for 'testb', OR when dst is already a
          * byte-class register written directly (e.g. "test bh,*1" -
@@ -851,7 +993,8 @@ static bool encode_test(CodeBuf *out, const ParsedOperand *dst, const ParsedOper
         }
         return true;
     }
-    if (dst->mode == ADDR_REGISTER && (src->mode == ADDR_REGISTER || src->mode == ADDR_INDIRECT)) {
+    if (dst->mode == ADDR_REGISTER &&
+        (src->mode == ADDR_REGISTER || src->mode == ADDR_INDIRECT || src->mode == ADDR_DIRECT)) {
         int rn = reg_number(&dst->reg);
         if (rn < 0) return false;
         bool bm = byte_mode || dst->reg_class == REG_BYTE;
@@ -860,9 +1003,26 @@ static bool encode_test(CodeBuf *out, const ParsedOperand *dst, const ParsedOper
             int srn = reg_number(&src->reg);
             if (srn < 0) return false;
             codebuf_put(out, (unsigned char)(0xC0 | (rn << 3) | srn));
+        } else if (src->mode == ADDR_DIRECT) {
+            emit_modrm_direct(out, rn, src, cur_addr, st, resolve, relocs);
         } else {
             emit_modrm_indirect(out, rn, src, cur_addr, st, resolve, relocs);
         }
+        return true;
+    }
+    /* "test mem,reg" - the same instruction as "test reg,mem" (TEST is
+     * symmetrical; the original writes the register in the ModRM reg
+     * field either way). */
+    if ((dst->mode == ADDR_INDIRECT || dst->mode == ADDR_DIRECT) &&
+        src->mode == ADDR_REGISTER && src->reg_class != REG_SEGMENT) {
+        int rn = reg_number(&src->reg);
+        if (rn < 0) return false;
+        bool bm = byte_mode || src->reg_class == REG_BYTE;
+        codebuf_put(out, bm ? 0x84 : 0x85);
+        if (dst->mode == ADDR_DIRECT)
+            emit_modrm_direct(out, rn, dst, cur_addr, st, resolve, relocs);
+        else
+            emit_modrm_indirect(out, rn, dst, cur_addr, st, resolve, relocs);
         return true;
     }
     return false;
@@ -922,7 +1082,8 @@ static bool encode_incdec(CodeBuf *out, bool is_inc, const ParsedOperand *op,
  * 0x92, 0x97), never the general 87 ModRM form. Byte XCHG (xchgb) has
  * no such shortcut and always uses the general 86 ModRM form -
  * confirmed: "xchgb ah,al" -> 86 e0 (mod=11). */
-static bool encode_xchg(CodeBuf *out, const ParsedOperand *a, const ParsedOperand *b, bool byte_mode)
+static bool encode_xchg(CodeBuf *out, const ParsedOperand *a, const ParsedOperand *b, bool byte_mode,
+                         long cur_addr, SymTab *st, bool resolve, RelocList *relocs)
 {
     if (!byte_mode) {
         bool a_is_ax = a->mode == ADDR_REGISTER && a->reg.len == 2 && strncmp(a->reg.text, "ax", 2) == 0;
@@ -943,11 +1104,31 @@ static bool encode_xchg(CodeBuf *out, const ParsedOperand *a, const ParsedOperan
     if (a->mode == ADDR_REGISTER && b->mode == ADDR_REGISTER) {
         int an = reg_number(&a->reg), bn = reg_number(&b->reg);
         if (an < 0 || bn < 0) return false;
+        /* A byte register decides, as everywhere else ("xchg al,bl" is the
+         * byte form, 86 /r: the original does so; found by asfuzz.py). */
+        if (a->reg_class == REG_BYTE || b->reg_class == REG_BYTE) byte_mode = true;
         codebuf_put(out, byte_mode ? 0x86 : 0x87);
         codebuf_put(out, (unsigned char)(0xC0 | (an << 3) | bn));
         return true;
     }
-    return false; /* reg,mem xchg: not needed by the current corpus subset */
+    /* XCHG with a memory operand - the order of the operands does not
+     * matter (the original writes the register in the ModRM reg field
+     * either way, and the accumulator shortcut is for registers only). */
+    const ParsedOperand *r = NULL, *m = NULL;
+    if (a->mode == ADDR_REGISTER && (b->mode == ADDR_INDIRECT || b->mode == ADDR_DIRECT)) { r = a; m = b; }
+    else if (b->mode == ADDR_REGISTER && (a->mode == ADDR_INDIRECT || a->mode == ADDR_DIRECT)) { r = b; m = a; }
+    if (r && r->reg_class != REG_SEGMENT) {
+        int rn = reg_number(&r->reg);
+        if (rn < 0) return false;
+        if (r->reg_class == REG_BYTE) byte_mode = true;
+        codebuf_put(out, byte_mode ? 0x86 : 0x87);
+        if (m->mode == ADDR_INDIRECT)
+            emit_modrm_indirect(out, rn, m, cur_addr, st, resolve, relocs);
+        else
+            emit_modrm_direct(out, rn, m, cur_addr, st, resolve, relocs);
+        return true;
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1206,7 +1387,8 @@ static bool encode_pushpop(CodeBuf *out, bool is_push, const ParsedOperand *op,
         emit_modrm_direct(out, 6, op, cur_addr, st, resolve, relocs);
         return true;
     }
-    if (is_push && op->mode == ADDR_IMMEDIATE && op->expr) {
+    if (is_push && op->mode == ADDR_IMMEDIATE && op->expr && g_opt_186) {
+        /* 80186: only with -1 (the original `as` refuses it) */
         long v = resolve_expr(op->expr, cur_addr, st, resolve);
         if (op->size == SZ_BYTE) {
             codebuf_put(out, 0x6A);
@@ -1227,11 +1409,23 @@ static bool encode_pushpop(CodeBuf *out, bool is_push, const ParsedOperand *op,
     }
     /* PUSH of an INDIRECT memory operand - confirmed real usage:
      * "push *4.(bp)" -> FF /6, mod01 disp8. POP never takes an
-     * immediate; a POP-of-memory form (8F /0) has not been observed
-     * and is not implemented. */
+     * immediate. */
     if (is_push && op->mode == ADDR_INDIRECT) {
         codebuf_put(out, 0xFF);
         emit_modrm_indirect(out, 6, op, cur_addr, st, resolve, relocs);
+        return true;
+    }
+    /* POP of memory - 8F /0, not in any real sample; the original gives
+     * it with a displacement ("pop *4.(bx)"), without ("pop (bx)") and
+     * with an address ("pop _x"), as measured 2026-10-25. */
+    if (!is_push && op->mode == ADDR_INDIRECT) {
+        codebuf_put(out, 0x8F);
+        emit_modrm_indirect(out, 0, op, cur_addr, st, resolve, relocs);
+        return true;
+    }
+    if (!is_push && op->mode == ADDR_DIRECT && op->expr) {
+        codebuf_put(out, 0x8F);
+        emit_modrm_direct(out, 0, op, cur_addr, st, resolve, relocs);
         return true;
     }
     return false;
@@ -1322,11 +1516,16 @@ static bool encode_ldx(CodeBuf *out, unsigned char opcode, const ParsedOperand *
                         const ParsedOperand *src, long cur_addr, SymTab *st, bool resolve,
                         RelocList *relocs)
 {
-    if (dst->mode != ADDR_REGISTER || src->mode != ADDR_INDIRECT) return false;
+    if (dst->mode != ADDR_REGISTER) return false;
+    if (src->mode != ADDR_INDIRECT && !(src->mode == ADDR_DIRECT && src->expr)) return false;
     int rn = reg_number(&dst->reg);
     if (rn < 0) return false;
     codebuf_put(out, opcode);
-    emit_modrm_indirect(out, rn, src, cur_addr, st, resolve, relocs);
+    /* "lds ax,_x" and "les bx,10." take an address: found 2026-10-25 */
+    if (src->mode == ADDR_DIRECT)
+        emit_modrm_direct(out, rn, src, cur_addr, st, resolve, relocs);
+    else
+        emit_modrm_indirect(out, rn, src, cur_addr, st, resolve, relocs);
     return true;
 }
 
@@ -1460,28 +1659,54 @@ static bool expr_is_unresolved_sym(const ExprNode *e, SymTab *st, int *symidx_ou
     return true;
 }
 
+/* The indirect forms of call/jmp/calli/jmpi (FF /2, /4, /3, /5) - the
+ * operand the original takes there (measured, asfuzz.py, 2026-10-25):
+ *   "@reg" and, without the '@', a bare "reg": the register (mod=11);
+ *   "@(reg)", "@disp(reg)", "@disp(reg)(reg)": the word in memory there;
+ *   "@expr": the word at that address (mod=00 rm=110, disp16 relocated).
+ * "(reg)", "disp(reg)" and "*disp(reg)" without the '@' are syntax errors
+ * (or, with a displacement, "Illegal intersegment jump") in the original
+ * and are refused. Returns false for anything else - the caller then
+ * tries the direct form. */
+static bool encode_ff_indirect(CodeBuf *out, int reg_field, const ParsedOperand *t,
+                                long cur_addr, SymTab *st, bool resolve, RelocList *relocs,
+                                bool *handled)
+{
+    *handled = true;
+    if (t->mode == ADDR_REGISTER) {
+        /* a byte register too: the original takes its number (al = 0 ...) */
+        if (t->reg_class != REG_WORD && t->reg_class != REG_BYTE) return false;
+        int rn = reg_number(&t->reg);
+        if (rn < 0) return false;
+        codebuf_put(out, 0xFF);
+        codebuf_put(out, (unsigned char)(0xC0 | (reg_field << 3) | rn));
+        return true;
+    }
+    if (t->mode != ADDR_INDIRECT) { *handled = false; return false; }
+    if (!t->at) return false;
+    if (t->at_direct) {
+        codebuf_put(out, 0xFF);
+        emit_modrm_direct(out, reg_field, t, cur_addr, st, resolve, relocs);
+        return true;
+    }
+    if (t->reg_class != REG_WORD && !(t->at_reg && t->reg_class == REG_BYTE)) return false;
+    codebuf_put(out, 0xFF);
+    if (t->at_reg) {
+        int rn = reg_number(&t->reg);
+        if (rn < 0) return false;
+        codebuf_put(out, (unsigned char)(0xC0 | (reg_field << 3) | rn));
+        return true;
+    }
+    emit_modrm_indirect(out, reg_field, t, cur_addr, st, resolve, relocs);
+    return true;
+}
+
 static bool encode_jmp(CodeBuf *out, const ParsedOperand *target, long cur_addr, SymTab *st,
                         bool resolve, RelocList *relocs)
 {
-    if (target->mode == ADDR_INDIRECT) {
-        if (target->reg_class != REG_WORD) return false;
-        codebuf_put(out, 0xFF);
-        if (target->expr == NULL) {
-            /* "jmp/br @reg" - register-indirect jump, FF /4, mod=11. */
-            int rn = reg_number(&target->reg);
-            if (rn < 0) return false;
-            codebuf_put(out, (unsigned char)(0xE0 | rn)); /* /4, mod=11 */
-        } else {
-            /* "jmp/br @disp(reg)" - indirect THROUGH a computed memory
-             * address (the WORD stored there is the real target) -
-             * CONFIRMED real via tty.s "br @L10001(bx)" (a jump-table
-             * dispatch). Same displacement/ModRM machinery, and same
-             * relocation coverage, as any other indirect memory
-             * operand - see emit_modrm_indirect. */
-            emit_modrm_indirect(out, 4, target, cur_addr, st, resolve, relocs);
-        }
-        return true;
-    }
+    bool handled;
+    bool r = encode_ff_indirect(out, 4, target, cur_addr, st, resolve, relocs, &handled);
+    if (handled) return r;
     if (target->mode != ADDR_DIRECT || !target->expr) return false;
     long field_off = cur_addr + 1; /* the E9's disp16 starts 1 byte in */
     codebuf_put(out, 0xE9);
@@ -1503,23 +1728,9 @@ static bool encode_jmp(CodeBuf *out, const ParsedOperand *target, long cur_addr,
 static bool encode_call(CodeBuf *out, const ParsedOperand *target, long cur_addr, SymTab *st,
                          bool resolve, RelocList *relocs)
 {
-    if (target->mode == ADDR_INDIRECT) {
-        if (target->reg_class != REG_WORD) return false;
-        codebuf_put(out, 0xFF);
-        if (target->expr == NULL) {
-            /* "call @reg" - register-indirect call, FF /2, mod=11. */
-            int rn = reg_number(&target->reg);
-            if (rn < 0) return false;
-            codebuf_put(out, (unsigned char)(0xD0 | rn)); /* /2, mod=11 */
-        } else {
-            /* "call @disp(reg)" - indirect THROUGH a computed memory
-             * address (e.g. a device-switch-table dispatch) - CONFIRMED
-             * real via tty.s "call @8.+_cdevsw(bx)". Same machinery as
-             * encode_jmp's memory-indirect case above. */
-            emit_modrm_indirect(out, 2, target, cur_addr, st, resolve, relocs);
-        }
-        return true;
-    }
+    bool handled;
+    bool r = encode_ff_indirect(out, 2, target, cur_addr, st, resolve, relocs, &handled);
+    if (handled) return r;
     if (target->mode != ADDR_DIRECT || !target->expr) return false;
     long field_off = cur_addr + 1;
     codebuf_put(out, 0xE8);
@@ -1537,44 +1748,32 @@ static bool encode_call(CodeBuf *out, const ParsedOperand *target, long cur_addr
 
 /* CALLI/JMPI - "inter segment call/jump" (Anlage A: "calli 1 @ A+W" /
  * "calli 1 d:s", "jmpi 1 @ M+W" / "jmpi 1 d:s"). Only the INDIRECT
- * form ("@reg"/"@disp(reg)", FF /3 for calli and FF /5 for jmpi - the
- * intersegment siblings of call's FF /2 and jmp's FF /4) is
- * implemented here, reusing the exact same indirect-operand machinery
- * as encode_call/encode_jmp. The DIRECT "d:s" (segment:offset literal)
- * form is a DELIBERATE, DOCUMENTED GAP: it needs a genuinely new
- * operand syntax (a colon-separated segment:offset pair) that neither
- * the lexer nor classify_operand currently parse at all, and no real
- * corpus sample uses it - implementing it speculatively without any
- * real syntax/encoding sample to confirm against would risk guessing
- * wrong. NOT yet observed in the real corpus in any form. */
+ * forms ("@reg"/"@disp(reg)"/..., and a bare register: FF /3 for calli
+ * and FF /5 for jmpi - the intersegment siblings of call's FF /2 and
+ * jmp's FF /4) are implemented here, reusing the machinery of
+ * encode_call/encode_jmp (encode_ff_indirect).
+ *
+ * The DIRECT form is a deliberate gap. Measured against the original
+ * (2026-10-25, tests/realbin/ascmp.py, docs/MUTOS_ORIGINAL_BUGS.md
+ * AS-12): it has no "d:s" syntax ("jmpi 5:6", "jmpi 5,6" are syntax
+ * errors) but takes a plain expression, "jmpi X" / "calli X", and writes
+ * the opcode (EA / 9A), the expression as a word and four zero bytes -
+ * seven bytes where the 8086's far jump has five. No source of the
+ * corpus has the form; it is refused here rather than reproduced. */
 static bool encode_calli(CodeBuf *out, const ParsedOperand *target, long cur_addr, SymTab *st,
                           bool resolve, RelocList *relocs)
 {
-    if (target->mode != ADDR_INDIRECT || target->reg_class != REG_WORD) return false;
-    codebuf_put(out, 0xFF);
-    if (target->expr == NULL) {
-        int rn = reg_number(&target->reg);
-        if (rn < 0) return false;
-        codebuf_put(out, (unsigned char)(0xD8 | rn)); /* /3, mod=11 */
-    } else {
-        emit_modrm_indirect(out, 3, target, cur_addr, st, resolve, relocs);
-    }
-    return true;
+    bool handled;
+    bool r = encode_ff_indirect(out, 3, target, cur_addr, st, resolve, relocs, &handled);
+    return handled ? r : false;
 }
 
 static bool encode_jmpi(CodeBuf *out, const ParsedOperand *target, long cur_addr, SymTab *st,
                          bool resolve, RelocList *relocs)
 {
-    if (target->mode != ADDR_INDIRECT || target->reg_class != REG_WORD) return false;
-    codebuf_put(out, 0xFF);
-    if (target->expr == NULL) {
-        int rn = reg_number(&target->reg);
-        if (rn < 0) return false;
-        codebuf_put(out, (unsigned char)(0xE8 | rn)); /* /5, mod=11 */
-    } else {
-        emit_modrm_indirect(out, 5, target, cur_addr, st, resolve, relocs);
-    }
-    return true;
+    bool handled;
+    bool r = encode_ff_indirect(out, 5, target, cur_addr, st, resolve, relocs, &handled);
+    return handled ? r : false;
 }
 
 /* Real (non-pseudo) short conditional jumps, e.g. "je L0007" - unlike
@@ -1766,6 +1965,33 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
                          long cur_addr, SymTab *st, bool resolve,
                          RelocList *relocs)
 {
+    /* Without -1 the 80186-only mnemonics are not instructions here, as
+     * in the original `as` (see encode_set_186()). */
+    if (!g_opt_186 && is_only_186(mnemonic))
+        return false;
+
+    /* The symbols of the operands are made in the order they are written,
+     * left to right (found by asfuzz.py, 2026-10-25: "sbb _tab,#_buf2"
+     * numbered _buf2 first, because the immediate was resolved before the
+     * address), which is the order of the symbol table and so of the
+     * relocations' symbol numbers. */
+    for (int i = 0; i < nops; i++)
+        if (ops[i].expr) register_expr_symbols(ops[i].expr, st);
+
+    /* An operand with '@' belongs to call, calli, jmp, jmpi and br (and
+     * to the branches the original makes of them, which mutos_as does not
+     * take); the original refuses it anywhere else, as a syntax error. */
+    for (int i = 0; i < nops; i++) {
+        if (!ops[i].at) continue;
+        const char *m = mnemonic->text;
+        size_t l = mnemonic->len;
+        bool ff = (l == 4 && (strncmp(m, "call", 4) == 0 || strncmp(m, "jmpi", 4) == 0)) ||
+                  (l == 5 && strncmp(m, "calli", 5) == 0) ||
+                  (l == 3 && strncmp(m, "jmp", 3) == 0) ||
+                  (l == 2 && strncmp(m, "br", 2) == 0);
+        if (!ff) return false;
+    }
+
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "push", 4) == 0 && nops == 1)
         return encode_pushpop(out, true, &ops[0], cur_addr, st, resolve, relocs);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "pop", 3) == 0 && nops == 1)
@@ -1848,9 +2074,9 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return encode_incdec(out, false, &ops[0], cur_addr, st, resolve, relocs);
 
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "xchg", 4) == 0 && nops == 2)
-        return encode_xchg(out, &ops[0], &ops[1], false);
+        return encode_xchg(out, &ops[0], &ops[1], false, cur_addr, st, resolve, relocs);
     if (mnemonic->len == 5 && strncmp(mnemonic->text, "xchgb", 5) == 0 && nops == 2)
-        return encode_xchg(out, &ops[0], &ops[1], true);
+        return encode_xchg(out, &ops[0], &ops[1], true, cur_addr, st, resolve, relocs);
 
     {
         bool byte_mode = false;
@@ -1947,9 +2173,32 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
         return false;
     }
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "int", 3) == 0 && nops == 1 && ops[0].expr) {
+        /* The original emits the one-byte breakpoint CC for a constant
+         * 3 ("int *3." and "int *1+2." alike, measured 2026-10-25 with
+         * tests/realbin/ascmp.py) and CD n for every other number. */
+        long k;
+        if (const_value(ops[0].expr, &k) && k == 3) {
+            codebuf_put(out, 0xCC);
+            return true;
+        }
         long v = resolve_expr(ops[0].expr, cur_addr, st, resolve);
         codebuf_put(out, 0xCD);
         codebuf_put(out, (unsigned char)(v & 0xFF));
+        return true;
+    }
+    /* "ret *n." / "reti *n." (near / far return, pop n bytes) - an
+     * immediate operand is the only form the original accepts. */
+    if (nops == 1 && ops[0].mode == ADDR_IMMEDIATE && ops[0].expr &&
+        ((mnemonic->len == 3 && strncmp(mnemonic->text, "ret", 3) == 0) ||
+         (mnemonic->len == 4 && strncmp(mnemonic->text, "reti", 4) == 0))) {
+        long v = resolve_expr(ops[0].expr, cur_addr, st, resolve);
+        codebuf_put(out, mnemonic->len == 3 ? 0xC2 : 0xCA);
+        if (resolve && relocs) {
+            unsigned char low4; int symidx;
+            if (classify_word_reloc(ops[0].expr, st, true, &low4, &symidx))
+                reloclist_add(relocs, (long)out->len, symidx, low4);
+        }
+        codebuf_put16le(out, (unsigned int)(v & 0xFFFF));
         return true;
     }
 
@@ -2011,9 +2260,9 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
     /* 80186 IMUL-with-immediate forms - see encode_imul_imm's doc
      * comment. Dispatches purely by operand count, so the classic
      * single-operand form just above (nops==1) is never shadowed. */
-    if (mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 2)
+    if (g_opt_186 && mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 2)
         return encode_imul_imm(out, &ops[0], &ops[0], &ops[1], cur_addr, st, resolve, relocs);
-    if (mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 3)
+    if (g_opt_186 && mnemonic->len == 4 && strncmp(mnemonic->text, "imul", 4) == 0 && nops == 3)
         return encode_imul_imm(out, &ops[0], &ops[1], &ops[2], cur_addr, st, resolve, relocs);
     if (mnemonic->len == 3 && strncmp(mnemonic->text, "div", 3) == 0 && nops == 1)
         return encode_group3(out, 6, &ops[0], cur_addr, st, resolve, relocs, false);
@@ -2028,6 +2277,18 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "notb", 4) == 0 && nops == 1)
         return encode_group3(out, 2, &ops[0], cur_addr, st, resolve, relocs, true);
 
+    if (mnemonic->len == 4 &&
+        (strncmp(mnemonic->text, "incb", 4) == 0 || strncmp(mnemonic->text, "decb", 4) == 0) &&
+        nops == 1 && ops[0].mode == ADDR_REGISTER) {
+        /* "incb bl" - and "incb bx", which the original takes as bl; sp,
+         * bp, si, di have no byte half (it refuses them). */
+        int rn = reg_number(&ops[0].reg);
+        if (rn < 0 || ops[0].reg_class == REG_SEGMENT ||
+            (ops[0].reg_class == REG_WORD && rn >= 4)) return false;
+        codebuf_put(out, 0xFE);
+        codebuf_put(out, (unsigned char)(0xC0 | ((mnemonic->text[0] == 'i' ? 0 : 1) << 3) | rn));
+        return true;
+    }
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "incb", 4) == 0 && nops == 1) {
         codebuf_put(out, 0xFE);
         if (ops[0].mode == ADDR_INDIRECT) { emit_modrm_indirect(out, 0, &ops[0], cur_addr, st, resolve, relocs); return true; }
@@ -2217,6 +2478,13 @@ static const char *const IRREGULAR_MNEMONICS[] = {
 
 bool encode_is_known_mnemonic(const Token *mnemonic)
 {
+    /* Without -1 the 80186-only names are no mnemonics: a bare one is an
+     * implicit data word (a reference to an undefined external of that
+     * name), as in the original `as` (AS-02 in
+     * docs/MUTOS_ORIGINAL_BUGS.md). */
+    if (!g_opt_186 && is_only_186(mnemonic))
+        return false;
+
     for (size_t i = 0; i < sizeof(IRREGULAR_MNEMONICS)/sizeof(IRREGULAR_MNEMONICS[0]); i++)
         if (strlen(IRREGULAR_MNEMONICS[i]) == mnemonic->len &&
             strncmp(IRREGULAR_MNEMONICS[i], mnemonic->text, mnemonic->len) == 0)

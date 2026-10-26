@@ -14,6 +14,12 @@
 #
 # Exit status: 0 if every file fell into category 1 (or had no golden
 # to compare against), 1 if any file fell into category 2 or 3.
+#
+# Options: a source needs one only if it uses 80186 instructions, which
+# mutos_as assembles with -1 only (the original as has none: it takes
+# insw, pusha, ... for an undefined symbol; docs/MUTOS_ORIGINAL_BUGS.md,
+# AS-02). The sources and goldens are never touched, so the option is
+# named here, by file.
 
 set -u
 
@@ -38,13 +44,23 @@ declare -A diff_fail_msg
 tmp_out="$(mktemp)"
 trap 'rm -f "$tmp_out"' EXIT
 
+# The extra options of one source (none for almost all).
+extra_opts() {
+    case "$1" in
+        mch_insw_outsw) echo "-1" ;;   # mch.s with insw/outsw as mnemonics
+        *) ;;
+    esac
+}
+
 shopt -s nullglob
 for src in *.s; do
     base="${src%.s}"
     obj="${base}.o"
     golden="${base}.o.golden"
+    opts="$(extra_opts "$base")"
 
-    if ! "$MUTOS_AS" "$src" -o "$obj" >"$tmp_out" 2>&1; then
+    # shellcheck disable=SC2086
+    if ! "$MUTOS_AS" $opts "$src" -o "$obj" >"$tmp_out" 2>&1; then
         asm_fail+=("$src")
         asm_fail_msg["$src"]="$(tail -n 1 "$tmp_out")"
         continue
