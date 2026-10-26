@@ -3,24 +3,28 @@
 `../../mutos/mutos_bin/` holds the original binaries brought from the
 hardware (the toolchain `as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, and since
 2026-10-25 `make`, `ar`, `ranlib`, the other tools MUTOS makefiles use and
-the editors, which nothing here runs yet - as base64 text, see its
+the editors - `ar` and `ranlib` run here since 2026-10-26, the others not yet -
+as base64 text, see its
 `README.md`). This
 directory runs the toolchain on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
 emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`,
-`mutos_ld`, `mutos_cc` and `mutos_c2` - since 2026-10-13, 2026-10-18,
-2026-10-22 (the next two), 2026-10-24 and 2026-10-25 ports of the real `c1`,
-`c0`, `cpp`, `ld`, `cc` and `c2` (`src/mutos_cc/c1port/`, `c0port/`,
+`mutos_ld`, `mutos_cc`, `mutos_c2`, `mutos_ar` and `mutos_ranlib` - since
+2026-10-13, 2026-10-18, 2026-10-22 (the next two), 2026-10-24, 2026-10-25 and
+2026-10-26 (the last two) ports of the real `c1`, `c0`, `cpp`, `ld`, `cc`,
+`c2`, `ar` and `ranlib` (`src/mutos_cc/c1port/`, `c0port/`,
 `src/mutos_cpp/`, `src/mutos_ld/`, `src/mutos_cc/ccport/`, `c2port/`,
-`docs/C1_PORT_PLAN.md`, `docs/C0_PORT_PLAN.md`,
-`src/mutos_cpp/README.md`, `src/mutos_ld/README.md`,
-`src/mutos_cc/README.md`) - are checked against the originals, on every
+`src/mutos_ar/`, `src/mutos_ranlib/`, `docs/C1_PORT_PLAN.md`,
+`docs/C0_PORT_PLAN.md`, `src/mutos_cpp/README.md`, `src/mutos_ld/README.md`,
+`src/mutos_cc/README.md`, `src/mutos_ar/README.md`,
+`src/mutos_ranlib/README.md`) - are checked against the originals, on every
 golden and on random input.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
-`c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py`, `ccdis.py` and `c2dis.py`; a C
+`c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py`, `ccdis.py`, `c2dis.py`,
+`ardis.py` and `ranlibdis.py`; a C
 compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 
 ## Files
@@ -62,6 +66,15 @@ compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 | `c2fuzz.py` | Differential fuzzing of `mutos_c2` with `c2cmp.py`'s comparison. Generators: the real compiler's output for `c1fuzz.py`'s programs (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`), through the ported chain; assembly in `c1`'s style made to reach every pass of `c2` (`--gen asm`: register moves and renames, `push`/`pop`, index patterns, constants, branches near and far, jumps to jumps, unreachable code, `.data`/`.bss`, several functions); `--gen mix` all three; `--mutate P` damages the cases (long operands and first tokens, odd bytes, lines deleted, doubled, swapped or cut, branches to undefined labels or to code, empty lines, a missing last linefeed, a line past the buffer). |
 | `ascmp.py` | `mutos_as` against the original `as` - not a port (`docs/TOOLCHAIN_PLAN.md`, decision 9), so a **measurement**: the same command line in two copies of one directory, every run put into a class (`same`, `obj-same`, `both-reject`, `PORT-REJECTS`, `PORT-ACCEPTS`, `OBJ-DIFF`; the flags say what else differs: status, stdout, stderr, files, bytes, mode) - `goldens` (every source with a real-hardware golden object, the seven `v30_speculative` sources and every compiler `.s` golden, with `cc`'s `-gC` and with `-o` only), `cases` (hand-written: the output name, stdin, several inputs, a missing input, the options, syntax errors, the original's limits, the 80186 forms), `options` (the original against itself: what `-g`, `-C`, `-l`, `-e` change) or `files`. `--write FILE` saves the classes of the runs that are not `same`, `--check FILE` compares with such a file (`ascmp_goldens.txt`, `ascmp_cases.txt`: `make check-realbin`; a new or a vanished difference fails). |
 | `asfuzz.py` | Differential fuzzing of `mutos_as` with `ascmp.py`'s classes; every serious case (`OBJ-DIFF`, `PORT-ACCEPTS`, `PORT-REJECTS`) is reduced to a minimal source and clustered by what each tool says. Generators: `insn` (one to six instructions of every form), `prog` (programs with segments, labels, `.globl`, `.comm`, data directives, expressions), `corpus` (lines of the real sources recombined), `cc` (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, a third of it after `mutos_c2`), `mix`; `--mutate P` damages the cases; `--strict` exits 1 on an `OBJ-DIFF` or a `PORT-REJECTS` (a source the original accepts and the port gets wrong), not on a `PORT-ACCEPTS` (leniency); `make check-realbin` runs 300 `cc` cases that way. `--words`: every instruction word of the original (read from its binary) and of `mutos_as` with up to 30 operand shapes, as a table. |
+| `armap.txt` | A map of the stripped `ar`: its 33 functions (v7's `ar.c` in source order, then `libc.a` from text 0f32) with their text offsets, all `same` as v7's, and the data (the strings, `pmode()`'s tables, `sys_errlist`, the BSS variables). |
+| `ardis.py` | `c1dis.py` switched to `ar` (`c1dis.use('ar')`): the annotated disassembly by function name from `armap.txt`. |
+| `artables.py` | `--c`: libc.a's `sys_errlist[]` of the `ar` binary as C - `src/mutos_ar/ardata.c` (generated, checked in; `--check-c` checks it is current); `--table`: the 41 texts. |
+| `arcmp.py` | `mutos_ar` against the original: sequences of `ar` command lines and changes of the files (written, removed, touched, cut, bytes changed) run in two copies of one directory, each with a MUTOS root of its own (`tmp/` for the temporary files); the messages, the exit status and both trees - names, bytes and modes - compared after every step, the temporary names counting as one. `cases` (hand-written: every command and key, positions, `u`, `l`, names of every length, paths, odd sizes, owners above 127, times past 2038, damaged archives, the original's quirks `AR-01` .. `AR-04`) or `run ARG...`. A refusal of the port (status 125, a last line ending in "refused") counts apart, and so do `limits` and `slow`. |
+| `arfuzz.py` | Differential fuzzing of `mutos_ar` with `arcmp.py`'s comparison: pools of files (sizes around the block edges, names past `DIRSIZ`, set-id and sticky modes, owners above 127, times to 2038 and past it), random commands with random keys and positions, files that change between the steps; `--mutate P` cuts the archive or changes bytes of it. |
+| `ranlibmap.txt` | A map of the stripped `ranlib`: its five functions (v7's `ranlib.c`, `nm`'s code, then `libc.a` from text 0580), all `same` as v7's, and the data (`arp` and `exp` one behind the other, `tab[700]`, the strings). |
+| `ranlibdis.py` | `c1dis.py` switched to `ranlib`: the annotated disassembly by function name from `ranlibmap.txt`. |
+| `ranlibcmp.py` | `mutos_ranlib` against the original, which starts the original `ar` through `/bin/sh -c`: the emulator's faked `exece` hands the command to the original `ar` in the same directory; the port starts `$MUTOS_ROOT/bin/ar`, a link to `mutos_ar`. The `arcmp.py` comparison, with the clock-derived dates (the table's five seconds past the clock) taken as the same within a window. `cases` (the members of every kind, every message, the stdio slot leak, 700 and 701 symbols, tables already there, damaged archives, names the shell would split), `libc` (libc.a rebuilt from its 167 objects: the same bytes as the original archive but for `__.SYMDEF`'s date, group and mode) or `run ARG...`. |
+| `ranlibfuzz.py` | Differential fuzzing of `mutos_ranlib` with `ranlibcmp.py`'s comparison: members generated by the fuzzer itself (symbols of every type and length, the four magic numbers and some that are none, cut tables, bytes after them, files that are no objects), names of 1 to 14 characters, `ar` commands between the `ranlib` runs; `--mutate P` damages the archive. |
 | `ldfuzz.py` | Differential fuzzing of `mutos_ld` with `ldcmp.py`'s comparison: random objects (text and data words with every relocation kind, the pc-relative and byte-shift bits; external definitions in every segment, absolutes, undefined, commons, locals, "L" locals, file names, shared names, a spare byte, an odd size, no relocation bits, another magic), real `crt0.o` and `libc.a` members, archives plain, current and out of date - by name or through `-l` from the root -, random options; `--mutate P` damages files for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
@@ -113,6 +126,13 @@ python3 tests/realbin/asfuzz.py -n 500 -s 7 --gen prog --keep /tmp/asdiff
 python3 tests/realbin/asfuzz.py -n 500 -s 7 --gen cc --strict
 python3 tests/realbin/asfuzz.py --words
 python3 tests/realbin/c2dis.py _pushopt
+python3 tests/realbin/arcmp.py cases --show 100
+python3 tests/realbin/arcmp.py run rv x.a a.txt   # one command line, in a copy of the current directory
+python3 tests/realbin/arfuzz.py -n 500 -s 7 --mutate 0.12 --keep /tmp/ardiff
+python3 tests/realbin/ranlibcmp.py cases --show 100
+python3 tests/realbin/ranlibcmp.py libc
+python3 tests/realbin/ranlibfuzz.py -n 500 -s 7 --mutate 0.15 --keep /tmp/rldiff
+python3 tests/realbin/ardis.py _copyfil
 ```
 
 The original `cc` (since 2026-10-20, `cctrace.py`):
@@ -297,6 +317,39 @@ and `asfuzz.py` measure instead of demanding "the same".
 - The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`,
   AS-04 .. AS-14.
 
+## The ports of `ar` and `ranlib` against them (2026-10-26)
+
+- `arcmp.py cases`: 366 runs (90 hand-written cases) - every command and key,
+  `u`, `l`, positions (`a`, `b`, `i`) found and not found, names of every
+  length and path, odd sizes and block edges, modes, owners above 127,
+  times from 1970 to past 2038, damaged and foreign archives, a key given
+  256 times (AR-04), 65536 short reads (AR-05) - 364 the same, 2 refused
+  (an opened directory).
+- `arfuzz.py` (`make check-realbin`: 300 cases each of the plain and the
+  damaged-archive runs, seed 1; the final runs are in `STATUS.md`,
+  Milestone 6): no difference. Three classes are counted apart: `refused`
+  (the port's refusals), `limits` (a damaged header that makes `ar` copy a
+  member of a gigabyte or print one: the port is stopped by the harness's
+  16 MB file size limit, as the original is by the emulator's) and `slow` (the same
+  member costs the emulated original more than the instruction budget
+  where the port, on the host, finishes; what the original said by then is
+  a prefix of the port's, and a rerun with a budget of three billion
+  instructions finished with the same messages).
+- `ranlibcmp.py cases`: 146 runs (57 cases) - 139 the same, 6
+  refused, 1 endless (a negative member size: neither finishes);
+  `ranlibcmp.py libc`: libc.a rebuilt from its 167 objects by `mutos_ar rc`
+  and `mutos_ranlib` is the original archive byte for byte but for
+  `__.SYMDEF`'s date (five seconds past the clock), group and mode.
+- `ranlibfuzz.py`: see `STATUS.md` (Milestone 6); `make check-realbin` runs
+  150 cases of the plain and of the damaged-archive run (seed 1).
+- The emulator was extended for them: `time` and `ftime` (the host's clock
+  or the run's `now`; `tz` and `dst`, UTC by default), a `write` error is
+  an errno (EFBIG for a file past a limit) and a short write returns its
+  count, `open`/`creat` are unbuffered (`ar q x.a x.a` reads what it has
+  appended), a file name's bytes are the host's (`os.fsdecode`).
+- The original's bugs the cases demonstrate:
+  `docs/MUTOS_ORIGINAL_BUGS.md`, AR-01 .. AR-05 and RL-01 .. RL-07.
+
 ## The other originals (2026-10-20)
 
 Run while planning the driver (`../../docs/TOOLCHAIN_PLAN.md`; findings in
@@ -353,8 +406,8 @@ oracles"):
 - System calls served: `exit`, `fork`, `read`, `write`, `open`, `close`,
   `wait`, `creat`, `link`, `unlink`, `exece` (and `exec`), `chmod`,
   `break`, `stat`, `lseek`, `getpid`, `fstat`, `access`, `kill`,
-  `signal`, `ioctl` (always "not a tty"), `umask`; anything else gets
-  `EINVAL` and a warning. `stat`/`fstat` give v7's `struct stat` from the
+  `signal`, `ioctl` (always "not a tty"), `umask`, and since 2026-10-26 `time`
+  and `ftime`; anything else gets `EINVAL` and a warning. `stat`/`fstat` give v7's `struct stat` from the
   host's (the longs high word first); `umask` is the emulated process's,
   starting from the host's, and `creat` applies it to a new file's mode.
 - `fork`/`exece`/`wait` are faked: one process at a time. `fork` saves
@@ -372,11 +425,13 @@ oracles"):
 - On the command line, a program that stops without `exit()` (or runs
   past `--max-insns`) gives status 125 and a `mutosemu:` message.
 - What a program `write()`s to a file is in the file however the run
-  ends, as with the kernel: the host files are buffered and are closed
-  at the end of every run. Until 2026-10-22 they were closed only after
-  `exit()` or the instruction limit, so a fault lost up to 8 KB of an
-  output file (`cppfuzz.py` found it: the port's output was longer than
-  the crashed original's).
+  ends, as with the kernel: since 2026-10-26 the host files are unbuffered
+  (`ar q x.a x.a` reads what it has just appended) and are closed at the
+  end of every run. Until 2026-10-22 they were buffered and closed only
+  after `exit()` or the instruction limit, so a fault lost up to 8 KB of
+  an output file (`cppfuzz.py` found it: the port's output was longer than
+  the crashed original's). A `write()` that reaches a file size limit is
+  short, as under Unix, and one at the limit fails with EFBIG.
 - `open()` of a directory fails (ENOENT): the host cannot read one as a
   file, where MUTOS hands out its entries. `mutos_cpp` refuses such an
   `#include` rather than follow either.

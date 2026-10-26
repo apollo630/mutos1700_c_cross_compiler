@@ -16,15 +16,17 @@ known), why (the mechanism, with the text or data offset in the binary as
 `tests/realbin/c1map.txt` and `c1dis.py` give them for `c1`, `c0map.txt`
 and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
 `ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`,
-`c2map.txt` and `c2dis.py` for `c2`), how it was
+`c2map.txt` and `c2dis.py` for `c2`, `armap.txt` and `ardis.py` for `ar`,
+`ranlibmap.txt` and `ranlibdis.py` for `ranlib`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
 reproducible with the commands in `tests/realbin/README.md`), **code
 reading** (the disassembly, not observed in a run). "Reproduced" means the
 project's tool gives the original's output byte for byte; "refused" that
-it stops with a message and exit status 2 where the original's output
-depends on state that is not modelled.
+it stops with a message and exit status 2 (`mutos_ar` and `mutos_ranlib`:
+125, the message's last line ending in "refused") where the original's
+output depends on state that is not modelled.
 
 Last updated: 2026-10-26.
 
@@ -111,6 +113,18 @@ Last updated: 2026-10-26.
 | C2-05 | `c2` | `lea` into memory clears `regs[-1]`: the low byte of the "redundant jumps" counter | emulator | reproduced |
 | C2-06 | `c2` | a branch to a label followed by a jump to an undefined label: `iterate()` increments the "node" at address 0 - `optab[0]`'s opcode: `br` becomes `beq` for the rest of the run | emulator | reproduced |
 | C2-07 | `c2` | an empty line (after a label alone on its line) equals the list's head: `xjump()` jumps to a label put before the head, never written, or leaves the list in a circle | emulator | reproduced; refused where the deletion after a branch never ends |
+| AR-01 | `ar` | a name longer than 14 characters never matches a member: `ar r` adds the file again each time, `ar d` says "not found" | emulator | reproduced |
+| AR-02 | `ar` | a member cut short: "phase error on x" but the file is written whole, its tail the old bytes of the copy buffer, and the exit status is 0 | emulator | reproduced |
+| AR-03 | `ar` | owner and group are signed chars: `ar tv` shows an owner of 200 as `-56` | emulator | reproduced |
+| AR-04 | `ar` | a key given 256 times counts as not given (`flg[]` is a signed char) | emulator | reproduced |
+| AR-05 | `ar` | `copyfil()` counts the short reads in a 16-bit int: a member whose size is 65536 blocks of 512 bytes past the archive's end (32 MB, or any multiple of it) is copied or skipped with no "phase error" | emulator, fuzzing | reproduced |
+| RL-01 | `ranlib` | "nm: %s-- no name list" prints a 14-character member name on through the header behind it (date, owner, size, the a.out header) | emulator | reproduced; refused with no 0 in the 42 bytes |
+| RL-02 | `ranlib` | a file that is no archive is not closed: the 18th such argument cannot be opened ("nm: cannot open") | emulator | reproduced |
+| RL-03 | `ranlib` | `arp`, `exp` and `sym` are not reset: an empty file after an archive without members passes for an archive | emulator | reproduced; refused where the old `sym` is the stack's |
+| RL-04 | `ranlib` | the command line for `ar` is built in `char buf[256]` without a check: names of about 230 characters in all smash the frame | emulator | refused |
+| RL-05 | `ranlib` | `ar` is run through `/bin/sh -c`: an archive name with a blank or a shell character is taken apart or expanded | code reading | refused |
+| RL-06 | `ranlib` | a negative member size sends the scan round the archive for ever | emulator | reproduced (an endless run); a seek to a negative offset refused |
+| RL-07 | `ranlib` | `fixdate()` dates the first member whatever it is: with `ar` failing, the first object of the archive is five seconds in the future | code reading | reproduced |
 
 ## `c1`
 
@@ -1559,6 +1573,195 @@ come with the MUTOS deltas.
   data segment can hold.
 - **Fix idea.** Drop the empty line after a label too, or stop
   `xjump()` at `first`.
+
+## `ar`
+
+Read in full on 2026-10-26 for its port (`src/mutos_ar/`,
+`tests/realbin/armap.txt`): none of the 33 functions of `ar.o` differs
+from v7's `ar.c` in what it does, so these are v7's own. Every entry with a
+trigger was run under the emulator - most are cases of
+`tests/realbin/arcmp.py cases` -, and the port does the same. Not bugs:
+`usage` goes to the standard output; the exit status of a run is the number
+of names not found (`done(notfound())`); `ar x` makes the files with the
+time of the extraction.
+
+### AR-01 A name longer than 14 characters never matches
+
+- **Symptom.** `ar rc x.a a_name_longer_than_14` twice puts the file in
+  twice - both members are named `a_name_longer_` -, and `ar d x.a
+  a_name_longer_than_14` says `ar: a_name_longer_than_14 not found` and
+  exits 1. `x`, `p`, `m` and the position names of `ra`/`rb` do likewise.
+  The name cut to 14 characters matches.
+- **Mechanism.** `getdir()` (text 0c80) copies the 14 characters of the
+  header's name into `name[16]`; `match()` (text 0cd8) and `bamatch()`
+  (text 0d3c) compare it with the command line's name whole, which `trim()`
+  (text 0e1e) cut only of its trailing slashes. The member a file is
+  stored under is the last component cut at 14 characters (`DIRSIZ`).
+- **Evidence.** Emulator (`arcmp.py cases`: `long names added twice`, `d a
+  long name`, `ra with a long position name`).
+- **This project.** Reproduced.
+- **Fix idea.** Compare at most 14 characters (`strncmp(a, b, 14)`) in
+  `match()` and `bamatch()`.
+
+### AR-02 A member cut short is copied whole, with the old bytes
+
+- **Symptom.** An archive cut inside a member (`m1` with 100 bytes, `m2`
+  cut after 40 of its 100): `ar x x.a` says `ar: phase error on m2`,
+  exits 0 and makes `m2` of 100 bytes - the 40 real ones, then the 60 bytes
+  the buffer held from `m1`. `ar t` prints the message as well, `ar p`
+  prints the old bytes.
+- **Mechanism.** `copyfil()` (text 0bc0) counts a read that returns less
+  than it asked (`pe++`) and writes the block all the same, with the end of
+  the 512-byte buffer as it was; `phserr()` (text 0dd6) only prints.
+- **Evidence.** Emulator (`arcmp.py cases`: `truncated in a header`, `in
+  data`, `in the pad byte`).
+- **This project.** Reproduced (the buffer is kept between the calls).
+- **Fix idea.** Write only what was read, and end with status 1 after
+  `phserr()`.
+
+### AR-03 Owner and group are signed chars
+
+- **Symptom.** A file of owner 200 and group 255: `ar tv` shows
+  `rw-r--r---56/-1` (the mode, then `-56/-1`). The header holds `char ar_uid, ar_gid`; an owner
+  above 255 is cut to 8 bits when the member is made.
+- **Mechanism.** `longt()` (text 0e58) prints the two chars with
+  `%3d/%1d` after the sign extension of the 8086's `cbw`.
+- **Evidence.** Emulator (`arcmp.py cases`: `modes and owners in an
+  archive`, `modes and owners`; the fuzzer's owners above 127).
+- **This project.** Reproduced.
+- **Fix idea.** `(unsigned char)` in the call.
+
+### AR-04 A key given 256 times counts as not given
+
+- **Symptom.** `ar r` + 256 times `v` + `x.a f` is silent where 255 times
+  `v` print `a - f`; 256 times `c` print "ar: creating x.a" again.
+- **Mechanism.** `main()` (text 00b6) counts the keys in `flg[26]`, signed
+  chars (`flg[*cp - 'a']++`): 256 steps are 0 again.
+- **Evidence.** Emulator (`arcmp.py cases`: `AR-04: a key 256 times`).
+- **This project.** Reproduced (`flg` is a `signed char` array).
+- **Fix idea.** `flg[...] = 1`.
+
+### AR-05 65536 short reads are no phase error
+
+- **Symptom.** An archive that ends after the header of a member whose size
+  is 65536 x 512 = 33554432 bytes: `ar t` lists the member and says nothing.
+  With 65535 or 65537 x 512 it says `ar: phase error on w.txt`. The same
+  for a header cut off 128 MB and 510 bytes short of its data (the fuzzer's
+  case: a damaged byte in the size).
+- **Mechanism.** `copyfil()` (text 0bc0) counts the reads that return less
+  than asked in `pe`, a 16-bit int in the frame (`inc word ptr [bp-6]`), once
+  per block of 512 bytes the archive lacks; `phserr()` is called only when
+  `pe` is not 0 at the end - and after a multiple of 65536 it is 0 again.
+- **Evidence.** Emulator (`arcmp.py cases`: `AR-05: 65536 phase errors`; the
+  fuzzer's case 3000445, seed 3 with `--mutate 0.12`).
+- **This project.** Reproduced (`pe` is a `uint16_t`).
+- **Fix idea.** `pe = 1` instead of `pe++`.
+
+## `ranlib`
+
+Read in full on 2026-10-26 for its port (`src/mutos_ranlib/`,
+`tests/realbin/ranlibmap.txt`): none of the five functions of `ranlib.o`
+differs from v7's `ranlib.c` in what it does, so these are v7's own (that
+file is `nm`'s code; its messages begin with `nm:`). Every entry with a
+trigger was run under the emulator - most are cases of
+`tests/realbin/ranlibcmp.py cases` -, and the port does the same.
+
+### RL-01 A 14-character member name runs on through the header
+
+- **Symptom.** A member `abcdefghijklmn` (14 characters) whose object has no
+  symbols: `ranlib x.a` says `nm: abcdefghijklmn` followed by the bytes of
+  the date, owner and mode (here `\xc4!`, `[`, `\xee`, `\x07`, `\t`,
+  `\xa4\x81`) and `-- no name list`.
+- **Mechanism.** `main()` (text 00b6) prints `arp.ar_name` with `%s`; the
+  name has no 0 at 14 characters, and `exp` lies behind `arp` in the BSS
+  (`arp` at data 1c34, `exp` at 1c4e), so the string goes on through the
+  header and the a.out header up to the first 0 byte.
+- **Evidence.** Emulator (`ranlibcmp.py cases`: `no name list, a long
+  name`, `named 14 or 15`).
+- **This project.** Reproduced (`arp` and `exp` are one 42-byte array);
+  refused when no 0 is among the 42 bytes.
+- **Fix idea.** `%.14s`.
+
+### RL-02 A file that is no archive keeps its stdio slot
+
+- **Symptom.** `ranlib t t t ...` with the file `t` 18 times (a file that is
+  no archive): 17 times `not archive: t`, then `nm: cannot open t`.
+- **Mechanism.** `main()` (text 00b6) prints "not archive" and `continue`s
+  without `fclose(fi)`; libc.a's stdio has 20 slots, three of them the
+  standard streams.
+- **Evidence.** Emulator (`ranlibcmp.py cases`: `17 files that are no
+  archives`, `17 non archives and a good one`).
+- **This project.** Reproduced (`rl_fopen()` counts the slots).
+- **Fix idea.** `fclose(fi)` before `continue`.
+
+### RL-03 The headers are not reset
+
+- **Symptom.** `ranlib m.a empty` with `m.a` the two bytes `65 ff` (an
+  archive without members) and `empty` an empty file: no message for
+  `empty`; alone it says `not archive: empty`. In the same way a symbol
+  table cut inside an entry gives the entry's old bytes back.
+- **Mechanism.** `exp` (data 1c4e) and the symbol `sym` (a local of
+  `main()`) are not cleared; a read that returns less leaves what was
+  there. The magic number of the empty file is the archive's left in `exp`.
+- **Evidence.** Emulator (`ranlibcmp.py cases`: `an empty file after an
+  archive`, `empty archive`).
+- **This project.** Reproduced; refused where the old `sym` would be the
+  stack's bytes (a table cut inside its first entry).
+- **Fix idea.** Clear `exp` before the read, and `sym` before each member.
+
+### RL-04 The command line for `ar` is built in a buffer of 256 bytes
+
+- **Symptom.** An archive named with 230 characters or more (`d/d/d/.../x.a`,
+  243 characters): `ranlib` goes on to take words behind its arguments as
+  file names (`nm: cannot open (null)`, ten times) - the frame is smashed.
+- **Mechanism.** `main()` (text 00b6) calls `sprintf(buf, "ar rlb %s %s %s\n",
+  ...)` (libc.a `sprintf`, text 0928) with `char buf[256]` in its frame, no
+  length check.
+- **Evidence.** Emulator (`ranlibcmp.py cases`: `a name past the buffer`).
+- **This project.** Refused (a command line of 256 characters or more).
+- **Fix idea.** `snprintf`, or a longer buffer.
+
+### RL-05 `ar` is run through the shell
+
+- **Symptom.** An archive name with a blank, `;`, `*` or `$` is taken apart
+  or expanded by `/bin/sh -c "ar rl <name> __.SYMDEF"` - the table of one
+  archive may be put in another, or any command run.
+- **Mechanism.** `system()` (libc.a, text 083c) is `fork` + `execl("/bin/sh",
+  "sh", "-c", cmd)`; the names are not quoted.
+- **Evidence.** Code reading (the emulator's `exece` stands in for the shell
+  with a split at blanks only: `ranlibcmp.py cases`, `names the shell
+  would split`).
+- **This project.** Refused (a name the shell would take apart or expand,
+  or an empty one).
+- **Fix idea.** `execv` of `ar` without a shell.
+
+### RL-06 A negative member size sends the scan round for ever
+
+- **Symptom.** An archive whose last member header has the size -2:
+  `ranlib` does not end.
+- **Mechanism.** `nextel()` (text 0346) sets `off` to the position after the
+  header plus the size, an odd size rounded up; a negative size puts it
+  behind the header already read, so the same members are read again.
+- **Evidence.** Emulator (`ranlibcmp.py cases`: `a negative member size`:
+  the original stopped by the instruction budget, the port by the time
+  limit - the class "endless").
+- **This project.** Reproduced as an endless run; an `fseek` to a
+  negative offset is refused.
+- **Fix idea.** Stop at a negative size ("bad archive").
+
+### RL-07 `fixdate()` dates the first member
+
+- **Symptom.** None seen with a working `ar`: the first member is then
+  `__.SYMDEF`. When `ar` fails to put the table in (a file system that is
+  full, `ar` not found), the first object of the archive is dated five
+  seconds into the future, and `ld` says "out of date" for no reason.
+- **Mechanism.** `fixdate()` (text 04fc) opens the archive, `lseek`s to
+  offset 16 (the date of the first header) and writes `time() + 5`; it does
+  not look at the name, nor at the status of `ar`.
+- **Evidence.** Code reading.
+- **This project.** Reproduced; an `ar` that refused (status 125) or one
+  missing from the root's `bin/` is refused first.
+- **Fix idea.** Check the status of `system()` and the first member's name.
 
 ## Suspect, no wrong output found
 

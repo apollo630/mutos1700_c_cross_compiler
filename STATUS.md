@@ -19,13 +19,13 @@ Last updated: 2026-10-26.
 
 A repo-root `Makefile` builds every component - through each one's own
 `src/mutos_<tool>/Makefile` (`mutos_ld`'s since its port, 2026-10-22), `mutos_ld`,
-`mutos_as`, `mutos_cpp` and `mutos_cc`/`mutos_c0`/`mutos_c1`/`mutos_c2` (`mutos_c2`
-since 2026-10-25) - and
+`mutos_as`, `mutos_cpp`, `mutos_cc`/`mutos_c0`/`mutos_c1`/`mutos_c2` (`mutos_c2`
+since 2026-10-25) and, since 2026-10-26, `mutos_ar` and `mutos_ranlib` - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
 `src/`, `usr/lib/`, `usr/include/` - since 2026-10-25 the original headers, copied from
-`mutos/mutos_include/usr/include/` -, and since 2026-10-22 `tmp/`; `make clean` removes
-it). Every component is
+`mutos/mutos_include/usr/include/` -, since 2026-10-22 `tmp/`, and since 2026-10-26
+`bin/ar` and `bin/ranlib`; `make clean` removes it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
 `src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
 use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
@@ -39,10 +39,11 @@ checks - `check_floatdat.sh` and `float_coverage/fltmodel.py` - and the assembly
 every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, the compiler's,
 `tests/mutos_root/check_root.py` on the root and its lookup, and since 2026-10-24
 `tests/mutos_cc/check_driver.py`: the driver `mutos_cc` with the ported passes, since
-2026-10-25 also `cc -O` with `mutos_c2`).
+2026-10-25 also `cc -O` with `mutos_c2`, and since 2026-10-26 `tests/mutos_ar/check_libc.py`:
+`libc.a` rebuilt from its objects by `mutos_ar` and `mutos_ranlib`).
 `make check-realbin` and `make check-libcatof` need the Python module `unicorn` and
 are not part of `make test`: the first checks the original binaries and the ports of
-`c0`, `c1`, `cpp`, `ld`, `cc` and `c2` against the emulated originals (and `mutos_ld`'s
+`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`, `ar` and `ranlib` against the emulated originals (and `mutos_ld`'s
 extension `-r`/`-d`), the original `cc` traced through its
 original passes against the goldens it made (Milestone 4), and the original `ld`
 through the root (Milestone 1); the second the
@@ -111,6 +112,18 @@ working tree: `make check-realbin` (all checks passed, the new ones among them:
 `asfuzz.py --gen cc --strict` 300 cases, all the same object) and `make
 check-libcatof` (0 differ). The final fuzzer run (about 5,500 cases) is in "Step 5 of
 the plan", Milestone 2.
+
+Verified 2026-10-26 with the ports of `ar` and `ranlib` (Milestone 6, step 6), on a fresh
+clone of the commit with the change applied (`git apply`; the new files added with `git
+add`, which `check-docs` reads): `make clean && make all` with zero warnings under
+`-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its output the same as the
+commit's without the change, line for line, but for the lines the change adds - the two
+`make` calls for `src/mutos_ar` and `src/mutos_ranlib`, `check_root.py`'s `bin/ar` and
+`bin/ranlib`, and `check_libc.py`'s five; `make check-realbin` exit 0, all checks passed
+(the new ones: `ardata.c` current, `arcmp.py cases` 366 runs, `arfuzz.py` plain and
+damaged, `ranlibcmp.py cases` and `libc`, `ranlibfuzz.py` plain and damaged, seed 1 -
+the results in Milestone 6); `make check-libcatof` (0 differ); `make check-docs`. The
+longer fuzzer runs of Milestone 6 (seeds 2 and 3) ran in the working tree.
 
 ---
 
@@ -503,6 +516,8 @@ not of `mutos_as`.
   library) becomes a goal of the project, because that is the only place where the
   present differences can matter. `mutos_as` stays until then; the tests (`make test`,
   `ascmp.py`, `asfuzz.py --gen cc --strict`) become the regression suite of the port.
+  Step 6 is done (2026-10-26) and the decision is still the project owner's: the port
+  of `mutos_as` is not started.
 
 ### Carried from 2026-09-29 (not re-run this session)
 
@@ -1051,15 +1066,21 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    the original accepts; the forms the fuzzer showed that matter for hand-written
    assembler are fixed, the rest measured and listed. The decision on a port is the project owner's - see
    "Step 5 of the plan" in Milestone 2 for the measurements and a recommendation.
-   **Next: step 6.**
-6. **Ports of `ar` and `ranlib`**, `bin/` in the root for the new tools.
+6. ~~**Ports of `ar` and `ranlib`**, `bin/` in the root for the new tools~~ - **done
+   2026-10-26** (Milestone 6): `mutos_ar` and `mutos_ranlib` are the originals, read from
+   their binaries - none of the 38 functions differs from v7's in what it does; `ranlib`
+   starts `$MUTOS_ROOT/bin/ar`, the root has `bin/ar` and `bin/ranlib`; their bugs (AR-01
+   to AR-05, RL-01 to RL-07). Checked by `tests/realbin/arcmp.py`, `arfuzz.py`,
+   `ranlibcmp.py` and `ranlibfuzz.py` against the emulated originals, and in `make test` by
+   `tests/mutos_ar/check_libc.py` (`libc.a` rebuilt from its 167 objects). **Next: step
+   7.**
 7. **Port of `make`** (decided 2026-10-25 in place of the wrapper `mutos_make` of
    2026-10-20).
 8. **Ports of `nm`, `size`, `strip`, `tsort`**, and `lorder`.
 9. **Ports of `ed` and `em`.**
 
-Steps 6 to 9 are Milestone 6 (below); their originals are in `mutos/mutos_bin/` since
-2026-10-25, the order was proposed that day.
+Steps 6 to 9 are Milestone 6 (below), step 6 done; their originals are in
+`mutos/mutos_bin/` since 2026-10-25, the order was proposed that day.
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
 the limits it had for `c1_gen.c`'s sake (no constant divisor, no `x = y;`, simple
@@ -1162,8 +1183,9 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 
 ## Milestone 6 — `make`, `ar`, `ranlib` and the other MUTOS tools
 
-**Status: NOT STARTED** (`docs/TOOLCHAIN_PLAN.md`, decision 10, steps 6 to 9).
-**Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
+**Status: step 6 done (2026-10-26) - `mutos_ar` and `mutos_ranlib` are ports of the
+real `ar` and `ranlib`; steps 7 to 9 NOT STARTED** (`docs/TOOLCHAIN_PLAN.md`, decision
+10, steps 6 to 9). **Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
 wrapper `mutos_make` around the host's `make`, planned on 2026-10-20, is dropped -, and
 so are all the other binaries brought from the hardware that day: `ar`, `ranlib`,
 `nm`, `size`, `strip`, `tsort`, the editors `ed` and `em`, and the shell script
@@ -1178,10 +1200,97 @@ and v7's sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`,
 `em` has no v7 source). Read so far (2026-10-25, from the binary's strings, not its
 code): the original `make`'s built-in rules and macros are v7's `builtin[]`
 (`v7/make/files.c`, `AS=as -`) string for string; `make.1.d` gives another default
-suffix list than the binary has (v7's manual's). None of these binaries runs under `tests/realbin/`
-yet. What the real `make` is known to do and not do on the hardware is in
+suffix list than the binary has (v7's manual's). Since 2026-10-26 `ar` and `ranlib` run
+under `tests/realbin/` (below); the others do not yet. What the real `make` is known to do and not do on the hardware is in
 `docs/devlog/m4_foundations.md`, "MUTOS 1700 host-tooling findings"; what the new
 files showed in `docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
+
+### `mutos_ar` and `mutos_ranlib` are ports of the real `ar` and `ranlib` (verified 2026-10-26)
+
+`mutos_ar` is the original MUTOS 1700 `ar` - v7's `ar.c` for the 8086 - and
+`mutos_ranlib` the original `ranlib` - v7's `ranlib.c`, which is `nm`'s code with another
+`main()` -, every function read from the stripped binary beside the v7 source
+(`tests/realbin/armap.txt`, `ranlibmap.txt`; `ardis.py` and `ranlibdis.py` disassemble one
+function by name). **None of the 33 functions of `ar.o` and the five of `ranlib.o`
+differs from v7's in what it does**; what differs is the representation and the libc.a
+underneath: the 26-byte archive header with its longs high word first, the 12-byte
+`nlist`, 16-bit `int`s, signed `char`s, libc.a's `perror()` (41 messages), `mktemp()`,
+`ctime()`, and stdio with twenty slots and its `isatty()` at the first output.
+
+- **Sources**: `src/mutos_ar/` (`ar.h`, `ar.c` - the 33 functions in v7's order with the
+  binary's text offsets -, `arlib.c` - what `ar` takes from libc.a and the MUTOS paths -,
+  `ardata.c` - libc.a's `sys_errlist[]`, generated from the binary by `tests/realbin/
+  artables.py --c` and checked by `--check-c` -, `README.md`) and `src/mutos_ranlib/`
+  (`ranlib.c`, `README.md`). Each has a Makefile; the top-level `make all` builds both
+  (`all: ld as cpp cc ar ranlib root`).
+- **In the MUTOS root**: `bin/ar` and `bin/ranlib` as links into `src/`
+  (`scripts/mutos_root.sh`, `tests/mutos_root/check_root.py`). `mutos_ranlib` runs
+  `$MUTOS_ROOT/bin/ar` with `fork`/`execv` where the original goes through `/bin/sh -c`.
+  The temporary files of `ar` are `/tmp/v*` under the root (`vXXXXX` in the current
+  directory with the key `l`).
+- **`libc.a`, rebuilt**: `tests/mutos_ar/check_libc.py` (in `make test`, no emulator)
+  makes `libc.a` from its 167 objects with `mutos_ar rc` and `mutos_ranlib`: 72,178 bytes,
+  the original archive byte for byte but for the three header fields of `__.SYMDEF` -
+  its first member - that the tools write themselves: the date (the clock plus five
+  seconds), the group (0, the original's 1) and the mode (0100644, the original's
+  0100664); `t`, `x` and `p` list and extract its 167 objects as the original archive
+  has them, and `ranlib` run twice, `ar d` and `ar rb` do what is expected of them.
+  `ranlibcmp.py libc` does the rebuild with the emulated `ar` and `ranlib`: the same.
+- **Against the emulated originals** (`tests/realbin/arcmp.py`, `ranlibcmp.py`; the
+  messages, the exit status and both trees - names, bytes, modes - after every step, in two
+  copies of a directory, `TZ=UTC`): `arcmp.py cases` 366 runs (one run is one `ar`
+  command line) of 90 hand-written cases - every key and message, positions, `u`,
+  `l`, names of every length, damaged and foreign archives, owners above 127, times to
+  past 2038, files that change between commands -: 364 the same, 2 refused (an opened
+  directory); `ranlibcmp.py cases` 146 runs of 57 cases - every message, every magic
+  number, symbols of every type, cut tables, names of 14 characters, more than seventeen
+  files that are no archives, the limits -: 139 the same, 6 refused, 1 where neither the
+  original nor the port ends (a negative member size, RL-06).
+- **Differential fuzzing** (`tests/realbin/arfuzz.py`, `ranlibfuzz.py`; random files and
+  random objects, random commands, files that change between the steps), no difference:
+  `ar`, 300 with seed 1 (all the same) and 1,500 with seed 2 (1,499 the same, 1 limits); damaged
+  archives (`--mutate 0.12`), 300 with seed 1 (all the same) and 600 with seed 3 (598 the same, 2 limits);
+  `ranlib`, 150 with seed 1 (all the same) and 400 with seed 2 (396 the same, 4 refused); damaged
+  (`--mutate 0.15`), 150 with seed 1 (148 the same, 2 refused) and 400 with seed 3 (385 the same, 14 refused, 1 slow).
+  `make check-realbin` runs the seed-1 runs.
+- **Result classes** of the two comparators, besides *same*: *refused* (below), *orig-fails*
+  (the original does not finish and the port refused), *endless* (neither finishes),
+  **limits** (new: the port is stopped by the harness's 16 MB file-size limit - a damaged
+  header that makes `ar` copy or print a member of a gigabyte -, by `SIGXFSZ` or by a short
+  write that `ar` reports), **slow** (new: the original is stopped by the instruction budget
+  on such a member while the port, on the host, finishes; what the original said by then is
+  a prefix of the port's; one case re-run with a budget of three billion instructions gave
+  the same output), and *DIFFERENT*. In both of the new classes what the original had
+  written is a prefix of what the port wrote, or the other way round.
+- **The emulator** (`tests/realbin/mutosemu.py`) learned what `ar` and `ranlib` need:
+  `time()`/`ftime()`, the error number of a failed `write()` and `open()`, files without
+  buffering, host file names as bytes, and a write at a file-size limit that is short
+  (it returns the count; `EFBIG` only when nothing fits) - the fuzzing had found the
+  last: a `write error: No such file or directory` where the original said `File too
+  large` (10 of the first 600 damaged archives of seed 3, none after the fix). The next
+  run found two more differences in the port, both now fixed and in the bug list: the
+  `ENOTTY` the original's first output to a file or pipe leaves in `errno`, which
+  `perror()` prints after a short write (`ar_out()`), and the 16-bit counter of short
+  reads in `copyfil()` (AR-05).
+- **Refused on purpose** (exit status 125, a last message line ending in "refused",
+  `ar`'s temporary files removed first): `ar` - an opened directory (the original reads
+  its entries as bytes), a file name past the host's limits, a time the host's calendar
+  cannot give; `ranlib` - a directory as an argument, a seek to a negative offset, a symbol
+  table that ends inside its first entry (the original uses its stack's old bytes), an
+  `ar_name` with no 0 among its 42 bytes, a command line of 256 characters or more (the
+  original smashes its frame, RL-04), a name the shell would take apart or expand, no
+  `bin/ar` in the root or one that refused.
+- **The originals' bugs**: AR-01 to AR-05 and RL-01 to RL-07 in
+  `docs/MUTOS_ORIGINAL_BUGS.md`, each with a trigger run under the emulator - a name of
+  more than 14 characters never matches (AR-01), a member cut short copied whole with the
+  old bytes (AR-02), owner and group as signed chars (AR-03), a key given 256 times
+  counted as not given (AR-04), 65536 short reads counted as none (AR-05); a 14-character name that runs on through the header
+  (RL-01), a file that is no archive keeping its stdio slot (RL-02), headers that are not
+  reset (RL-03), `buf[256]` for `ar`'s command line (RL-04), `ar` run through the shell
+  (RL-05), a negative member size that sends the scan round for ever (RL-06), `fixdate()`
+  dating the first member whatever it is (RL-07).
+- **Not done**: `ar`'s and `ranlib`'s manual pages (the manual pages come at the end,
+  Workflow Guideline 10).
 
 ---
 
@@ -1362,8 +1471,8 @@ far.
    driver `mutos_cc` are ports of the real `c1`, `c0` and `cc` (`docs/C1_PORT_PLAN.md`,
    `docs/C0_PORT_PLAN.md`, `docs/TOOLCHAIN_PLAN.md` step 3), every golden reproduced
    through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5), then
-   `mutos_as`'s differential fuzzer (Milestone 2, step 5); next is step 6 - see
-   "Next up".
+   `mutos_as`'s differential fuzzer (Milestone 2, step 5), then `mutos_ar` and
+   `mutos_ranlib` (Milestone 6, step 6); next is step 7 - see "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -

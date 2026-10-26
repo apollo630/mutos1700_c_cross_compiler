@@ -17,6 +17,11 @@
 #                                      mutos_c0/mutos_c1/mutos_c2 - ports
 #                                      of the original cc, c0, c1 and
 #                                      c2; see src/mutos_cc/README.md)
+#   mutos_ar   - archiver            (src/mutos_ar/, a port of the
+#                                      original ar)
+#   mutos_ranlib - archive indexer   (src/mutos_ranlib/, a port of the
+#                                      original ranlib; it runs mutos_ar
+#                                      through the MUTOS root's bin/ar)
 #   mutos_root/ - the MUTOS root     (scripts/mutos_root.sh: crt0.o,
 #                                      libc.a, the passes as symbolic
 #                                      links; docs/TOOLCHAIN_PLAN.md,
@@ -28,6 +33,8 @@
 #   make as         # build just mutos_as
 #   make cpp        # build just mutos_cpp
 #   make cc         # build just mutos_cc/mutos_c0/mutos_c1/mutos_c2
+#   make ar         # build just mutos_ar
+#   make ranlib     # build just mutos_ranlib
 #   make root       # make (or bring up to date) mutos_root/
 #   make clean      # clean every component, remove mutos_root/
 #   make test       # run every component's golden-diff test suite
@@ -60,7 +67,10 @@
 #                   # against the original on every golden source and
 #                   # hand-written case, the classes of the runs pinned
 #                   # in tests/realbin/ascmp_*.txt, and a fuzz run over the
-#                   # real compiler's output; the
+#                   # real compiler's output; mutos_ar and mutos_ranlib (the
+#                   # ports of ar and ranlib) against the original on
+#                   # hand-written cases and fuzz runs, and libc.a rebuilt
+#                   # from its objects; the
 #                   # original ld through mutos_root/ (needs the Python
 #                   # module "unicorn" and, for cc's stub, a C compiler;
 #                   # see tests/realbin/README.md)
@@ -83,9 +93,9 @@ endif
 MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
 SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
-.PHONY: all ld as cpp cc root clean test fuzz check-docs check-libcatof check-realbin install-hooks
+.PHONY: all ld as cpp cc ar ranlib root clean test fuzz check-docs check-libcatof check-realbin install-hooks
 
-all: ld as cpp cc root
+all: ld as cpp cc ar ranlib root
 
 ld:
 	$(SUBMAKE) -C src/mutos_ld
@@ -98,6 +108,12 @@ cpp:
 
 cc:
 	$(SUBMAKE) -C src/mutos_cc
+
+ar:
+	$(SUBMAKE) -C src/mutos_ar
+
+ranlib:
+	$(SUBMAKE) -C src/mutos_ranlib
 
 # mutos_root/: crt0.o and libc.a decoded from tests/ (libc.a with its
 # __.SYMDEF time), the passes and tools as symbolic links into src/ (a
@@ -114,6 +130,8 @@ clean:
 	$(MAKE) -C src/mutos_as clean
 	$(MAKE) -C src/mutos_cpp clean
 	$(MAKE) -C src/mutos_cc clean
+	$(MAKE) -C src/mutos_ar clean
+	$(MAKE) -C src/mutos_ranlib clean
 	rm -rf ./mutos_root
 
 # Runs every component's own golden-diff test suite. Each suite is
@@ -144,7 +162,10 @@ clean:
 # "out of date". tests/mutos_cc/check_driver.py runs the driver mutos_cc
 # with the ported passes through mutos_root/ - "cc -S", "cc -P" against
 # the goldens, "cc -O -S" (mutos_c2) against the kernel_opt sources,
-# "cc -o" and "cc -O -o" on the construct corpus.
+# "cc -o" and "cc -O -o" on the construct corpus. tests/mutos_ar/
+# check_libc.py rebuilds libc.a from its 167 objects with mutos_ar and
+# mutos_ranlib (the same bytes but for __.SYMDEF's time, group and mode),
+# lists, extracts and prints it, and runs ranlib twice.
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -170,6 +191,8 @@ test: all
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" $(MUTOS_ROOT_DEFAULT)
 	@echo "== mutos_cc (the driver) with the ported passes =="
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_cc/check_driver.py
+	@echo "== mutos_ar and mutos_ranlib rebuild libc.a =="
+	@python3 tests/mutos_ar/check_libc.py
 
 # Checks every *.md file for the kind of drift a rebuild/regression run
 # can't catch: numbers restated in more than one place that disagree,
@@ -253,8 +276,15 @@ check-libcatof: as ld cc
 # pinned in tests/realbin/ascmp_goldens.txt and ascmp_cases.txt (a new
 # or a vanished difference fails), and a fuzz run in which the real
 # compiler's output must give the same object (tests/realbin/ascmp.py,
-# asfuzz.py); then the original ld
-# through mutos_root/ (check_root.py --realbin). Separate
+# asfuzz.py); then mutos_ar and mutos_ranlib (the ports of ar and ranlib,
+# src/mutos_ar/, src/mutos_ranlib/): ar's generated error texts (ardata.c)
+# current, its messages, exit status and the files left (every byte and
+# mode) the original's on hand-written command sequences (tests/realbin/
+# arcmp.py) and on two fixed-seed differential fuzz runs, one with damaged
+# archives (arfuzz.py); ranlib's the same on hand-written cases
+# (ranlibcmp.py, the original ar under the emulator too) with libc.a
+# rebuilt from its objects, and two fuzz runs (ranlibfuzz.py); then the
+# original ld through mutos_root/ (check_root.py --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
@@ -264,7 +294,9 @@ REALBIN_LDFUZZ_ARGS = -n 300 -s 1
 REALBIN_CCFUZZ_ARGS = -n 1000 -s 1
 REALBIN_C2FUZZ_ARGS = -n 100 -s 1
 REALBIN_ASFUZZ_ARGS = -n 300 -s 1
-check-realbin: cc cpp as ld root
+REALBIN_ARFUZZ_ARGS = -n 300 -s 1
+REALBIN_RANLIBFUZZ_ARGS = -n 150 -s 1
+check-realbin: cc cpp as ld ar ranlib root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
 	@python3 tests/realbin/check_real.py goldens
@@ -304,6 +336,14 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/ascmp.py goldens --check tests/realbin/ascmp_goldens.txt
 	@python3 tests/realbin/ascmp.py cases --check tests/realbin/ascmp_cases.txt
 	@python3 tests/realbin/asfuzz.py $(REALBIN_ASFUZZ_ARGS) --gen cc --strict
+	@python3 tests/realbin/artables.py --check-c src/mutos_ar/ardata.c
+	@python3 tests/realbin/arcmp.py cases
+	@python3 tests/realbin/arfuzz.py $(REALBIN_ARFUZZ_ARGS)
+	@python3 tests/realbin/arfuzz.py $(REALBIN_ARFUZZ_ARGS) --mutate 0.12
+	@python3 tests/realbin/ranlibcmp.py cases
+	@python3 tests/realbin/ranlibcmp.py libc
+	@python3 tests/realbin/ranlibfuzz.py $(REALBIN_RANLIBFUZZ_ARGS)
+	@python3 tests/realbin/ranlibfuzz.py $(REALBIN_RANLIBFUZZ_ARGS) --mutate 0.15
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from

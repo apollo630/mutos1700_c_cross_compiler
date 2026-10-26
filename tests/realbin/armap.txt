@@ -1,0 +1,126 @@
+# armap.txt - a map of the real MUTOS 1700 ar (mutos/mutos_bin/ar.golden.base64.txt)
+#
+# The binary (0407) is stripped; the names below are v7's (v7/ar/ar.c),
+# found by the strings each function passes, the calls it makes and its
+# position. It is crt0, then ar.o - v7's ar.c, its 33 functions in source
+# order -, then libc.a from text 0f32 (fprintf; the others matched by
+# ardis.py against libc.a's objects). ardis.py reads this file; artables.py prints
+# the data (sys_errlist).
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/ar/ar.c): same  - compared, does what v7's does
+#                              libc  - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_ar/ar.c (libc.a's in arlib.c), read from the
+#       text at that offset
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- ar.o
+T 00b6 _main       same       ported
+T 026a _setcom     same       ported
+T 029c _rcmd       same       ported
+T 0352 _dcmd       same       ported
+T 03ae _xcmd       same       ported
+T 045c _pcmd       same       ported
+T 04c4 _mcmd       same       ported
+T 0570 _tcmd       same       ported
+T 05ca _qcmd       same       ported
+T 069a _init       same       ported
+T 070a _getaf      same       ported
+T 076e _getqf      same       ported
+T 084c _usage      same       ported
+T 0870 _noar       same       ported
+T 0894 _sigdone    same       ported
+T 08a6 _done       same       ported
+T 08ea _notfound   same       ported
+T 0928 _morefil    same       ported
+T 094e _cleanup    same       ported
+T 09b2 _install    same       ported
+T 0b0e _movefil    same       ported
+T 0b84 _stats      same       ported
+T 0bc0 _copyfil    same       ported
+T 0c80 _getdir     same       ported
+T 0cd8 _match      same       ported
+T 0d3c _bamatch    same       ported
+T 0dd6 _phserr     same       ported
+T 0df0 _mesg       same       ported
+T 0e1e _trim       same       ported
+T 0e58 _longt      same       ported
+T 0eac _pmode      same       ported
+T 0eca _select     same       ported
+T 0f16 _wrerr      same       ported
+# Common to all 33: v7's code as it is. The header (arbuf) is 26 bytes of
+# which the longs have their high word first and uid and gid are signed
+# chars ("ar t" shows them so); the option counters flg[] are signed chars
+# that wrap; stat is the 30-byte MUTOS struct stat. A function that
+# prints does it with fprintf(stderr, ...) except usage() (printf, stdout)
+# and the listings (stdout).
+# ---- libc.a from 0f32 (ardis.py names the functions it can match)
+T 0f32 _fprintf    libc       -       the host's: ar's formats are "%s", "%c", "%3d/%1d", "%7D" (a long), "%-12.12s", "%-4.4s"
+T 0f74 _printf     libc       -
+T 0fb8 __doprnt    libc       -
+T 12d4 _crack      libc       -       _doprnt's helpers to 159a
+T 159a __flsbuf    libc       -
+T 1682 _fflush     libc       -
+T 16d8 __cleanu    libc       -
+T 16f6 _fclose     libc       -
+T 175c __stbuf     libc       -
+T 1796 __ftbuf     libc       -
+T 17bc _exit       libc       ported  flushes stdout (through _cleanup), then exit
+T 17c6 _perror     libc       ported  arlib.c's ar_perror(): message, ": ", sys_errlist[errno], newline - four write()s to fd 2 (two for an empty message); an errno above 34 (and a negative one) is EINVAL
+T 1840 _ctime      libc       ported  arlib.c's ar_ctime(): localtime() (the zone from ftime()), gmtime(), asctime() - "Day Mon dd hh:mm:ss yyyy\n"; the port takes the host's localtime_r()
+T 1858 _localti    libc       ported  ctime's
+T 1930 _sunday     libc       ported  ctime's (the DST rule)
+T 1966 _gmtime     libc       ported  ctime's
+T 1af6 _asctime    libc       ported  ctime's
+T 1be0 _dysize     libc       ported  ctime's
+T 1c00 _ct_numb    libc       ported  ctime's
+T 1c3a _malloc     libc       -       the port uses none: ar allocates nothing
+T 1d42 _free       libc       -
+T 1d5c _ialloc     libc       -
+T 1dec _realloc    libc       -
+T 1e9c _isatty     libc       -
+T 1ec2 _mktemp     libc       ported  arlib.c's ar_mktemp(): the X's replaced by the process number, then 'a'.. while access() finds the name ("/" at 'z')
+T 1f32 _stty       libc       -
+T 1f4a _gtty       libc       -
+T 1f62 _strcmp     libc       -
+T 1f90 _strlen     libc       -
+T 1fac _access     libc       -       the system calls from here: 1fb2 close, 1fb8 creat, 1fbe fstat, 1fc4 getpid, 1fcc ioctl, 1fd2 lseek, 1ffc open, 2002 read, 2008 sbrk, 203a brk, 2058 signal, 2108 time, 2121 ftime, 212e unlink, 2134 write; 213a cret, 2142 ldiv ... lmul, lrem; 22bc the system call stub
+# ---- data (the port's image has none: ar.c's variables are C's)
+D 22e2 crt0        crt0's data: Isgadr 22e4, Iscadr 22e8
+D 22ec man         = "mrxtdpq" (2366)
+D 22ee opt         = "uvnbail" (236e)
+D 22f0 signum      int signum[] = { SIGHUP, SIGINT, SIGQUIT, 0 }
+D 22f8 tmpnam      = "/tmp/vXXXXX" (2376)
+D 22fa tmp1nam     = "/tmp/v1XXXXX" (2382)
+D 22fc tmp2nam     = "/tmp/v2XXXXX" (238f)
+D 22fe armag       0177545 (65 ff): the archive's magic
+D 2300 m1          pmode()'s table, "r": { 1, 0400, 'r', '-' }; m2 2308 'w', m3 2310 's'/'x' (04000, 0100), m4 231c, m5 2324, m6 232c (02000, 010), m7 2338, m8 2340, m9 2348 ('t'/'x', 01000, 1)
+D 2354 m           = { m1 .. m9 }, 2366 its end
+D 2366 text        the strings: option letters, temporary names (the "l" flag's relative ones at 23b1), the messages from 239c on - "ar: bad option `%c'", "usage: ar [%s][%s] archive files ...", "ar write error" at 25f4
+D 2604 null        libc.a's "(null)"
+D 260c _iob        libc.a's FILE structures (stdout at 2614, stderr at 261c)
+D 273c sys_errlist libc.a's: 41 texts (the pointers; artables.py --table prints them), the count at 278e
+D 2a70 bss         the BSS: ar.o's variables in the order the linker put them
+D 2a72 stbuf       the 30-byte struct stat of stats() (fstat)
+D 2a90 arbuf       the archive header (26 bytes): name 2a90, date 2a9e, uid 2aa2, gid 2aa3, mode 2aa4, size 2aa6
+D 2aaa comfun      the command function setcom() chose
+D 2aac flg         char flg[26], 'a' at 2aac, 'u' at 2ac0, 'v' at 2ac1
+D 2ac6 namv        the file names of the command line
+D 2ac8 namc        their number
+D 2aca arnam       the archive's name
+D 2acc ponam       the position name (a, b, i)
+D 2ace tfnam       the temporary files' names ...
+D 2ad0 tf1nam      ... (tf1nam is also the "l" flag's second file)
+D 2ad2 tf2nam
+D 2ad4 file        the name of the member being handled
+D 2ad6 name        char name[16] - 14 characters of the header's name, a NUL
+D 2ae6 af          the archive's descriptor
+D 2ae8 tf          the temporary files' descriptors
+D 2aea tf1
+D 2aec tf2
+D 2aee qf          the quick-append archive's descriptor
+D 2af0 bastate     the a/b/i state machine (0 to 2)
+D 2af2 buf         char buf[512], copyfil()'s block
+D 30f2 _errno      libc.a's errno
