@@ -20,7 +20,24 @@ void parser_init(Parser *p, const char *src, size_t len, const char *filename)
     lexer_init(&p->lx, src, len, filename);
     p->queued = 0;
     p->error_count = 0;
+    p->at_end = false;
     p->filename = filename;
+}
+
+/* The names of the original's directives (read from its binary, 2026-10-25);
+ * every other ".name" is a symbol (see parser_next_statement). */
+static bool is_directive_name(const Token *t)
+{
+    static const char *const names[] = {
+        ".text", ".data", ".bss", ".byte", ".word", ".insrt", ".globl",
+        ".comm", ".blkb", ".blkw", ".even", ".list", ".nlist", ".end",
+        ".ascii", ".asciz", ".float", ".double", ".dlptr", ".targref",
+        ".textref", NULL
+    };
+    for (int i = 0; names[i]; i++)
+        if (strlen(names[i]) == t->len && strncmp(names[i], t->text, t->len) == 0)
+            return true;
+    return false;
 }
 
 /* Returns the token `ahead` positions from the current position without
@@ -59,8 +76,9 @@ static bool is_separator(TokenType tt)
 /* Collects tokens for a single operand into `op`, stopping at a
  * top-level comma (paren depth 0) or a statement separator. Does not
  * consume the terminating comma/separator. */
-static void parse_operand(Parser *p, Operand *op)
+static bool parse_operand(Parser *p, Operand *op)
 {
+    bool truncated = false;
     op->ntokens = 0;
     int depth = 0;
     for (;;) {
@@ -72,11 +90,13 @@ static void parse_operand(Parser *p, Operand *op)
         if (t.type == TOK_LPAREN) depth++;
         if (t.type == TOK_RPAREN) { if (depth > 0) depth--; }
 
-        if (op->ntokens < MAX_TOKENS_PER_OPERAND) {
+        if (op->ntokens < MAX_TOKENS_PER_OPERAND)
             op->tokens[op->ntokens++] = t;
-        } /* else: silently truncate for this skeleton; Pass 2 can widen the limit */
+        else
+            truncated = true; /* the caller reports it (Statement.too_long) */
         consume_tok(p);
     }
+    return truncated;
 }
 
 static void parse_operand_list(Parser *p, Statement *stmt)
@@ -88,7 +108,8 @@ static void parse_operand_list(Parser *p, Statement *stmt)
 
     for (;;) {
         if (stmt->noperands < MAX_OPERANDS) {
-            parse_operand(p, &stmt->operands[stmt->noperands]);
+            if (parse_operand(p, &stmt->operands[stmt->noperands]))
+                stmt->too_long = true;
             stmt->noperands++;
         } else {
             /* Too many operands for this skeleton's fixed array - drain
@@ -96,6 +117,7 @@ static void parse_operand_list(Parser *p, Statement *stmt)
              * with many entries will need MAX_OPERANDS raised later. */
             Operand dummy;
             parse_operand(p, &dummy);
+            stmt->too_long = true;
         }
         Token t = peek_tok(p, 0);
         if (t.type == TOK_COMMA) {
@@ -109,6 +131,9 @@ static void parse_operand_list(Parser *p, Statement *stmt)
 bool parser_next_statement(Parser *p, Statement *out)
 {
     memset(out, 0, sizeof(*out));
+
+    if (p->at_end)
+        return false;
 
     /* Skip blank statements (bare separators). */
     for (;;) {
@@ -132,8 +157,10 @@ bool parser_next_statement(Parser *p, Statement *out)
         Token t0 = peek_tok(p, 0);
 
         if (t0.type == TOK_LOCAL_LABEL_DEF) {
-            if (out->nlabels < 4)
+            if (out->nlabels < MAX_STMT_LABELS)
                 out->labels[out->nlabels++] = t0;
+            else
+                out->too_many_labels = true;
             out->has_local_label_def = true;
             out->local_label_digit = t0.local_digit;
             consume_tok(p);
@@ -143,8 +170,10 @@ bool parser_next_statement(Parser *p, Statement *out)
         if (t0.type == TOK_IDENT) {
             Token t1 = peek_tok(p, 1);
             if (t1.type == TOK_COLON) {
-                if (out->nlabels < 4)
+                if (out->nlabels < MAX_STMT_LABELS)
                     out->labels[out->nlabels++] = t0;
+                else
+                    out->too_many_labels = true;
                 consume_tok(p); /* ident */
                 consume_tok(p); /* ':' */
                 continue;
@@ -161,15 +190,26 @@ bool parser_next_statement(Parser *p, Statement *out)
         return true;
     }
 
-    if (t.type == TOK_DOT_IDENT) {
+    if (t.type == TOK_DOT_IDENT && is_directive_name(&t)) {
         out->kind = STMT_DIRECTIVE;
         out->mnemonic_or_name = t;
         consume_tok(p);
         parse_operand_list(p, out);
+        /* ".end" stops the assembly: nothing after it is read, not even
+         * parsed (measured on the original, 2026-10-25). Only the bare
+         * form does; ".end <expr>" is the original's start address and,
+         * as everything else, kept going. */
+        if (t.len == 4 && strncmp(t.text, ".end", 4) == 0 && out->noperands == 0)
+            p->at_end = true;
         return true;
     }
 
-    if (t.type == TOK_IDENT || t.type == TOK_DOT) {
+    /* Any other ".name" is not a directive: the original reads it as the
+     * symbol of that name - alone on a line a word that refers to it, as
+     * "_foo" does, or "name = expr" - so it takes the identifier paths
+     * below (a mistyped directive is a visible undefined symbol at link
+     * time, not a statement that vanishes). */
+    if (t.type == TOK_IDENT || t.type == TOK_DOT || t.type == TOK_DOT_IDENT) {
         Token t1 = peek_tok(p, 1);
         if (t1.type == TOK_EQUALS) {
             /* Assignment form: name = expression, OR the location-
@@ -184,7 +224,7 @@ bool parser_next_statement(Parser *p, Statement *out)
             return true;
         }
 
-        if (t.type == TOK_IDENT) {
+        if (t.type == TOK_IDENT || t.type == TOK_DOT_IDENT) {
             /* Instruction: mnemonic (possibly with a byte-size 'b'
              * suffix such as 'movb', or a prefix like a segment
              * override - both are just part of the identifier text at

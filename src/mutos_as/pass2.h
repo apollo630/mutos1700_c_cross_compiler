@@ -47,8 +47,23 @@ typedef enum {
     EX_LOCCTR,    /* bare '.' - current location counter */
     EX_LOCALREF,  /* numeric local label reference, e.g. "1f"/"1b" */
     EX_NEG,       /* unary minus, lhs = operand */
-    EX_ADD, EX_SUB, EX_MUL, EX_DIV  /* binary, lhs/rhs = operands */
+    EX_NOT,       /* '~', lhs = operand */
+    EX_ADD, EX_SUB, EX_MUL, EX_DIV,  /* binary, lhs/rhs = operands */
+    EX_AND, EX_OR, EX_MOD, EX_SHL, EX_SHR  /* '&', '!', '^', '<<', '>>' */
 } ExprOp;
+
+/* The arithmetic of the original (measured 2026-10-25, asfuzz.py): an
+ * operand of *, /, ^ (remainder), &, !, <<, >> and ~ is first made a
+ * 16-bit signed number and so is the result; / and ^ truncate toward
+ * zero; a shift count is read as unsigned and a count of 16 or more
+ * gives 0 (left) or the sign (right); the right shift keeps the sign.
+ * + - and unary - stay in `long` (their results are truncated where
+ * they are used). Division or remainder by 0 (and -32768 / -1) crashes
+ * the original; here *ok is false and the result 0. */
+long expr_apply(ExprOp op, long a, long b, bool *ok);
+long expr_apply_not(long a);
+/* Counts a division by zero seen while evaluating (see assemble.c). */
+extern int expr_div_errors;
 
 typedef struct ExprNode {
     ExprOp op;
@@ -131,6 +146,16 @@ typedef struct {
     /* ADDR_INDIRECT: optional displacement (NULL if none, e.g. "(bp)").
      * ADDR_IMMEDIATE / ADDR_DIRECT: the expression itself. */
     ExprNode  *expr;
+
+    /* A leading '@' (call/jmp/calli/jmpi only; any other instruction
+     * refuses such an operand, as the original does). at_reg: "@reg", the
+     * register itself (FF mod=11); at_direct: "@expr", the word at that
+     * address (FF mod=00 rm=110, mode ADDR_INDIRECT, reg_class
+     * REG_NONE); otherwise "@(reg)", "@disp(reg)", "@disp(reg)(reg)":
+     * the word in memory, like the same operand without the '@'. */
+    bool       at;
+    bool       at_reg;
+    bool       at_direct;
 
     bool       ok;           /* false if classification/parsing failed */
 } ParsedOperand;

@@ -11,8 +11,11 @@ dated where they stand (2026-10-25: the headers in the MUTOS root,
 decision 3; the port of `make` and of the other tools brought from the
 hardware, decision 10).
 
-**Status (2026-10-25): steps 0 to 4 are done** (section 3); step 5, the
-differential fuzzer for `mutos_as` and the switch `-1`, is next.
+**Status (2026-10-25): steps 0 to 5 are done** (section 3). Step 5 -
+the differential fuzzer for `mutos_as`, the switch `-1`, `-C` - measured the
+re-implementation against the original; whether to port `mutos_as` is the
+project owner's decision, with the measurements and a recommendation in
+`STATUS.md` (Milestone 2). Step 6, the ports of `ar` and `ranlib`, is next.
 `STATUS.md`'s "Next up" follows this order.
 
 ## 1. Where things stand
@@ -23,7 +26,7 @@ differential fuzzer for `mutos_as` and the switch `-1`, is next.
 | `mutos_c0` | port of the original `c0` (2026-10-18) | the emulated original: every golden, differential fuzzing |
 | `mutos_c1` | port of the original `c1` (2026-10-13) | the emulated original at four depths, differential fuzzing |
 | `mutos_c2` | port of the original `c2` (2026-10-25) | the emulated original: every `.s` golden three ways (`c2 in out`, `c2 - in out`, `c2 <in >out`), hand-written cases, differential fuzzing; `tests/mutos_as/kernel_opt/`'s nine real-hardware sources, also through `mutos_cc -O -S` |
-| `mutos_as` | re-implementation, 80186/V30 opcodes always on; takes `-g`/`-C` (step 0) | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof` |
+| `mutos_as` | re-implementation (2026-10-25: measured against the original, step 5); `-g` (no effect), `-C` (leaves out the local `L` symbols) and `-1` (the 80186/V30 opcodes, off without it) as the original and the plan have them | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof`; the emulated original: every golden and compiler `.s`, differential fuzzing (`tests/realbin/ascmp.py`, `asfuzz.py`) |
 | `mutos_ld` | port of the original `ld` (2026-10-22; until then a port of v7's `ld.c` with the MUTOS deltas known then), `-r`/`-d` an extension | the emulated original: every compiled golden linked with a matrix of options, hand-written cases, differential fuzzing (its own goldens `myhello`/`idhello` are missing from the tree); the extension by running programs linked through `-r` |
 | `mutos_cc` | port of the original `cc` (2026-10-24) | the emulated original, its passes traced: a matrix of command lines, the corpus with the original passes run in both, the ported chain against the original chain and the goldens, differential fuzzing |
 | `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | not ported yet (decision 10, steps 6 to 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
@@ -101,12 +104,15 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 8. **`mutos_c1` and `mutos_c2` stay without 80186/V30 code generation**
    until the 8086 toolchain works completely; whether and how it comes is
    decided then.
-9. **`mutos_as` is not ported now.** It accepts `-g` and `-C` (which the
-   original `cc` always passes) and ignores them - no effect of either is
-   known yet. No 8087 support is needed. A differential fuzzer against the
-   emulated original measures the differences; a port is decided after
-   that. The 80186/V30 instructions move behind the switch `-1` (section
-   4).
+9. **`mutos_as` is not ported now.** It takes `-g` and `-C` (which the
+   original `cc` always passes): `-g` has no effect in the original and
+   none here; `-C` leaves the defined, non-global symbols starting with `L`
+   out of the symbol table - measured on the original, 2026-10-25, and done
+   in `mutos_as`. No 8087 support is needed. A differential fuzzer against
+   the emulated original measured the differences (step 5, done
+   2026-10-25: `STATUS.md`, Milestone 2); the port itself is decided from
+   them - the owner's decision, with a recommendation. The 80186/V30
+   instructions are behind the switch `-1` (section 4).
 10. **`make` and the other tools are ported** (decided 2026-10-25). The
     plan of 2026-10-20 was a wrapper `mutos_make` around the host's `make`
     (its built-in rules off, the MUTOS `make`'s rules from a file,
@@ -159,7 +165,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 | 2 | Port of `ld` | the emulated original: every compiled golden linked with `crt0.o` and `libc.a`, with `-i`, `-n`, `-s`, `-x`, `-X`, `-u`, `-e`, `-o`, archive search, messages and exit status; this replaces the missing `myhello`/`idhello` goldens. **Done 2026-10-22**: `src/mutos_ld/` is the original read from its binary, on an image of its data segment; `ldcmp.py goldens` 1,572/1,572 the same (131 goldens, twelve command lines each: messages, exit status, the files left), the hand-written cases and the differential fuzzing in `STATUS.md` (Milestone 1) without a difference; the extension `-r`/`-d` checked by running programs linked through it (`tests/mutos_ld/check_rflag.py`); eight bugs of the original found (LD-01 to LD-08) |
 | 3 | Port of `cc` | the tracer: every pass's path and arguments, messages and exit status over a matrix of options, the original's against the port's; whole programs through the chain. **Done 2026-10-24**: `src/mutos_cc/ccport/` is the original read from its binary, on an image of its 64K segment (text, data, heap, `main()`'s frame); `cccmp.py` - the port's passes a stub that logs its arguments - 177 command lines traced (175 the same, 2 refused), the corpus with the original passes run in both 124/124, the ported chain against the original chain 124/124 (the same `a.out`) and against the goldens (`cc -S` 132/132, `cc -P` 132/132, `cc -O -S` 9/9 with the original `c2`), differential fuzzing in `STATUS.md` (Milestone 4) without a difference; six bugs of the original found (CC-01 to CC-06) |
 | 4 | Port of `c2` | the emulated original on all 132 `.s` goldens and on `c1fuzz.py`'s programs; `tests/mutos_as/kernel_opt/`'s nine sources from `11_kernel` (the original gives them byte for byte). **Done 2026-10-25**: `src/mutos_cc/c2port/` is the original read from its binary, on an image of its data segment with libc.a's stdio in it; `c2cmp.py goldens` 396/396 the same (132 goldens three ways: into a file, with the statistics, through stdin and stdout), the nine `kernel_opt/` sources byte for byte - also through `mutos_cc -O -S` (`check_driver.py`, `cccmp.py goldens`) -, the hand-written cases and the differential fuzzing (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, assembly made for `c2`'s passes, both damaged) in `STATUS.md` (Milestone 5) without a difference; seven bugs of the original found (C2-01 to C2-07), two of them endless loops the port refuses |
-| 5 | `mutos_as`: differential fuzzer, the `-1` switch | the emulated original; then the decision on a port |
+| 5 | `mutos_as`: differential fuzzer, the `-1` switch | the emulated original; then the decision on a port. **Done 2026-10-25**: `tests/realbin/ascmp.py` (a comparator that sorts every run into a class) and `asfuzz.py` (differential fuzzing, five generators, reduced and clustered findings, the table of all 273 instruction words); `-1` and `-C` implemented (`tests/mutos_as/check_switches.sh`); the compiler's own output assembles to the same object as the original's in all 1,284 of the 1,409 compiled test programs the original accepts (the other 125 are the compiler's own invalid output) and in every `.s` of the tree it accepts; the fuzzer's findings that hand-written code could meet are fixed (list in `STATUS.md`), the rest measured and kept (the options `-e`/`-l`, the exit statuses, the messages, the 8087 words, leniency); eleven bugs of the original found (AS-04 to AS-14, besides AS-01 and AS-02 re-measured); the decision on a port is the project owner's - recommendation in `STATUS.md` ("Step 5 of the plan"): not now, after step 6 |
 | 6 | Ports of `ar` and `ranlib`; `bin/` in the root for the new tools | the emulated original: archives made and changed with every key, `libc.a` rebuilt from its 167 objects against the original archive, `__.SYMDEF` included; differential fuzzing |
 | 7 | Port of `make` | the emulated original, its `fork`/`exece`/`wait` faked as for `cc` and the commands it runs traced: the corpus's `Makefile.mutos` files, makefiles written for its rules, macros and options, differential fuzzing; then the corpus's makefiles through `mutos_make` and the ported tools against the goldens |
 | 8 | Ports of `nm`, `size`, `strip`, `tsort`; `lorder` | the emulated original on every object and archive of the tree (the compiled goldens, `crt0.o`, `libc.a`) with each option; `lorder` and `tsort` on `libc.a`'s objects |
@@ -188,7 +194,14 @@ name (AS-02 in `docs/MUTOS_ORIGINAL_BUGS.md`); the link then fails with
 `Undefined: pusha` - a C program cannot define a name without the
 leading `_`. That keeps the differential fuzzer exact. The tests that use
 those instructions (`tests/mutos_as/kernel_opt/mch_insw_outsw.s`,
-`tests/mutos_as/v30_speculative/`) get `-1`. Implemented with step 5.
+`tests/mutos_as/v30_speculative/`) get `-1`. **Implemented 2026-10-25**
+(step 5): `tests/mutos_as/run_goldens.sh` passes `-1` for `mch_insw_outsw.s`
+(76/76 byte for byte; without `-1` 75/76, like the original), and
+`tests/mutos_as/check_switches.sh` (in `make test`) pins that the seven
+`v30_speculative` sources give their recorded objects (`v30_with_1.md5`) with
+`-1` and not without it. The `mutos_as` forms of `push` and `imul` with an
+immediate and of the shifts by a count are refused without `-1`, as the
+original refuses them; its 80186 words are the unknown words of AS-02.
 
 ## 5. What the originals showed (2026-10-20)
 
@@ -244,8 +257,12 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
 
 ## 6. Open questions
 
-- What `as`'s `-g`, `-C` and `-l` do: to be read in the binary (step 5).
-  (`cc`'s "Executing ..." messages: its option `-a`, read with step 3.)
+- ~~What `as`'s `-g`, `-C` and `-l` do~~: measured 2026-10-25 (step 5). `-g`
+  no effect; `-C` leaves the defined, non-global symbols starting with `L` out
+  of the symbol table; `-l` writes a listing `x.L` beside the object (not
+  implemented in `mutos_as`); `-e` keeps only the external symbols (not
+  implemented either). (`cc`'s "Executing ..." messages: its option `-a`, read
+  with step 3.)
 - Whether `cc -o name.o` writing `name` is meant (listed as suspect in
   `docs/MUTOS_ORIGINAL_BUGS.md`).
 - `c0f`, `c1f`, `asf` and `libf.a`: the compiler passes, the assembler

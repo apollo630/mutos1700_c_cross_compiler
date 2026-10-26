@@ -56,7 +56,11 @@
 #                   # the original passes and with the ported ones, and a
 #                   # fuzz run; mutos_c2 (the port of c2) against the
 #                   # original on every .s golden, hand-written cases and
-#                   # four fuzz runs; the
+#                   # four fuzz runs; mutos_as (not a port: a measurement)
+#                   # against the original on every golden source and
+#                   # hand-written case, the classes of the runs pinned
+#                   # in tests/realbin/ascmp_*.txt, and a fuzz run over the
+#                   # real compiler's output; the
 #                   # original ld through mutos_root/ (needs the Python
 #                   # module "unicorn" and, for cc's stub, a C compiler;
 #                   # see tests/realbin/README.md)
@@ -124,7 +128,10 @@ clean:
 # hand-written .float/.double sources (zeros, doubles, inexact values,
 # the rounding probes fltmode.s and fltmul.s and the range probe fltovf.s
 # among them), and assemble_cc_goldens.sh checks that every real
-# compiler output in tests/mutos_cc assembles (no reference objects).
+# compiler output in tests/mutos_cc assembles (no reference objects),
+# and check_switches.sh the switches -1 (the seven v30_speculative
+# sources assemble with it, to their recorded objects, not without it)
+# and -C (the local L symbols left out).
 # float_coverage/fltmodel.py (Python 3, standard library only) re-derives
 # the .float/.double conversion model's unknowns from those goldens and
 # checks src/mutos_as/fltconst.c against its own, independent model.
@@ -153,6 +160,8 @@ test: all
 	@python3 tests/mutos_as/float_coverage/fltmodel.py check $(CURDIR)/src/mutos_as/fltconst_test
 	@echo "== mutos_as on the real compiler's .s (tests/mutos_cc goldens) =="
 	@MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as tests/mutos_as/assemble_cc_goldens.sh
+	@echo "== mutos_as switches -1 and -C =="
+	@MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as tests/mutos_as/check_switches.sh
 	@echo "== mutos_cpp goldens =="
 	@cd tests/mutos_cpp && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp ./run_goldens.sh
 	@echo "== mutos_cc (c0/c1) goldens =="
@@ -238,7 +247,13 @@ check-libcatof: as ld cc
 # hand-written cases (tests/realbin/c2cmp.py), and four fixed-seed
 # differential fuzz runs - the real compiler's output for random
 # programs, assembly made for c2's passes, both damaged
-# (tests/realbin/c2fuzz.py); then the original ld
+# (tests/realbin/c2fuzz.py); then mutos_as (a re-implementation, not a
+# port): its runs on every golden source and hand-written case put into
+# classes against the emulated original and compared with the classes
+# pinned in tests/realbin/ascmp_goldens.txt and ascmp_cases.txt (a new
+# or a vanished difference fails), and a fuzz run in which the real
+# compiler's output must give the same object (tests/realbin/ascmp.py,
+# asfuzz.py); then the original ld
 # through mutos_root/ (check_root.py --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
@@ -248,6 +263,7 @@ REALBIN_CPPFUZZ_ARGS = -n 200 -s 1
 REALBIN_LDFUZZ_ARGS = -n 300 -s 1
 REALBIN_CCFUZZ_ARGS = -n 1000 -s 1
 REALBIN_C2FUZZ_ARGS = -n 100 -s 1
+REALBIN_ASFUZZ_ARGS = -n 300 -s 1
 check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -285,6 +301,9 @@ check-realbin: cc cpp as ld root
 	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen fuzz_c
 	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen asm
 	@python3 tests/realbin/c2fuzz.py $(REALBIN_C2FUZZ_ARGS) --gen mix --mutate 0.5
+	@python3 tests/realbin/ascmp.py goldens --check tests/realbin/ascmp_goldens.txt
+	@python3 tests/realbin/ascmp.py cases --check tests/realbin/ascmp_cases.txt
+	@python3 tests/realbin/asfuzz.py $(REALBIN_ASFUZZ_ARGS) --gen cc --strict
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from

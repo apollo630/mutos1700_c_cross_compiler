@@ -60,6 +60,8 @@ compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 | `c2tables.py` | `--c`: the original `c2`'s initialized data segment as C - `src/mutos_cc/c2port/c2data.c` (generated, checked in; `--check-c` checks it is current); `--strings`: its strings; `--optab`: its opcode table. |
 | `c2cmp.py` | `mutos_c2` against the original: the same command line in two copies of one directory - `c2 in out`, `c2 - in out` (the statistics), `c2 <in >out`, the hand-written ones -, the output, the messages and the exit status compared byte for byte - `goldens` (every `.s` golden of `tests/mutos_cc` three ways; the nine `11_kernel` outputs also against `tests/mutos_as/kernel_opt/`), `cases` (hand-written: the command lines, the input's form, the line buffer's end, long tokens and operands over the fixed buffers, many chunks, a large function, the heap's end, label numbers, the original's bugs) or `files`. A refusal of the port must have written a prefix of the original's output, and where the original does not finish the port must have refused; where both run into the limits their outputs must agree as far as the shorter goes (`endless`). |
 | `c2fuzz.py` | Differential fuzzing of `mutos_c2` with `c2cmp.py`'s comparison. Generators: the real compiler's output for `c1fuzz.py`'s programs (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`), through the ported chain; assembly in `c1`'s style made to reach every pass of `c2` (`--gen asm`: register moves and renames, `push`/`pop`, index patterns, constants, branches near and far, jumps to jumps, unreachable code, `.data`/`.bss`, several functions); `--gen mix` all three; `--mutate P` damages the cases (long operands and first tokens, odd bytes, lines deleted, doubled, swapped or cut, branches to undefined labels or to code, empty lines, a missing last linefeed, a line past the buffer). |
+| `ascmp.py` | `mutos_as` against the original `as` - not a port (`docs/TOOLCHAIN_PLAN.md`, decision 9), so a **measurement**: the same command line in two copies of one directory, every run put into a class (`same`, `obj-same`, `both-reject`, `PORT-REJECTS`, `PORT-ACCEPTS`, `OBJ-DIFF`; the flags say what else differs: status, stdout, stderr, files, bytes, mode) - `goldens` (every source with a real-hardware golden object, the seven `v30_speculative` sources and every compiler `.s` golden, with `cc`'s `-gC` and with `-o` only), `cases` (hand-written: the output name, stdin, several inputs, a missing input, the options, syntax errors, the original's limits, the 80186 forms), `options` (the original against itself: what `-g`, `-C`, `-l`, `-e` change) or `files`. `--write FILE` saves the classes of the runs that are not `same`, `--check FILE` compares with such a file (`ascmp_goldens.txt`, `ascmp_cases.txt`: `make check-realbin`; a new or a vanished difference fails). |
+| `asfuzz.py` | Differential fuzzing of `mutos_as` with `ascmp.py`'s classes; every serious case (`OBJ-DIFF`, `PORT-ACCEPTS`, `PORT-REJECTS`) is reduced to a minimal source and clustered by what each tool says. Generators: `insn` (one to six instructions of every form), `prog` (programs with segments, labels, `.globl`, `.comm`, data directives, expressions), `corpus` (lines of the real sources recombined), `cc` (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, a third of it after `mutos_c2`), `mix`; `--mutate P` damages the cases; `--strict` exits 1 on an `OBJ-DIFF` or a `PORT-REJECTS` (a source the original accepts and the port gets wrong), not on a `PORT-ACCEPTS` (leniency); `make check-realbin` runs 300 `cc` cases that way. `--words`: every instruction word of the original (read from its binary) and of `mutos_as` with up to 30 operand shapes, as a table. |
 | `ldfuzz.py` | Differential fuzzing of `mutos_ld` with `ldcmp.py`'s comparison: random objects (text and data words with every relocation kind, the pc-relative and byte-shift bits; external definitions in every segment, absolutes, undefined, commons, locals, "L" locals, file names, shared names, a spare byte, an odd size, no relocation bits, another magic), real `crt0.o` and `libc.a` members, archives plain, current and out of date - by name or through `-l` from the root -, random options; `--mutate P` damages files for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
@@ -103,6 +105,13 @@ python3 tests/realbin/c2cmp.py cases --show 100
 python3 tests/realbin/c2cmp.py files - x.s     # one file, "c2 - x.s out"
 python3 tests/realbin/c2fuzz.py -n 500 -s 7 --gen asm --keep /tmp/c2diff
 python3 tests/realbin/c2fuzz.py -n 500 -s 7 --gen mix --mutate 0.5
+python3 tests/realbin/ascmp.py goldens --check tests/realbin/ascmp_goldens.txt
+python3 tests/realbin/ascmp.py cases --show 100
+python3 tests/realbin/ascmp.py options
+python3 tests/realbin/ascmp.py files -C -o x.o x.s   # one line, both runs in full
+python3 tests/realbin/asfuzz.py -n 500 -s 7 --gen prog --keep /tmp/asdiff
+python3 tests/realbin/asfuzz.py -n 500 -s 7 --gen cc --strict
+python3 tests/realbin/asfuzz.py --words
 python3 tests/realbin/c2dis.py _pushopt
 ```
 
@@ -253,6 +262,40 @@ operator and type, and the register returned, `d`: every `delay()` call;
   cases of each generator and 100 damaged ones (seed 1).
 - The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`,
   C2-01 .. C2-07.
+
+## `mutos_as` against it (2026-10-25)
+
+`mutos_as` is not a port (`../../docs/TOOLCHAIN_PLAN.md`, decision 9), so `ascmp.py`
+and `asfuzz.py` measure instead of demanding "the same".
+
+- `ascmp.py goldens`: every source with a real-hardware golden object, the seven
+  `v30_speculative` sources and the 132 compiler outputs, with `cc`'s `-gC` and with
+  `-o` only - 432 runs: 404 `same`, 16 `obj-same` (the object is the same, the file
+  mode is not: `mutos_as` makes an object without undefined symbols executable), 12
+  `both-reject` (the five `v30_speculative` files that need `-1`, and `p19_open3`,
+  the compiler's own invalid output). Of the 76 golden objects the original gives 75
+  and `mutos_as` 75 (the 76th, `mch_insw_outsw`, has an 80186 instruction: 76/76
+  with `-1`).
+- `ascmp.py cases`: 158 hand-written cases - 33 `same`, 41 `obj-same`, 38
+  `both-reject`, 32 `PORT-REJECTS`, 7 `PORT-ACCEPTS`, 7 `OBJ-DIFF`; every one that is
+  not `same` is in `ascmp_cases.txt` and explained in `STATUS.md` (Milestone 2, "Step 5
+  of the plan"). The 7 `OBJ-DIFF` are the original's bugs AS-10, AS-07 and AS-13 (two
+  cases), `.globl L` twice under `-C`, several inputs (the original uses the first)
+  and `scab`/`scaw` (words only the original has).
+- `ascmp.py options`: the original against itself on 216 sources - `-g` changes no
+  object, `-C` leaves out the defined non-global `L` symbols, `-l` writes a listing,
+  `-e` keeps the external symbols.
+- `asfuzz.py` (the final binary, seed 20 unless it says otherwise): `insn` 1,200
+  cases, `prog` 800, `corpus` 800, `mix --mutate 0.5` 600 (seed 21), `cc` 1,500
+  (1,409 compiled: the original accepts 1,284 and **all 1,284 give the same
+  object**; the other 125 are the compiler's invalid output, 105 refused by both) and
+  `cc --mutate 0.5` 600 (seed 21). What is left over in `OBJ-DIFF` and `PORT-REJECTS`
+  is a list that is kept on purpose (`STATUS.md`): instruction words only one of the two
+  has, the original's bugs (AS-04, AS-05, AS-10, AS-11, AS-12, AS-13, AS-14), `pop cs`, `mov.b`,
+  `push bl`, `.globl L` twice under `-C`, sums longer than 64 tokens, bytes with the
+  high bit set. `make check-realbin` runs 300 `cc` cases (seed 1) with `--strict`.
+- The original's bugs the cases demonstrate: `docs/MUTOS_ORIGINAL_BUGS.md`,
+  AS-04 .. AS-14.
 
 ## The other originals (2026-10-20)
 

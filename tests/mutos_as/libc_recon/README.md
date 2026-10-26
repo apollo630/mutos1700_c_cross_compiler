@@ -58,17 +58,16 @@ second point below.
   `.double 3.00000000000000000e-02` — and `.03` — give exactly `ecvt.o`'s
   `c3 f5 28 5c 8f c2 75 7b` under every rounding still possible;
   `floatdat.s` checks all 8 bytes.
-- **No `L` labels.** Their symbol tables contain no compiler-generated `L`
-  labels (nor does any other of `libc.a`'s 167 objects) — the real `as`'s
-  documented default without `-L`
-  (`docs/MUTOS1700_Assembler_as.pdf` sect. 3.1: identifiers beginning with `L`
-  are local labels unless `-L` is given) — while `mutos_as` always writes them,
-  because the kernel goldens compiled from C have them (`CLAUDE.md`'s "Known,
-  deliberate exception"). The real binary turned out to ignore `-L` entirely
-  (`Unknown option L ignored`, 2026-09-28 - see `STATUS.md`'s open item 6), so
-  why the kernel goldens have `L` labels and `libc.a` has none is still open.
-  A compiled-C `libc.a` object can only be reproduced once that difference is
-  resolved - for both `atof.o` and `ecvt.o` it is now the only blocker.
+- **No `L` labels** - explained since 2026-10-25. Their symbol tables contain no
+  compiler-generated `L` labels (nor does any other of `libc.a`'s 167 objects),
+  while the kernel goldens compiled from C have them. The real binary ignores
+  `-L` (`Unknown option L ignored`, 2026-09-28), but it has `-C`, which leaves out
+  the defined, non-global `L` symbols, and the original `cc` runs `as -gC`:
+  `libc.a` was presumably made by `cc -c`, the kernel goldens by `cc -S` and a
+  plain `as` (`STATUS.md`'s open item 6). `mutos_as -C` does the same, so a
+  compiled-C `libc.a` object can be reproduced - with `-C` - once its source is
+  written from the disassembly; for both `atof.o` and `ecvt.o` that is the only
+  blocker left (not done in step 5).
 
 `ldexp.o` has neither problem: it is hand-written (no `L` labels) and its one
 floating constant, `huge`, is emitted as `.word`s here — its original spelling

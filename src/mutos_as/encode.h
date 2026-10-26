@@ -101,12 +101,35 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
  * See encode.c's definition for the concrete bug this closes. */
 bool encode_is_known_mnemonic(const Token *mnemonic);
 
+/* The switch "-1" (docs/TOOLCHAIN_PLAN.md, section 4): switches on the
+ * 80186/V30 instructions - pusha, popa, leave, enter, bound, insb, insw,
+ * outsb, outsw, "push" of an immediate, "imul" with two or three
+ * operands, and shifts and rotates by a count other than 1 or CL. The
+ * original `as` has none of them; without the switch (the default) they
+ * are what they are to the original - an identifier it does not know
+ * starts an expression (a word referring to an undefined external of
+ * that name), the operand forms are errors. */
+void encode_set_186(bool on);
+
 /* Exposes the internal expression resolver for callers that need to
  * evaluate a plain expression outside of instruction encoding (e.g.
  * the assembler driver's handling of ".=.+4" location-counter
  * assignments and STMT_DATA_VALUE words). Always fully resolves
  * (equivalent to encode_instruction's resolve=true path). */
 long resolve_expr_pub(const ExprNode *e, long cur_addr, SymTab *st);
+
+/* The value and kind (SYM_ABS, or SYM_TEXT / SYM_DATA / SYM_LOCALBSS for an
+ * address in that segment) of `e`, when everything it names is known: a
+ * defined symbol that is not external and not a .comm (and, with
+ * cur_seq >= 0, one defined at a statement not after number cur_seq - see
+ * symtab_cur_seq). The original's algebra: a sum needs an absolute side, a
+ * difference an absolute right side or two addresses of one segment (that
+ * is absolute), the other operators plain numbers. `dot_ty`/`dot_v` give
+ * "." (SYM_UNDEF: not known). False if anything is not known. This is
+ * what the assignment "name = expr" and the size of a displacement
+ * "name(bx)" are decided by. */
+bool expr_eval_known(const ExprNode *e, SymTab *st, int cur_seq,
+                     SymType dot_ty, long dot_v, SymType *ty, long *v);
 
 /* Same as resolve_expr_pub, but with resolve=false: does NOT trust any
  * symbol's value (always returns a placeholder for symbol-dependent

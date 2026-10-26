@@ -1,6 +1,6 @@
 # The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc` and `c2`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), and the measurement of `mutos_as` against the original `as` (2026-10-25).
 
 ---
 
@@ -1313,3 +1313,203 @@ into `v7/`. What reading them showed, on the day:
   `-k`, `-n`, `-t`, `-r`, `-s`. Its default suffix list, `.out .o .c .e
   .r .f .y .l .s`, is v7's manual's, not the binary's: the binary has
   v7's built-in `.out .o .c .f .e .r .y .yr .ye .l .s`.
+
+## The `mutos_as` measurement (2026-10-25)
+
+Step 5 of `docs/TOOLCHAIN_PLAN.md`. The assembler is the one tool that is not a port (decision 9), so
+the earlier steps' question - "is the output the same, byte for byte?" - could not be the
+whole question: `mutos_as` is a re-implementation written from the manual, the goldens and
+the corpus, and the original accepts and refuses things it never saw. The step measured
+how much differs and where, to give the project owner what the decision on a port needs.
+`STATUS.md` (Milestone 2, "Step 5 of the plan") has the result; this is how it went.
+
+### A comparator that does not demand "the same"
+
+`tests/realbin/ascmp.py` runs the original (under the emulator) and `mutos_as` on the same
+command line in two copies of one directory and puts each pair into a class. The
+important change from `ldcmp.py` or `c2cmp.py`: a run is not "failed" when the two
+differ, it is counted. `OBJ-DIFF` (both accept, the objects differ) and `PORT-REJECTS`
+(the original accepts and `mutos_as` refuses) are the two that can matter for real
+programs, `PORT-ACCEPTS` (the original refuses, `mutos_as` takes it) is leniency - it
+makes no program fail that the original would assemble. Everything else is a
+flag: the exit status, stdout, stderr, the set of files left behind, their bytes and
+their mode. `--write` pins the lines that are not `same` in two files in `tests/realbin/`
+so that `make check-realbin` fails on a new difference or a vanished one.
+
+The first thing it showed was on the corpus itself: 76/76 real-hardware golden objects
+are the same bytes from `mutos_as` - and 75/76 from the original. The 76th is
+`mch_insw_outsw`, `mch.s` with the 80186 instruction `insw`, which the original does
+not know (AS-02): it makes it a one-word reference to an undefined external `insw`.
+That settled the shape of the switch `-1`: `mutos_as` without it must do the same, so that
+the original is the reference for everything else.
+
+### The fuzzer, and what it cannot be
+
+`asfuzz.py` has five generators. A generator of random instructions (`insn`) hits the
+parser with forms nobody writes (a byte instruction on `si`, `(dx)` as an index register),
+which both tools refuse for different reasons; the first runs were 70% noise. So it has
+a strict mode (forms the original accepts: byte registers for byte instructions, local
+labels as jump targets, plain numbers as values) used for 70% of the cases. `prog`
+builds whole programs with segments, labels and directives; `corpus` recombines lines
+of the real sources position by position; `cc` takes the real compiler's output - the
+programs of `c1fuzz.py` and `fuzz_c.py`, through `mutos_cc -S`, a third of them after `c2`.
+(A generator that wrote assembly in `c1`'s style, as `c2fuzz.py` does, had `mutos_as`
+refuse 149 of 150 - the style `c2` accepts is not the style `as` does - and was dropped.)
+
+Every serious case is reduced - lines taken out while the class stays - and clustered by
+what each tool says (a normalised first line of each message; for an `OBJ-DIFF` the
+instruction words), so that 250 findings become 24 clusters. The reduction found its own
+bug on the way: a mutation that cuts the last linefeed makes the original refuse the
+source (`syntax error`), and the reducer, putting the linefeed back on every candidate,
+turned the case into a `same` and crashed the report. It keeps the form of the end now.
+
+`asfuzz.py --words` is the exhaustive version of `insn`: the original's table is in
+its data segment (273 words from `aaa` to `xorb`), `mutos_as`'s is read from
+`encode.c`, and each word is tried with up to 30 operand shapes. It showed the whole
+difference in the instruction set in one table: 113 words of the 8087, `bc`, `bnc`,
+`scab`, `scaw` and a few spellings only the original has, and seventeen words only
+`mutos_as` has (the 80186 set, `bloss`, `inb`, `outb`, `movsw`, `scas`, `scasb`,
+`repe`, `repne`).
+
+### What the original does, read from the runs
+
+- **Options** - letter by letter: `-o` takes the next argument, `-e`, `-g`, `-C`, `-l`;
+  every other letter is `Unknown option X ignored.` and the run goes on. `-g` changes
+  no object in the 216 sources (`ascmp.py options`). `-l` writes a listing (line
+  number, address, bytes, source) to the input's name with its last character made
+  `L`; `-e` keeps only the external symbols.
+- **`-C`.** The object of the `kernel_opt` sources has the compiler's `L<number>`
+  labels in its symbol table (`malloc.o` 14 of them), `libc.a`'s 167 objects have none.
+  The 2026-09-28 experiment on the hardware had shown that `-L` is not in the binary,
+  which ruled the flag out as the cause - the binary has `-C`. It leaves out every
+  symbol that is defined, not `.globl` and starts with a capital `L`: also `La = 5`, a
+  label in `.data`, a label in `.bss`. The fuzzer showed the rest of the rule: an
+  `L` name that is only referenced is written, after all the others, in the order of its
+  first mention; one named by `.globl` or `.comm` takes its place at that directive; and
+  `.globl` after the label is an error (`Illegal redeclaration of symbol`). The original
+  `cc` always runs `as -gC`, so everything `cc -c` made - `libc.a` - lacks the labels;
+  the kernel's makefile used `cc -S` and plain `as`. That is still a reading, not
+  a record: nothing in the tree says how `libc.a` was built.
+- **Output name and input**: the input name with the last character made `o`, whatever it
+  is (`x.s` gives `x.o`, `prog` gives `proo` after `Warning input file prog does not end
+  in .s`); with `-o` the name given; no input is not stdin but an error; several
+  inputs give `More than one input, a.s used.` (the first, and the rest ignored); exit
+  status 2 for errors in the source, 4 when a file cannot be opened.
+- **Messages**: `***ERROR*** syntax error, line N` on stdout and stderr, then `x.s: N errors.`;
+  the partial object stays, with the mode `creat` gave.
+- **Limits and quirks.** Labels in front of a statement: 24 and more are fine, 32 are
+  not (the table has 32 entries); `.asciz` takes backslash escapes - `\n`, `\t`,
+  `\\`, `\*`, octal up to three digits, a digit 8 or 9 ends the number, any other
+  character after `\` is itself - and refuses text after the closing `*`; a line is read in
+  pieces of 127 characters - what follows the 127th is read as a line of its own, a
+  comment's tail too (AS-13; a first note here said a comment could be of any length: it
+  had been tried with tails that read as nothing); `int *3.` is `CC`; a number or a sum alone on a line is a
+  word in the current segment, in `.text` as in `.data`, and moves the counter in
+  `.bss`; `incb bx` is accepted as `bl`, `incb si` is `Byte instruction cannot use si`;
+  an odd `.bss` is made even.
+- **The expression language** (asfuzz's expression probes, by hand): no precedence, left
+  to right - `2+3*4` is 20 -; the operators `+ - * / & ! ^ << >>` with `!` for or and `^`
+  for the remainder; one unary `-`, `+` or `~` before an operand and no more
+  (`--1`, `-~1` are errors); `*`, `/`, `^`, `&`, `!`, `<<`, `>>` and `~` work on 16-bit
+  signed numbers (`/8000*2` is 0), a shift count of 16 or more gives 0 (or -1 for a
+  negative left side); `|` starts a comment, parentheses and a single `<` or `>` are
+  errors; numbers are decimal (`010` is 10, a `.` at the end changes nothing) or, after
+  a `/`, hexadecimal; a character constant is `'c'` or `'ab'` (`a*256+b`), with the
+  escapes `\n \t \b \f \r` and `\c` for any other `c`, and `'abc'` or an unclosed one is
+  an error. A sum needs one absolute side, a difference an
+  absolute right side or two addresses of one segment (absolute); anything else is
+  `Illegal relocatable expression`. `name = expr` takes any such expression, the
+  symbol gets its kind (absolute, text, data, bss); `.end` stops reading; `.insrt "file"`
+  goes ten levels deep.
+- **The size of a displacement.** `disp(reg)` is a byte displacement when the value is
+  absolute, made only of symbols that were defined above the statement, and fits in a
+  signed byte; otherwise a word. `K = 5` and `mov ax,K(bx)` is `8B 47 05`; with `K = 5`
+  below the statement, with `K` a label or an external symbol, `8B 87 ..`. The first
+  rule the `kernel_opt` goldens could not show: they have only numbers and external
+  names in displacements.
+- **`call`, `jmp`, `calli`, `jmpi`** (FF /2, /4, /3, /5): `@reg` and a bare `reg` are the
+  register (mod 11), `@(reg)` the word at `[reg]`, `@disp(reg)`, `@(reg)(reg)` and
+  `@disp(reg)(reg)` the word in memory, `@expr` the word at an address (mod 00, rm 110,
+  with a relocation); the forms without `@` are errors, and an `@` on any other
+  instruction is a syntax error.
+- **Order of symbols**: the order of the first mention, operands left to right.
+- **Bugs of the original** (`docs/MUTOS_ORIGINAL_BUGS.md`, AS-04 to AS-14): `aam` gives `D6
+  0A` instead of `D4 0A`; `hlt` is in the table but not found (the table is out of order
+  there, which a bisection would not survive; `fcomsp` is lost the same way); `(bp)`
+  and then the first `.float` crashes it; an odd `.data` followed by `.bss` gives a short
+  object; `name = sym` before `sym` is defined makes `name` an undefined external with
+  the value 0x7870; a division or remainder by zero kills it; `(bp)` with an
+  immediate gets the immediate's low byte as its displacement after some statements;
+  a conditional branch to an indirect address (`ble @cx`) writes `EA` where the `jmp`
+  needs `FF`; `jmpi X`/`calli X` are seven bytes where the 8086's far jump has five;
+  a line of 128 characters or more is cut, a comment's tail being assembled; and a
+  byte of `0200` or more in code is read in a way that depends on its value, `0351` being
+  a jump into unmapped memory. The last three came out of the confirmation run, from
+  clusters that did not fit any known cause - the last two from the damaged cases (a
+  lengthened line, a byte `0377` in front of a statement).
+
+### What `mutos_as` was missing, found by the fuzzer and fixed
+
+Those the original accepts and `mutos_as` refused or assembled differently, in the order
+they were found:
+
+- shifts and rotates of a global (`sarb _g,cl`);
+- `test cx,_d`: the address was taken for an immediate (`F7 C1 imm`, the original `85 0E
+  addr`), and `xchg al,bl` was the word form - two silent differences in the object;
+- `.asciz` escapes, also silent: the characters of `\n` were written as they stand;
+- more than four labels in front of a statement - the others were dropped, so that
+  `08_tty`'s `L132:L131:L129:...` lost symbols (found by the golden, not the fuzzer);
+- `int *3.`, `ret *n.`, `reti *n.`, `xchg`/`test` with a memory operand in either
+  order, `pop` of memory, `lds`/`les` with an address, `incb`/`decb` of a register, the
+  16-bit displacement, `.` in a displacement, a number alone on a line in `.text` (it went
+  into the data while the text counter moved on: the one that changes a program's
+  code), and the order of `L` symbols under `-C`;
+- the directives the original has and `mutos_as` had not (`.blkw`, `.ascii`, `.end`,
+  `.list`, `.nlist`, `.insrt`, `.targref`, `.textref`, `.dlptr` as an error), strings in
+  `"`, a name starting with a dot as a symbol; the expression grammar (no precedence,
+  the bit operators, the 16-bit arithmetic - `mutos_as` had the usual precedence and
+  no `&`, `!`, `^`, shifts), `name = expr` for any expression, an odd `.bss` made
+  even, and a number in `.bss` that went to the data;
+- the last rounds, each of them a silent mismatch for code a person could write: the
+  size of `K(bx)` for an assigned `K` (a byte in the original, a word here), `call
+  @(bx)` (the word at `[bx]`, here the register), `@x`, `@(bx)(si)`, `call ax`, the
+  numbering of symbols in `sbb _tab,#_buf2` (the immediate's symbol first), an
+  expression of more than 16 tokens, which was cut after the 16th without a message
+  (now 64, and an error beyond), character constants (`'a'` was read as 0), and a data
+  operand `mutos_as` could not parse (`.word 5 6`, `.byte 1+(2)`), which became 0 and is
+  an error now. The last three were found by the *classes* of the run, not by a single
+  case: after a round that fixed several silent mismatches the question was which
+  kinds of input the fuzzer had not yet varied, and each new dimension - a character,
+  a long sum, a strange operand - found one.
+
+The rest stayed, deliberately: the options `-e` and `-l`, the default output name, stdin,
+several inputs, the exit statuses, the messages, the 8087 words, `bc`/`bnc`/`scab`/`scaw`,
+`pop cs`, `push bl`, `mov.b`, the conditional branches and `jmpi`/`calli` to an address
+that the original gets wrong (AS-11, AS-12), the cut at 127 characters (AS-13), the
+64-token limit of an operand, an `L` name
+written once more for every `.globl` of it under `-C`, and the leniency (a `Byte
+instruction cannot use si` that `mutos_as` does not give). None of
+them is in the compiler's output, none in the corpus; they are listed in `STATUS.md` with
+the evidence in `tests/realbin/ascmp_cases.txt`.
+
+### The result and the recommendation
+
+The measured picture: the compiler's output is assembled to the same object in every case the
+original accepts (1,284 of 1,284 test programs, the 132 compiler goldens, the 76 golden
+objects 76/76 with `-1`); the rest of the difference is in what a person writes by hand and
+in what the original does wrong or does more. Of about 5,500 generated cases of the final run
+no cluster was unexplained: every `OBJ-DIFF` and `PORT-REJECTS` is on the list of kept
+differences or is a bug of the original (AS-10 to AS-14). The numbers are in `STATUS.md`.
+
+**The recommendation** (the decision is the project owner's): *not now*. A port would
+change nothing for the compiler's output. What it would buy is the margin for hand-written
+assembler - the place where each new dimension the fuzzer was taught found a silent
+mismatch, more than a dozen in all, and where the confirmation run found none, which is
+evidence, not proof - and the original's options, messages, exit statuses, 8087 words and
+bugs. It costs about one session on top of the tools already in place (oracle,
+comparator, pins), and nothing on the path to steps 6 and 7 depends on it. So: after
+step 6, or earlier if hand-written assembler becomes a goal; `mutos_as` stays until then.
+
+A footnote on method, because it recurs in this log: the two last findings, AS-13 and
+AS-14, and the correction of an earlier note ("a comment may be of any length", measured with
+tails that read as nothing) came from the *damaged* cases and from trying the same question with another tail. A claim about a limit holds for the inputs it was tried on.
