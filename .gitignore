@@ -15,6 +15,7 @@
 /src/mutos_ld/mutos_ld
 /src/mutos_ar/mutos_ar
 /src/mutos_ranlib/mutos_ranlib
+/src/mutos_make/mutos_make
 /src/mutos_as/mutos_as
 /src/mutos_as/parse_dump
 /src/mutos_as/classify_test

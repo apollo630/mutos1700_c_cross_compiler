@@ -1,0 +1,128 @@
+# makemap.txt - a map of the real MUTOS 1700 make (mutos/mutos_bin/make.golden.base64.txt)
+#
+# The binary (0411, text 16192 bytes, data 3288, bss 6430) is stripped; the
+# names below are v7's (v7/make/), found by the strings each function passes,
+# the calls it makes and its position. It is crt0, then make.o's 50
+# functions - main.c, doname.c, misc.c, files.c, dosys.c in source order
+# and gram.y's yylex, retsh, nextlin and yyparse -, then libc.a from text
+# 27cc (fseek; the others matched by makedis.py against libc.a's objects).
+# makedis.py reads this file; maketables.py prints and checks the data.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/make/): same - compared, compiles with the project's
+#                                   cc -O -Dunix to these very bytes
+#                            yacc - yacc's skeleton, generated
+#                            libc  - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_make/<file>, read from the text at that offset
+#       mklib.c - the host's libc, shaped as libc.a's is (see that file)
+#
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- make.o
+T 00b6 _main       same  ported main.c  v7 but for METERFILE, which is not defined
+T 0450 _intrupt    same  ported main.c
+T 04ea _isprecious same  ported main.c
+T 053c _enbint     same  ported main.c
+T 056c _rddescf    same  ported main.c
+T 05cc _rdd1       same  ported main.c
+T 060c _printdesc  same  ported main.c
+T 0790 _doname     same  ported doname.c  the frame is 386 bytes: sourcename[100], prefix[100], temp[100], concsuff[20] (the port counts it and bounds the buffers)
+T 0dd0 _docom      same  ported doname.c  the frame is 2516 bytes: string[2500]
+T 0eba _docom1     same  ported doname.c
+T 0f66 _expand     same  ported doname.c
+T 0fb6 _hashloc    same  ported misc.c
+T 101e _srchname   same  ported misc.c
+T 1038 _makename   same  ported misc.c
+T 10c6 _hasslash   same  ported misc.c
+T 10ee _copys      same  ported misc.c
+T 1132 _concat     same  ported misc.c
+T 116c _suffix     same  ported misc.c
+T 11d8 _ckalloc    same  ported misc.c
+T 1202 _subst      same  ported misc.c  a "$" ends a string: the scan reads past the NUL (MK-02)
+T 1302 _setvar     same  ported misc.c  returns the AX of its last test (the used bit) - mkqlist() passes it on
+T 13a4 _eqsign     same  ported misc.c
+T 140c _varptr     same  ported misc.c
+T 145a _fatal1     same  ported misc.c
+T 1480 _fatal      same  ported misc.c
+T 14ba _yyerror    same  ported misc.c
+T 14e2 _appendq    same  ported misc.c
+T 151a _mkqlist    same  ported misc.c  with no chain it returns the AX that setvar("@", ...) left: 0 or the address of the "@" block (MK-01)
+T 157a _exists     same  ported files.c
+T 15c2 _prestime   same  ported files.c
+T 15de _srchdir    same  ported files.c  directories are read 16 bytes at a time (struct direct); the port gives "." and ".." and the sorted names (mklib.c)
+T 187e _amatch     same  ported files.c
+T 1960 _umatch     same  ported files.c
+T 1996 _lookarch   same  ported files.c  v7 but for struct nlist: char n_type, char n_other (MUTOS a.out.h); the same 12 bytes
+T 1ae0 _clarch     same  ported files.c
+T 1af2 _openarch   same  ported files.c
+T 1b7c _getarch    same  ported files.c
+T 1bf8 _getobj     same  ported files.c
+T 1c82 _eqstr      same  ported files.c
+T 1cb8 _dosys      same  ported dosys.c
+T 1ce6 _metas      same  ported dosys.c
+T 1d0a _doshell    same  ported dosys.c
+T 1d5a _await      same  ported dosys.c  the status word wait() gives; docom1 shifts it right by 8 as a 16-bit int (MK-10)
+T 1da2 _doclose    same  ported dosys.c
+T 1dc6 _doexec     same  ported dosys.c  argv[200]: a command of more than 199 words writes over the frame (MK-06)
+T 1e72 _touch      same  ported dosys.c
+T 1f40 _yylex      same  ported gram.c  the frame is 1508 bytes
+T 204a _retsh      same  ported gram.c
+T 20a0 _nextlin    same  ported gram.c  templin[1500]: a longer line is "line too long" (v7's own check)
+T 22ce _yyparse    yacc  ported gram.c  yacc: the skeleton of v7 yaccpar (no yydebug) on the eight tables at data 0982; the actions (switch at 27ac) are gram.y's with NLEFTS 300 (v7: 40)
+# Common to all 50: v7's code as it is (the three differences in make.h: no
+# METERFILE, MUTOS's struct nlist, NLEFTS 300). Every function begins with
+# the stack check chkstk (3d1a) with its frame size in AX; when the frame
+# would not fit the kernel is asked for more (a system call through the gate
+# at data 2) and the process dies with SIGSEGV if it refuses - the port
+# counts the frames (mk_enter/mk_leave) and refuses (mk_trap).
+# ---- libc.a from 27cc (makedis.py names the functions it can match)
+T 27cc _fseek      libc  ported mklib.c: the host's fseek() on the archive being read
+T 2916 _fread      libc  ported mklib.c: the host's
+T 2970 _fwrite     libc  ported mklib.c
+T 29d0 _fopen      libc  ported mklib.c: the host's fopen(); make has 20 FILE slots: stdin, stdout, stderr and 17 (mk_fopen_slot())
+T 29e8 _fprintf    libc  ported mklib.c: the messages go to fd 2 unbuffered (mk_eprintf)
+T 2a2a _printf     libc  ported mklib.c: stdout buffered in 512-byte blocks (mk_printf); a null %s prints "(null)"
+T 2a6e _sprintf    libc  ported misc.c: fatal1/yyerror: the buffers buf[100] and buf[50] are bounded
+T 2abc __filbuf    libc  ported mklib.c
+T 2b7a __doprnt    libc  ported mklib.c
+T 315c __flsbuf    libc  ported mklib.c
+T 3244 _fflush     libc  ported mklib.c: mk_fflush()
+T 329a __cleanup   libc  ported mklib.c
+T 32b8 _fclose     libc  ported mklib.c
+T 34b8 _exit       libc  ported mklib.c: mk_exit(): flushes stdout, then exit
+T 34c2 _execlp     libc  ported dosys.c: the shell is /bin/sh (execl() in doshell)
+T 34d8 _execvp     libc  ported dosys.c: the host's execvp(); the PATH has $MUTOS_ROOT/bin first (mk_setpath())
+T 365a _getenv     libc  ported mklib.c
+T 3758 _calloc     libc  ported misc.c: ckalloc(): the blocks are counted in the original's sizes (mk_account())
+T 37ae _malloc     libc  ported misc.c
+T 38b6 _free       libc  ported misc.c
+T 3aa0 _index      libc  ported mklib.c
+T 3ac4 _strcmp     libc  ported mklib.c
+T 3af2 _strlen     libc  ported mklib.c
+T 3b64 _fork       libc  ported dosys.c: the host's fork()
+T 3bb0 _open       libc  ported dosys.c: touch(): the host's
+T 3c14 _signal     libc  ported main.c: the host's signal(): SIGINT and SIGQUIT
+T 3cc4 _stat       libc  ported files.c
+T 3cca _time       libc  ported files.c: prestime(): the host's time()
+T 3cf0 _unlink     libc  ported main.c: intrupt()
+T 3cf6 _wait       libc  ported dosys.c: await()
+T 3d1a _chkstk     libc  ported mklib.c: mk_enter()/mk_leave(): the frame sizes are counted; SEG_LIMIT 0xF000 is an assumption, not measured
+T 3d50 _almul      libc  -
+T 3d8a _cret       libc  -
+T 3d92 _ldiv       libc  -
+T 3e38 _lrem       libc  -
+T 3efa __exit      libc  ported mklib.c
+# ---- data (the port's image has none: make.c's variables are C's)
+D 0000 crt0        crt0's data: Isgadr 0002 - the word at 2 is the system gate (a null depname->namep reads it)
+D 0054 linesptr    char **linesptr = builtin  (files.c: the next built-in line)
+D 02fc nhashed     hashtab's count
+D 02fe depth       subst()'s depth
+D 03b2 builtin     char *builtin[] - 67 pointers and a 0 (makedata.c: maketables.py --c)
+D 043c strings     the string constants from here on
+D 0982 yyexca      yacc's tables (maketables.py --c): yyexca 0982, yyact 098e, yypact 09b2, yypgo 09d8, yyr1 09ea, yyr2 0a10, yychk 0a36, yydef 0a5c
+D 0a82 yychar      0a82; yynerrs 0a84; yyerrflag 0a86
+D 0cd6 stklim      the stack limit word chkstk compares against
+D 0cfc funny       char funny[128] (main() fills it; the index is a signed char)
+D 0d8c yylval      yylval 0d8c, yyval 0d8e
+D 16c4 qbuf        mkqlist()'s buffer (QBUFMAX)

@@ -11,13 +11,14 @@ dated where they stand (2026-10-25: the headers in the MUTOS root,
 decision 3; the port of `make` and of the other tools brought from the
 hardware, decision 10).
 
-**Status (2026-10-26): steps 0 to 6 are done** (section 3). Step 5 -
+**Status (2026-11-02): steps 0 to 7 are done** (section 3). Step 5 -
 the differential fuzzer for `mutos_as`, the switch `-1`, `-C` - measured the
 re-implementation against the original; whether to port `mutos_as` is the
 project owner's decision, with the measurements and a recommendation in
 `STATUS.md` (Milestone 2). Step 6 - the ports of `ar` and `ranlib`, with
-`bin/ar` and `bin/ranlib` in the root - was done on 2026-10-26. Step 7, the
-port of `make`, is next. `STATUS.md`'s "Next up" follows this order.
+`bin/ar` and `bin/ranlib` in the root - was done on 2026-10-26. Step 7 - the
+port of `make`, with `bin/make` in the root - was done on 2026-11-02. Step 8,
+the ports of `nm`, `size`, `strip`, `tsort` and `lorder`, is next. `STATUS.md`'s "Next up" follows this order.
 
 ## 1. Where things stand
 
@@ -32,7 +33,8 @@ port of `make`, is next. `STATUS.md`'s "Next up" follows this order.
 | `mutos_cc` | port of the original `cc` (2026-10-24) | the emulated original, its passes traced: a matrix of command lines, the corpus with the original passes run in both, the ported chain against the original chain and the goldens, differential fuzzing |
 | `mutos_ar` | port of the original `ar` (2026-10-26) | the emulated original: hand-written command sequences, differential fuzzing (files and archives changed between the commands, damaged archives); libc.a rebuilt from its 167 objects |
 | `mutos_ranlib` | port of the original `ranlib` (2026-10-26); runs `mutos_ar` through the root's `bin/ar` as the original runs `ar` through the shell | the emulated original `ranlib` and `ar`: hand-written cases, differential fuzzing; libc.a rebuilt from its 167 objects, `__.SYMDEF` included |
-| `make`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | not ported yet (decision 10, steps 7 to 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
+| `mutos_make` | port of the original `make` (2026-11-02); its commands run by the host's `/bin/sh` and the `PATH` with the root's `bin/` first | the emulated original (its `fork`/`exece`/`wait` faked, the commands the host's, fake tools in the root): hand-written cases, the corpus's `Makefile.mutos` files, differential fuzzing; the corpus's makefiles through `mutos_make` and the ported tools against the goldens |
+| `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | not ported yet (decision 10, steps 8 and 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
 
 The originals run under `tests/realbin/mutosemu.py`: `cpp`, `c0`, `c1`,
 `as` since 2026-10-12, and on 2026-10-20 also `c2`, `ld` and - with
@@ -170,7 +172,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 | 4 | Port of `c2` | the emulated original on all 132 `.s` goldens and on `c1fuzz.py`'s programs; `tests/mutos_as/kernel_opt/`'s nine sources from `11_kernel` (the original gives them byte for byte). **Done 2026-10-25**: `src/mutos_cc/c2port/` is the original read from its binary, on an image of its data segment with libc.a's stdio in it; `c2cmp.py goldens` 396/396 the same (132 goldens three ways: into a file, with the statistics, through stdin and stdout), the nine `kernel_opt/` sources byte for byte - also through `mutos_cc -O -S` (`check_driver.py`, `cccmp.py goldens`) -, the hand-written cases and the differential fuzzing (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, assembly made for `c2`'s passes, both damaged) in `STATUS.md` (Milestone 5) without a difference; seven bugs of the original found (C2-01 to C2-07), two of them endless loops the port refuses |
 | 5 | `mutos_as`: differential fuzzer, the `-1` switch | the emulated original; then the decision on a port. **Done 2026-10-25**: `tests/realbin/ascmp.py` (a comparator that sorts every run into a class) and `asfuzz.py` (differential fuzzing, five generators, reduced and clustered findings, the table of all 273 instruction words); `-1` and `-C` implemented (`tests/mutos_as/check_switches.sh`); the compiler's own output assembles to the same object as the original's in all 1,284 of the 1,409 compiled test programs the original accepts (the other 125 are the compiler's own invalid output) and in every `.s` of the tree it accepts; the fuzzer's findings that hand-written code could meet are fixed (list in `STATUS.md`), the rest measured and kept (the options `-e`/`-l`, the exit statuses, the messages, the 8087 words, leniency); eleven bugs of the original found (AS-04 to AS-14, besides AS-01 and AS-02 re-measured); the decision on a port is the project owner's - recommendation in `STATUS.md` ("Step 5 of the plan"): not now, after step 6 |
 | 6 | Ports of `ar` and `ranlib`; `bin/` in the root for the new tools | the emulated original: archives made and changed with every key, `libc.a` rebuilt from its 167 objects against the original archive, `__.SYMDEF` included; differential fuzzing. **Done 2026-10-26**: `src/mutos_ar/` and `src/mutos_ranlib/` are the originals read from their binaries - none of the 33 functions of `ar.o` and the five of `ranlib.o` differs from v7's in what it does, the representation (26-byte headers, longs high word first, signed chars) and the libc.a underneath do (`perror`'s 41 texts, `mktemp`, `ctime`, the twenty stdio slots) -; `mutos_ranlib` starts `$MUTOS_ROOT/bin/ar`, the root's link to `mutos_ar`, where the original goes through `/bin/sh -c`; `bin/ar` and `bin/ranlib` in the root (`scripts/mutos_root.sh`, `check_root.py`); `arcmp.py cases` 366 runs (364 the same, 2 refused) and `ranlibcmp.py cases` 146 runs (139 the same, 6 refused, 1 endless), the differential fuzzing in `STATUS.md` (Milestone 6) without a difference; libc.a rebuilt from its 167 objects by `mutos_ar rc` and `mutos_ranlib` is the original archive byte for byte but for `__.SYMDEF`'s time (five seconds past the clock), group and mode - against the emulated originals (`ranlibcmp.py libc`) and in `make test` without an emulator (`tests/mutos_ar/check_libc.py`); twelve bugs of the original found (AR-01 to AR-05, RL-01 to RL-07) |
-| 7 | Port of `make` | the emulated original, its `fork`/`exece`/`wait` faked as for `cc` and the commands it runs traced: the corpus's `Makefile.mutos` files, makefiles written for its rules, macros and options, differential fuzzing; then the corpus's makefiles through `mutos_make` and the ported tools against the goldens |
+| 7 | Port of `make` | the emulated original, its `fork`/`exece`/`wait` faked as for `cc` and the commands it runs traced: the corpus's `Makefile.mutos` files, makefiles written for its rules, macros and options, differential fuzzing; then the corpus's makefiles through `mutos_make` and the ported tools against the goldens. **Done 2026-11-02**: `src/mutos_make/` is the original read from its binary - 49 of its 50 functions are v7's (they compile with the project's own `cc -O -Dunix` to the original's bytes, but for `METERFILE`, MUTOS's `struct nlist` and `NLEFTS` 300), `yyparse()` is yacc's skeleton on the eight tables and `builtin[]` the generator `tests/realbin/maketables.py --c` writes from the binary -, with the libc.a underneath modelled (16-bit `int`, signed `char`, 512-byte stdout blocks, `(null)`, the 64K segment counted, directories as MUTOS shows them); `bin/make` in the root; the commands run by the host's `/bin/sh`, with `$MUTOS_ROOT/bin` first in `PATH`. `makecmp.py cases` 457 runs (307 sequences) without a difference, `makecmp.py corpus` 312 runs of the thirteen `Makefile.mutos`, `makefuzz.py` in `STATUS.md` (Milestone 6); `tests/mutos_make/check_corpus.py` (in `make test`): the thirteen makefiles through `mutos_make` and the ported tools give 131 `.s` (and the refused `p19_open3`), 132 `.i`, `.1`, `.2` as the goldens; thirteen bugs of the original (MK-01 to MK-13) |
 | 8 | Ports of `nm`, `size`, `strip`, `tsort`; `lorder` | the emulated original on every object and archive of the tree (the compiled goldens, `crt0.o`, `libc.a`) with each option; `lorder` and `tsort` on `libc.a`'s objects |
 | 9 | Ports of `ed` and `em` | the emulated original on scripted editing sessions |
 
@@ -275,10 +277,13 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
 - How `mutos_make` runs its recipes: the original hands each line to
   `/bin/sh -c`; on the host that can only be the host's shell, with
   `$MUTOS_ROOT/bin` first in `PATH` so that `cc`, `as`, `ld`, `ar` in a
-  recipe are the MUTOS tools - to be settled with step 7.
+  recipe are the MUTOS tools - **settled with step 7 (2026-11-02)**: so it
+  is; `mk_setpath()` puts `$MUTOS_ROOT/bin` in front of the `PATH` of the
+  commands. An absolute path in a recipe (`/lib/c0`) is the host's and cannot
+  be redirected (decision 10).
 - Where the new tools sit in the MUTOS file system (`/bin` or
   `/usr/bin`), and so in the root: to be read from the binaries that
-  name them - steps 7 to 9. (`make` names `/bin/sh`, and libc's
+  name them - steps 8 and 9. (`make` names `/bin/sh`, and libc's
   `execvp` in it the search path `:/bin:/usr/bin` for a `PATH` not set.)
   Settled for `ar` and `ranlib` with step 6: `bin/ar` and `bin/ranlib`, next
   to `as`, `ld` and `cc` - `ranlib` names only "ar" (`ar rlb %s %s %s`,

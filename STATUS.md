@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-10-26.
+Last updated: 2026-11-02.
 
 ---
 
@@ -20,12 +20,13 @@ Last updated: 2026-10-26.
 A repo-root `Makefile` builds every component - through each one's own
 `src/mutos_<tool>/Makefile` (`mutos_ld`'s since its port, 2026-10-22), `mutos_ld`,
 `mutos_as`, `mutos_cpp`, `mutos_cc`/`mutos_c0`/`mutos_c1`/`mutos_c2` (`mutos_c2`
-since 2026-10-25) and, since 2026-10-26, `mutos_ar` and `mutos_ranlib` - and
+since 2026-10-25), since 2026-10-26 `mutos_ar` and `mutos_ranlib` and, since 2026-11-02,
+`mutos_make` - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
 `src/`, `usr/lib/`, `usr/include/` - since 2026-10-25 the original headers, copied from
 `mutos/mutos_include/usr/include/` -, since 2026-10-22 `tmp/`, and since 2026-10-26
-`bin/ar` and `bin/ranlib`; `make clean` removes it). Every component is
+`bin/ar` and `bin/ranlib`, and since 2026-11-02 `bin/make`; `make clean` removes it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
 `src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
 use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
@@ -40,10 +41,12 @@ every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, the compiler's,
 `tests/mutos_root/check_root.py` on the root and its lookup, and since 2026-10-24
 `tests/mutos_cc/check_driver.py`: the driver `mutos_cc` with the ported passes, since
 2026-10-25 also `cc -O` with `mutos_c2`, and since 2026-10-26 `tests/mutos_ar/check_libc.py`:
-`libc.a` rebuilt from its objects by `mutos_ar` and `mutos_ranlib`).
+`libc.a` rebuilt from its objects by `mutos_ar` and `mutos_ranlib`, and since 2026-11-02
+`tests/mutos_make/check_corpus.py`: the thirteen `Makefile.mutos` of `tests/mutos_cc/`
+run through `mutos_make` and the ported tools).
 `make check-realbin` and `make check-libcatof` need the Python module `unicorn` and
 are not part of `make test`: the first checks the original binaries and the ports of
-`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`, `ar` and `ranlib` against the emulated originals (and `mutos_ld`'s
+`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib` and `make` against the emulated originals (and `mutos_ld`'s
 extension `-r`/`-d`), the original `cc` traced through its
 original passes against the goldens it made (Milestone 4), and the original `ld`
 through the root (Milestone 1); the second the
@@ -124,6 +127,20 @@ commit's without the change, line for line, but for the lines the change adds - 
 damaged, `ranlibcmp.py cases` and `libc`, `ranlibfuzz.py` plain and damaged, seed 1 -
 the results in Milestone 6); `make check-libcatof` (0 differ); `make check-docs`. The
 longer fuzzer runs of Milestone 6 (seeds 2 and 3) ran in the working tree.
+
+Verified 2026-11-02 with the port of `make` (Milestone 6, step 7), on a fresh clone of the
+commit with the change applied (`git apply`; the new files added with `git add`, which
+`check-docs` reads): `make clean && make all` with zero warnings under `-std=c11 -Wall
+-Wextra -Wpedantic`; `make test` exit 0, its output the same as the commit's without the
+change, line for line, but for the lines the change adds - the `make` call for
+`src/mutos_make`, `check_root.py`'s `bin/make`, and the one line of `check_corpus.py` (131
+`.s`, 132 `.i`, 132 `.1` and 132 `.2` as the goldens, 1 `.s` refused as `invalid_goldens.txt`
+says, second runs idle, `clean` clean); `make check-realbin` exit 0, all checks passed (the
+new ones: `makedata.c` current, `makecmp.py cases` 457 runs and `makecmp.py corpus` 312 runs,
+`makefuzz.py` plain and damaged, seed 1 - the results in Milestone 6; the earlier ones as
+before, `ascmp.py cases` against its pins unchanged); `make check-libcatof` (0 differ in both literal runs);
+`make check-docs`. The longer fuzzer runs of Milestone 6 (seeds 11 to 13, 3,600 cases) ran
+in the working tree.
 
 ---
 
@@ -516,8 +533,8 @@ not of `mutos_as`.
   library) becomes a goal of the project, because that is the only place where the
   present differences can matter. `mutos_as` stays until then; the tests (`make test`,
   `ascmp.py`, `asfuzz.py --gen cc --strict`) become the regression suite of the port.
-  Step 6 is done (2026-10-26) and the decision is still the project owner's: the port
-  of `mutos_as` is not started.
+  Steps 6 and 7 are done (2026-10-26, 2026-11-02) and the decision is still the project
+  owner's: the port of `mutos_as` is not started.
 
 ### Carried from 2026-09-29 (not re-run this session)
 
@@ -1072,14 +1089,18 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    starts `$MUTOS_ROOT/bin/ar`, the root has `bin/ar` and `bin/ranlib`; their bugs (AR-01
    to AR-05, RL-01 to RL-07). Checked by `tests/realbin/arcmp.py`, `arfuzz.py`,
    `ranlibcmp.py` and `ranlibfuzz.py` against the emulated originals, and in `make test` by
-   `tests/mutos_ar/check_libc.py` (`libc.a` rebuilt from its 167 objects). **Next: step
-   7.**
-7. **Port of `make`** (decided 2026-10-25 in place of the wrapper `mutos_make` of
-   2026-10-20).
+   `tests/mutos_ar/check_libc.py` (`libc.a` rebuilt from its 167 objects).
+7. ~~**Port of `make`**~~ (decided 2026-10-25 in place of the wrapper `mutos_make` of
+   2026-10-20) - **done 2026-11-02** (Milestone 6): `mutos_make` is the original, read from
+   its binary - 49 of its 50 functions are v7's, `yyparse()` is yacc's skeleton on tables
+   taken from the binary; `bin/make` in the root; its bugs (MK-01 to MK-13). Checked by
+   `tests/realbin/makecmp.py` and `makefuzz.py` against the emulated original, and in `make
+   test` by `tests/mutos_make/check_corpus.py` (the thirteen `Makefile.mutos` of the
+   corpus run through `mutos_make` and the ported tools: every golden). **Next: step 8.**
 8. **Ports of `nm`, `size`, `strip`, `tsort`**, and `lorder`.
 9. **Ports of `ed` and `em`.**
 
-Steps 6 to 9 are Milestone 6 (below), step 6 done; their originals are in
+Steps 6 to 9 are Milestone 6 (below), steps 6 and 7 done; their originals are in
 `mutos/mutos_bin/` since 2026-10-25, the order was proposed that day.
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
@@ -1183,9 +1204,9 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 
 ## Milestone 6 — `make`, `ar`, `ranlib` and the other MUTOS tools
 
-**Status: step 6 done (2026-10-26) - `mutos_ar` and `mutos_ranlib` are ports of the
-real `ar` and `ranlib`; steps 7 to 9 NOT STARTED** (`docs/TOOLCHAIN_PLAN.md`, decision
-10, steps 6 to 9). **Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
+**Status: steps 6 and 7 done - `mutos_ar` and `mutos_ranlib` (2026-10-26) and `mutos_make`
+(2026-11-02) are ports of the real `ar`, `ranlib` and `make`; steps 8 and 9 NOT STARTED**
+(`docs/TOOLCHAIN_PLAN.md`, decision 10, steps 6 to 9). **Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
 wrapper `mutos_make` around the host's `make`, planned on 2026-10-20, is dropped -, and
 so are all the other binaries brought from the hardware that day: `ar`, `ranlib`,
 `nm`, `size`, `strip`, `tsort`, the editors `ed` and `em`, and the shell script
@@ -1201,7 +1222,7 @@ and v7's sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`,
 code): the original `make`'s built-in rules and macros are v7's `builtin[]`
 (`v7/make/files.c`, `AS=as -`) string for string; `make.1.d` gives another default
 suffix list than the binary has (v7's manual's). Since 2026-10-26 `ar` and `ranlib` run
-under `tests/realbin/` (below); the others do not yet. What the real `make` is known to do and not do on the hardware is in
+under `tests/realbin/` (below), and since 2026-11-02 `make`; the others do not yet. What the real `make` is known to do and not do on the hardware is in
 `docs/devlog/m4_foundations.md`, "MUTOS 1700 host-tooling findings"; what the new
 files showed in `docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
 
@@ -1291,6 +1312,110 @@ underneath: the 26-byte archive header with its longs high word first, the 12-by
   dating the first member whatever it is (RL-07).
 - **Not done**: `ar`'s and `ranlib`'s manual pages (the manual pages come at the end,
   Workflow Guideline 10).
+
+### `mutos_make` is a port of the real `make` (verified 2026-11-02)
+
+`mutos_make` is the original MUTOS 1700 `make` - Unix V7's `make` for the 8086 -, every
+function read from the stripped binary (a 0411 a.out: text 16192, data 3288, bss 6430
+bytes) beside the v7 source (`tests/realbin/makemap.txt`; `makedis.py` disassembles one
+function by name). **49 of the 50 functions of `make.o` are v7's**: v7's `main.c`,
+`doname.c`, `misc.c`, `files.c`, `dosys.c` and `gram.c`, compiled with this project's own
+`cc -O -Dunix`, give the original's bytes, with three differences that are the headers' -
+`METERFILE` is not defined (no `meter()`), MUTOS's `struct nlist` has `char n_type` where
+v7's has an `int`, and `NLEFTS`, the number of names in one rule, is 300 where v7's `defs`
+says 40. The fiftieth, `yyparse()`, is yacc's skeleton (v7's `yaccpar` without `yydebug`)
+on eight tables; they and `builtin[]`, the built-in rules and macros (string for string
+v7's `files.c`), are generated from the binary into `makedata.c` by `tests/realbin/
+maketables.py --c`, and `--check-c` keeps the file current. What differs from a build of
+v7's code for the host is the representation and the environment, which the port makes
+explicit: 16-bit `int`s (`status >> 8` of a command that exits 200 is -56: MK-10), signed
+`char`s, 32-bit times, libc.a's stdio (512-byte blocks, `printf("%s", 0)` prints `(null)`),
+a directory read as MUTOS gives it (`.` and `..`, then the names in byte order, those of more
+than 14 characters left out), an empty path name that is the current directory, and the
+heap and the frames of the recursive functions counted in the original's sizes against the
+64K segment.
+
+- **Sources**: `src/mutos_make/` (`make.h`; `main.c`, `doname.c`, `misc.c`, `files.c`,
+  `dosys.c`, `gram.c` - v7's functions with the binary's text offsets in their comments -;
+  `mklib.c`, the libc/segment model; `makedata.c`, generated; `README.md`). Its Makefile is
+  called by the top-level `make all` (`all: ld as cpp cc ar ranlib make root`).
+- **In the MUTOS root**: `bin/make` as a link into `src/` (`scripts/mutos_root.sh`,
+  `tests/mutos_root/check_root.py`). The commands of a makefile run through the host's
+  `/bin/sh -c` (`-ce` without `-i`) when they have a shell character, and through `execvp()`
+  otherwise, with `$MUTOS_ROOT/bin` first in the `PATH`: `cc`, `as`, `ld`, `ar`, `ranlib`
+  and `make` in a recipe are the MUTOS tools of the root. **An absolute path in a recipe**
+  (`/lib/c0`, `/lib/cpp` in the corpus's makefiles) **is run by the host and cannot be
+  redirected by any `make`**: such a makefile takes it as a macro
+  (`make CC=$MUTOS_ROOT/bin/cc CPP=$MUTOS_ROOT/lib/cpp C0=$MUTOS_ROOT/lib/c0`,
+  `docs/TOOLCHAIN_PLAN.md`, decision 10).
+- **The corpus through `mutos_make`** (`tests/mutos_make/check_corpus.py`, in `make test`, no
+  emulator, a second): the thirteen `tests/mutos_cc/*/Makefile.mutos`, written for the real
+  `make` on the hardware, run in scratch copies with the macros above and `-i` - and make
+  131 `.s`, 132 `.i`, 132 `.1` and 132 `.2` that are the real-hardware goldens byte for byte
+  (the `.s` that `mutos_c1` refuses, `fltprobe/p19_open3`, by the golden's first lines, as
+  `invalid_goldens.txt` says); a second run does nothing in all thirteen, and `clean` leaves
+  each directory as it was. The same makefiles also run under the comparator, below.
+- **Against the emulated original** (`tests/realbin/makecmp.py`; `fork`, `exece` and `wait`
+  are faked and the commands it runs are the host's, the same for both, with fake `cc`, `as`,
+  `ld`, `yacc`, `lex`, `cpp` and `c0` in a root's `bin/` that say what they were asked and
+  make the file they were asked for; after every step the messages, the exit status and both
+  directory trees - names, bytes, modes -, in two copies of a directory, `TZ=UTC`):
+  `makecmp.py cases` 457 runs (one run is one `make` command line) of 307 hand-written
+  sequences - the description file and `-f`, every flag, rules and dependencies, `::`, macros
+  in every form, the line syntax (comments, continuation, tabs, CR LF, long lines, NUL and
+  high bytes), every syntax error, the prefixes of commands, exit statuses and signals,
+  `.DEFAULT` and the other special targets, the built-in rules for every suffix, wildcards,
+  archives of every kind (damaged ones, entry points `lib((sym))`, a directory in the
+  name) -: 430 the same, 25 refused, 2 where the original does not finish (a command that
+  expands to more than `string[2500]` ends at address 0 without an exit: MK-06); `makecmp.py corpus` 312 runs - the thirteen makefiles under three
+  timestamp conditions and eight command lines each (`-n`, a run, a second run, `-q`, `-pn`,
+  `-t`, `clean`, `-n clean`) -: all the same.
+- **Differential fuzzing** (`tests/realbin/makefuzz.py`; random makefiles with macros, suffix
+  rules, explicit rules, wildcards, archive members and every flag, command lines and files
+  that change between the steps; with `--mutate` the makefile also damaged), no difference:
+  plain, 1,500 cases with seed 11 (1,377 the same, 123 refused) and 600 with seed 13 and six
+  steps each (528 the same, 72 refused); damaged (`--mutate 0.5`), 1,500 with seed 12 (1,363
+  the same, 137 refused). `make check-realbin` runs the seed-1 runs (300 cases, plain and
+  damaged).
+- **Result classes** of the comparator, besides *same*: *refused* (below), *orig-fails*,
+  *endless*, *limits*, *DIFFERENT* and *BAD-REFUSAL* (the port refused, but wrote what the
+  original did not). The first runs found three differences, all in the port and fixed: a
+  null `%s` that the original prints `(null)` (the macro `@` between two commands, in `-p` and
+  `-d`), the empty path name, and the 301st name of a rule, which the original stores over
+  `nlefts` and survives by luck (MK-03); and one fault of the judge itself (an empty
+  output is no line). The longest fuzz run then showed two false BAD-REFUSALs that were the
+  comparator's: `-d` prints `TIME(name)=<clock>` for a target a step has made, the two runs are
+  some milliseconds apart, and when the second ticked between them the lines differed - a time
+  within an hour of the run now counts as `<now>`.
+- **Refused on purpose** (exit status 125, a last message line ending in "refused"; what was
+  written before is the original's, in order): `$?` read when it holds what `mkqlist()` returns
+  for an empty chain (MK-01), a `$` as the last character of a string (MK-02), `$*` after the
+  `doname()` that set it has returned (MK-05), a command or a name that would run over one of
+  the original's stack buffers (MK-06), a byte of 0x80 or more where the original indexes
+  `funny[]` or the ctype table, a path component of more than 14 characters (MK-12), a
+  directory as the description file, an archive of one byte (MK-09), a member size that takes
+  the position below zero (MK-08), the 14 characters of a member name with no end (MK-07),
+  more than 300 names in a rule while the heap is above 32K, the stack and the heap together
+  above the segment model's limit, and a `fork()` that fails.
+- **The originals' bugs**: MK-01 to MK-13 in `docs/MUTOS_ORIGINAL_BUGS.md` - `$?` of a command
+  with nothing newer (MK-01), a `$` at the end of a string (MK-02), the 301st name of a rule
+  (MK-03), `-d` with a wildcard (MK-04), `$*` read after its frame has gone (MK-05), buffers
+  of the stack without checks (MK-06), a 14-character member name (MK-07), a negative archive
+  position (MK-08), an archive of one byte (MK-09), `status >> 8` on a signed int (MK-10), a
+  command that is blank after its prefixes (MK-11), a path component of more than 14
+  characters (MK-12), and the "out of memory" the hardware reported for a 19 KB makefile
+  (MK-13). The port reproduces MK-03, MK-10, MK-11 and the cases of MK-01 whose value is
+  defined.
+- **Not verified**: the limit of the segment (`SEG_LIMIT` 0xF000) is a model - the hardware
+  ran out of memory for the 124-target makefile that `tests/mutos_cc` had before it was split
+  per category (MK-13) while the emulated original and the port run it; the order of a
+  directory (the port sorts it), the policy for names of more than 14 characters and the
+  empty path name are V7's, not measured on the hardware; the signal handlers (`intrupt()`,
+  `enbint()`) are read, not compared, and a `fork()` that fails cannot be tested. A byte of
+  0x80 or more is refused, though the first fifty of the 128 bytes before `funny[]` are the
+  tail of libc's ctype table, which could be modelled.
+- **Not done**: `make`'s manual page (the manual pages come at the end, Workflow
+  Guideline 10).
 
 ---
 
@@ -1472,7 +1597,7 @@ far.
    `docs/C0_PORT_PLAN.md`, `docs/TOOLCHAIN_PLAN.md` step 3), every golden reproduced
    through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5), then
    `mutos_as`'s differential fuzzer (Milestone 2, step 5), then `mutos_ar` and
-   `mutos_ranlib` (Milestone 6, step 6); next is step 7 - see "Next up".
+   `mutos_ranlib` (Milestone 6, step 6) and `mutos_make` (step 7); next is step 8 - see "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -

@@ -17,18 +17,19 @@ known), why (the mechanism, with the text or data offset in the binary as
 and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
 `ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`,
 `c2map.txt` and `c2dis.py` for `c2`, `armap.txt` and `ardis.py` for `ar`,
-`ranlibmap.txt` and `ranlibdis.py` for `ranlib`), how it was
+`ranlibmap.txt` and `ranlibdis.py` for `ranlib`, `makemap.txt` and
+`makedis.py` for `make`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
 reproducible with the commands in `tests/realbin/README.md`), **code
 reading** (the disassembly, not observed in a run). "Reproduced" means the
 project's tool gives the original's output byte for byte; "refused" that
-it stops with a message and exit status 2 (`mutos_ar` and `mutos_ranlib`:
-125, the message's last line ending in "refused") where the original's
+it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib` and
+`mutos_make`: 125, the message's last line ending in "refused") where the original's
 output depends on state that is not modelled.
 
-Last updated: 2026-10-26.
+Last updated: 2026-11-02.
 
 ## Overview
 
@@ -125,6 +126,19 @@ Last updated: 2026-10-26.
 | RL-05 | `ranlib` | `ar` is run through `/bin/sh -c`: an archive name with a blank or a shell character is taken apart or expanded | code reading | refused |
 | RL-06 | `ranlib` | a negative member size sends the scan round the archive for ever | emulator | reproduced (an endless run); a seek to a negative offset refused |
 | RL-07 | `ranlib` | `fixdate()` dates the first member whatever it is: with `ar` failing, the first object of the archive is five seconds in the future | code reading | reproduced |
+| MK-01 | `make` | `$?` in a command of a target with nothing newer: `mkqlist()` returns the AX `setvar()` left - 0, or the address of the `@` block, which `$?` then expands as a string (`echo [<six bytes of pointers>]`) | emulator, code reading | refused for the block, reproduced for 0 |
+| MK-02 | `make` | a `$` that ends a string (`echo cost 5$`): `subst()` copies the terminator as the character after the `$` and goes on reading past it | emulator, code reading | refused |
+| MK-03 | `make` | the 301st name in a rule is stored over `nlefts`, which follows `lefts[300]`; the test `nlefts > NLEFTS` right after catches it (the address is above 300) by luck | emulator, code reading | reproduced ("Too many lefts") while the heap is below 32K |
+| MK-04 | `make` | `-d` with a wildcard dependency: `expand()` sets the block's name to 0, `TIME(%s)` reads `depname->namep` through that null pointer (the word at data 2, the system gate) and prints `TIME()=0` | emulator | refused |
+| MK-05 | `make` | `$*` is a pointer to `prefix[100]` in the frame of the `doname()` that set it: read after that call has returned, it is whatever the dead frame holds | emulator, code reading | refused |
+| MK-06 | `make` | stack buffers filled without a check: `docom()`'s `string[2500]`, `doname()`'s `sourcename`/`prefix`/`temp[100]` and `concsuff[20]`, `subst()`'s `vname[100]`, `srchdir()`'s `temp`/`fullname[100]`, `fatal1()`'s `buf[100]`, `yyerror()`'s `buf[50]`, `doexec()`'s `argv[200]` | emulator (`string[]`: make dies), code reading | refused |
+| MK-07 | `make` | a 14-character member name in "%s is not an object module" is printed on through the header behind it | emulator | refused with no 0 in the name |
+| MK-08 | `make` | a member size that takes the archive position below zero: `fseek()` fails and `getarch()` reads on from where the file was | emulator | refused |
+| MK-09 | `make` | an archive of one byte, 0x65: the high byte of the magic word is the stack's, not the file's | code reading | refused |
+| MK-10 | `make` | `status >> 8` on a 16-bit int: a command that exits with 128 or more is "*** Error code -56" (exit 200), "-1" (255) | emulator | reproduced |
+| MK-11 | `make` | a command that is blank after its `-`/`@` prefixes (`\t- ` followed by a blank) is not the empty string `docom1()` tests for: `doexec()` returns -1 and make stops with "*** Error code -1" | emulator | reproduced |
+| MK-12 | `make` | a path component of more than 14 characters is another name to make and the same file to MUTOS (`DIRSIZ`) | code reading | refused |
+| MK-13 | `make` | "Make: out of memory. Stop." on the hardware for a 19 KB makefile of 124 targets (`tests/mutos_cc/README.md`); under the emulator and in the port it runs - the limit on the hardware is lower than the 64K segment | real hardware | not reproduced |
 
 ## `c1`
 
@@ -1762,6 +1776,216 @@ trigger was run under the emulator - most are cases of
 - **This project.** Reproduced; an `ar` that refused (status 125) or one
   missing from the root's `bin/` is refused first.
 - **Fix idea.** Check the status of `system()` and the first member's name.
+
+## `make`
+
+Read in full on 2026-11-02 for its port (`src/mutos_make/`,
+`tests/realbin/makemap.txt`): 49 of the 50 functions of `make.o` are v7's
+(they compile with this project's own `cc -O -Dunix` to the original's bytes,
+given the three header differences listed in `src/mutos_make/make.h`), the
+fiftieth, `yyparse()`, is yacc's skeleton; so these are v7's own bugs as
+the MUTOS representation (16-bit `int`, signed `char`, a 64K segment with the
+stack in it) gives them. Every entry with a trigger was run under the
+emulator - most are cases of `tests/realbin/makecmp.py cases` -, and the port
+does the same where it can; where the original's output depends on the
+memory it cannot know (the heap's layout, the stack below a returned call) it
+refuses (`mutos_make`: exit status 125, the last line of the messages ends in
+"refused").
+
+### MK-01 `$?` of a command with nothing newer
+
+- **Symptom.** `all:` / `<tab>echo [$?]` prints `echo [` followed by six
+  bytes that are not text - the three pointers of a variable block - and a
+  `]`; the shell then fails on them. When a command has run before that used
+  `$@`, the same line prints `echo []`.
+- **Mechanism.** `doname()` (text 0790) calls `setvar("@", name)` and then
+  `setvar("?", mkqlist(chain))`. `mkqlist()` (text 151a) returns the
+  address of its buffer only when the chain has an element; with none it
+  falls off its end and returns the AX the call before it left, and
+  `setvar()` (text 1302) has no `return`: its last statement is the test of
+  the `used` flag of the block, and what stays in AX is that block's address
+  (the block of `@`) or 0. `$?` is then a pointer into the heap, not a
+  string, or undefined.
+- **Evidence.** Emulator (`makecmp.py cases`: `$? no deps`, `$@ not yet
+  defined`, `$? no deps after $@`, `double colon with $?`).
+- **This project.** Reproduced for the value 0; refused when the block's
+  bytes would be read - they are heap addresses of the original.
+- **Fix idea.** `mkqlist()` returns "" for an empty chain.
+
+### MK-02 A `$` at the end of a string
+
+- **Symptom.** `echo cost 5$` is echoed as `echo cost 5` and run so: the
+  `$` was replaced by the terminator, and whatever followed the string in
+  the heap was read as the rest of the command.
+- **Mechanism.** `subst()` (text 1202) tests `*++a == '\0' || *a == '$'` and
+  copies that character - the NUL - to the output, then reads on with `a`
+  past the terminator, up to the next NUL.
+- **Evidence.** Emulator (`makecmp.py cases`: `$ at the end of a line`; the
+  byte after the string was a pad byte, 0); code reading.
+- **This project.** Refused.
+- **Fix idea.** Copy the `$` and stop at the terminator.
+
+### MK-03 The 301st name of a rule overruns `lefts[]`
+
+- **Symptom.** `t0 t1 ... t300:` ends with "Make: Too many lefts.  Stop."
+  (the intended message) - but the store of the name has already run one
+  word past `lefts[300]`.
+- **Mechanism.** The action of `namelist: namelist NAME` (text 27ac region)
+  is `lefts[nlefts++] = $2; if (nlefts > NLEFTS) fatal("Too many lefts");`
+  - v7's: the test comes after the store. In the MUTOS build NLEFTS is 300
+  (v7's defs say 40) and `nlefts` follows `lefts[]` in the BSS, so the
+  301st store overwrites `nlefts` with the name block's address; that is
+  above 300, and the test fires by luck. With the heap above 32K the address
+  would be a negative `int` and the test would not.
+- **Evidence.** Emulator (`makecmp.py cases`: `300 targets`, `301 targets`,
+  `302 targets`, `299 targets and run`); the BSS order from the
+  disassembly.
+- **This project.** Reproduced; refused with the heap at or above 32K.
+- **Fix idea.** Test before the store (`nlefts >= NLEFTS`).
+
+### MK-04 A name `expand()` replaced is read through a null pointer
+
+- **Symptom.** `-d` with `all: *.c` prints `TIME()=0` where the line for
+  the pattern's block should name it; `appendq()` and the `.PRECIOUS` test
+  read the same pointer.
+- **Mechanism.** `expand()` (text 0f66) puts the matches behind the block and
+  sets the block's `depname` to 0; `doname()` (text 0790) skips it, but its
+  `-d` line and `appendq(qchain, q->depname->namep)` do not (the name block
+  has `namep` at offset 2: the word at address 2 of the data segment, which
+  is the system gate of libc.a's calls, is taken for a string).
+- **Evidence.** Emulator (`makecmp.py cases`: `wildcard -d`, `wildcard
+  after dir cut`). `printdesc()` tests the pointer and is right.
+- **This project.** Refused (the gate's value is the kernel's).
+- **Fix idea.** Skip a block with `depname == 0` everywhere.
+
+### MK-05 `$*` outlives the `doname()` that set it
+
+- **Symptom.** In `a.o: b.o` / `<tab>echo $*` with the suffix rule `.c.o`
+  made for `b.o`, `$*` is `a` - but a command run after that call
+  has returned, with `$*` still set (a target without a suffix rule that
+  uses `$*`), prints the prefix of the earlier target as long as nothing
+  has overwritten the frame, and garbage after.
+- **Mechanism.** `doname()` calls `setvar("*", prefix)` with `prefix` an
+  array of its own frame (`char prefix[100]`, text 0790); `setvar()` stores
+  the pointer. The frame is dead when the call returns.
+- **Evidence.** Emulator (`makecmp.py cases`: `suffix $* dangling` - the
+  old bytes were still there), code reading.
+- **This project.** Refused when `$*` is read after its frame has gone
+  (the port keeps the serial number of the `doname()` that set it).
+- **Fix idea.** `setvar("*", copys(prefix))`.
+
+### MK-06 Buffers of the stack frames are filled without a check
+
+- **Symptom.** A command that is longer than 2,500 characters after
+  expansion (`A` of 1,400 characters, `echo $(A)$(A)$(A)`) runs over
+  `docom()`'s `string[2500]`: make dies (the emulator ends at address 0
+  without an exit). The other buffers are the same in kind.
+- **Mechanism.** `docom()` (text 0dd0) `subst(q->shbp, string)`; `subst()`
+  (text 1202) copies into `string[2500]` and `vname[100]` without a limit;
+  `doname()` fills `sourcename[100]`, `prefix[100]`, `temp[100]` and
+  `concsuff[20]` with `concat()` and `suffix()` (text 1132, 116c) of names
+  of any length; `srchdir()` (text 15de) `temp[100]` and `fullname[100]`;
+  `fatal1()` (text 145a) `sprintf(buf[100])`, `yyerror()` (text 14ba)
+  `buf[50]`; `doexec()` (text 1dc6) `argv[200]` takes a 200th word and more.
+  `nextlin()` checks (line too long, 1,500).
+- **Evidence.** Emulator for `string[]` (`makecmp.py cases`: `command
+  overflow expanded`, `command 2499 expanded`, the original does not
+  finish); code reading for the rest.
+- **This project.** Refused where a buffer would overflow.
+- **Fix idea.** Check each against its size, as `nextlin()` does.
+
+### MK-07 A 14-character member name runs on through the header
+
+- **Symptom.** `l.a((_foo))` with a member of a name of 14 characters and a
+  header that is no object prints "Make: abcdefghijklmn" followed by the
+  bytes of the member's date, owner and size, then " is not an object
+  module."
+- **Mechanism.** `getobj()` (text 1bf8) prints `arhead.ar_name` with `%s`;
+  the field has 14 bytes and no terminator (`ranlib`'s RL-01 is the same).
+- **Evidence.** Emulator (`makecmp.py cases`: `archive entry bad magic
+  names`).
+- **This project.** Refused with no 0 in the name.
+- **Fix idea.** Copy the name into a 15-byte buffer first.
+
+### MK-08 A member size that takes the position below zero
+
+- **Symptom.** An archive whose member has the size 0x7ffffff0: the sum
+  `arpos + 26 + size` wraps negative; `fseek()` fails and `getarch()`
+  reads the next header from the file's present position, the middle of the
+  member.
+- **Mechanism.** `getarch()` (text 1b7c) adds in 32-bit longs, tests `arpos
+  >= arlen` (false for a negative `arpos`) and does not look at `fseek()`'s
+  result.
+- **Evidence.** Emulator (`makecmp.py cases`: `archive huge size`, `archive
+  size wraps`).
+- **This project.** Refused (what MUTOS's `lseek` does to a negative offset
+  is not measured).
+- **Fix idea.** Stop at a negative or too large size.
+
+### MK-09 An archive of one byte
+
+- **Symptom.** An archive file of the single byte 0x65 is "not an archive"
+  when the stack's old byte next to it is not 0xff, an archive of no
+  members when it is.
+- **Mechanism.** `openarch()` (text 1af2) reads the magic word with
+  `fread(&mag, 2, 1, f)`, a short read of one byte, and compares the whole
+  word.
+- **Evidence.** Code reading; the emulator run (`archive one byte`) shows
+  the first case.
+- **This project.** Refused.
+- **Fix idea.** Test the count `fread()` returns.
+
+### MK-10 The status is shifted as a signed 16-bit int
+
+- **Symptom.** `sh -c "exit 200"` as a command: "*** Error code -56", exit
+  255: "-1", exit 128: "-128".
+- **Mechanism.** `docom1()` (text 0eba) prints `status >> 8`, `status` an
+  `int` of 16 bits holding the status word of `wait()`.
+- **Evidence.** Emulator (`makecmp.py cases`: `exit code 200`, `255`, `128`).
+- **This project.** Reproduced.
+- **Fix idea.** `(status >> 8) & 0377`.
+
+### MK-11 A blank command is an error
+
+- **Symptom.** A recipe line that is only `-` and a blank, or `@` and a
+  blank, prints a blank line (without `@`), "*** Error code -1" and - with
+  no `-i` or leading `-` - stops make.
+- **Mechanism.** `docom1()` (text 0eba) returns 0 only for the empty string;
+  a blank is not, `dosys()` finds no shell character and `doexec()` (text
+  1dc6) returns -1 for a command with no word.
+- **Evidence.** Emulator (`makecmp.py cases`: `blank command`, `prefix
+  then space`).
+- **This project.** Reproduced.
+- **Fix idea.** Skip blanks in `docom1()` before the test.
+
+### MK-12 Names of more than 14 characters in a path
+
+- **Symptom.** The targets `fifteen_chars15` and `fifteen_chars16` are
+  two names to make and the same file, `fifteen_chars1`, to the file
+  system; a pattern gives the cut names of the directory.
+- **Mechanism.** The kernel cuts each component at `DIRSIZ`, 14; `make`
+  compares and hashes the whole name.
+- **Evidence.** Code reading (the emulator runs on the host's file system,
+  which does not cut).
+- **This project.** Refused for a component of more than 14 characters in
+  `exists()`, `srchdir()`, `openarch()` and `touch()`.
+- **Fix idea.** Cut the name in `makename()`.
+
+### MK-13 "out of memory" below the segment's size
+
+- **Symptom.** `Make: out of memory. Stop.` on the hardware, running a
+  makefile of 124 explicit targets (19 KB, `tests/mutos_cc/README.md`, B);
+  the same file under the emulator and in the port runs through.
+- **Mechanism.** Not read: `ckalloc()` (text 11d8) fails when `calloc()` does,
+  so `sbrk()` was refused below the 64K the emulator gives; the limit
+  (memory of the machine, the user's, or the kernel's rule for a data
+  segment) is not known.
+- **Evidence.** Real hardware (the record in `tests/mutos_cc/README.md`);
+  emulator and port without the failure (a copy of that file ran with
+  `-n`, `-nk` and `-pn`, the same output).
+- **This project.** Not reproduced. The port counts the heap and the stack
+  against 0xF000 bytes and refuses beyond; the true limit is open.
+- **Fix idea.** None for make; the makefiles are split per category.
 
 ## Suspect, no wrong output found
 

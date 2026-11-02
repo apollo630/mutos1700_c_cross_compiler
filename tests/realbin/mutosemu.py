@@ -154,8 +154,69 @@ def default_on_exec(emu, path, argv, envp, pid):
     return 0
 
 
+class DirFile:
+    """A directory opened for reading, as MUTOS has it: the program reads
+    the entries - v7's struct direct, 16 bytes: a 16-bit inode number and
+    the name, 14 bytes, zero padded. The entries are "." and "..", then
+    the others in byte order (the order of the disk is not the host's);
+    a name of more than 14 bytes, which MUTOS's file system cannot have, is
+    left out. The list is read again when the program seeks to 0 (make
+    does it before each scan), as the kernel gives a directory's present
+    state to an lseek and a read."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        self.pos = 0
+        self._load()
+
+    def _load(self):
+        names = sorted(n for n in os.listdir(os.fsencode(self.path))
+                       if len(n) <= 14)
+        names = [b'.', b'..'] + names
+        self.buf = b''.join(struct.pack('<H', 1 + i) + n.ljust(14, b'\0')
+                            for i, n in enumerate(names))
+
+    def read(self, n):
+        data = self.buf[self.pos:self.pos + n]
+        self.pos += len(data)
+        return data
+
+    def seek(self, off, whence=0):
+        if whence == 1:
+            off += self.pos
+        elif whence == 2:
+            off += len(self.buf)
+        if off < 0:
+            raise OSError(22, 'Invalid argument')
+        if off == 0:
+            self._load()
+        self.pos = off
+        return off
+
+    def write(self, b):
+        raise OSError(21, 'Is a directory')
+
+    def fileno(self):
+        return self.fd
+
+    def flush(self):
+        pass
+
+    def close(self):
+        os.close(self.fd)
+
+
 class Emu:
-    """One process: a loaded a.out image, its arguments and open files."""
+    """One process: a loaded a.out image, its arguments and open files.
+
+    read_dirs (a class attribute, False): an open() of a directory for
+    reading gives a DirFile, its entries, as MUTOS does. Off, the open fails
+    as before, which the pins of the other comparators (ascmp_cases.txt, the
+    ar and ranlib fuzzers) were made with; makecmp.py sets it on the Emu of
+    make, whose srchdir() reads directories."""
+
+    read_dirs = False
 
     def __init__(self, image, args, cwd='.', stdin=None, stdout=None,
                  stderr=None, root=None, eof_limit=None, pid=None, fds=None,
@@ -703,11 +764,15 @@ class Emu:
             return ret(si if not isinstance(w, int) or w > si else w)
         if n == 5:                                   # open(name, mode)
             try:
-                # unbuffered: a write is seen by every other reader of the
-                # file at once, as under Unix (ar q x.a x.a reads what it
-                # has appended)
-                f = open(self._path(self.cstr(bx)), 'rb' if cx == 0 else 'r+b',
-                         buffering=0)
+                path = self._path(self.cstr(bx))
+                if cx == 0 and self.read_dirs and os.path.isdir(path):
+                    # a directory is read as its entries (make's srchdir)
+                    f = DirFile(path)
+                else:
+                    # unbuffered: a write is seen by every other reader of
+                    # the file at once, as under Unix (ar q x.a x.a reads
+                    # what it has appended)
+                    f = open(path, 'rb' if cx == 0 else 'r+b', buffering=0)
             except OSError:
                 return ret(ENOENT, error=True)
             return ret(self._newfd(f))
