@@ -1758,3 +1758,94 @@ The first fifty or so of the 128 bytes before `funny[]` are the tail of libc's
 `_ctype_` table (`01 .. 10 .. 42 .. 02 .. 10 20`) - static data the port could model,
 which would let a German umlaut through - and then variables of libc.a that change in
 a run (`curbrk` among them). For now the port refuses every such byte.
+
+## The ports of `nm`, `size`, `strip`, `tsort` and `lorder` (2026-11-02)
+
+Step 8 of `docs/TOOLCHAIN_PLAN.md`. Four small binaries - 1 to 8 functions each, all v7's -
+and a shell script. The work was less in the functions than in what lies under them:
+libc.a's stdio, `malloc()`, `qsort()` and `fscanf()` as the 8086 code shows them, which
+the four tools see through their output, their exit status and their limits.
+
+### One header for the stdio they share
+
+`src/h/mutos_stdio.h` is what the four ports take from libc.a: standard output in 512-byte
+blocks (written when the next character arrives, at `exit()`, a line at a time to a terminal,
+`isatty(1)` at the first character), standard error with no buffer, `_IOERR` set by a short
+`write()` and never cleared, `printf()` returning `ferror(stdout) ? -1 : 0`, and `exit()`
+flushing where `_exit()` does not. It matters because `size` and `tsort` have a `main()` that
+ends in `return`: crt0 hands whatever is left in AX to `exit()`, so the exit status of `size
+nothere` is `printf()`'s 0 and that of `tsort < /dev/null` is `fscanf()`'s -1 - 255 (SZ-02,
+TS-03). The comparators run a tool with standard output on `/dev/full` for that (`size/full`,
+`tsort/full`).
+
+`mu_trap()` is the refusal the other ports have: status 125 and a last line ending in
+"refused", which the comparator counts apart (what the port wrote must be a prefix of what
+the original wrote). All four use it for a directory named as a file - the original reads
+the directory's entries, the host's `fopen()` of a directory succeeds and `fread()` fails.
+
+### Where the limits are
+
+- **`nm`'s slots.** A file that is neither archive nor object is not closed (NM-04), as in
+  `ranlib` (RL-02) - but `nm` runs on, and the 18th such file goes to the 21st `FILE`, at
+  data 1d10, which is on the stdin buffer behind libc.a's table of twenty. The original then
+  ends "out of memory" (status 2) or says "bad format" for ever; the port refuses from the
+  18th (`nm/slots17` .. `slots25` were the cases that showed it).
+- **`nm`'s memory.** The table of an object is one block grown by `realloc()`; 1000 and
+  2000 symbols pass (`nm/big1000`, `big2000`), and the port refuses beyond `NM_MAXSYM` = 2000
+  rather than guess where the heap and the stack of the 64K segment meet.
+- **`tsort`'s heap.** The accounting of `malloc()` is V7's: `(n + 3) >> 1` words with their
+  header, so an item of 8 characters costs 12 + 10 + 6 = 28 bytes (name, node, predecessor).
+  The first limits in the port were estimates (`TS_HEAP` 0x8000, then 0xA000, which
+  refused a chain of 1500 pairs); the measurement on the original is a chain of 2010 pairs that
+  sorts and one of 2011 that ends "too many items", so about 56K of blocks fit. The port stops
+  at 54K (0xD800). The measurement
+  could not be made with predecessors only: a failing `malloc()` of a predecessor list is
+  not tested (TS-04) and the list is written to address 0, so a graph of 100 nodes and 9,121
+  edges runs to the end with the same output - the failure is silent. Only `index()` says "too
+  many items".
+- **`tsort`'s scan table.** `__sctab` is indexed by the character; the table has 128 entries
+  (data 1be8 .. 1c67) and its separators are 9, 10 and 32 (the entries with the bit 1; CR,
+  VT and FF are none). A byte of 0200 or more reads whatever follows - the string `(null)` at
+  1c68 and the stdio tables - so the port refuses such a byte (TS-02). `main()`'s frame is
+  modelled byte for byte (`follows[50]`, `precedes[50]`, `x`, `j`, `input`), because an
+  item of 50 characters or more runs on through all of it (TS-01): the port reproduces up to
+  53 characters in the first place and 103 in the second, where the `FILE` pointer is
+  overwritten, and refuses beyond.
+
+### `lorder` is the original
+
+The script is the original's text with three changes (`src/mutos_lorder/README.md`): `nm` is
+`$MUTOS_ROOT/bin/nm`, the three tools of the pipeline are the host's `sed`, `sort` and `join`
+in the C locale, and the exit status of `nm`, which a pipeline loses, goes through a file so
+that a refusal of `mutos_nm` (125) ends `lorder` with 125 before it prints anything. The
+comparator runs the original script in the same shell, with the emulated `nm` as a wrapper in
+the root of its case.
+
+One mistake of mine stood for a while in the README and in the script's comment: the pair
+`a b` was described as "a defines a symbol that b uses". The manual says it the other way
+(the first file contains external identifiers defined in the second), and so does the script:
+`join $symref $symdef` prints `refmember defmember` after the symbol is cut off - the user
+first, so that `ld` finds the member that defines what it needs after the one that needs it.
+`tests/mutos_binutils/check_tools.py` caught it, because it derives the pairs from the symbol
+tables itself.
+
+### What the checks are
+
+`utilcmp.py cases` runs 1,118 cases on the emulated originals and the ports (a case is a
+directory and a few steps); `utilfuzz.py` makes its own objects and archives. `check_tools.py`
+(in `make test`, no emulator) is the independent reading: it parses the a.out headers and
+symbol tables of `crt0.o`, the 167 objects of libc.a and a program the ported `cc` makes, and
+compares what `size` and `nm` print with what it computes (the type letters, the three sort
+orders, `-g`, `-u`, `-o`), the `__.SYMDEF` of `libc.a` with the table `nm -g` gives (the
+external symbols that are defined - ranlib leaves out the commons, which `nm` shows as `C`),
+a stripped program (no symbols, the flag set, the file as long as header, text and data),
+`tsort` on small graphs and `lorder libc.a | tsort` (each of the 167 objects once).
+
+### Two notes on the working method
+
+- A background command written as `( cmd1; cmd2 ) &` in the tool's shell ended with the shell:
+  the log showed the first line only. The fix is to run the command itself in the background.
+- The measurements that settled the limits (chains of 2010, 2011, 2025, 2040, 2060 pairs;
+  edges 5,000 to 9,121) take 30 seconds each on the emulator; they were run two at a time and
+  the results kept in the notes above, not in a test: `utilcmp.py cases tsort` has the chains of
+  1900, 1974 and 1975 (the port's limit), 2010 and 2011 (the original's) as cases.

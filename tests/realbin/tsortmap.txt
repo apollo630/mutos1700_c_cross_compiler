@@ -1,0 +1,105 @@
+# tsortmap.txt - a map of the real MUTOS 1700 tsort (mutos/mutos_bin/tsort.golden.base64.txt)
+#
+# The binary (0407, text 1b6e, data 1b6e..1dca, BSS to 2280) is stripped; the names below are v7's
+# (v7/tsort/tsort.c), found by the strings each function passes, the calls it makes and
+# its position. It is crt0, then tsort.o - v7's tsort.c, its eight functions -, then
+# libc.a from text 03cc (fopen) (tsortdis.py matches the other functions against
+# libc.a's objects). tsortdis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/tsort/tsort.c): same - compared, does what v7's does
+#                                      libc - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_tsort/tsort.c, read from the text at that
+#       offset (libc.a's: only where the port re-enacts what tsort sees of
+#       it - stdio's buffering and status values; the rest is the host's)
+#
+# Common to all: the words are 16 bits wide, struct nodelist is 8 bytes
+# (nextnode, inedges, name, live), struct predlist 4 (nextpred, pred).
+# main() has no exit(): AX is the exit status. Its frame (bp-6e): follows[50],
+# precedes[50], x, j, input.
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- tsort.o
+T 00b6 _main       same       ported  input = fopen(argv[1]) if there is one ("cannot open"); fscanf(input, "%s%s", precedes, follows) until EOF ("odd data" for one item); index() of both; a predecessor list entry unless they are the same node or present(); the sweeps: a LIVE node with no live predecessor is printed, findloop() when there is none
+T 01be _present    same       ported  is i on j's predecessor list
+T 01e6 _anypred    same       ported  is there a live predecessor
+T 0210 _index      same       ported  a linear search by cmp(); else malloc(strlen + 1), malloc(8) ("too many items"), the string copied, the new last node (live DEAD)
+T 02b2 _cmp        same       ported  string equality
+T 02d8 _error      same       ported  note() and exit(1)
+T 02f6 _note       same       ported  fprintf(stderr, "tsort: %s%s\n", s, t)
+T 0312 _findloop   same       ported  "cycle in reverse order" and the items of a cycle (ONCE, TWICE), all that is not DEAD LIVE again; "error 1" and "error 2" (one argument, v7's bug) cannot happen
+# ---- libc.a (tsortdis.py names the functions it can match)
+T 03cc _fopen     libc       ported  the port opens with the host's fopen(); a directory is refused (the original reads its entries)
+T 03e4 _scanf     libc       -       libc.a's stdio, the host's in the port
+T 03fe _fscanf    libc       ported  scan2()
+T 0416 _sscanf    libc       -       libc.a's stdio, the host's in the port
+T 0452 __doscan   libc       ported  scan2(): fscanf(input, "%s%s", ...) - blank, tab and newline are the separators
+T 0624 __innum    libc       -       linked in by scanf; not reached for %s items
+T 096c __instr    libc       ported  instr_s(): the %s conversion; the item is stored without a length check
+T 0a76 __getccl   libc       -       linked in by scanf; not reached for %s items
+T 0ae0 _fprintf   libc       ported  mu_eprintf(): stderr has no buffer, one write()
+T 0b22 _printf    libc       ported  mu_printf() (../h/mutos_stdio.h): stdout in 512-byte blocks, EOF (-1) once the stream failed, else 0
+T 0b66 _ungetc    libc       -       libc.a's stdio, the host's in the port
+T 0bb2 __filbuf   libc       -       libc.a's stdio, the host's in the port
+T 0c70 __doprnt   libc       ported  the host's vsnprintf()
+T 0f8c _crack     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0fbe _crack2    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1028 _getuw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1046 _getsw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1092 _getud     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 10b6 _getsd     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1106 _gnum      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1156 _pfloat    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1164 _pgen      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1172 _pscien    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1180 __strout   libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1252 __flsbuf   libc       ported  mu_flush(): one write() of the block; a short write sets the error flag
+T 133a _fflush    libc       -       libc.a's stdio, the host's in the port
+T 1390 __cleanu   libc       -       libc.a's stdio, the host's in the port
+T 13ae _fclose    libc       -       libc.a's stdio, the host's in the port
+T 1414 __stbuf    libc       -       libc.a's stdio, the host's in the port
+T 144e __ftbuf    libc       -       libc.a's stdio, the host's in the port
+T 1474 __endope   libc       -       libc.a's stdio, the host's in the port
+T 154c _create    libc       -       libc.a's stdio, the host's in the port
+T 1586 __findio   libc       -       libc.a's stdio, the host's in the port
+T 15ae _exit      libc       ported  mu_exit(): the stdout block written, then _exit(status)
+T 15b8 _malloc    libc       ported  ts_malloc(): the heap is counted (TS_HEAP, 0xD800 bytes), not modelled
+T 16c0 _free      libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 16da _ialloc    libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 176a _realloc   libc       -       linked in, not called
+T 181a _isatty    libc       -       isatty(1) decides whether stdout is line buffered (mu_oputc()); the host's
+T 1840 _stty      libc       -       tty ioctl, called by isatty() only
+T 1858 _gtty      libc       -       tty ioctl, called by isatty() only
+T 1870 _atof      libc       -       linked in by scanf; not reached for %s items
+T 188e _fltrd     libc       -       linked in by scanf; not reached for %s items
+T 18ac __fperr    libc       -       linked in by scanf; not reached for %s items
+T 18d0 __ovfl     libc       -       linked in by scanf; not reached for %s items
+T 18ec __div0     libc       -       linked in by scanf; not reached for %s items
+T 1908 _close     libc       -       system call stub (the host's system call in the port)
+T 190e _creat     libc       -       system call stub (the host's system call in the port)
+T 1914 _getpid    libc       -       system call stub (the host's system call in the port)
+T 191c _ioctl     libc       -       libc.a's stdio, the host's in the port
+T 1922 _kill      libc       -       libc.a's stdio, the host's in the port
+T 1928 _lseek     libc       -       system call stub (the host's system call in the port)
+T 1952 _open      libc       -       system call stub (the host's system call in the port)
+T 1958 _read      libc       -       system call stub (the host's system call in the port)
+T 195e _sbrk      libc       -       system call stub (the host's system call in the port)
+T 1985 sbrk0      libc       -       libc.a's stdio, the host's in the port
+T 1986 sbrk2      libc       -       libc.a's stdio, the host's in the port
+T 1989 sbrk1      libc       -       libc.a's stdio, the host's in the port
+T 1990 _brk       libc       -       libc.a's stdio, the host's in the port
+T 19ae _write     libc       -       system call stub (the host's system call in the port)
+T 19b4 chkstk     libc       -       libc.a's stdio, the host's in the port
+T 1b3a sys1a      libc       -       libc.a's stdio, the host's in the port
+T 1b5a __exit     libc       -       libc.a's stdio, the host's in the port
+# ---- data
+D 1b6e crt0        crt0's data: Isgadr 1b70, Iscadr 1b74
+D 1b78 firstnode   struct nodelist {NULL, NULL, NULL, DEAD}
+D 1b80 empty       char *empty = "" (the string at 1b82)
+D 1b83 text        the strings: "r", "cannot open ", "%s%s", "odd data", "%s\n", "too many items", "tsort: %s%s\n", "cycle in reverse order", "error 1", "error 2"
+D 1be7 sctab       libc.a's __sctab, index -1 at 1be7, 128 entries from 1be8: the separators are 9, 10 and 32 (value 1); a byte of 0200 or more indexes past it, into "(null)" at 1c68 and what follows
+D 1c68 null        libc.a's "(null)"
+D 1c70 _iob        libc.a's FILE structures (8 bytes each), stdin 1c70, stdout 1c78, stderr 1c80
+D 1d16 ctype       libc.a's _ctype (index c + 1 at 1d17)
+D 1dca bss         the BSS (the break starts at 2280)

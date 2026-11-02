@@ -18,15 +18,18 @@ and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
 `ldmap.txt` and `lddis.py` for `ld`, `ccmap.txt` and `ccdis.py` for `cc`,
 `c2map.txt` and `c2dis.py` for `c2`, `armap.txt` and `ardis.py` for `ar`,
 `ranlibmap.txt` and `ranlibdis.py` for `ranlib`, `makemap.txt` and
-`makedis.py` for `make`), how it was
+`makedis.py` for `make`, `sizemap.txt` and `sizedis.py` for `size`,
+`stripmap.txt` and `stripdis.py` for `strip`, `nmmap.txt` and `nmdis.py` for
+`nm`, `tsortmap.txt` and `tsortdis.py` for `tsort`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
 reproducible with the commands in `tests/realbin/README.md`), **code
 reading** (the disassembly, not observed in a run). "Reproduced" means the
 project's tool gives the original's output byte for byte; "refused" that
-it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib` and
-`mutos_make`: 125, the message's last line ending in "refused") where the original's
+it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib`,
+`mutos_make`, `mutos_nm`, `mutos_size`, `mutos_strip` and `mutos_tsort`: 125, the
+message's last line ending in "refused") where the original's
 output depends on state that is not modelled.
 
 Last updated: 2026-11-02.
@@ -139,6 +142,28 @@ Last updated: 2026-11-02.
 | MK-11 | `make` | a command that is blank after its `-`/`@` prefixes (`\t- ` followed by a blank) is not the empty string `docom1()` tests for: `doexec()` returns -1 and make stops with "*** Error code -1" | emulator | reproduced |
 | MK-12 | `make` | a path component of more than 14 characters is another name to make and the same file to MUTOS (`DIRSIZ`) | code reading | refused |
 | MK-13 | `make` | "Make: out of memory. Stop." on the hardware for a 19 KB makefile of 124 targets (`tests/mutos_cc/README.md`); under the emulator and in the port it runs - the limit on the hardware is lower than the 64K segment | real hardware | not reproduced |
+| SZ-01 | `size` | the header buffer is not reset and `fread()`'s result not tested: an empty or short file after an object prints that object's sizes again | emulator | reproduced |
+| SZ-02 | `size` | `main()` has no `exit()`: the status is what `fclose()` or `printf()` left in AX - 0 for a file that is missing, 255 once standard output has failed | emulator | reproduced |
+| ST-01 | `strip` | the header `head` is global and not reset: a short file passes for the one before it, "already stripped" for a file that is a magic number and nothing more | emulator | reproduced |
+| ST-02 | `strip` | the file is truncated (`creat()`) before the stripped copy is written back: a failing write leaves it cut, exit status 2 | code reading | reproduced |
+| ST-03 | `strip` | the temporary name is built from the low 15 bits of the process number and `mktemp()` tries only `a` .. `y`: with those names taken, or no `/tmp`, "cannot create temp file" | emulator, code reading | reproduced |
+| ST-04 | `strip` | an object with its relocation (a `.o`) is stripped as well: header, text and data are written, the relocation dropped, the file can no longer be linked - no message | emulator | reproduced |
+| NM-01 | `nm` | the columns do not line up: an undefined symbol gets six blanks, every other symbol four hex digits and a blank (`FORMAT` was narrowed from six octal digits, the blank field not) | emulator | reproduced |
+| NM-02 | `nm` | `arch_flg` is never reset: a file after an archive on the command line is read as an archive too (an a.out file as "an archive of one member") | emulator | reproduced |
+| NM-03 | `nm` | a 14-character member name runs on through the header behind it in `\nname:\n`, the `-o` prefix and "-- no name list" | emulator | reproduced; refused with no 0 in the 42 bytes |
+| NM-04 | `nm` | a file that is neither archive nor object is not closed: the 18th is opened in a `FILE` beyond libc.a's table - "out of memory", or "bad format" for ever | emulator | refused |
+| NM-05 | `nm` | `arp`, `exp` and `sym` are not reset: an empty file after an object keeps its magic number, a table cut inside an entry gives the old bytes back | emulator | reproduced |
+| NM-06 | `nm` | a negative member size sends the scan round the archive for ever, or seeks to a negative offset | emulator | reproduced (an endless run); the seek refused |
+| NM-07 | `nm` | the names are compared as signed characters: a name with a byte of 0200 or more sorts before the others; equal elements come out in `qsort()`'s swap order | emulator | reproduced |
+| NM-08 | `nm` | the symbols of one object are held in one `realloc()`ed block of the 64K heap: "out of memory" for a table of a few thousand symbols | code reading | refused beyond 2000 symbols |
+| TS-01 | `tsort` | an item of 50 characters or more runs over `follows[50]` into `precedes[50]`, then `x`, `j` and the `FILE` pointer `input`: wrong items, from 54 characters a crash | emulator | reproduced up to 53 and 103 characters, refused beyond |
+| TS-02 | `tsort` | a byte of 0200 or more indexes `__sctab` (128 entries) past its end: whether it separates items depends on the data behind the table | code reading | refused |
+| TS-03 | `tsort` | `main()` has no `exit()`: the status is what `fscanf()` or the last `printf()` left in AX - 255 for empty input | emulator | reproduced |
+| TS-04 | `tsort` | `malloc()` of a predecessor list is not tested: with the heap used up the pointer is 0 and the list is written to address 0 (no message); `index()` tests and says "too many items" | emulator, code reading | refused beyond 54K of blocks |
+| TS-05 | `tsort` | the 64K segment holds about 2010 items of 8 characters (28 bytes each): more is "tsort: too many items" | emulator | refused beyond 54K of blocks |
+| LO-01 | `lorder` | only `T` and `D` symbols are definitions: an object that defines a bss or absolute symbol (`B`, `A`) is a reference to it, and the pair is left out | code reading | reproduced (the script) |
+| LO-02 | `lorder` | the working files `$$symref` and `$$symdef` are written to the current directory, not to `/tmp` | code reading | reproduced (the script) |
+| LO-03 | `lorder` | object names must end in `.o` (the manual says so): a member of another name is dropped without a message; `$*` is not quoted, a name with a blank or a wildcard is split; a symbol name with a character below the blank breaks the sort order `join` needs | code reading | reproduced (the script) |
 
 ## `c1`
 
@@ -1987,6 +2012,322 @@ refuses (`mutos_make`: exit status 125, the last line of the messages ends in
   against 0xF000 bytes and refuses beyond; the true limit is open.
 - **Fix idea.** None for make; the makefiles are split per category.
 
+## `size`
+
+Read in full on 2026-11-02 for its port (`src/mutos_size/`,
+`tests/realbin/sizemap.txt`): its one function, `main()` (text 00b6), does
+what v7's `size.c` does. Both entries were run under the emulator - cases of
+`tests/realbin/utilcmp.py cases size` - and the port does the same.
+
+### SZ-01 The header buffer is not reset
+
+- **Symptom.** `size x.o e` (`e` an empty file): the second line gives `e`
+  the sizes of `x.o` again; `e` alone is "not an object file". A file of 10
+  bytes replaces the first 10 bytes of the header, the last 6 stay those of
+  the file before.
+- **Mechanism.** The header is `struct exec buf` in `main()`'s frame (text
+  00b6), read by `fread(&buf, 1, 16, f)` whose result is not tested; a short
+  read leaves the bytes of the file before it, and the first file finds
+  zeros.
+- **Evidence.** Emulator (`size/stale`, `size/short`).
+- **This project.** Reproduced (`buf` is static: the frame keeps its bytes).
+- **Fix idea.** Test `fread()`'s result (one element of 16 bytes) and say
+  "not an object file" otherwise.
+
+### SZ-02 `main()` has no `exit()`
+
+- **Symptom.** `size nothere` ends with status 0: a missing file is no
+  error. With standard output full (`> /dev/full`) the status is 255 after
+  a missing file and 0 after an object.
+- **Mechanism.** `main()` ends in `return`: the value in AX goes to `exit()`
+  (crt0). After a file that was read it is `fclose()`'s 0; after "not found"
+  it is `printf()`'s, 0 or -1 once libc.a's stdio has flagged an error on
+  standard output.
+- **Evidence.** Emulator (`size/missing`, `size/full`).
+- **This project.** Reproduced (`mu_exit(ax)`).
+- **Fix idea.** `exit(errors)`.
+
+## `strip`
+
+Read in full on 2026-11-02 for its port (`src/mutos_strip/`,
+`tests/realbin/stripmap.txt`): none of the three functions differs from v7's
+`strip.c` in what it does. Every entry with a trigger was run under the
+emulator - cases of `tests/realbin/utilcmp.py cases strip` - and the port does
+the same.
+
+### ST-01 The header is not reset
+
+- **Symptom.** `strip x y` with `x` a program with symbols and `y` a file of
+  two bytes holding the magic number 0407: `y already stripped` (the header
+  of the file stripped before has a_syms 0 and the flag set). A short file
+  after another gets the rest of its header from the one before.
+- **Mechanism.** `head` is a global (data 137e, 16 bytes), read in
+  `strip()` (text 016e) by `read(f, &head, 16)` whose result is not tested;
+  after a stripped file it holds a_syms 0 and the flag set.
+- **Evidence.** Emulator (`strip/stale%d`, `strip/stale-magic`,
+  `strip/stale-text`).
+- **This project.** Reproduced (`head` is global).
+- **Fix idea.** Test the count `read()` returns.
+
+### ST-02 The file is truncated before the copy is written back
+
+- **Symptom.** When writing the stripped copy back fails (file system full,
+  quota), the file is left cut: `x unexpected write eof`, status 2; the
+  stripped copy is in the temporary file and is removed at the end of the
+  run.
+- **Mechanism.** `strip()` (text 016e) writes the header and the text and
+  data to the temporary file, then `creat(name, 0666)` (text 0277) - which
+  truncates - and `copy()` (text 02ce) writes the temporary file back.
+- **Evidence.** Code reading.
+- **This project.** Reproduced (the same sequence of calls).
+- **Fix idea.** Write the new file under a temporary name and rename it
+  over the old one.
+
+### ST-03 The temporary name
+
+- **Symptom.** With no `/tmp` (or none writable), or with the name
+  `/tmp/sNNNNN` and its 24 variants all there: `cannot create temp file`,
+  status 2. The name is the process number's low 15 bits in five digits, so
+  it can be guessed, and the file is made with `creat()` after a test with
+  `access()`: another process that makes the name in between has its file
+  truncated.
+- **Mechanism.** `mktemp()` (libc.a, text 0e2a) replaces the X with the pid
+  and, while `access()` finds the name, the first digit with `a`, `b` ..
+  `y` - at `z` it returns `/`; `main()` (text 00b6) makes the file with
+  `creat(tname, 0600)` and opens it, one for the whole run.
+- **Evidence.** Emulator (`strip/notmp`), code reading (the rest).
+- **This project.** Reproduced (`st_mktemp()`).
+- **Fix idea.** `mkstemp()`, or `open()` with `O_EXCL`.
+
+### ST-04 An object file loses its relocation
+
+- **Symptom.** `strip x.o` on an object with relocation (flag bit 1 clear)
+  writes header (a_syms 0, flag 1), text and data - and no relocation: the
+  file can no longer be linked, with no message.
+- **Mechanism.** `strip()` (text 016e) sets `head.a_flag |= 1` and copies
+  `a_text + a_data` bytes; v7's `strip` is for linked programs.
+- **Evidence.** Emulator (`strip/reloc`).
+- **This project.** Reproduced.
+- **Fix idea.** Refuse a file whose relocation is present, or copy it.
+
+## `nm`
+
+Read in full on 2026-11-02 for its port (`src/mutos_nm/`,
+`tests/realbin/nmmap.txt`): none of the three functions of `nm.o` differs
+from v7's `nm.c` in what it does (it is the code of `ranlib` with another
+`main()`, whose RL-01 .. RL-03 and RL-06 come again here). Every entry with
+a trigger was run under the emulator - cases of
+`tests/realbin/utilcmp.py cases nm` - and the port does the same.
+
+### NM-01 The columns do not line up
+
+- **Symptom.** `nm printf.o`:
+
+      0000 T _printf
+           U __doprnt
+
+  The type letter of an undefined symbol comes two columns to the right.
+- **Mechanism.** `main()` (text 00b6) prints an undefined symbol's value
+  as six blanks (text 04f5, data 1b53) and the others with `FORMAT`, now
+  `"%04x"` (text 0510, data 1b5a), followed by `" %c "`: v7's six octal
+  digits became four hex digits, the blanks did not follow.
+- **Evidence.** Emulator (every case with undefined symbols).
+- **This project.** Reproduced.
+- **Fix idea.** Four blanks.
+
+### NM-02 `arch_flg` is never reset
+
+- **Symptom.** `nm libc.a crt0.o`: `crt0.o` is read as an archive too - an
+  a.out file as "an archive of one member", from offset 2 on, its name not
+  printed - and what `nm` lists is wrong.
+- **Mechanism.** `arch_flg` (data 1c24) is set for an archive and tested
+  for every later file; v7 resets it nowhere.
+- **Evidence.** Emulator (`nm/arch-then-obj`, `nm/two-archives`).
+- **This project.** Reproduced.
+- **Fix idea.** `arch_flg = 0` at the top of the file loop.
+
+### NM-03 A 14-character member name runs on through the header
+
+- **Symptom.** A member `abcdefghijklmn`: `nm x.a` prints `\nabcdefghijklmn`
+  followed by the bytes of the date, owner and mode, and `:`; the same for `-o`
+  and "-- no name list" (RL-01).
+- **Mechanism.** `arp.ar_name` (data 1c28, 14 bytes) is printed with `%s`;
+  `exp` lies behind `arp` (data 1c42).
+- **Evidence.** Emulator (`nm/arch-names`).
+- **This project.** Reproduced; refused with no 0 in the 42 bytes.
+- **Fix idea.** `%.14s`.
+
+### NM-04 A file that is neither archive nor object keeps its slot
+
+- **Symptom.** `nm f f f ...` with a text file `f` 18 times: 17 times
+  `nm: f-- bad format`, then the 18th is read from a `FILE` that is not one
+  (measured: `nm: out of memory on f`, status 2, or `bad format` for
+  ever).
+- **Mechanism.** `main()` (text 00b6) prints "bad format" and `continue`s
+  without `fclose()`; libc.a has 20 `FILE` slots of 8 bytes at data 1c70
+  (`_iob`), three taken; `fopen()` (text 0934) finds the slot 21 by its
+  address, 1d10, in the stdin buffer.
+- **Evidence.** Emulator (`nm/slots17` .. `nm/slots25`).
+- **This project.** Refused from the 18th file open.
+- **Fix idea.** `fclose(fi)` before `continue` (as RL-02).
+
+### NM-05 The headers are not reset
+
+- **Symptom.** `nm x.o empty`: `empty` is listed as `x.o`'s symbols; a table
+  that ends inside an entry gives the old bytes of the entry (RL-03).
+- **Mechanism.** `exp` (data 1c42), `arp` and the local `sym` are not cleared;
+  a read that returns less leaves what was there.
+- **Evidence.** Emulator (`nm/header-short`, `nm/partial-sym`,
+  `nm/arch-stale`).
+- **This project.** Reproduced.
+- **Fix idea.** Clear them before each read, test the counts.
+
+### NM-06 A negative member size
+
+- **Symptom.** An archive whose last header says the size -2: `nm` lists the
+  same members for ever, or `fseek()` fails and the stream goes on from
+  where it was (RL-06).
+- **Mechanism.** `nextel()` (text 05f6) sets `off` from the size; libc.a's
+  `fseek()` (text 0678) does not test `lseek()`.
+- **Evidence.** Emulator (`nm/arch-size%x`).
+- **This project.** Reproduced as an endless run; a seek to a negative
+  offset is refused.
+- **Fix idea.** Stop at a negative size ("bad format").
+
+### NM-07 Names are compared as signed characters
+
+- **Symptom.** A symbol whose name has a byte of 0200 or more is listed
+  before `_a`. Symbols with the same name (and value) come out in the order
+  of `qsort()`'s swaps, not the table's.
+- **Mechanism.** `compare()` (text 058e) compares the 8 bytes as `char`;
+  `qsort()` (libc.a, text 1660) is V7's, not stable.
+- **Evidence.** Emulator (`nm/names`, `nm/dups%d`, `nm/same%d`).
+- **This project.** Reproduced (the same algorithm in the same 16-bit
+  arithmetic).
+- **Fix idea.** `unsigned char`; a stable sort.
+
+### NM-08 The symbols of an object are held in memory
+
+- **Symptom.** An object with a few thousand symbols: `nm: out of memory on
+  x` and status 2 (code reading; 1000 and 2000 symbols work).
+- **Mechanism.** `main()` (text 00b6) keeps the table in one block grown by
+  `realloc()` (libc.a text 158a) in the 64K segment, 12 bytes a symbol.
+- **Evidence.** Code reading; emulator for 1000 and 2000 symbols
+  (`nm/big%d`).
+- **This project.** Refused beyond `NM_MAXSYM` (2000) symbols.
+- **Fix idea.** List the table as it is read when not sorting; sort on disk.
+
+## `tsort`
+
+Read in full on 2026-11-02 for its port (`src/mutos_tsort/`,
+`tests/realbin/tsortmap.txt`): none of the eight functions differs from v7's
+`tsort.c` in what it does. Every entry with a trigger was run under the
+emulator - cases of `tests/realbin/utilcmp.py cases tsort` - and the port
+does the same.
+
+### TS-01 Items of 50 characters or more
+
+- **Symptom.** An item of 50 to 53 characters overwrites the first bytes of
+  the other item; the output is wrong. Longer, the low word of `x`, the
+  word `j` and the `FILE` pointer `input` are overwritten: a crash.
+- **Mechanism.** `main()` (text 00b6) reads with `fscanf(input, "%s%s",
+  precedes, follows)` into `char precedes[50], follows[50]` - `follows` first
+  in the frame, then `precedes`, `x`, `j`, `input` - and libc.a's `%s`
+  (`_instr`, text 096c) has no limit.
+- **Evidence.** Emulator (`tsort/long%d`, `tsort/long-stale`).
+- **This project.** Reproduced for an item of up to 53 characters (first)
+  or 103 (second); refused beyond.
+- **Fix idea.** `%49s`.
+
+### TS-02 A byte of 0200 or more
+
+- **Symptom.** The input bytes 0200 .. 0377 are looked up in libc.a's
+  `__sctab`, which has 128 entries; the data behind it (the string
+  `(null)` and the stdio tables) decides whether the byte separates items.
+- **Mechanism.** `_doscan()` (text 0452) indexes `__sctab` (data 1be7, entry
+  c at 1be8 + c) with the byte as a signed `char`.
+- **Evidence.** Code reading; emulator (`tsort/highbyte`).
+- **This project.** Refused.
+- **Fix idea.** `(unsigned char)` and a table of 256 entries.
+
+### TS-03 The exit status
+
+- **Symptom.** `tsort < /dev/null` ends with status 255; with graphs the
+  status is 0, or 255 after a failed write.
+- **Mechanism.** `main()` has no `exit()`: AX holds `fscanf()`'s -1 (EOF)
+  or `printf()`'s return.
+- **Evidence.** Emulator (`tsort/empty`, `tsort/full`).
+- **This project.** Reproduced.
+- **Fix idea.** `exit(0)`.
+
+### TS-04 `malloc()` of a predecessor list is not tested
+
+- **Symptom.** With the heap used up the list is written through the null
+  pointer (address 0, the first bytes of crt0's code) and the edge is lost
+  without a message; `index()` tests its `malloc()` and says `tsort: too
+  many items`.
+- **Mechanism.** `main()` (text 00b6) stores `p->nextpred` and `p->pred`
+  without looking at `p`.
+- **Evidence.** Code reading (`index()` at text 0210 tests; `main()`
+  does not).
+- **This project.** Refused beyond 54K of blocks.
+- **Fix idea.** Test `p`, as `index()` does.
+
+### TS-05 The 64K segment
+
+- **Symptom.** A chain of 2011 pairs of items of 8 characters is `tsort: too
+  many items` (status 1), one of 2010 is sorted.
+- **Mechanism.** Every item costs 12 bytes (name) + 10 (node) + 6 (the
+  predecessor) in libc.a's V7 `malloc()`; the break starts at 0x2280 and
+  `sbrk()` fails at the end of the segment.
+- **Evidence.** Emulator (measured: `tsort/chain2010` is sorted,
+  `tsort/chain2011` is not).
+- **This project.** Refused beyond 54K of blocks (`TS_HEAP`, 1K short of
+  what was measured).
+- **Fix idea.** None short of another memory model.
+
+## `lorder`
+
+The script (`mutos/mutos_bin/lorder.golden.base64.txt`) read on 2026-11-02
+for `src/mutos_lorder/`; the project runs it, so every entry is the
+script's, reproduced.
+
+### LO-01 Only `T` and `D` are definitions
+
+- **Symptom.** An object that defines a bss or absolute symbol (`B`, `A`; a
+  common is `C`) is not ordered before the objects that use it: the
+  pair is left out.
+- **Mechanism.** The `sed` script sends lines with `[TD] ` to `symdef` and all
+  others (`U`, `B`, `A`, `C`) to `symref`.
+- **Evidence.** Code reading; the comparison `tests/mutos_binutils/check_tools.py`
+  makes of `lorder libc.a` with an independent reading.
+- **This project.** Reproduced (the script).
+- **Fix idea.** `[TDBAC] `.
+
+### LO-02 The working files are in the current directory
+
+- **Symptom.** In a directory with no write permission `lorder` cannot
+  write `<pid>symref` and `<pid>symdef`.
+- **Mechanism.** The script names them `$$symref`, `$$symdef` with no
+  directory (the manual lists them as `*symref`, `*symdef`).
+- **Evidence.** Code reading.
+- **This project.** Reproduced.
+- **Fix idea.** `/tmp/$$...`.
+
+### LO-03 Names must end in `.o`; `$*` is not quoted; the sort order
+
+- **Symptom.** A member whose name does not end in `.o` is dropped without a
+  message, as the manual says ("Andernfalls entsteht Unsinn"); a file name
+  with a blank or a wildcard is split or expanded. The two lists are sorted
+  by whole lines but joined on the first field: a symbol name with a
+  character below the blank (a damaged table gives such names) makes `join`
+  say "input is not in sorted order" and the pairs after it are lost.
+- **Mechanism.** `/\.o:/!d` in the `sed` script; `nm -g $*`; `sort $$symdef
+  -o $$symdef` and `join $$symref $$symdef`.
+- **Evidence.** Code reading; the manual.
+- **This project.** Reproduced.
+- **Fix idea.** Quote `"$@"`; accept other names.
+
 ## Suspect, no wrong output found
 
 - **`c1`, `cexpr()`'s `T` for an ITOC** tests the type of the node at
@@ -2013,3 +2354,7 @@ refuses (`mutos_make`: exit status 125, the last line of the messages ends in
   output's name, `setsuf(t, 0)` with the `.` cut off. A name starting
   with `-` is treated the same way - see CC-05 for the case without an
   object. `mutos_cc` reproduces it.
+- **`tsort`, `findloop()`'s "error 1" and "error 2"** cannot happen when the
+  lists are what `index()` makes of them; v7's call for "error 2" passes one
+  argument where `error()` takes two (code reading, 2026-11-02;
+  `mutos_tsort` refuses the case).

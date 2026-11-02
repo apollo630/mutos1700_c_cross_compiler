@@ -1,0 +1,78 @@
+# sizemap.txt - a map of the real MUTOS 1700 size (mutos/mutos_bin/size.golden.base64.txt)
+#
+# The binary (0407, text 11b2, data 11b2..12cc, BSS to 1782) is stripped; the names below are v7's
+# (v7/size/size.c), found by the strings each function passes, the calls it makes and
+# its position. It is crt0, then size.o - v7's size.c, its one function -, then
+# libc.a from text 01ca (fread) (sizedis.py matches the other functions against
+# libc.a's objects). sizedis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/size/size.c): same - compared, does what v7's does
+#                                      libc - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_size/size.c, read from the text at that
+#       offset (libc.a's: only where the port re-enacts what size sees of
+#       it - stdio's buffering and status values; the rest is the host's)
+#
+# Common to the function: the a.out header is a 16-byte local of main()
+# (struct exec buf, zero at the start, stale between the files), the words
+# are 16 bits wide, the sum of the three sizes a long (the high word first).
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- size.o
+T 00b6 _main       same       ported  per file (a.out without): fopen "r", fread 16 bytes into buf (no check), the magic against a_magic[] (0407 0410 0411 0405); "size: %s not found" / "size: %s not an object file" on stdout; "%s: " when more than one file (gorp > 2); "%u+%u+%u = " and "%ldb = 0%lob"; fclose; no exit(): AX is the exit status
+# ---- libc.a (sizedis.py names the functions it can match)
+T 01ca _fread     libc       -       libc.a's stdio, the host's in the port
+T 0224 _fwrite    libc       -       libc.a's stdio, the host's in the port
+T 0284 _fopen     libc       ported  the port opens with the host's fopen(); a directory is refused (the original reads its entries)
+T 029c _printf    libc       ported  mu_printf() (../h/mutos_stdio.h): stdout in 512-byte blocks, EOF (-1) once the stream failed, else 0
+T 02e0 __filbuf   libc       -       libc.a's stdio, the host's in the port
+T 039e __doprnt   libc       ported  the host's vsnprintf()
+T 06ba _crack     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 06ec _crack2    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0756 _getuw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0774 _getsw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 07c0 _getud     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 07e4 _getsd     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0834 _gnum      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0884 _pfloat    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0892 _pgen      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 08a0 _pscien    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 08ae __strout   libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0980 __flsbuf   libc       ported  mu_flush(): one write() of the block; a short write sets the error flag
+T 0a68 _fflush    libc       -       libc.a's stdio, the host's in the port
+T 0abe __cleanu   libc       -       libc.a's stdio, the host's in the port
+T 0adc _fclose    libc       -       libc.a's stdio, the host's in the port
+T 0b42 __stbuf    libc       -       libc.a's stdio, the host's in the port
+T 0b7c __ftbuf    libc       -       libc.a's stdio, the host's in the port
+T 0ba2 __endope   libc       -       libc.a's stdio, the host's in the port
+T 0c7a _create    libc       -       libc.a's stdio, the host's in the port
+T 0cb4 __findio   libc       -       libc.a's stdio, the host's in the port
+T 0cdc _exit      libc       ported  mu_exit(): the stdout block written, then _exit(status)
+T 0ce6 _malloc    libc       -       linked in, not called
+T 0dee _free      libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 0e08 _ialloc    libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 0e98 _realloc   libc       -       linked in, not called
+T 0f48 _isatty    libc       -       isatty(1) decides whether stdout is line buffered (mu_oputc()); the host's
+T 0f6e _stty      libc       -       tty ioctl, called by isatty() only
+T 0f86 _gtty      libc       -       tty ioctl, called by isatty() only
+T 0f9e _close     libc       -       system call stub (the host's system call in the port)
+T 0fa4 _creat     libc       -       system call stub (the host's system call in the port)
+T 0faa _ioctl     libc       -       libc.a's stdio, the host's in the port
+T 0fb0 _lseek     libc       -       system call stub (the host's system call in the port)
+T 0fda _open      libc       -       system call stub (the host's system call in the port)
+T 0fe0 _read      libc       -       system call stub (the host's system call in the port)
+T 0fe6 _sbrk      libc       -       system call stub (the host's system call in the port)
+T 100d sbrk0      libc       -       libc.a's stdio, the host's in the port
+T 100e sbrk2      libc       -       libc.a's stdio, the host's in the port
+T 1011 sbrk1      libc       -       libc.a's stdio, the host's in the port
+T 1018 _brk       libc       -       libc.a's stdio, the host's in the port
+T 1036 _write     libc       -       system call stub (the host's system call in the port)
+T 118c sys1a      libc       -       libc.a's stdio, the host's in the port
+# ---- data
+D 11b2 crt0        crt0's data: Isgadr 11b4, Iscadr 11b8
+D 11bc a_magic     int a_magic[] = {0407, 0410, 0411, 0405, 0}
+D 11c6 aout        "a.out"
+D 11ce text        the strings: "size: %s not found\n", "size: %s not an object file\n", "%u+%u+%u = ", "%Db = 0%Ob\n"
+D 121c null        libc.a's "(null)"
+D 12cc bss         the BSS (libc.a's _iob among it)

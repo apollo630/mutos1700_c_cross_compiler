@@ -16,6 +16,12 @@
 /src/mutos_ar/mutos_ar
 /src/mutos_ranlib/mutos_ranlib
 /src/mutos_make/mutos_make
+/src/mutos_nm/mutos_nm
+/src/mutos_size/mutos_size
+/src/mutos_strip/mutos_strip
+/src/mutos_tsort/mutos_tsort
+/src/mutos_lorder/mutos_lorder
+/src/mutos_lorder/mutos_lorder.new
 /src/mutos_as/mutos_as
 /src/mutos_as/parse_dump
 /src/mutos_as/classify_test
