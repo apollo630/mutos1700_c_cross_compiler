@@ -11,14 +11,16 @@ dated where they stand (2026-10-25: the headers in the MUTOS root,
 decision 3; the port of `make` and of the other tools brought from the
 hardware, decision 10).
 
-**Status (2026-11-02): steps 0 to 7 are done** (section 3). Step 5 -
+**Status (2026-11-02): steps 0 to 8 are done** (section 3). Step 5 -
 the differential fuzzer for `mutos_as`, the switch `-1`, `-C` - measured the
 re-implementation against the original; whether to port `mutos_as` is the
 project owner's decision, with the measurements and a recommendation in
 `STATUS.md` (Milestone 2). Step 6 - the ports of `ar` and `ranlib`, with
 `bin/ar` and `bin/ranlib` in the root - was done on 2026-10-26. Step 7 - the
-port of `make`, with `bin/make` in the root - was done on 2026-11-02. Step 8,
-the ports of `nm`, `size`, `strip`, `tsort` and `lorder`, is next. `STATUS.md`'s "Next up" follows this order.
+port of `make`, with `bin/make` in the root - was done on 2026-11-02, and so was
+step 8, the ports of `nm`, `size`, `strip`, `tsort` and `lorder`, with `bin/nm`,
+`bin/size`, `bin/strip`, `bin/tsort` and `bin/lorder` in the root. Step 9, the
+ports of `ed` and `em`, is next. `STATUS.md`'s "Next up" follows this order.
 
 ## 1. Where things stand
 
@@ -34,7 +36,9 @@ the ports of `nm`, `size`, `strip`, `tsort` and `lorder`, is next. `STATUS.md`'s
 | `mutos_ar` | port of the original `ar` (2026-10-26) | the emulated original: hand-written command sequences, differential fuzzing (files and archives changed between the commands, damaged archives); libc.a rebuilt from its 167 objects |
 | `mutos_ranlib` | port of the original `ranlib` (2026-10-26); runs `mutos_ar` through the root's `bin/ar` as the original runs `ar` through the shell | the emulated original `ranlib` and `ar`: hand-written cases, differential fuzzing; libc.a rebuilt from its 167 objects, `__.SYMDEF` included |
 | `mutos_make` | port of the original `make` (2026-11-02); its commands run by the host's `/bin/sh` and the `PATH` with the root's `bin/` first | the emulated original (its `fork`/`exece`/`wait` faked, the commands the host's, fake tools in the root): hand-written cases, the corpus's `Makefile.mutos` files, differential fuzzing; the corpus's makefiles through `mutos_make` and the ported tools against the goldens |
-| `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | not ported yet (decision 10, steps 8 and 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
+| `mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort` | ports of the original `nm`, `size`, `strip` and `tsort` (2026-11-02); the stdio they share is `src/h/mutos_stdio.h` | the emulated originals: every object and archive of the tree (the compiled goldens, `crt0.o`, `libc.a`) with every option, hand-written cases, differential fuzzing; `tests/mutos_binutils/check_tools.py` without an emulator |
+| `mutos_lorder` | the original shell script (2026-11-02), run by the host's `sh` with `$MUTOS_ROOT/bin/nm` and the host's `sed`, `sort` and `join` | the original script with the emulated `nm`: `libc.a`'s objects, hand-written cases, differential fuzzing; `lorder libc.a \| tsort` without an emulator |
+| `ed`, `em` | not ported yet (decision 10, step 9); the originals in `mutos/mutos_bin/` since 2026-10-25 | - |
 
 The originals run under `tests/realbin/mutosemu.py`: `cpp`, `c0`, `c1`,
 `as` since 2026-10-12, and on 2026-10-20 also `c2`, `ld` and - with
@@ -283,12 +287,17 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   be redirected (decision 10).
 - Where the new tools sit in the MUTOS file system (`/bin` or
   `/usr/bin`), and so in the root: to be read from the binaries that
-  name them - steps 8 and 9. (`make` names `/bin/sh`, and libc's
+  name them - step 9 for the editors. (`make` names `/bin/sh`, and libc's
   `execvp` in it the search path `:/bin:/usr/bin` for a `PATH` not set.)
   Settled for `ar` and `ranlib` with step 6: `bin/ar` and `bin/ranlib`, next
   to `as`, `ld` and `cc` - `ranlib` names only "ar" (`ar rlb %s %s %s`,
   `ar rl %s %s`, through `/bin/sh -c`, so the shell's search path finds it).
+  Settled for `nm`, `size`, `strip`, `tsort` and `lorder` with step 8: `bin/`
+  too - the originals are single files that name no other
+  tool but `lorder`, which calls `nm`, `sed`, `sort` and `join` through the `PATH`.
 - `lorder` is a shell script: its port is the script, run by the host's
-  shell with the MUTOS `nm` - to be settled with step 8.
+  shell with the MUTOS `nm` - **settled with step 8 (2026-11-02)**: so it is;
+  `src/mutos_lorder/mutos_lorder.in` is the original's text with `nm` named
+  as `$MUTOS_ROOT/bin/nm`, and `sed`, `sort` and `join` the host's, in the C locale.
 - What `ed` and `em` need of the terminal (`sgtty`, `ioctl`) under the
   emulator: to be read with step 9.

@@ -1,0 +1,67 @@
+#!/bin/sh
+# mutos_lorder - the MUTOS 1700 lorder: the original shell script
+# (mutos/mutos_bin/lorder.golden.base64.txt), run by the host's sh.
+#
+# lorder prints, for the object files and archives named, "a b" pairs of
+# object names - a uses a symbol that b defines -, one per line, for tsort
+# to order the members of a library (docs: src/mutos_lorder/README.md).
+#
+# Three things differ from the original's text, and nothing else:
+#  - nm is $MUTOS_ROOT/bin/nm, the root's link to mutos_nm, not the first
+#    nm of the PATH (on a host that is the host's own nm), and it fails
+#    when there is none; the PATH puts $MUTOS_ROOT/bin first for the rest;
+#  - sed, sort and join are the host's, run in the C locale (LC_ALL=C):
+#    byte order, as the original's sort;
+#  - nm's exit status goes through a file, because a pipeline gives only
+#    the last command's: 125 (mutos_nm refused something it does not model,
+#    and said so) ends lorder with 125 before it prints anything. The
+#    original's nm ends with 0 for anything but an invalid option (1) and
+#    no memory (2), and lorder goes on regardless.
+case ${MUTOS_ROOT:-} in
+'')	MUTOS_ROOT=@MUTOS_ROOT_DEFAULT@ ;;
+esac
+LC_ALL=C
+PATH=$MUTOS_ROOT/bin:$PATH
+export LC_ALL PATH
+if [ ! -x "$MUTOS_ROOT/bin/nm" ]; then
+	echo "lorder: no executable $MUTOS_ROOT/bin/nm" >&2
+	exit 1
+fi
+trap "rm -f $$sym?ef $$symst; exit" 0 1 2 13 15
+case $# in
+0)	echo usage: lorder file ...
+	exit ;;
+1)	case $1 in
+	*.o)	set $1 $1
+	esac
+esac
+{ "$MUTOS_ROOT/bin/nm" -g $*; echo $? >$$symst; } | sed '
+	/^$/d
+	/:$/{
+		/\.o:/!d
+		s/://
+		h
+		s/.*/& &/
+		p
+		d
+	}
+	/[TD] /{
+		s/.* //
+		G
+		s/\n/ /
+		w '$$symdef'
+		d
+	}
+	s/.* //
+	G
+	s/\n/ /
+	w '$$symref'
+	d
+'
+read nmst <$$symst
+case $nmst in
+125)	exit 125 ;;
+esac
+sort $$symdef -o $$symdef
+sort $$symref -o $$symref
+join $$symref $$symdef | sed 's/[^ ]* *//'

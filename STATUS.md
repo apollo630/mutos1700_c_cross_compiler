@@ -142,6 +142,19 @@ before, `ascmp.py cases` against its pins unchanged); `make check-libcatof` (0 d
 `make check-docs`. The longer fuzzer runs of Milestone 6 (seeds 11 to 13, 3,600 cases) ran
 in the working tree.
 
+Verified 2026-11-02 with the ports of `nm`, `size`, `strip` and `tsort` and the script `lorder`
+(Milestone 6, step 8), on a fresh clone of the commit with the change applied (`git apply`; the new
+files added with `git add`, which `check-docs` reads): `make clean && make all` with zero warnings under
+`-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its output the same as the commit's without the
+change, line for line, but for the lines the change adds - the five `make` calls for `src/mutos_nm`,
+`mutos_size`, `mutos_strip`, `mutos_tsort` and `mutos_lorder`, `check_root.py`'s five `bin/` links, and
+`check_tools.py` (30 checks, 0 failed) - and a temporary directory's name; `make check-realbin` exit 0, all
+checks passed, run in the working tree whose sources are the patch's (the new ones: `utilcmp.py cases` 1,118
+cases, 3,729 the same, 125 refused, 18 where the original does not finish; `utilfuzz.py` seed 1, 300 cases
+plain and 300 damaged, no difference - the results in Milestone 6); `make check-libcatof` (0 differ);
+`make check-docs`. The longer fuzzer runs of Milestone 6 (seeds 2 and 3, 1,500 cases each) ran in the
+working tree, too.
+
 ---
 
 ## Milestone 1 — `mutos_ld` (linker)
@@ -1096,11 +1109,19 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    taken from the binary; `bin/make` in the root; its bugs (MK-01 to MK-13). Checked by
    `tests/realbin/makecmp.py` and `makefuzz.py` against the emulated original, and in `make
    test` by `tests/mutos_make/check_corpus.py` (the thirteen `Makefile.mutos` of the
-   corpus run through `mutos_make` and the ported tools: every golden). **Next: step 8.**
-8. **Ports of `nm`, `size`, `strip`, `tsort`**, and `lorder`.
+   corpus run through `mutos_make` and the ported tools: every golden).
+8. ~~**Ports of `nm`, `size`, `strip`, `tsort`**, and `lorder`~~ - **done 2026-11-02**
+   (Milestone 6): `mutos_nm`, `mutos_size`, `mutos_strip` and `mutos_tsort` are the
+   originals, read from their binaries - all v7's functions, on the libc.a stdio that
+   `src/h/mutos_stdio.h` models -, and `mutos_lorder` is the original shell script, run by
+   the host's shell with the root's `bin/nm`; `bin/nm`, `bin/size`, `bin/strip`, `bin/tsort`
+   and `bin/lorder` in the root; their bugs (SZ-01 to LO-03, 22 in all). Checked by
+   `tests/realbin/utilcmp.py` and `utilfuzz.py` against the emulated originals, and in `make
+   test` by `tests/mutos_binutils/check_tools.py` (an independent reading of the a.out headers
+   and symbol tables, no emulator). **Next: step 9.**
 9. **Ports of `ed` and `em`.**
 
-Steps 6 to 9 are Milestone 6 (below), steps 6 and 7 done; their originals are in
+Steps 6 to 9 are Milestone 6 (below), steps 6 to 8 done; their originals are in
 `mutos/mutos_bin/` since 2026-10-25, the order was proposed that day.
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
@@ -1204,8 +1225,10 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 
 ## Milestone 6 — `make`, `ar`, `ranlib` and the other MUTOS tools
 
-**Status: steps 6 and 7 done - `mutos_ar` and `mutos_ranlib` (2026-10-26) and `mutos_make`
-(2026-11-02) are ports of the real `ar`, `ranlib` and `make`; steps 8 and 9 NOT STARTED**
+**Status: steps 6 to 8 done - `mutos_ar` and `mutos_ranlib` (2026-10-26), `mutos_make`, `mutos_nm`,
+`mutos_size`, `mutos_strip` and `mutos_tsort` (2026-11-02) are ports of the real `ar`, `ranlib`,
+`make`, `nm`, `size`, `strip` and `tsort`, and `mutos_lorder` is the real shell script; step 9
+(`ed`, `em`) NOT STARTED**
 (`docs/TOOLCHAIN_PLAN.md`, decision 10, steps 6 to 9). **Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
 wrapper `mutos_make` around the host's `make`, planned on 2026-10-20, is dropped -, and
 so are all the other binaries brought from the hardware that day: `ar`, `ranlib`,
@@ -1417,6 +1440,97 @@ heap and the frames of the recursive functions counted in the original's sizes a
 - **Not done**: `make`'s manual page (the manual pages come at the end, Workflow
   Guideline 10).
 
+### `mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort` and `mutos_lorder` (verified 2026-11-02)
+
+`mutos_nm`, `mutos_size`, `mutos_strip` and `mutos_tsort` are the original MUTOS 1700 `nm`,
+`size`, `strip` and `tsort` - Unix V7's programs for the 8086 -, every function read from the
+stripped binary beside the v7 source (`tests/realbin/nmmap.txt`, `sizemap.txt`, `stripmap.txt`,
+`tsortmap.txt`; `nmdis.py`, `sizedis.py`, `stripdis.py` and `tsortdis.py` disassemble one
+function by name): `size` has one function, `strip` three, `nm` three (and libc.a's `qsort()`
+under it), `tsort` eight (and `fscanf`) - **none differs from v7's in what it does**. What the
+port makes explicit is the representation and the libc.a underneath: 16-bit `int`s, signed
+`char`s, the 16-byte a.out header, the 12-byte `struct nlist` with its word `n_type`, the
+26-byte archive header, longs with the high word first, and **libc.a's stdio, which the four share
+in one header, `src/h/mutos_stdio.h`** - standard output in 512-byte blocks, standard error with
+no buffer, `_IOERR` set by a short `write()` and never cleared, `printf()` returning
+`ferror(stdout) ? -1 : 0`, and `main()` without `exit()` handing crt0 what is left in AX
+(the exit status of `size nothere` is 0, that of `tsort < /dev/null` 255: SZ-02, TS-03).
+`mutos_lorder` is the shell script of the original, which is not ported but run (the host's
+`sh`, `sed`, `sort` and `join` in the C locale, with `$MUTOS_ROOT/bin/nm`); the three changes to
+its text are in `src/mutos_lorder/README.md`.
+
+- **Sources**: `src/mutos_{size,strip,nm,tsort}/` (the one C file of each, the offsets of the
+  binary in the comments; a `Makefile` and a `README.md` each), `src/mutos_lorder/`
+  (`mutos_lorder.in`, built into `mutos_lorder` by its `Makefile`), `src/h/mutos_stdio.h`. The top-level
+  `make all` builds them (`all: ld as cpp cc ar ranlib make nm size strip tsort lorder root`),
+  zero warnings under `-std=c11 -Wall -Wextra -Wpedantic`.
+- **In the MUTOS root**: `bin/nm`, `bin/size`, `bin/strip`, `bin/tsort` and `bin/lorder` as links into
+  `src/` (`scripts/mutos_root.sh`, `tests/mutos_root/check_root.py`). `lorder` finds `nm` there.
+- **Against the emulated originals** (`tests/realbin/utilcmp.py`; a case is a directory and a few
+  steps, run in two copies, each with a MUTOS root of its own, the messages, the exit status and
+  both trees - names, bytes, modes - compared after every step; `nm` and `tsort` also with both output
+  streams on one pipe, for the order of their messages; `size` and `tsort` also with standard output
+  on `/dev/full`): `utilcmp.py cases` **1,118 cases, 3,872 runs: 3,729 the same, 125 refused, 18 where
+  the original does not finish, no difference** - `size` 294 cases (313 the same, 3 refused), `strip`
+  311 (636, 1), `nm` 410 (2,504, 30), `tsort` 89 (226 the same, 90 refused, 18 where the original
+  ends in an invalid instruction), `lorder` 14 (50, 1). Every object and archive of the tree is in
+  them - the 76 `.o` goldens, `crt0.o`, `libc.a` and its 167 objects, executables linked from them
+  - each with every option (`nm -gnopru` and combinations, an invalid one, one file and several, archives
+  and objects mixed; `strip` of objects, executables and stripped files; `size` of every magic number),
+  besides headers of every shape, cut and damaged files, archives of odd sizes, full disks,
+  directories, graphs of every kind for `tsort` (DAGs, cycles, self-loops, duplicates, odd data,
+  items of up to 200 characters, separators of every kind) and `lorder` on `libc.a`'s objects; chains of
+  1900, 1974 and 1975 pairs (the port's limit) and of 2010 (passes) and 2011 (the original: "too many
+  items") for `tsort`.
+- **Differential fuzzing** (`tests/realbin/utilfuzz.py`; objects and archives the fuzzer makes - symbols
+  of every type, names of 1 to 14 characters, bytes of 0200 and more, equal names and values, the four
+  magic numbers and some that are none, cut tables -, command lines with random options, graphs for
+  `tsort`, `lorder` into `tsort`; with `--mutate` the files are also cut or changed between the
+  runs; one case runs the five tools in turn): no difference. Seed 1, 300 cases plain and 300 with `--mutate
+  0.3` (`make check-realbin`); seed 2, 1,500 cases plain (1,382 the same, 117 refused, 1 where the
+  original does not finish); seed 3, 1,500 cases with `--mutate 0.3` (1,411 the same, 89 refused).
+  The first fuzz run found one fault of the judge (the process number `join` prints into a message
+  is normalised); the comparison found one of the port, fixed: the heap limit of `tsort`
+  (`TS_HEAP` was 0xA000 and refused a chain of 1500 pairs which the original sorts; **measured on the
+  original: 2010 pairs pass, 2011 end "too many items"**, so about 56K of blocks fit; the port
+  stops 1K short at 0xD800).
+- **Without an emulator** (`tests/mutos_binutils/check_tools.py`, in `make test`, 30 checks, no
+  difference): the a.out headers and symbol tables of `crt0.o`, the 167 objects of `libc.a` and
+  a program the ported `cc` and `ld` make are read independently of `nm` and `size`, and what they print
+  - the sizes, the type letters, `-g`, `-u`, `-n`, `-r`, `-o`, `-p` - is compared with it; the
+  `__.SYMDEF` of `libc.a` with the table `nm -g` gives; a program after `strip` (no symbols,
+  the flag set, the file as long as header, text and data; "already stripped" the second time);
+  `tsort` on a chain, a diamond, a cycle, odd data, a missing file and a file argument;
+  `lorder` of one object (the pair twice), of `crt0.o` (no name list) and of `libc.a` - every pair
+  derived from the symbol tables - and `lorder libc.a | tsort`, which names each of the 167 objects once.
+- **Refused on purpose** (exit status 125, a last message line ending in "refused"; what was written
+  before is the original's, in order): a directory named as a file (all four: the original reads its entries),
+  `nm`'s eighteenth file left open (NM-04), a negative member size that sends the original's
+  `fseek()` below zero (NM-06), a 14-character member name with no 0 in the 42 bytes behind it
+  (NM-03), more than `NM_MAXSYM` = 2000 symbols in one object (NM-08), `tsort`'s item of 54
+  characters or more in the first place or 104 in the second (TS-01), a byte of 0200 or more
+  in `tsort`'s input (TS-02), more graph than 54K of blocks (TS-04, TS-05); `lorder` passes `nm`'s refusal on.
+- **The originals' bugs**: 22 in `docs/MUTOS_ORIGINAL_BUGS.md` - `size`: the header buffer is not reset (SZ-01),
+  no `exit()` (SZ-02); `strip`: the header is not reset (ST-01), the file is truncated before the copy is
+  written (ST-02), the temporary name from 15 bits of the process number (ST-03), an object's
+  relocation is dropped (ST-04); `nm`: unaligned columns (NM-01), `arch_flg` never reset
+  (NM-02), the 14-character member name (NM-03), the unclosed file (NM-04), `arp`/`exp`/`sym` never
+  reset (NM-05), a negative member size (NM-06), signed name comparison (NM-07), the heap
+  (NM-08); `tsort`: the 50-character item (TS-01), `__sctab` (TS-02), no `exit()` (TS-03), the
+  unchecked `malloc()` (TS-04), the 64K (TS-05); `lorder`: only `T` and `D` are definitions (LO-01),
+  working files in the current directory (LO-02), names must end in `.o` and `$*` is unquoted
+  (LO-03). The port reproduces them all but NM-04, NM-08, TS-02, TS-04 and TS-05, which it refuses,
+  and the parts of NM-03, NM-06 and TS-01 named above.
+- **Not verified**: the limits of the 64K segment are models - `tsort`'s 2010 pairs are measured on
+  the emulated original, but a failing `malloc()` of a predecessor list is silent (TS-04), so the
+  limit can only be read from `index()`'s message, and `NM_MAXSYM` = 2000 is a safe bound, not a
+  measured one; none of this was run on the hardware; `strip`'s temporary name takes the host's process
+  number, as `mktemp()` takes the original's; `lorder`'s `sed`, `sort` and `join` are the host's,
+  not MUTOS's (the C locale makes them agree in every case measured); the stdio model is
+  libc.a's as read for these four programs, nothing more; `tsort`'s `findloop()` errors 1 and 2
+  are read, not reached.
+- **Not done**: the manual pages of the five tools (they come at the end, Workflow Guideline 10).
+
 ---
 
 ## `mutos_as` opcode coverage
@@ -1597,7 +1711,8 @@ far.
    `docs/C0_PORT_PLAN.md`, `docs/TOOLCHAIN_PLAN.md` step 3), every golden reproduced
    through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5), then
    `mutos_as`'s differential fuzzer (Milestone 2, step 5), then `mutos_ar` and
-   `mutos_ranlib` (Milestone 6, step 6) and `mutos_make` (step 7); next is step 8 - see "Next up".
+   `mutos_ranlib` (Milestone 6, step 6), `mutos_make` (step 7) and `mutos_nm`, `mutos_size`,
+   `mutos_strip`, `mutos_tsort`, `mutos_lorder` (step 8); next is step 9 - see "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -

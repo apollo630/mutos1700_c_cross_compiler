@@ -1,0 +1,102 @@
+# nmmap.txt - a map of the real MUTOS 1700 nm (mutos/mutos_bin/nm.golden.base64.txt)
+#
+# The binary (0407, text 1ab8, data 1ab8..1c1a, BSS to 2110) is stripped; the names below are v7's
+# (v7/nm/nm.c), found by the strings each function passes, the calls it makes and
+# its position. It is crt0, then nm.o - v7's nm.c, its three functions -, then
+# libc.a from text 0678 (fseek) (nmdis.py matches the other functions against
+# libc.a's objects). nmdis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/nm/nm.c): same - compared, does what v7's does
+#                                      libc - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_nm/nm.c, read from the text at that
+#       offset (libc.a's: only where the port re-enacts what nm sees of
+#       it - stdio's buffering and status values; the rest is the host's)
+#
+# Common to all: the headers are bytes (ar_hdr 26, exec 16, nlist 12), the
+# longs have their high word first (arp.ar_size, off), the symbol's type is
+# read as a word and its N_EXT bit (040) tested, FORMAT is "%04x", and arp
+# and exp lie one behind the other at 1c28 and 1c42 (arp.ar_name of 14 bytes
+# runs on into the header when it has no 0 - "nm: %s-- no name list" prints
+# it so).
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- nm.o
+T 00b6 _main       same       ported  the options g n o p r u in the first argument only (switch table at 0152: g 010a, n 0103, o 0128, p 0121, r 0118, u 0111, else "invalid argument" and exit 1); a.out without a file; per file fopen "r", the magic (0177545 or the four a.out magics, else "bad format" - the file stays open), the members via nextel(); per member the symbols into a block that grows by realloc; qsort(compare); the list with printf
+T 058e _compare    same       ported  -n: n_value (unsigned), then the 8 bytes of the name compared as signed characters; revsort_flg is 1 or -1
+T 05f6 _nextel     same       ported  fseek(fi, off, 0); fread 26 bytes into arp (a short read still counts); an odd size rounded up; off = ftell() + size
+# ---- libc.a (nmdis.py names the functions it can match)
+T 0678 _fseek     libc       ported  nm_fseek(): the host's fseek(); a seek to a negative offset (the original's lseek() fails) is refused
+T 07c2 _ftell     libc       -       libc.a's stdio, the host's in the port
+T 087a _fread     libc       -       libc.a's stdio, the host's in the port
+T 08d4 _fwrite    libc       -       libc.a's stdio, the host's in the port
+T 0934 _fopen     libc       ported  the port opens with the host's fopen(); a directory is refused (the original reads its entries)
+T 094c _fprintf   libc       ported  mu_eprintf(): stderr has no buffer, one write()
+T 098e _printf    libc       ported  mu_printf() (../h/mutos_stdio.h): stdout in 512-byte blocks, EOF (-1) once the stream failed, else 0
+T 09d2 __filbuf   libc       -       libc.a's stdio, the host's in the port
+T 0a90 __doprnt   libc       ported  the host's vsnprintf()
+T 0dac _crack     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0dde _crack2    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0e48 _getuw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0e66 _getsw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0eb2 _getud     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0ed6 _getsd     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0f26 _gnum      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0f76 _pfloat    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0f84 _pgen      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0f92 _pscien    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0fa0 __strout   libc       -       printf's formatting (the port: the host's vsnprintf())
+T 1072 __flsbuf   libc       ported  mu_flush(): one write() of the block; a short write sets the error flag
+T 115a _fflush    libc       -       libc.a's stdio, the host's in the port
+T 11b0 __cleanu   libc       -       libc.a's stdio, the host's in the port
+T 11ce _fclose    libc       -       libc.a's stdio, the host's in the port
+T 1234 __stbuf    libc       -       libc.a's stdio, the host's in the port
+T 126e __ftbuf    libc       -       libc.a's stdio, the host's in the port
+T 1294 __endope   libc       -       libc.a's stdio, the host's in the port
+T 136c _create    libc       -       libc.a's stdio, the host's in the port
+T 13a6 __findio   libc       -       libc.a's stdio, the host's in the port
+T 13ce _exit      libc       ported  mu_exit(): the stdout block written, then _exit(status)
+T 13d8 _malloc    libc       ported  NM_MAXSYM: the symbols grow by realloc() inside the 64K break, the original runs out of memory at about 2000; the port refuses beyond it
+T 14e0 _free      libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 14fa _ialloc    libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 158a _realloc   libc       ported  the symbol array: see _malloc
+T 163a _isatty    libc       -       isatty(1) decides whether stdout is line buffered (mu_oputc()); the host's
+T 1660 _qsort     libc       ported  nm_qsort(): V7's qsort - qs1 168a, qsexc 17ca, qstexc 17f8, in 16-bit pointers
+T 168a _qs1       libc       ported  qs1()
+T 17ca _qsexc     libc       ported  qsexc()
+T 17f8 _qstexc    libc       ported  qstexc()
+T 183a _stty      libc       -       tty ioctl, called by isatty() only
+T 1852 _gtty      libc       -       tty ioctl, called by isatty() only
+T 186a _close     libc       -       system call stub (the host's system call in the port)
+T 1870 _creat     libc       -       system call stub (the host's system call in the port)
+T 1876 _ioctl     libc       -       libc.a's stdio, the host's in the port
+T 187c _lseek     libc       -       system call stub (the host's system call in the port)
+T 18a6 _open      libc       -       system call stub (the host's system call in the port)
+T 18ac _read      libc       -       system call stub (the host's system call in the port)
+T 18b2 _sbrk      libc       -       system call stub (the host's system call in the port)
+T 18d9 sbrk0      libc       -       libc.a's stdio, the host's in the port
+T 18da sbrk2      libc       -       libc.a's stdio, the host's in the port
+T 18dd sbrk1      libc       -       libc.a's stdio, the host's in the port
+T 18e4 _brk       libc       -       libc.a's stdio, the host's in the port
+T 1902 _write     libc       -       system call stub (the host's system call in the port)
+T 1a92 sys1a      libc       -       libc.a's stdio, the host's in the port
+# ---- data
+D 1ab8 crt0        crt0's data: Isgadr 1aba, Iscadr 1abe
+D 1ac2 revsort_flg int revsort_flg = 1
+D 1ac4 text        the strings: "nm: invalid argument -%c\n", "a.out", "nm: cannot open %s\n", "nm: %s-- bad format\n", "\n%s:\n", "nm: %s-- no name list\n", "nm: out of memory on %s\n", "%s:", "      ", "%04x", " %c ", "%.8s\n"
+D 1b6a null        libc.a's "(null)"
+D 1c1a bss         the BSS
+D 1c1c numsort_flg
+D 1c1e undef_flg
+D 1c20 globl_flg
+D 1c22 nosort_flg
+D 1c24 arch_flg
+D 1c26 prep_flg
+D 1c28 arp         struct ar_hdr (26 bytes): name 1c28, date 1c36, size 1c3e
+D 1c42 exp         struct exec (16 bytes): magic 1c42, text 1c44, data 1c46, syms 1c4a, flag 1c50
+D 1c52 fi          FILE *
+D 1c54 off         long (high word 1c54, low 1c56)
+D 1c70 _iob        libc.a's FILE structures (8 bytes each), stdin 1c70, stdout 1c78, stderr 1c80; the 21st would lie at 1d10, on the stdin buffer
+D 210c qscmp       qsort()'s comparison function
+D 210e qses        qsort()'s element size

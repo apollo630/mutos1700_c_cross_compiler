@@ -3,31 +3,35 @@
 `../../mutos/mutos_bin/` holds the original binaries brought from the
 hardware (the toolchain `as`, `c0`, `c1`, `c2`, `cc`, `cpp`, `ld`, and since
 2026-10-25 `make`, `ar`, `ranlib`, the other tools MUTOS makefiles use and
-the editors - `ar` and `ranlib` run here since 2026-10-26, `make` since
-2026-11-02, the others not yet -
+the editors - `ar` and `ranlib` run here since 2026-10-26, `make`, `nm`,
+`size`, `strip`, `tsort` and `lorder` since 2026-11-02, the editors not yet -
 as base64 text, see its
 `README.md`). This
 directory runs the toolchain on the modern host under an
 8086 emulator and reads `c1`'s code tables out of its data segment. It
 needs no hardware: the real compiler's answer for any input is one
 emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`,
-`mutos_ld`, `mutos_cc`, `mutos_c2`, `mutos_ar`, `mutos_ranlib` and
-`mutos_make` - since 2026-10-13, 2026-10-18, 2026-10-22 (the next two),
-2026-10-24, 2026-10-25, 2026-10-26 (the next two) and 2026-11-02 (the last)
-ports of the real `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib` and
-`make` (`src/mutos_cc/c1port/`, `c0port/`,
+`mutos_ld`, `mutos_cc`, `mutos_c2`, `mutos_ar`, `mutos_ranlib`, `mutos_make`,
+`mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort` and `mutos_lorder` - since
+2026-10-13, 2026-10-18, 2026-10-22 (the next two), 2026-10-24, 2026-10-25,
+2026-10-26 (the next two) and 2026-11-02 (the last six) ports of the real `c1`,
+`c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip` and
+`tsort` and the real shell script `lorder` (`src/mutos_cc/c1port/`, `c0port/`,
 `src/mutos_cpp/`, `src/mutos_ld/`, `src/mutos_cc/ccport/`, `c2port/`,
-`src/mutos_ar/`, `src/mutos_ranlib/`, `src/mutos_make/`,
+`src/mutos_ar/`, `src/mutos_ranlib/`, `src/mutos_make/`, `src/mutos_nm/`,
+`src/mutos_size/`, `src/mutos_strip/`, `src/mutos_tsort/`, `src/mutos_lorder/`,
 `docs/C1_PORT_PLAN.md`,
 `docs/C0_PORT_PLAN.md`, `src/mutos_cpp/README.md`, `src/mutos_ld/README.md`,
 `src/mutos_cc/README.md`, `src/mutos_ar/README.md`,
-`src/mutos_ranlib/README.md`, `src/mutos_make/README.md`) - are checked against the originals, on every
+`src/mutos_ranlib/README.md`, `src/mutos_make/README.md`, `src/mutos_nm/README.md`
+and the others of step 8) - are checked against the originals, on every
 golden and on random input.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
 `c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py`, `ccdis.py`, `c2dis.py`,
-`ardis.py`, `ranlibdis.py` and `makedis.py`; a C
+`ardis.py`, `ranlibdis.py`, `makedis.py`, `sizedis.py`, `stripdis.py`, `nmdis.py` and
+`tsortdis.py`; a C
 compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 
 ## Files
@@ -83,6 +87,10 @@ compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 | `maketables.py` | Reads yacc's eight tables and `builtin[]` (67 strings) out of the binary: `--table` prints them, `--c` writes `src/mutos_make/makedata.c`, `--check-c FILE` checks that file is current (in `make check-realbin`). |
 | `makecmp.py` | `mutos_make` against the original: sequences of `make` command lines and changes of the files (written, removed, touched, cut) run in two copies of one directory with a MUTOS root of its own (fake `cc`, `as`, `ld`, `f77`, `yacc`, `lex`, `cpp`, `c0` in `bin/`, `tmp/`); the emulator's faked `exece` runs the host's program with the original's standard output and error, the port's `PATH` is the same; the messages, the exit status and both trees - names, bytes and modes - compared after every step, the path of the copy counting as one name. `cases` (hand-written: the description file and `-f`, every flag, rules and special targets, `::`, macros and their forms, the line syntax, syntax errors, prefixes, exit statuses and signals, the built-in rules, wildcards, archives of every kind) or `corpus` (the thirteen `tests/mutos_cc/*/Makefile.mutos` with the sources only, the made files newer and older, eight command lines each) or `run ARG...`. A refusal of the port (status 125, a last line ending in "refused") counts apart, and so do `orig-fails`, `endless` and `limits`. |
 | `makefuzz.py` | Differential fuzzing of `mutos_make` with `makecmp.py`'s comparison: random makefiles (macros, `.SUFFIXES`, suffix rules, explicit rules with `:` and `::`, wildcards, archive members and entry points, `.DEFAULT` and the special targets, commands with prefixes, `;`, continuation, comments, CR LF) over a pool of files whose times tie, command lines with random flags, macros and targets, files that change between the runs; `--mutate P` damages the makefile for the error paths. |
+| `sizemap.txt`, `stripmap.txt`, `nmmap.txt`, `tsortmap.txt` | Maps of the stripped `size` (one function), `strip` (three), `nm` (three, then `libc.a` from text 0678 with `qsort()`) and `tsort` (eight, then `libc.a` from text 03cc with `fscanf`): v7's functions, all `same` as v7's, `libc.a`'s functions linked in, and the data (the header buffers, the flags, `arp` and `exp`, the frame of `tsort`'s `main()`, `__sctab`, the strings). |
+| `sizedis.py`, `stripdis.py`, `nmdis.py`, `tsortdis.py` | `c1dis.py` switched to `size`, `strip`, `nm` and `tsort`: the annotated disassembly by function name from the map. |
+| `utilcmp.py` | `mutos_size`, `mutos_strip`, `mutos_nm`, `mutos_tsort` and `mutos_lorder` against the originals: cases of files and steps (command lines, with a standard input where there is one, and changes of the files) run in two copies of one directory, each with a MUTOS root of its own (an empty `tmp/` for `strip`'s temporary file, `bin/` for `lorder`'s tools), the messages, the exit status and both trees - names, bytes and modes - compared after every step; `nm` and `tsort` run a second time with both output streams on one pipe, to compare the order of their messages. `lorder` is a shell script: the original script runs under the host's `sh` with the emulated original `nm` (a wrapper in the case's root), and `lorder ... \| tsort` runs the emulated `tsort` on its output. `cases` (every object and archive of the tree - 76 `.o` goldens, `crt0.o`, `libc.a`, its 167 objects, executables linked from them - with every option, headers of every shape, damaged files, archives of odd sizes, the stdio slot leak, full disks, directories, graphs of every kind for `tsort`) or `run [--stdin] TOOL ARG...`. A refusal of the port (status 125, a last line ending in "refused") counts apart: what it wrote must be a prefix of what the original wrote. |
+| `utilfuzz.py` | Differential fuzzing of the five with `utilcmp.py`'s comparison: objects and archives generated by the fuzzer itself (symbols of every type, names of 1 to 14 characters, bytes of 0200 and more, equal names and values, the four magic numbers and some that are none, cut tables), command lines with random options, graphs for `tsort` (DAGs, cycles, self-loops, odd data, items of up to 49 characters), `lorder` into `tsort`; `--mutate P` cuts or changes the files between the runs. |
 | `ldfuzz.py` | Differential fuzzing of `mutos_ld` with `ldcmp.py`'s comparison: random objects (text and data words with every relocation kind, the pc-relative and byte-shift bits; external definitions in every segment, absolutes, undefined, commons, locals, "L" locals, file names, shared names, a spare byte, an odd size, no relocation bits, another magic), real `crt0.o` and `libc.a` members, archives plain, current and out of date - by name or through `-l` from the root -, random options; `--mutate P` damages files for the error paths. |
 | `c0fuzz.py` | Differential fuzzing of `mutos_c0` with `c0cmp.py`'s comparison. Generators: its own, declaration-heavy (storage classes, typedefs, structures, unions, enums, bit-fields, initializers, K&R parameters, blocks, labels, switches, the old `=+` operators, `\/` and `/\`, escapes, comments, `# line` lines, SOH markers), `c1fuzz.py`'s (`--gen c1fuzz`) and `fuzz_c.py`'s (`--gen fuzz_c`); `--mutate P` deletes, duplicates, swaps or inserts tokens, for the error paths. |
 | `c1fuzz.py` | Differential fuzzing: random programs through `mutos_cpp` and the emulated real `c0`, then the emulated original `c1` against `mutos_c1` (depth 4 by default, 1 and 2 too). Generators: its own (every type, a structure with bit-fields, registers, calls, switches), `fuzz_c.py`'s (`--gen fuzz_c`), and long constant arithmetic at the edges of `lconst()`'s library paths (`--gen lconst`). The port's refusals are checked too: what it wrote before must be the original's, and where the original does not finish, the port must have refused. |
@@ -147,6 +155,12 @@ python3 tests/realbin/makecmp.py run -n -f Makefile.mutos   # one command line, 
 python3 tests/realbin/makefuzz.py -n 500 -s 7 --mutate 0.5 --keep /tmp/mkdiff
 python3 tests/realbin/maketables.py --check-c src/mutos_make/makedata.c
 python3 tests/realbin/makedis.py _doname
+python3 tests/realbin/utilcmp.py cases -j 2 --show 100
+python3 tests/realbin/utilcmp.py cases nm tsort
+python3 tests/realbin/utilcmp.py run nm -pn x.o   # one command line, in a copy of the current directory
+python3 tests/realbin/utilfuzz.py -n 500 -s 7 --mutate 0.3 --tool nm --keep /tmp/utildiff
+python3 tests/realbin/nmdis.py _compare
+python3 tests/realbin/tsortdis.py _index
 ```
 
 The original `cc` (since 2026-10-20, `cctrace.py`):
@@ -399,6 +413,41 @@ and `asfuzz.py` measure instead of demanding "the same".
 - The signal handlers are not compared (`intrupt()`, `enbint()`: the
   emulator cannot signal the program from outside, and `make` ignores SIGINT
   and SIGQUIT while it waits for a command).
+
+## The ports of `nm`, `size`, `strip`, `tsort` and `lorder` against them (2026-11-02)
+
+- `utilcmp.py cases`: 1,118 cases (a case is a directory and a few steps), 3,872
+  runs of a tool - 3,729 the same, 125 refused, 18 where the original does not
+  finish, no difference. By tool: `size` 294 cases (313 the same, 3 refused: a
+  directory named as a file); `strip` 311 (636, 1: the same); `nm` 410 (2,504, 30
+  refused: 17 an `fseek()` to a negative offset - NM-06 -, 8 the eighteenth file left
+  open - NM-04 -, 3 a directory, 2 more symbols than `NM_MAXSYM`); `tsort` 89 (226
+  the same, 90 refused: 78 an item that runs on into the `FILE` pointer of `main()`'s
+  frame - TS-01 -, 5 a byte of 0200 or more - TS-02 -, 5 more graph than the heap
+  model (`TS_HEAP`) holds - TS-04, TS-05 -, 2 a directory; 18 where the original ends in an invalid
+  instruction - an item that overwrites `main()`'s return address); `lorder` 14 (50,
+  1 refused: the `nm` under it). Every object and archive of the tree is among them:
+  the 76 `.o` goldens, `crt0.o`, `libc.a` and its 167 objects, executables linked from
+  them, each with every option; `tsort` on the chains of 1900, 1974 and 1975 pairs (the
+  port's limit) and 2010 and 2011 (the original's); `lorder libc.a | tsort`.
+- `utilfuzz.py` (`make check-realbin`: 300 cases, seed 1, plain and with
+  `--mutate 0.3`; the longer runs are in `STATUS.md`, Milestone 6): no difference
+  in seeds 1 to 3 - 1,500 cases each at seed 2 (plain: 1,382 the same, 117 refused,
+  1 where the original does not finish) and seed 3 (`--mutate 0.3`: 1,411 the
+  same, 89 refused).
+- The emulator's `Emu` needed nothing new. A refusal is the port's exit status 125
+  and a last line ending in "refused"; the judge requires what it wrote before to be
+  a prefix of what the original wrote. `lorder` runs the original script under the
+  host's `sh` with the emulated `nm`; the process number the host's `join` puts into
+  one of its messages is normalised, which the first fuzz run showed (one false
+  DIFFERENT, the judge's).
+- Found by the comparison, in the port: the `tsort` heap limit (`TS_HEAP` 0xA000
+  refused a chain of 1500 pairs which the original sorts; measured on the original:
+  2010 pairs pass, 2011 end "too many items"; now 0xD800). Nothing else
+  differed.
+- `../mutos_binutils/check_tools.py` is the check that needs no emulator (in `make
+  test`): sizes, symbol tables, `__.SYMDEF`, a stripped program and `lorder | tsort`
+  against an independent reading of the a.out files - 30 checks.
 
 ## The other originals (2026-10-20)
 

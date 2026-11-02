@@ -16,14 +16,15 @@
 #                  1989-01-31 20:41:17 UTC, so that ld uses the table
 #                  without "out of date"
 #   lib/cpp, lib/c0, lib/c1, lib/c2, bin/as, bin/ld, bin/cc, bin/ar,
-#   bin/ranlib, bin/make
+#   bin/ranlib, bin/make, bin/nm, bin/size, bin/strip, bin/tsort, bin/lorder
 #                  symbolic links to mutos_cpp, mutos_c0, mutos_c1,
 #                  mutos_c2, mutos_as, mutos_ld, mutos_cc, mutos_ar,
-#                  mutos_ranlib, mutos_make - the driver finds its passes
-#                  through the root, under the original's paths, and
-#                  mutos_ranlib runs bin/ar as the original runs "ar"
+#                  mutos_ranlib, mutos_make, mutos_nm, mutos_size,
+#                  mutos_strip, mutos_tsort, mutos_lorder - the driver finds
+#                  its passes through the root, under the original's paths,
+#                  and mutos_ranlib runs bin/ar as the original runs "ar"
 #                  through its shell (mutos_make puts the root's bin/ first
-#                  in the PATH of its commands); a
+#                  in the PATH of its commands; mutos_lorder runs bin/nm); a
 #                  link to a tool not built (yet) dangles, and running it
 #                  fails as on a MUTOS system without the file
 #   usr/lib/       empty: for the user's own libraries (ld -lX looks in
@@ -112,4 +113,9 @@ bin/cc mutos_cc/mutos_cc
 bin/ar mutos_ar/mutos_ar
 bin/ranlib mutos_ranlib/mutos_ranlib
 bin/make mutos_make/mutos_make
+bin/nm mutos_nm/mutos_nm
+bin/size mutos_size/mutos_size
+bin/strip mutos_strip/mutos_strip
+bin/tsort mutos_tsort/mutos_tsort
+bin/lorder mutos_lorder/mutos_lorder
 EOF

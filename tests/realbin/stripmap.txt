@@ -1,0 +1,90 @@
+# stripmap.txt - a map of the real MUTOS 1700 strip (mutos/mutos_bin/strip.golden.base64.txt)
+#
+# The binary (0407, text 11ec, data 11ec..137a, BSS to 1832) is stripped; the names below are v7's
+# (v7/strip/strip.c), found by the strings each function passes, the calls it makes and
+# its position. It is crt0, then strip.o - v7's strip.c, its three functions -, then
+# libc.a from text 0350 (printf) (stripdis.py matches the other functions against
+# libc.a's objects). stripdis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status (against v7/strip/strip.c): same - compared, does what v7's does
+#                                      libc - libc.a's, as far as the port re-enacts it
+# Port: ported - in src/mutos_strip/strip.c, read from the text at that
+#       offset (libc.a's: only where the port re-enacts what strip sees of
+#       it - stdio's buffering and status values; the rest is the host's)
+#
+# Common to all: the a.out header is a global (struct exec head, 16 bytes,
+# zero at the start, stale between the files), the sizes are longs (the
+# high word first).
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- strip.o
+T 00b6 _main       same       ported  SIGHUP, SIGINT and SIGQUIT ignored; tname = mktemp("/tmp/sXXXXX"); close(creat(tname, 0600)); tf = open(tname, 2) ("cannot create temp file", exit 2); strip() for each argument until status > 1; close(tf); unlink(tname); exit(status)
+T 016e _strip      same       ported  open(name, 0) ("cannot open"); read 16 bytes into head (no check); the magic ("not in a.out format"); a_syms == 0 and a_flag & 1 ("already stripped"); size = text + data; head.a_syms = 0, a_flag |= 1; head and size bytes into tf; creat(name, 0666) ("cannot recreate"); tf back over the file
+T 02ce _copy       same       ported  size bytes from fr to to in pieces of 512; "%s unexpected eof" / "%s unexpected write eof", 1
+# ---- libc.a (stripdis.py names the functions it can match)
+T 0350 _printf    libc       ported  mu_printf() (../h/mutos_stdio.h): stdout in 512-byte blocks, EOF (-1) once the stream failed, else 0
+T 0394 __doprnt   libc       ported  the host's vsnprintf()
+T 06b0 _crack     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 06e2 _crack2    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 074c _getuw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 076a _getsw     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 07b6 _getud     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 07da _getsd     libc       -       printf's formatting (the port: the host's vsnprintf())
+T 082a _gnum      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 087a _pfloat    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0888 _pgen      libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0896 _pscien    libc       -       printf's formatting (the port: the host's vsnprintf())
+T 08a4 __strout   libc       -       printf's formatting (the port: the host's vsnprintf())
+T 0976 __flsbuf   libc       ported  mu_flush(): one write() of the block; a short write sets the error flag
+T 0a5e _fflush    libc       -       libc.a's stdio, the host's in the port
+T 0ab4 __cleanu   libc       -       libc.a's stdio, the host's in the port
+T 0ad2 _fclose    libc       -       libc.a's stdio, the host's in the port
+T 0b38 __stbuf    libc       -       libc.a's stdio, the host's in the port
+T 0b72 __ftbuf    libc       -       libc.a's stdio, the host's in the port
+T 0b98 _exit      libc       ported  mu_exit(): the stdout block written, then _exit(status)
+T 0ba2 _malloc    libc       -       linked in, not called
+T 0caa _free      libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 0cc4 _ialloc    libc       -       the allocator's (V7 malloc: sbrk in steps of about 1K)
+T 0d54 _realloc   libc       -       linked in, not called
+T 0e04 _isatty    libc       -       isatty(1) decides whether stdout is line buffered (mu_oputc()); the host's
+T 0e2a _mktemp    libc       ported  st_mktemp(): the pid's five digits (16 bits), then 'a'..'y' for the first digit while the name exists; "/" at 'z'
+T 0e9a _stty      libc       -       tty ioctl, called by isatty() only
+T 0eb2 _gtty      libc       -       tty ioctl, called by isatty() only
+T 0eca _access    libc       -       libc.a's stdio, the host's in the port
+T 0ed0 _close     libc       -       system call stub (the host's system call in the port)
+T 0ed6 _creat     libc       -       system call stub (the host's system call in the port)
+T 0edc _getpid    libc       -       system call stub (the host's system call in the port)
+T 0ee4 _ioctl     libc       -       libc.a's stdio, the host's in the port
+T 0eea _lseek     libc       -       system call stub (the host's system call in the port)
+T 0f14 _open      libc       -       system call stub (the host's system call in the port)
+T 0f1a _read      libc       -       system call stub (the host's system call in the port)
+T 0f20 _sbrk      libc       -       system call stub (the host's system call in the port)
+T 0f47 sbrk0      libc       -       libc.a's stdio, the host's in the port
+T 0f48 sbrk2      libc       -       libc.a's stdio, the host's in the port
+T 0f4b sbrk1      libc       -       libc.a's stdio, the host's in the port
+T 0f52 _brk       libc       -       libc.a's stdio, the host's in the port
+T 0f70 _signal    libc       ported  the host's signal(): SIG_IGN for SIGHUP, SIGINT, SIGQUIT
+T 0f98 sig1       libc       -       libc.a's stdio, the host's in the port
+T 0faa sig2       libc       -       libc.a's stdio, the host's in the port
+T 0fad sig3       libc       -       libc.a's stdio, the host's in the port
+T 0fb3 sig4       libc       -       libc.a's stdio, the host's in the port
+T 0fb4 sigtrp     libc       -       libc.a's stdio, the host's in the port
+T 0fdc sigvec     libc       -       libc.a's stdio, the host's in the port
+T 1020 _unlink    libc       -       system call stub (the host's system call in the port)
+T 1026 _write     libc       -       system call stub (the host's system call in the port)
+T 102c chkstk     libc       -       libc.a's stdio, the host's in the port
+T 11b2 sys1a      libc       -       libc.a's stdio, the host's in the port
+T 11d2 __exit     libc       -       libc.a's stdio, the host's in the port
+T 11e0 _kill      libc       -       libc.a's stdio, the host's in the port
+# ---- data
+D 11ec crt0        crt0's data: Isgadr 11ee, Iscadr 11f2
+D 11f6 a_magic     int a_magic[] = {0407, 0410, 0411, 0405, 0}
+D 1200 text        the strings: "/tmp/sXXXXX", "cannot create temp file\n", "cannot open %s\n", "%s not in a.out format\n", "%s already stripped\n", "%s cannot recreate\n", "%s unexpected eof\n", "%s unexpected write eof\n"
+D 12a2 null        libc.a's "(null)"
+D 137a bss         the BSS
+D 137c tname       char *
+D 137e head        struct exec (16 bytes): magic 137e, text 1380, data 1382, syms 1386, flag 138c
+D 138e status      int
+D 1390 tf          int

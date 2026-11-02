@@ -48,7 +48,11 @@ LINKS = (('lib/cpp', 'mutos_cpp/mutos_cpp'), ('lib/c0', 'mutos_cc/mutos_c0'),
          ('bin/as', 'mutos_as/mutos_as'), ('bin/ld', 'mutos_ld/mutos_ld'),
          ('bin/cc', 'mutos_cc/mutos_cc'), ('bin/ar', 'mutos_ar/mutos_ar'),
          ('bin/ranlib', 'mutos_ranlib/mutos_ranlib'),
-         ('bin/make', 'mutos_make/mutos_make'))
+         ('bin/make', 'mutos_make/mutos_make'),
+         ('bin/nm', 'mutos_nm/mutos_nm'), ('bin/size', 'mutos_size/mutos_size'),
+         ('bin/strip', 'mutos_strip/mutos_strip'),
+         ('bin/tsort', 'mutos_tsort/mutos_tsort'),
+         ('bin/lorder', 'mutos_lorder/mutos_lorder'))
 GOLDEN_S = os.path.join(REPO, 'tests', 'mutos_cc', '08_float',
                         '01_floatbas.s.golden')
 INCLUDE = os.path.join(REPO, 'mutos', 'mutos_include', 'usr', 'include')
