@@ -1,0 +1,176 @@
+# edmap.txt - a map of the real MUTOS 1700 ed (mutos/mutos_bin/ed.golden.base64.txt)
+#
+# The binary (0407, text 0000..2d02, data 2d02..2dec, BSS to 4102) is stripped; the
+# names are v7's: v7/ed/ed.c with the two MUTOS changes (src/mutos_ed/README.md),
+# compiled with the project's own cc -O -s and linked with libc.a, is the binary
+# byte for byte - the offsets below are that build's symbol table. It is crt0, then
+# ed.o, then libc.a from text 2556 (exit). eddis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status: v7    - v7's function, instruction for instruction (the rebuild)
+#         mutos - v7's with the MUTOS change (the rebuild)
+#         libc  - libc.a's
+# Port:   ported - in src/mutos_ed/ed.c; for libc.a: as far as ed sees it
+#
+# The line table is malloc()ed at 0x4104 (measured), the break before it 4102.
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- ed.o
+T 00b6 _main       v7         ported  options - (no counts, no "?" for changes), -q (SIGQUIT), -x (the key: refused); the file of the command line read by a faked "r"; the line table malloc()ed (0x4104); mktemp("/tmp/eXXXXX")
+T 0200 _command    mutos      ported  commands(): the MUTOS j (one address: it and the next) - else v7's; switch hashed by c%2 (jump table in the text)
+T 06ba _address    v7         ported  the number n*10+d in 16 bits, a1 += n wraps around the segment, the check unsigned
+T 0896 _setdot     v7         ported
+T 08c6 _setall     v7         ported
+T 08fa _setnoad    v7         ported
+T 0914 _nonzero    v7         ported
+T 093a _newline    v7         ported
+T 0976 _filenam    v7         ported  filename(): the name into file[] with no bound (runs on into linebuf, rhsbuf, expbuf; past circfl refused)
+T 0a42 _exfile     v7         ported
+T 0a6e _onintr     v7         ported
+T 0a9e _onhup      v7         ported
+T 0afa _error      v7         ported  "?" and the text; lseek(0, 0L, 2): a script read from a file ends at its first error
+T 0b9a _getchr     v7         ported  read(0, &c, 1), c & 0177
+T 0c0c _gettty     v7         ported
+T 0c80 _getfile    v7         ported  512-byte reads; a byte with 0200: "?"
+T 0d56 _putfile    v7         ported
+T 0e70 _append     v7         ported  free(zero); realloc(): the table grows where it is, by 512 words
+T 0f64 _calluni    v7         ported  callunix(): sh -t (the port: the child reads the line, sh -c)
+T 0ff2 _quit       v7         ported
+T 1036 _delete     v7         ported
+T 1056 _rdelete    v7         ported
+T 10ac _gdelete    v7         ported
+T 110e _getline    v7         ported
+T 1166 _putline    v7         ported
+T 11f4 _getbloc    v7         ported  getblock(): block >= 255: "?TMP"
+T 134c _blkio      v7         ported
+T 1394 _init       v7         ported
+T 142a _global     v7         ported
+T 155c _join       v7         ported
+T 15e8 _substit    v7         ported
+T 16cc _compsub    v7         ported
+T 1776 _getsub     v7         ported
+T 17a6 _dosub      v7         ported
+T 1884 _place      v7         ported
+T 18b2 _move       mutos      ported  the MUTOS m: to addr1 or addr1-1 nothing is done - else v7's
+T 19cc _reverse    v7         ported
+T 19f8 _getcopy    v7         ported
+T 1a24 _compile    v7         ported
+T 1ca0 _execute    v7         ported
+T 1d82 _advance    v7         ported  an empty \(\) repeated by \1*: loops for ever (refused)
+T 1f6e _backref    v7         ported
+T 1fae _cclass     v7         ported
+T 1fe4 _putd       v7         ported
+T 2034 _puts       v7         ported
+T 2062 _putchr     v7         ported  a line buffer of 70, written at a newline or 64 bytes
+T 210a _crblock    v7         ported
+T 21a2 _getkey     v7         ported  gtty() fails: "?Input not tty"
+T 224e _crinit     v7         ported  the key through /usr/lib/makekey: without it "?crypt: cannot generate key"
+T 24d6 _makekey    v7         ported  the temporary file's key with the time: refused
+# ---- libc.a
+T 2556 _exit       libc       -
+T 2560 _malloc     libc       ported  V7 malloc(); the first block at 4104
+T 2668 _free       libc       -
+T 2682 _ialloc     libc       -
+T 2712 _realloc    libc       ported  after free(): grows in place
+T 27c2 __cleanu    libc       -
+T 27c4 _mktemp     libc       ported  the 16-bit process number
+T 2834 _setjmp     libc       ported
+T 284f _longjmp    libc       ported
+T 286e _stty       libc       -
+T 2886 _gtty       libc       -
+T 289e _strncpy    libc       -
+T 28e4 _access     libc       -
+T 28ea _close      libc       -
+T 28f0 _creat      libc       -
+T 28f6 _dup2       libc       -
+T 2904 _dup        libc       -
+T 291c _execl      libc       -
+T 293a _fork       libc       -
+T 2956 _getpid     libc       -
+T 295e _ioctl      libc       -
+T 2964 _lseek      libc       -
+T 298e _open       libc       -
+T 2994 _pipe       libc       -
+T 29b4 _read       libc       -
+T 29ba _sbrk       libc       -
+T 29ec _brk        libc       -
+T 2a0a _signal     libc       -
+T 2aba _time       libc       -
+T 2ad3 _ftime      libc       -
+T 2ae0 _unlink     libc       -
+T 2ae6 _wait       libc       -
+T 2b04 _write      libc       -
+T 2ce8 __exit      libc       -
+T 2cf6 _kill       libc       -
+# ---- data and bss
+D 2d0c _Q
+D 2d0e _T
+D 2d12 _vflag
+D 2d14 _tfile
+D 2d16 _iblock
+D 2d18 _oblock
+D 2d1a _WRERR
+D 2d26 _nlall
+D 2d28 _linp
+D 2dbe _allocb
+D 2dc0 _allocp
+D 2dec _environ
+D 2dee _peekc
+D 2df0 _lastc
+D 2df2 _savedfi
+D 2e32 _file
+D 2e72 _linebuf
+D 3072 _rhsbuf
+D 3172 _expbuf
+D 31f6 _circfl
+D 31f8 _zero
+D 31fa _dot
+D 31fc _dol
+D 31fe _addr1
+D 3200 _addr2
+D 3202 _genbuf
+D 3402 _count
+D 3406 _nextip
+D 3408 _linebp
+D 340a _ninbuf
+D 340c _io
+D 340e _pflag
+D 3410 _oldhup
+D 3412 _oldquit
+D 3414 _xflag
+D 3416 _xtflag
+D 3418 _kflag
+D 341a _key
+D 3424 _crbuf
+D 3624 _perm
+D 3924 _tperm
+D 3c24 _listf
+D 3c26 _col
+D 3c28 _globp
+D 3c2a _tline
+D 3c2c _tfname
+D 3c2e _loc1
+D 3c30 _loc2
+D 3c32 _locs
+D 3c34 _ibuff
+D 3e34 _obuff
+D 4034 _ichange
+D 4036 _nleft
+D 4038 _names
+D 406c _anymark
+D 406e _braslis
+D 4078 _braelis
+D 4082 _nbra
+D 4084 _subnewa
+D 4086 _subolda
+D 4088 _fchange
+D 408a _wrapp
+D 408c _savej
+D 40b0 _line
+D 40f6 _errno
+D 40f8 _par_uid
+D 40fa __stkmax
+D 40fc _alloca
+D 40fe _allocx
+D 4102 _end

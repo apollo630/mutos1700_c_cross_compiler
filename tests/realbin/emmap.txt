@@ -1,0 +1,178 @@
+# emmap.txt - a map of the real MUTOS 1700 em (mutos/mutos_bin/em.golden.base64.txt)
+#
+# The binary (0411: text 0000..6a00, data 0000..083a, BSS to 3310) is stripped and
+# has no source. Its functions were found by matching the original ed's
+# (edmap.txt: the rebuild) instruction for instruction, the names of the others
+# are this project's. It is crt0, then em.o, then libc.a from text 613e (exit;
+# stdio is linked for the -r echo). emdis.py reads this file.
+#
+# Format: "T <text offset> <name> <status> <port> [<note>]" for code,
+#         "D <data offset> <name> [<note>]" for data.
+# Status: ed     - the original ed's function, instruction for instruction
+#         ed+    - ed's with the change in the note
+#         new    - em's own
+#         screen - the screen mode
+#         libc   - libc.a's
+# Port:   ported - in src/mutos_em/em.c; refused - the port refuses there
+#
+# The line table is malloc()ed at 0x3312 (measured), behind the bss.
+# ---- crt0.o
+T 0000 start       crt0       -       crt0.o
+# ---- em.o
+T 00b6 _main        new     ported   options - -s (no banner, prompt, counts), -e, -l, -q, -r <log>, -x; logging only for a terminal; "Editor"; the line table at 3312; commands(vflag)
+T 02d0 _commands    new     ported   ed's commands() with em's: b h o z " & % | < > and the -e rules; "sure? " for q/e; the prompt ">" (write(1, ">", 1)) when arg > 0 and no globp; switch hashed by c%10 (jump table at 0a99)
+T 0c58 _address     ed+     ported   ed's; a search that fails is error("?")
+T 0e34 _range       new     ported   addr1, addr2 = a, b kept inside 1..$ (for " & %)
+T 0e6a _setdot      ed      ported
+T 0e9a _setall      ed      ported
+T 0ece _setnoaddr   ed      ported
+T 0ee8 _nonzero     ed      ported
+T 0f0e _newline     ed      ported
+T 0f4a _filename    ed+     ported   -e: the saved name only once (0026); returns 1 for a name given; ".n" checked (_dotn)
+T 104e _dotn        new     ported   -e or a name ending in ".n": the line-break flag 01f2 (read nowhere)
+T 1076 _exfile      ed+     ported   the count only with vflag and not -e
+T 10aa _onintr      ed      ported
+T 10da _onhup       ed      ported
+T 1136 _error       ed+     ported   ed's, and the screen mode's cleanup (not modelled)
+T 11f4 _getchr      ed+     ported   peekc, the screen mode's buffer, globp, then _rdchr(0); not masked (8-bit)
+T 125e _rdchr2      new     ported   _rdchr(2): the answers of z
+T 1270 _rdchr       new     ported   the input buffer at 003a (128 bytes from a terminal, else 1), the log written, the -r log read and echoed (putc), a byte 0377 and the end are EOF
+T 134e _gettty      ed+     ported   the byte not masked
+T 13c0 _getfile     ed+     ported   bytes of 0200 and above taken
+T 1490 _putfile     ed      ported
+T 15aa _append      ed      ported
+T 169e _callunix    new     ported   the command into 0840 (no bound), "%" the file's name, "!!" the last command (echoed), /bin/sh -c
+T 17d2 _quit        new     ported   unlink the temporary file and the log; exit(0) - no question
+T 17fe _delete      ed      ported
+T 181e _rdelete     ed      ported
+T 1874 _gdelete     ed      ported
+T 18d6 _getline     ed      ported
+T 192e _putline     ed      ported
+T 19bc _getblock    ed      ported
+T 1b14 _blkio       ed      ported
+T 1b5c _init        ed+     ported   a new log (_makelog) when logging
+T 1bfc _makelog     new     ported   the log's name (08e4) from savedfile: the last component cut to 8, ".elog", a digit while it exists; "r <file>" and the line number of dot written
+T 1d28 _global      ed+     ported   commands(-1)
+T 1e60 _join        ed      ported
+T 1eec _substitute  ed+     ported   z: every match asked (_confirm), n: the count printed; no match: error("?")
+T 202e _nosub       new     ported   rhsbuf "&" for a match not substituted
+T 205c _confirm     new     ported   z: the match marked (_mark), the answer from fd 2: "." yes, newline no, else "? '.' to confirm"
+T 20e6 _mark        new     ported   the line with '"' around the match, or '^' under it (a fast terminal)
+T 2170 _rule        new     ported   cols-1 '_' and a newline (%)
+T 2198 _compsub     ed+     ported   the flags g (1) and n (2)
+T 2258 _getsub      ed      ported
+T 2288 _dosub       ed+     ported   an argument: count the substitution
+T 2376 _place       ed      ported
+T 23a4 _move        ed      ported   the MUTOS ed's
+T 24be _reverse     ed      ported
+T 24ea _getcopy     ed      ported
+T 2516 _compile     ed+     ported   a pattern ended by the newline: the last one, the newline read again
+T 27a0 _execute     ed      ported
+T 2882 _advance     ed      ported
+T 2a6e _backref     ed      ported
+T 2aae _cclass      ed      ported
+T 2ae4 _putd        ed      ported
+T 2b34 _puts        ed      ported
+T 2b62 _putchr      ed+     ported   to the fd in 0028; l: \ooo for 0200 and above
+T 2c28 _crblock     ed      -        never reached (the key cannot be made)
+T 2cc0 _getkey      ed      ported
+T 2d6c _crinit      ed      ported   without /usr/lib/makekey: "?crypt: cannot generate key"
+T 2ff4 _makekey     ed      ported   refused (the time)
+T 3074 _ask         new     ported   the question, then read(0, buf, 128): y or n, else "answer y or n - " and again
+T 30d8 _screen      screen  refused  o: the screen mode (ANSI, function keys) - from here to 3846 and 38c4 .. 6118
+T 3846 _ttymodes    new     ported   ioctl(0, ..): the columns (byte 10) and lines (byte 11), the speed > B600 ("fast")
+T 38c4 _scrtty      screen  refused  the screen mode's terminal modes
+T 3912 _scredit     screen  refused  the screen editor
+T 4c88 _scrputc     new     ported   one character at once to fd 1 (the prompt; "\r\n" for a newline)
+T 4d16 _rawputs     new     ported   a string at once to fd 1, the control characters but ESC ^U ^X ^Y as blanks
+T 51f8 _help        new     ported   h: the file to fd 2, or "<name> not found"
+# ---- libc.a
+T 5ef0 _putc        libc    ported   putc(c, stdout): the echo of -r (mu_oputc)
+T 61ac _malloc      libc    -        the first block at 3312
+T 62b4 _free        libc    -
+T 635e _realloc     libc    -        after free(): grows in place
+T 640e _isatty      libc    ported   gtty() succeeds
+T 6434 _mktemp      libc    ported   the 16-bit process number
+T 64a4 _setjmp      libc    -
+T 64bf _longjmp     libc    -
+# ---- data and bss
+D 000a _Q
+D 000c _T
+D 0010 _vflag
+D 0012 _xflag
+D 0026 _noname
+D 0028 _outfd
+D 002a _zflag
+D 002c _eflag
+D 002e _logflag
+D 0030 _recov
+D 0032 _recfd
+D 0034 _logfd
+D 0038 _scrbuf
+D 003a _inbuf
+D 00bc _inp
+D 00be _tfile
+D 00c0 _iblock
+D 00c2 _oblock
+D 00c4 _WRERR
+D 00d0 _nlall
+D 00d2 _linp
+D 01ee _lines
+D 01f0 _cols
+D 01f2 _lbreak
+D 01f6 _fast
+D 083c _peekc
+D 083e _lastc
+D 0840 _cmdbuf
+D 08a4 _savedfile
+D 08e4 _logname
+D 0924 _file
+D 0964 _linebuf
+D 0b64 _rhsbuf
+D 0c64 _expbuf
+D 0ce8 _circfl
+D 0cea _zero
+D 0cec _dot
+D 0cee _dol
+D 0cf0 _addr1
+D 0cf2 _addr2
+D 0cf4 _genbuf
+D 0ef4 _count
+D 0ef8 _nextip
+D 0efa _linebp
+D 0efc _ninbuf
+D 0efe _io
+D 0f00 _pflag
+D 0f02 _oldhup
+D 0f04 _oldquit
+D 0f06 _xtflag
+D 0f08 _kflag
+D 0f0a _key
+D 0f14 _crbuf
+D 1114 _perm
+D 1414 _tperm
+D 1714 _listf
+D 1716 _col
+D 1718 _globp
+D 171a _tline
+D 171c _tfname
+D 171e _loc1
+D 1720 _loc2
+D 1722 _locs
+D 1724 _ibuff
+D 1924 _obuff
+D 1b24 _ichanged
+D 1b26 _nleft
+D 1b28 _names
+D 1b5c _anymarks
+D 1b5e _braslist
+D 1b68 _braelist
+D 1b72 _nbra
+D 1b74 _subnewa
+D 1b76 _subolda
+D 1b78 _fchange
+D 1b7a _wrapp
+D 1b7c _savej
+D 1bba _line
+D 1c00 _ttyb
+D 1c2a _hbuf

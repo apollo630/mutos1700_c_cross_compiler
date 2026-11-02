@@ -20,7 +20,8 @@ and `c0dis.py` for `c0`, `cppmap.txt` and `cppdis.py` for `cpp`,
 `ranlibmap.txt` and `ranlibdis.py` for `ranlib`, `makemap.txt` and
 `makedis.py` for `make`, `sizemap.txt` and `sizedis.py` for `size`,
 `stripmap.txt` and `stripdis.py` for `strip`, `nmmap.txt` and `nmdis.py` for
-`nm`, `tsortmap.txt` and `tsortdis.py` for `tsort`), how it was
+`nm`, `tsortmap.txt` and `tsortdis.py` for `tsort`, `edmap.txt` and
+`eddis.py` for `ed`, `emmap.txt` and `emdis.py` for `em`), how it was
 established, what this project's tool does with it, and an idea for a fix.
 Evidence is one of: **golden** (real-hardware output in the tree),
 **emulator** (the original run under `tests/realbin/mutosemu.py` -
@@ -28,7 +29,8 @@ reproducible with the commands in `tests/realbin/README.md`), **code
 reading** (the disassembly, not observed in a run). "Reproduced" means the
 project's tool gives the original's output byte for byte; "refused" that
 it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib`,
-`mutos_make`, `mutos_nm`, `mutos_size`, `mutos_strip` and `mutos_tsort`: 125, the
+`mutos_make`, `mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort`,
+`mutos_ed` and `mutos_em`: 125, the
 message's last line ending in "refused") where the original's
 output depends on state that is not modelled.
 
@@ -164,6 +166,27 @@ Last updated: 2026-11-02.
 | LO-01 | `lorder` | only `T` and `D` symbols are definitions: an object that defines a bss or absolute symbol (`B`, `A`) is a reference to it, and the pair is left out | code reading | reproduced (the script) |
 | LO-02 | `lorder` | the working files `$$symref` and `$$symdef` are written to the current directory, not to `/tmp` | code reading | reproduced (the script) |
 | LO-03 | `lorder` | object names must end in `.o` (the manual says so): a member of another name is dropped without a message; `$*` is not quoted, a name with a blank or a wildcard is split; a symbol name with a character below the blank breaks the sort order `join` needs | code reading | reproduced (the script) |
+| ED-01 | `ed` | a file name of more than 63 characters runs over `file[64]` into `linebuf`, `rhsbuf`, `expbuf` (from 964 over the buffer's pointers); after a long `e` or `f` name a command without a name copies `savedfile` onto `file` without end | emulator | reproduced within the arrays, refused past them |
+| ED-02 | `ed` | the name of the command line is copied into `savedfile[64]` with no bound | code reading | reproduced within the arrays, refused past them |
+| ED-03 | `ed` | `-x` without a terminal: the error comes before `setjmp()` - a jump through a zeroed `jmp_buf`; a failed `x` leaves the flag set: the next `e` keys the new temporary file with the time and fails in the middle of `init()` | code reading, emulator | refused |
+| ED-04 | `ed` | without `/usr/lib/makekey` (or `/lib/makekey`) no key can be made: `crinit()` reads back the 10 bytes it wrote itself, "?crypt: cannot generate key" | code reading | reproduced (the message); refused with a `makekey` in the root |
+| ED-05 | `ed` | an empty `\(\)` repeated by `\1*` loops for ever | emulator | refused |
+| ED-06 | `ed` | a NUL byte in a pattern matches the 0 at a line's end, and the match runs on into the stale rest of `linebuf` and beyond | code reading | reproduced within the arrays, refused past them |
+| ED-07 | `ed` | the last line of a file without a newline is dropped, its characters counted all the same ("24" for two lines and 20 characters) | emulator | reproduced |
+| ED-08 | `ed` | the numbers of an address wrap in 16 bits and the address around the 64K segment before the check: `1+65536p`, `65537p`, `1+32768p` are line 1 | emulator | reproduced |
+| EM-01 | `em` | `!` with nothing behind it takes the next line as the command (the newline is stored, the reading goes on to the next one) | code reading | reproduced |
+| EM-02 | `em` | the shell command's buffer (100 bytes) has no bound: `!!` appends to the last command every time, `%` copies the file's name - into `savedfile`, the log's name, `file` and on | code reading | reproduced within the arrays, refused past them |
+| EM-03 | `em` | `\|cmd`: the command goes into 80 bytes of the stack with no bound - from the 81st character over `commands()`' own pointer and frame | code reading | refused |
+| EM-04 | `em` | `h<name>`: `/usr/lib/emhelp/` and the name go into `genbuf` with no bound | code reading | refused past `genbuf` |
+| EM-05 | `em` | "sure?" reads its answer with `read(0, buf, 128)`: from a file or a pipe it swallows up to 128 bytes of the script; at the end of the input it asks for ever (the buffer keeps the last answer, or the stack's garbage) | emulator | reproduced; the endless question refused |
+| EM-06 | `em` | `z` reads its answers from the standard error: not readable, or at its end, the loop to the newline reads the end for ever | emulator | refused |
+| EM-07 | `em` | the input's bytes come back signed: a byte 0377 is the end of the input | emulator | reproduced |
+| EM-08 | `em` | 8-bit characters in the replacement text of `s` lose their top bit (`dosub()` takes 0200 for its escape mark): `s/Q/\337/` puts `_` | emulator | reproduced |
+| EM-09 | `em` | at the end of a replayed log (`-r`) the first byte of the standard input is lost and the command loop sees the end of the input | code reading | reproduced |
+| EM-10 | `em` | the "line break" (`b+`, `b-`, a name ending in `.n`, `-e`) sets a flag nothing reads: the feature is missing | code reading | reproduced (the flag) |
+| EM-11 | `em` | the session log's first line number is computed from `dot` before the buffer is set up: "26231" at the start, the old buffer's line after `e` | code reading | reproduced |
+| EM-12 | `em` | `>` and `<` restart the command loop without reading the rest of their line: the newline behind them prints the next line | emulator | reproduced |
+| EM-13 | `em` | `\|` leaves SIGPIPE ignored and sets SIGINT and SIGHUP to em's handlers afterwards, also when they were ignored at the start; a child whose `execl()` fails goes on as a second editor | code reading | reproduced (the signals); not the failed exec (the port's child ends) |
 
 ## `c1`
 
@@ -2327,6 +2350,264 @@ script's, reproduced.
 - **Evidence.** Code reading; the manual.
 - **This project.** Reproduced.
 - **Fix idea.** Quote `"$@"`; accept other names.
+
+## `ed`
+
+The binary (`mutos/mutos_bin/ed.golden.base64.txt`) read on 2026-11-02 for
+`src/mutos_ed/`: v7's `ed.c` with two changes (`j` with one address, `m`
+onto itself), rebuilt byte for byte by this project's `cc -O -s`; the
+offsets are `tests/realbin/edmap.txt`'s. The bugs are v7's - the two
+changes add none.
+
+### ED-01 A file name of more than 63 characters runs over `file[64]`
+
+- **Symptom.** `w <name>` with a name of 64 characters or more writes past
+  `file` into `linebuf`, `rhsbuf` and `expbuf`; from 964 characters over
+  `circfl`, `zero`, `dot`, `dol`, `addr1` and `addr2` (a crash). An `e` or
+  `f` name of 65 characters or more is copied into `savedfile` on into
+  `file`; a later command without a name copies `savedfile` onto `file`, 64
+  bytes ahead of it - the 0 is overwritten before it is read, and the copy
+  runs through the segment.
+- **Mechanism.** `filename()` (text 0976) stores the name without a bound;
+  the copies `while (*p1++ = *p2++)` between `savedfile` (2df2) and `file`
+  (2e32) overlap.
+- **Evidence.** Emulator (`tests/realbin/edcmp.py`, `filename-long` - 70
+  characters, `filename-overflow` - 1200).
+- **This project.** Reproduced within `savedfile` .. `expbuf` (one array in
+  the port, 2df2 .. 31f6), refused past it.
+- **Fix idea.** Stop at `FNSIZE-1` ("?" for a longer name).
+
+### ED-02 The name of the command line runs over `savedfile`
+
+- **Symptom.** `ed <name>` with a name of 64 characters or more: as ED-01.
+- **Mechanism.** `main()` (text 00b6) copies `argv[1]` into `savedfile` with
+  `while (*p2++ = *p1++)`.
+- **Evidence.** Code reading.
+- **This project.** As ED-01.
+- **Fix idea.** As ED-01.
+
+### ED-03 The encryption's errors
+
+- **Symptom.** `ed -x` with a standard input that is not a terminal (or
+  with a key, see ED-04): the error's `longjmp()` goes through a `jmp_buf`
+  that `setjmp()` has not set yet - a crash. `x` that fails ("?Input not
+  tty") leaves the encryption on: the next `e` or `E` keys the new temporary
+  file with the time, which fails in the middle of `init()` - the file is
+  new, `dot` and `dol` still the old buffer's.
+- **Mechanism.** `main()` calls `getkey()` and `crinit()` before
+  `setjmp(savej)`; `x` sets `xflag` before `getkey()` (text 0200..);
+  `init()` (text 1394) calls `makekey()` when `xflag` is set.
+- **Evidence.** Code reading; emulator (`encrypt`: "?Input not tty").
+- **This project.** Refused (`-x`, and `e` after `x`).
+- **Fix idea.** `setjmp()` first; set `xflag` once the key is made.
+
+### ED-04 No key without `/usr/lib/makekey`
+
+- **Symptom.** With a terminal and a key: "?crypt: cannot generate key".
+- **Mechanism.** `crinit()` (text 224e) writes the key into a pipe for
+  `/usr/lib/makekey` (or `/lib/makekey`); when the child cannot run it and
+  exits, the parent reads back its own 10 bytes - not 13.
+- **Evidence.** Code reading (the emulator has no `pipe()`).
+- **This project.** The message reproduced; a `makekey` in the MUTOS root (a
+  MUTOS program) refused.
+- **Fix idea.** Close the write end before reading; say that makekey is
+  missing.
+
+### ED-05 An empty `\(\)` repeated by `\1*` loops for ever
+
+- **Symptom.** `/\(\)\1*x/` hangs.
+- **Mechanism.** `advance()`'s `CBACK|STAR` (text 1d82..) steps by the
+  group's length, 0: `while (backref(i, lp)) lp += 0;`, and in the other
+  loop `lp -= 0`.
+- **Evidence.** Emulator (`pattern-empty-group`: the original runs out of
+  instructions).
+- **This project.** Refused.
+- **Fix idea.** Treat an empty group's `*` as matching once.
+
+### ED-06 A NUL byte in a pattern matches past a line's end
+
+- **Symptom.** A pattern with a NUL byte (not its first character - that is
+  lost as `peekc`) can match the 0 at a line's end, and the rest of the
+  match is tried on the stale bytes of `linebuf` behind it, then on
+  `rhsbuf` and `expbuf`.
+- **Mechanism.** `getchr()` returns the NUL; `compile()` makes it a `CCHR
+  0`, which `advance()` compares like any other character.
+- **Evidence.** Code reading.
+- **This project.** Reproduced within the arrays, refused past `expbuf`.
+- **Fix idea.** Drop NUL bytes in `getchr()`, as `gettty()` does.
+
+### ED-07 The last line without a newline is dropped but counted
+
+- **Symptom.** A file "a\nb\nlast without newline": "24", and `$=` is 2.
+- **Mechanism.** `getfile()` (text 0c80) counts every character it stores;
+  at the end of the file it returns EOF without making a line of them.
+- **Evidence.** Emulator (`no-newline-at-end`).
+- **This project.** Reproduced.
+- **Fix idea.** Keep the line (or leave its characters out of the count, as
+  the manual's "removes all characters after the last newline" suggests).
+
+### ED-08 The numbers of an address wrap
+
+- **Symptom.** `1+65536p`, `65537p` and `1+32768p` print line 1; `.+65535p`
+  is the line before the current one.
+- **Mechanism.** `address()` (text 06ba) computes `n *= 10` in 16 bits and
+  `a1 += n` - two bytes a line - around the 64K segment, and checks the
+  result only against `zero` and `dol`.
+- **Evidence.** Emulator (`address-wrap`).
+- **This project.** Reproduced.
+- **Fix idea.** Check the number against `dol - zero`.
+
+## `em`
+
+The binary (`mutos/mutos_bin/em.golden.base64.txt`), which has no source,
+read on 2026-11-02 for `src/mutos_em/`: the original ed with a new `main()`
+and `commands()` and functions of its own (`tests/realbin/emmap.txt`). It
+has ed's bugs (ED-01, ED-03 .. ED-08; for ED-01 the arrays are em's) and
+these.
+
+### EM-01 `!` with nothing behind it takes the next line
+
+- **Symptom.** `!` alone on a line runs the next line as a shell command.
+- **Mechanism.** `callunix()` (text 169e) stores the first character - here
+  the newline - before it tests for the newline, and reads on to the next
+  one.
+- **Evidence.** Code reading (the emulator has no `fork()`).
+- **This project.** Reproduced.
+- **Fix idea.** Test the first character.
+
+### EM-02 The shell command's buffer has no bound
+
+- **Symptom.** `!!` again and again, or `%` with a long file name: the
+  command runs on into `savedfile`, the log's name, `file` and further.
+- **Mechanism.** The buffer (bss 0840, 100 bytes) is filled by
+  `callunix()` without a bound; `!!` appends the rest of the line to the
+  last command, `%` copies `savedfile`.
+- **Evidence.** Code reading.
+- **This project.** Reproduced within the arrays (0840 .. 0ce8), refused
+  past them.
+- **Fix idea.** A bound.
+
+### EM-03 `|cmd` overruns the stack
+
+- **Symptom.** A `|` command of more than 80 characters overwrites
+  `commands()`' locals and frame.
+- **Mechanism.** `commands()` (text 08fd) reads the command into 80 bytes at
+  `[bp-5c]`; the pointer it writes with is at `[bp-0c]`, right behind them.
+- **Evidence.** Code reading.
+- **This project.** Refused from the 81st character.
+- **Fix idea.** A bound.
+
+### EM-04 `h<name>` has no bound
+
+- **Symptom.** A long name after `h` writes past `genbuf` over `count`,
+  `nextip`, ...
+- **Mechanism.** `commands()` (text 046c) copies "/usr/lib/emhelp/" and the
+  name into `genbuf` (512 bytes).
+- **Evidence.** Code reading.
+- **This project.** Refused past `genbuf`.
+- **Fix idea.** A bound.
+
+### EM-05 "sure?" reads the script
+
+- **Symptom.** `q` (or `e`) with changes not written asks "sure? " and reads
+  the answer with `read(0, buf, 128)`: from a file or a pipe the read takes
+  up to 128 bytes of the script - the rest of the command's line first -
+  and only the first byte counts; neither `y` nor `n`: "answer y or n - "
+  and another read; at the end of the input `read()` gives nothing, the
+  buffer keeps the last answer (or, at the first read, the stack's
+  garbage), and em asks for ever.
+- **Mechanism.** `ask()` (text 3074) does not use em's input reader and
+  does not test `read()`'s result.
+- **Evidence.** Emulator (`sure-y`, `sure-n`, `sure-other`, `sure-eof`,
+  `edit-changed`, `quit-changed`; the endless ones run out of instructions).
+- **This project.** Reproduced; the endless question refused.
+- **Fix idea.** Read the answer through `getchr()`; "no" at the end of the
+  input.
+
+### EM-06 `z` reads its answers from the standard error
+
+- **Symptom.** `z/re/text/` with a standard error that cannot be read (a
+  file, a pipe) hangs at the first match.
+- **Mechanism.** `confirm()` (text 205c) reads through `rdchr(2)` (text 125e,
+  1270); at the end it skips to the newline, which never comes.
+- **Evidence.** Emulator (`zsubst-match`: the original runs out of
+  instructions).
+- **This project.** Refused.
+- **Fix idea.** Treat the end as "no", and stop.
+
+### EM-07 A byte 0377 is the end of the input
+
+- **Symptom.** A script with a byte 0377 ends there.
+- **Mechanism.** `rdchr()` (text 1270) returns the byte sign-extended
+  (`cwde`): 0377 is -1, EOF.
+- **Evidence.** Emulator (`eof-byte`).
+- **This project.** Reproduced.
+- **Fix idea.** Return the byte as `& 0377`.
+
+### EM-08 8-bit replacement text loses its top bit
+
+- **Symptom.** `s/Q/\337/` puts `_` (0137) into the line; `s/x/\344/` a
+  `d`.
+- **Mechanism.** `compsub()` marks an escaped character with 0200, and
+  `dosub()` (text 2288, ed's) takes every byte with 0200 for one and writes
+  `c & 0177`.
+- **Evidence.** Emulator (`eight-bit-commands`).
+- **This project.** Reproduced.
+- **Fix idea.** Another mark for the escapes (a separate flag array).
+
+### EM-09 The first byte after a replayed log is lost
+
+- **Symptom.** `em -r log`: when the log is at its end, the first byte read
+  from the standard input is dropped and the command loop sees the end of
+  the input (from a terminal it goes on).
+- **Mechanism.** `rdchr()` (text 1270) keeps its `eof` flag set when it goes
+  over from the log to the standard input (`goto` back to the read).
+- **Evidence.** Code reading (the emulator's runs show the end of the log).
+- **This project.** Reproduced.
+- **Fix idea.** Clear the flag.
+
+### EM-10 The line break does nothing
+
+- **Symptom.** `b+` (the manual: a newline inserted into a line longer than
+  a set length) changes nothing.
+- **Mechanism.** `b`, `dotn()` (text 104e - a name ending in `.n`, or `-e`)
+  set the word at data 01f2; nothing in the text reads it.
+- **Evidence.** Code reading.
+- **This project.** Reproduced (the flag is kept).
+- **Fix idea.** Implement it in `gettty()`.
+
+### EM-11 The log's first line number
+
+- **Symptom.** The session log of a file begins "r <file>" and "26231" -
+  replayed, a "?" -; after `e` the line number is the old buffer's.
+- **Mechanism.** `init()` calls `makelog()` (text 1bfc), which writes
+  `(dot - zero) & 077777`, before it sets `dot`: at the start `dot` is 0.
+- **Evidence.** Code reading (the log needs a terminal).
+- **This project.** Reproduced.
+- **Fix idea.** Write the number after the file is read.
+
+### EM-12 `<` and `>` leave their line
+
+- **Symptom.** `1p`, `>`: line 2 is printed as well.
+- **Mechanism.** `commands()` (text 08d5, 08e9) sets `vflag` and calls
+  `longjmp()` back into `main()`, which calls `commands()` anew; the newline
+  behind the command is read as a command of its own.
+- **Evidence.** Emulator (`prompt-toggle`).
+- **This project.** Reproduced.
+- **Fix idea.** `newline()` first.
+
+### EM-13 `|`'s signals and its failed child
+
+- **Symptom.** After a `|` command SIGPIPE stays ignored, and SIGINT and
+  SIGHUP are em's handlers also when em was started with them ignored (in
+  the background); a child that cannot run `/bin/sh` goes on as a second
+  editor on the same input.
+- **Mechanism.** `commands()` (text 09b2..0a41) sets the handlers without
+  looking at what was there; the child calls `error()` after `execl()`.
+- **Evidence.** Code reading.
+- **This project.** The signals reproduced; the child that cannot run the
+  shell exits (the host has `/bin/sh`).
+- **Fix idea.** Restore what was there; `exit()` in the child.
 
 ## Suspect, no wrong output found
 

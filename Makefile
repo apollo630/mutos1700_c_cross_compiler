@@ -34,6 +34,10 @@
 #   mutos_lorder - library orderer   (src/mutos_lorder/, the original lorder,
 #                                      a shell script, run by the host's sh
 #                                      with the root's bin/nm)
+#   mutos_ed, mutos_em - the editors (src/mutos_ed/, src/mutos_em/, ports
+#                                      of the original ed and of em's line
+#                                      mode; the MUTOS kernel's makefile
+#                                      runs both)
 #   mutos_root/ - the MUTOS root     (scripts/mutos_root.sh: crt0.o,
 #                                      libc.a, the passes as symbolic
 #                                      links; docs/TOOLCHAIN_PLAN.md,
@@ -49,6 +53,7 @@
 #   make ranlib     # build just mutos_ranlib
 #   make make       # build just mutos_make
 #   make nm         # build just mutos_nm (likewise size, strip, tsort, lorder)
+#   make ed         # build just mutos_ed (likewise em)
 #   make root       # make (or bring up to date) mutos_root/
 #   make clean      # clean every component, remove mutos_root/
 #   make test       # run every component's golden-diff test suite
@@ -91,7 +96,10 @@
 #                   # strip and tsort) and mutos_lorder (the original script
 #                   # with mutos_nm) against the originals on every object
 #                   # and archive of the tree with every option, hand-written
-#                   # cases and fuzz runs; the
+#                   # cases and fuzz runs; mutos_ed and mutos_em (the ports
+#                   # of ed and em) against the originals on hand-written
+#                   # scripts - the kernel makefile's among them - and fuzz
+#                   # runs; the
 #                   # original ld through mutos_root/ (needs the Python
 #                   # module "unicorn" and, for cc's stub, a C compiler;
 #                   # see tests/realbin/README.md)
@@ -114,9 +122,9 @@ endif
 MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
 SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
-.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder root clean test fuzz check-docs check-libcatof check-realbin install-hooks
+.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root clean test fuzz check-docs check-libcatof check-realbin install-hooks
 
-all: ld as cpp cc ar ranlib make nm size strip tsort lorder root
+all: ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root
 
 ld:
 	$(SUBMAKE) -C src/mutos_ld
@@ -154,6 +162,12 @@ tsort:
 lorder:
 	$(SUBMAKE) -C src/mutos_lorder
 
+ed:
+	$(SUBMAKE) -C src/mutos_ed
+
+em:
+	$(SUBMAKE) -C src/mutos_em
+
 # mutos_root/: crt0.o and libc.a decoded from tests/ (libc.a with its
 # __.SYMDEF time), the passes and tools as symbolic links into src/ (a
 # link to a tool not built yet dangles), usr/lib/, usr/include/ and tmp/.
@@ -177,6 +191,8 @@ clean:
 	$(MAKE) -C src/mutos_strip clean
 	$(MAKE) -C src/mutos_tsort clean
 	$(MAKE) -C src/mutos_lorder clean
+	$(MAKE) -C src/mutos_ed clean
+	$(MAKE) -C src/mutos_em clean
 	rm -rf ./mutos_root
 
 # Runs every component's own golden-diff test suite. Each suite is
@@ -219,7 +235,12 @@ clean:
 # libc.a and a program the ported cc makes: the facts of the files
 # themselves (the sizes, the symbol tables, the table libc.a's __.SYMDEF
 # holds, a stripped program), and libc.a's members in the order of
-# lorder | tsort.
+# lorder | tsort. tests/mutos_ed/check_editors.py runs the MUTOS kernel's
+# makefile (tests/mutos_ed/kernel/) through mutos_make in a scratch kernel
+# tree: the machine and option targets and "depend", which edit it with
+# mutos_ed, against an independent reading of their scripts, and the mch
+# rule - cc -P, mutos_em with fakeawk, cc -c - against the real-hardware
+# mch.i, mch.s and mch.o; and the editors' shell commands.
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -251,6 +272,8 @@ test: all
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_make/check_corpus.py
 	@echo "== mutos_size, mutos_strip, mutos_nm, mutos_tsort and mutos_lorder on crt0.o and libc.a =="
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_binutils/check_tools.py
+	@echo "== mutos_ed and mutos_em on the MUTOS kernel's makefile (mutos_make, cc) =="
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_ed/check_editors.py
 
 # Checks every *.md file for the kind of drift a rebuild/regression run
 # can't catch: numbers restated in more than one place that disagree,
@@ -352,7 +375,12 @@ check-libcatof: as ld cc
 # the messages, exit status and files left the originals' on every object
 # and archive of the tree (the compiled goldens, crt0.o, libc.a and its
 # objects) with every option, on hand-written cases and on fixed-seed fuzz
-# runs, one with damaged files (utilcmp.py, utilfuzz.py); then the original ld through mutos_root/ (check_root.py --realbin). Separate
+# runs, one with damaged files (utilcmp.py, utilfuzz.py); then mutos_ed and
+# mutos_em (the ports of ed and em, src/mutos_ed/, src/mutos_em/): the output,
+# exit status and files left the originals' on hand-written scripts - from a
+# file and through a pipe, the kernel makefile's eddep scripts and fakeawk
+# on mch.i among them - and on two fixed-seed fuzz runs (edcmp.py,
+# edfuzz.py); then the original ld through mutos_root/ (check_root.py --realbin). Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
@@ -366,7 +394,8 @@ REALBIN_ARFUZZ_ARGS = -n 300 -s 1
 REALBIN_RANLIBFUZZ_ARGS = -n 150 -s 1
 REALBIN_MAKEFUZZ_ARGS = -n 300 -s 1
 REALBIN_UTILFUZZ_ARGS = -n 300 -s 1
-check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder root
+REALBIN_EDFUZZ_ARGS = -n 400 -s 1
+check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
 	@python3 tests/realbin/check_real.py goldens
@@ -422,6 +451,9 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder root
 	@python3 tests/realbin/utilcmp.py cases
 	@python3 tests/realbin/utilfuzz.py $(REALBIN_UTILFUZZ_ARGS)
 	@python3 tests/realbin/utilfuzz.py $(REALBIN_UTILFUZZ_ARGS) --mutate 0.3
+	@python3 tests/realbin/edcmp.py cases
+	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool ed
+	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool em
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
