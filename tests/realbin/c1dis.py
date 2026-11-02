@@ -127,11 +127,23 @@ def cstr(a):
                    for c in s)[:60]
 
 
+def _disasm(md, code, start):
+    """capstone's disasm() stops at the first byte it cannot decode (a jump
+    table, a byte of data in the text); resume one byte further on."""
+    pos = 0
+    while pos < len(code):
+        n = 0
+        for i in md.disasm(code[pos:], start + pos):
+            n = i.address + i.size - (start + pos)
+            yield i
+        pos += n if n else 1
+
+
 def disassemble(start, end, names, dnames):
     md = Cs(CS_ARCH_X86, CS_MODE_16)
     md.detail = True
     out = []
-    for i in md.disasm(TEXT[start:end], start):
+    for i in _disasm(md, TEXT[start:end], start):
         if i.address in names:
             out.append('%s:' % names[i.address])
         notes = []

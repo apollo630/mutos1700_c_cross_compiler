@@ -1,6 +1,6 @@
-# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar` and `ranlib`
+# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib` and `make`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), and the ports of `ar` and `ranlib` (2026-10-26).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), the ports of `ar` and `ranlib` (2026-10-26), and the port of `make` (2026-11-02).
 
 ---
 
@@ -1634,3 +1634,127 @@ user's umask and group). Every symbol table entry, every offset and the order of
 entries agree, which is the proof that `ranlib`'s `tab[]` and its `offdelta` are
 right. `tests/mutos_ar/check_libc.py` does this without an emulator and is part of
 `make test`; `ranlibcmp.py libc` does it against the emulated originals.
+
+## The port of `make` (2026-11-02)
+
+Step 7 of `docs/TOOLCHAIN_PLAN.md`, by the method of the others: the binary is the
+specification, v7's source (`v7/make/`) the skeleton, the emulated original the
+oracle. The results are in `STATUS.md` (Milestone 6), the behaviour in
+`src/mutos_make/README.md`, the bugs in `docs/MUTOS_ORIGINAL_BUGS.md` (MK-01 ..
+MK-13).
+
+### 49 of 50 functions are v7's - found by compiling v7
+
+`make.o` is 50 functions (the five source files of v7 and `gram.y`'s `yylex`, `retsh`,
+`nextlin` and `yyparse`), followed by libc.a from text 27cc (`fseek`). Instead of
+reading each function against its v7 source by eye, v7's `main.c`, `doname.c`,
+`misc.c`, `files.c`, `dosys.c` and `gram.c` were compiled with this project's own
+`mutos_cc -O -Dunix` - a port of the original `cc` and its passes - and the objects'
+functions compared with the binary's text byte for byte. They are the same, with
+three differences that are the headers': `METERFILE` is not defined, so no `meter()`
+calls; `struct nlist` is MUTOS's (`char n_type; char n_other;` - the same 12 bytes
+as v7's `int n_type`, but the compiler emits a byte test where v7's emits a word's);
+and `NLEFTS` is 300 in the grammar's header where v7's `defs` says 40 - which only
+`yyparse()`'s action for `namelist NAME` shows. `yyparse()` is yacc's skeleton
+(v7's `yaccpar` without `yydebug`) on eight tables; they are data in the binary,
+and `tests/realbin/maketables.py --c` writes them with `builtin[]` (67 strings and
+a 0, string for string v7's `files.c`) as `src/mutos_make/makedata.c`, which
+`make check-realbin` keeps current. So the port is v7's C with the 16-bit
+representation and the environment made explicit - which is where the work was.
+
+### What the frames and the heap are for
+
+Every function of the binary begins with libc's `chkstk` (text 3d1a) with its frame
+size in AX; if the stack would meet the break, `chkstk` asks the kernel (a system call
+through the gate at data address 2) and the process dies with SIGSEGV when it refuses.
+The emulator never refuses, so what happens at the limit is a model: the port counts
+the heap blocks in the original's sizes (`nameblock` 12 bytes, `lineblock` 6, ... each
+with malloc's header word) and the frames of the recursive functions (`doname` 386,
+`docom` 2516, `subst` 118, `srchdir` 754, `yylex` 1508, `nextlin` 1520, ...), and refuses
+at 0xF000 of the 64K. The hardware gives a data point that the model does not
+reproduce: the single makefile of 124 explicit targets (19 KB) that `tests/mutos_cc`
+had before it was split per category ended with "Make: out of memory. Stop." (MK-13);
+the emulated original and the port both run it. Whatever the hardware's limit was, it
+is lower than the segment.
+
+### The AX that setvar() leaves, and the other things the stack keeps
+
+Three of the thirteen bugs are the stack's (MK-01, MK-05, MK-06's family), and they
+are the ones the port had to learn to refuse rather than model.
+
+- `mkqlist()` with an empty chain has no `return`, and the call before it in
+  `doname()` is `setvar("@", name)`, whose last act is the test of the used flag: what
+  `$?` then is depends on AX. The emulator showed `echo [` + six non-text bytes +
+  `]` for a first command without `$@`, and `echo []` after a `$@` had been used; the
+  port reproduces the second and refuses the first.
+- `$*` is a pointer into `doname()`'s `prefix[100]`. The port gives each `doname()` a
+  serial number and each `$*` the serial of the frame it points into; reading it after
+  that frame has returned is refused. (The emulator, reading it right after, found
+  the old bytes still there.)
+- `string[2500]` of `docom()`: a command that expands to more makes the emulated
+  original end at address 0 without an exit.
+
+### What the first runs found
+
+`makecmp.py cases` on the first day: 422 of 456 runs the same, and the rest were three
+causes. A null `%s` in `printdesc()` prints `(null)` - the port had assumed the empty
+string (a macro whose value is cleared between two commands, `@`, shows in `-p` and
+`-d`). An empty path name is the current directory - V7's `namei()` -, and the emulator
+(which joins it onto the working directory) agrees: `all: /*` expands to the files of
+`.`, each preceded by a slash, and `make ''` is up to date; the host refuses an empty
+path, so the port maps it (`MKPATH`). The 301st name of a rule is stored over `nlefts`,
+which follows `lefts[300]` in the BSS, and the test on the next line fires by luck
+(MK-03) - the port had refused it; it now does what the original does while the heap
+is below 32K (the address, as a signed 16-bit int, is above 300). And the judge itself:
+for a refusal it demands that what the port wrote is a subsequence of the lines of
+the original's output, and an empty output has no lines - `b''.split(b'\n')` is `[b'']`,
+a line no output has. Twenty-one runs were wrongly called `BAD-REFUSAL` for that.
+Two of the cases also had the shell's own `$$` in them: the process number, which
+differs between the two runs.
+
+### Commands, the shell and the PATH
+
+The original hands a line with a shell character to `/bin/sh -c` (`-ce` without `-i`),
+and every other line is split at blanks and given to `execvp()`. On the host the
+shell is the host's, and the `PATH` the commands see has `$MUTOS_ROOT/bin` in front, so
+`cc`, `as`, `ld`, `ar`, `ranlib` and `make` in a recipe are the MUTOS tools of the
+root. An absolute path in a recipe (`/lib/c0`, `/lib/cpp` in the corpus's makefiles)
+is the host's own and no `make` can redirect it - decision 10 of the plan has the
+workaround, a macro on the command line. `tests/mutos_make/check_corpus.py` runs the
+thirteen makefiles that way: in one second, 131 `.s`, 132 `.i`, `.1` and `.2`
+equal to the real-hardware goldens, `p19_open3.s` refused as before, a second run that
+does nothing, `clean` that cleans. The comparators run the same makefiles with fake
+tools in a root of their own and compare with the original: the commands are the
+host's in both, which is what makes the comparison of `make` itself possible.
+
+### The directory read, and the pins it must not move
+
+`srchdir()` opens a directory and reads its entries, which MUTOS lets a program do and the
+host does not: the emulator's `open()` of a directory had always failed. The first version of
+the fix (`DirFile`, the entries as 16-byte `struct direct`) was on for every comparator, and
+the full `make check-realbin` then showed what else depended on the failure: the pinned
+`ascmp.py cases` run "input is a directory" changed (the original `as` read the entries as
+source text and said `syntax error, line 1` where it had said `Cannot open input d.s`), and
+five of the 300 damaged-archive cases of `arfuzz.py --mutate 0.12` differed - the original
+`ar` got a directory to read and ended in `phase error on ...`, because the host's size of a
+directory is not the length of its entries. Neither is `make`'s concern, and the pins and
+the results of the earlier steps are not to move with it: the read is switched on by
+`Emu.read_dirs`, which only `makecmp.py` sets. (Whether `ar` should treat the entries of a
+directory as MUTOS does is the port of `ar`'s question - it refuses an opened directory.)
+
+### The clock in `-d`
+
+`make -d` prints `TIME(name)=<clock>` for a target a step has made, and the comparator runs
+the original and the port one after the other, a few milliseconds apart. In 3,600 fuzz cases
+the second ticked between the two runs in two, and both were called `BAD-REFUSAL`: the port
+had refused, and the lines it had written before were not the original's, by one second.
+They were not a fault of the port; a time within an hour of the run counts as `<now>` in the
+judge now.
+
+### A note for later: the high bytes
+
+A byte of 0x80 or more in a name or a command indexes `funny[]` below its start.
+The first fifty or so of the 128 bytes before `funny[]` are the tail of libc's
+`_ctype_` table (`01 .. 10 .. 42 .. 02 .. 10 20`) - static data the port could model,
+which would let a German umlaut through - and then variables of libc.a that change in
+a run (`curbrk` among them). For now the port refuses every such byte.
