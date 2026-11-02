@@ -16,11 +16,13 @@
 #                  1989-01-31 20:41:17 UTC, so that ld uses the table
 #                  without "out of date"
 #   lib/cpp, lib/c0, lib/c1, lib/c2, bin/as, bin/ld, bin/cc, bin/ar,
-#   bin/ranlib, bin/make, bin/nm, bin/size, bin/strip, bin/tsort, bin/lorder
+#   bin/ranlib, bin/make, bin/nm, bin/size, bin/strip, bin/tsort, bin/lorder,
+#   bin/ed, bin/em
 #                  symbolic links to mutos_cpp, mutos_c0, mutos_c1,
 #                  mutos_c2, mutos_as, mutos_ld, mutos_cc, mutos_ar,
 #                  mutos_ranlib, mutos_make, mutos_nm, mutos_size,
-#                  mutos_strip, mutos_tsort, mutos_lorder - the driver finds
+#                  mutos_strip, mutos_tsort, mutos_lorder, mutos_ed,
+#                  mutos_em - the driver finds
 #                  its passes through the root, under the original's paths,
 #                  and mutos_ranlib runs bin/ar as the original runs "ar"
 #                  through its shell (mutos_make puts the root's bin/ first
@@ -118,4 +120,6 @@ bin/size mutos_size/mutos_size
 bin/strip mutos_strip/mutos_strip
 bin/tsort mutos_tsort/mutos_tsort
 bin/lorder mutos_lorder/mutos_lorder
+bin/ed mutos_ed/mutos_ed
+bin/em mutos_em/mutos_em
 EOF

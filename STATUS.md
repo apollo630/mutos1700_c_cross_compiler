@@ -21,12 +21,14 @@ A repo-root `Makefile` builds every component - through each one's own
 `src/mutos_<tool>/Makefile` (`mutos_ld`'s since its port, 2026-10-22), `mutos_ld`,
 `mutos_as`, `mutos_cpp`, `mutos_cc`/`mutos_c0`/`mutos_c1`/`mutos_c2` (`mutos_c2`
 since 2026-10-25), since 2026-10-26 `mutos_ar` and `mutos_ranlib` and, since 2026-11-02,
-`mutos_make` - and
+`mutos_make`, `mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort`, `mutos_lorder`, `mutos_ed`
+and `mutos_em` - and
 makes the MUTOS root `mutos_root/` (`make root`, `scripts/mutos_root.sh`: `lib/crt0.o`,
 `lib/libc.a` at its `__.SYMDEF` time, the passes and tools as symbolic links into
 `src/`, `usr/lib/`, `usr/include/` - since 2026-10-25 the original headers, copied from
 `mutos/mutos_include/usr/include/` -, since 2026-10-22 `tmp/`, and since 2026-10-26
-`bin/ar` and `bin/ranlib`, and since 2026-11-02 `bin/make`; `make clean` removes it). Every component is
+`bin/ar` and `bin/ranlib`, and since 2026-11-02 `bin/make`, `bin/nm`, `bin/size`, `bin/strip`,
+`bin/tsort`, `bin/lorder`, `bin/ed` and `bin/em`; `make clean` removes it). Every component is
 compiled with `-DMUTOS_ROOT_DEFAULT='"<tree>/mutos_root"'`, the default of
 `src/h/mutos_root.h`'s lookup (`$MUTOS_ROOT` overrides it); `mutos_cpp` and `mutos_ld`
 use it since 2026-10-22 (the default include directory; `-lX`'s libraries and the
@@ -43,10 +45,13 @@ every real compiler `.s` in `tests/mutos_cc`, `mutos_cpp`'s, the compiler's,
 2026-10-25 also `cc -O` with `mutos_c2`, and since 2026-10-26 `tests/mutos_ar/check_libc.py`:
 `libc.a` rebuilt from its objects by `mutos_ar` and `mutos_ranlib`, and since 2026-11-02
 `tests/mutos_make/check_corpus.py`: the thirteen `Makefile.mutos` of `tests/mutos_cc/`
-run through `mutos_make` and the ported tools).
+run through `mutos_make` and the ported tools, `tests/mutos_binutils/check_tools.py`, and
+`tests/mutos_ed/check_editors.py`: the MUTOS kernel's makefile run through `mutos_make` with
+`mutos_ed` and `mutos_em`).
 `make check-realbin` and `make check-libcatof` need the Python module `unicorn` and
 are not part of `make test`: the first checks the original binaries and the ports of
-`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib` and `make` against the emulated originals (and `mutos_ld`'s
+`c0`, `c1`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`,
+`lorder`, `ed` and `em` against the emulated originals (and `mutos_ld`'s
 extension `-r`/`-d`), the original `cc` traced through its
 original passes against the goldens it made (Milestone 4), and the original `ld`
 through the root (Milestone 1); the second the
@@ -154,6 +159,18 @@ cases, 3,729 the same, 125 refused, 18 where the original does not finish; `util
 plain and 300 damaged, no difference - the results in Milestone 6); `make check-libcatof` (0 differ);
 `make check-docs`. The longer fuzzer runs of Milestone 6 (seeds 2 and 3, 1,500 cases each) ran in the
 working tree, too.
+
+Verified 2026-11-02 with the ports of `ed` and `em` (Milestone 6, step 9), on a fresh clone of the commit
+with the change applied (`git apply`; the new files added with `git add`, which `check-docs` reads): `make
+clean && make all` with zero warnings under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its
+output the same as the commit's without the change (a second fresh clone), line for line, but for the lines
+the change adds - the two `make` calls for `src/mutos_ed` and `src/mutos_em`, `check_root.py`'s `bin/ed` and
+`bin/em`, and `check_editors.py` (212 checks, 0 failed) - and a temporary directory's name; `make check-docs`.
+Of `make check-realbin`, the checks the change adds ran in that clone - `edcmp.py cases` (244 cases: 225 the
+same, 7 refused, 12 where the original loops for ever and the port refuses), `edfuzz.py` seed 1 (ed: 400 the
+same; em: 380 the same, 20 where em asks "sure?" for ever), all passed - and `check_root.py --realbin` (all
+checks passed); the targets before them are unchanged by the change (no source of another tool, only the root's
+two new links). The longer fuzzer run (seeds 1000 to 3999, 3,000 cases) ran in the working tree.
 
 ---
 
@@ -1118,10 +1135,20 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    and `bin/lorder` in the root; their bugs (SZ-01 to LO-03, 22 in all). Checked by
    `tests/realbin/utilcmp.py` and `utilfuzz.py` against the emulated originals, and in `make
    test` by `tests/mutos_binutils/check_tools.py` (an independent reading of the a.out headers
-   and symbol tables, no emulator). **Next: step 9.**
-9. **Ports of `ed` and `em`.**
+   and symbol tables, no emulator).
+9. ~~**Ports of `ed` and `em`**~~ - **done 2026-11-02** (Milestone 6): `mutos_ed` is the
+   original `ed` - v7's `ed.c` with two MUTOS changes, rebuilt byte for byte by the project's
+   own `cc -O -s` -, `mutos_em` the original `em`'s line mode (the original `ed` with em's
+   own `main()`, `commands()`, input reader, session log and commands; the screen mode
+   refused); `bin/ed` and `bin/em` in the root; their bugs (ED-01 to ED-08, EM-01 to EM-13).
+   Checked by `tests/realbin/edcmp.py` and `edfuzz.py` against the emulated originals, and in
+   `make test` by `tests/mutos_ed/check_editors.py` (the MUTOS kernel's makefile through
+   `mutos_make`: its targets that edit it with `ed`, its `mch` rule with `em` - the real
+   `mch.s` and `mch.o`). **Next**: the plan's later items (`docs/TOOLCHAIN_PLAN.md`, section 3:
+   the 80186/V30 decision for `c1`/`c2`, `make install`, the manual pages) and the open
+   decision on a port of `as` - the project owner's to order.
 
-Steps 6 to 9 are Milestone 6 (below), steps 6 to 8 done; their originals are in
+Steps 6 to 9 are Milestone 6 (below), all four done; their originals are in
 `mutos/mutos_bin/` since 2026-10-25, the order was proposed that day.
 
 Smaller, not on the path: `tests/mutos_cc/fuzz/fuzz_c.py`'s generator still keeps
@@ -1225,10 +1252,10 @@ derivation in `docs/devlog/m5_c2_v30.md`.
 
 ## Milestone 6 — `make`, `ar`, `ranlib` and the other MUTOS tools
 
-**Status: steps 6 to 8 done - `mutos_ar` and `mutos_ranlib` (2026-10-26), `mutos_make`, `mutos_nm`,
-`mutos_size`, `mutos_strip` and `mutos_tsort` (2026-11-02) are ports of the real `ar`, `ranlib`,
-`make`, `nm`, `size`, `strip` and `tsort`, and `mutos_lorder` is the real shell script; step 9
-(`ed`, `em`) NOT STARTED**
+**Status: steps 6 to 9 done - `mutos_ar` and `mutos_ranlib` (2026-10-26), `mutos_make`, `mutos_nm`,
+`mutos_size`, `mutos_strip`, `mutos_tsort`, `mutos_ed` and `mutos_em` (2026-11-02) are ports of the
+real `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, `ed` and `em` (its line mode), and
+`mutos_lorder` is the real shell script**
 (`docs/TOOLCHAIN_PLAN.md`, decision 10, steps 6 to 9). **Decided 2026-10-25**: `make` is ported from its binary like every other tool - the
 wrapper `mutos_make` around the host's `make`, planned on 2026-10-20, is dropped -, and
 so are all the other binaries brought from the hardware that day: `ar`, `ranlib`,
@@ -1245,7 +1272,8 @@ and v7's sources (`v7/make/`, `v7/ar/`, `v7/ranlib/`, `v7/nm/`, `v7/size/`,
 code): the original `make`'s built-in rules and macros are v7's `builtin[]`
 (`v7/make/files.c`, `AS=as -`) string for string; `make.1.d` gives another default
 suffix list than the binary has (v7's manual's). Since 2026-10-26 `ar` and `ranlib` run
-under `tests/realbin/` (below), and since 2026-11-02 `make`; the others do not yet. What the real `make` is known to do and not do on the hardware is in
+under `tests/realbin/` (below), and since 2026-11-02 `make`, `nm`, `size`, `strip`, `tsort`, `ed`
+and `em`. What the real `make` is known to do and not do on the hardware is in
 `docs/devlog/m4_foundations.md`, "MUTOS 1700 host-tooling findings"; what the new
 files showed in `docs/devlog/originals_and_ports.md`, "The originals of 2026-10-25".
 
@@ -1531,6 +1559,93 @@ its text are in `src/mutos_lorder/README.md`.
   are read, not reached.
 - **Not done**: the manual pages of the five tools (they come at the end, Workflow Guideline 10).
 
+### `mutos_ed` and `mutos_em` are ports of the real `ed` and `em` (verified 2026-11-02)
+
+`mutos_ed` is the original MUTOS 1700 `ed`: **v7's `ed.c` with two changes**, which this
+project's own `cc -O -s` (the ported chain) compiles and links with `libc.a` to the original
+binary **byte for byte** - 11,522 bytes of text, 234 of data, 4,886 of bss. The two changes,
+found by diffing the rebuild against the binary instruction by instruction: `j` with one address
+joins it and the next line (v7: nothing), and `m` to the line before the first one moved, or to the
+first one itself, does nothing. `tests/realbin/edmap.txt` is the rebuild's symbol table, `eddis.py`
+disassembles a function by name. The port keeps what a caller can tell of the 8086: 16-bit numbers
+and addresses that wrap around the segment before they are checked (`1+65536p` is line 1), the
+line table `malloc()`ed at 0x4104 (measured) and grown in place, the bss arrays `savedfile`,
+`file`, `linebuf`, `rhsbuf` and `expbuf` one behind the other (a long file name runs on through
+them), signed chars, the input read a byte at a time, the seek to the end of the standard input
+after an error (a script from a file ends at its first error; through a pipe it goes on), the
+output a line at a time, `/tmp/eXXXXX` under the root. `!` runs the host's `/bin/sh` with the
+root's `bin/` first in the `PATH`.
+
+`mutos_em` is the original `em`'s **line mode**. `em` has no source: matching the original `ed`'s
+functions against its text found **33 of ed's functions unchanged and ten changed**; the rest -
+`main()`, `commands()`, the input reader, the session log, `ask()`, `confirm()`, `mark()`, the help,
+the screen mode - is em's own (`tests/realbin/emmap.txt`, `emdis.py`). What it adds to ed: "Editor"
+and the prompt ">" (`-`, `-s` silent; `<`, `>` switch), `-e` (only the named file), the session log
+`<file>.elog` and its replay `-r` (only with a terminal), 8-bit text, "sure? " for `q`/`e` with
+changes, `s///n` (the count), `z` (`s` asking at each match), `"`, `&`, `%` (screenfuls), `|cmd`, `!`
+with `%` and `!!`, `h` (help files of `/usr/lib/emhelp/`), `b+`/`b-`. **The screen mode `o` is
+refused.**
+
+- **Sources**: `src/mutos_ed/ed.c`, `src/mutos_em/em.c` (the offsets of the binaries in the
+  comments; a `Makefile` and a `README.md` each). The top-level `make all` builds them (`all: ld as cpp
+  cc ar ranlib make nm size strip tsort lorder ed em root`), zero warnings under `-std=c11 -Wall
+  -Wextra -Wpedantic`.
+- **In the MUTOS root**: `bin/ed` and `bin/em` as links into `src/` (`scripts/mutos_root.sh`,
+  `tests/mutos_root/check_root.py`), where the kernel's makefile finds them through `mutos_make`'s
+  `PATH`.
+- **The MUTOS kernel's makefile** (`tests/mutos_ed/kernel/conf.Makefile` and `fakeawk`, as the
+  project owner gave them; `tests/mutos_ed/check_editors.py`, in `make test`, no emulator, 212 checks,
+  no difference): run through `mutos_make` in a scratch kernel tree, `make 7150`, `make 1834`, `make
+  7100` edit the configuration blocks and the `mutos:` lines as an independent reading of the eddep
+  script gives them (and `make 7100` gives the original file back byte for byte); all 34 option targets
+  (`AMX`, `noAMX`, .. `V30IDE`, `noV30IDE`) change `DRIVER`, `CONFIG` or `FLAGS` as their scripts say and
+  touch the sources that test the option; `make depend` writes the dependencies of every source behind
+  the marker, twice the same; **`make ../mdep/mch_M7100.o` runs `cc -P` (the configuration's
+  `-DM7100 -DASK -DIFSS -DV24 -DV30IDE`, those the kernel's goldens were made with), `em mch.i
+  <fakeawk` and `cc -c`: `mch.i` is `tests/mutos_cpp/c/mch.i.golden`, `em` makes of it
+  `tests/mutos_as/kernel_opt/mch.s`, and the object's text, data and relocation are
+  `kernel_opt/mch.o.golden`'s** - real hardware all three; its symbols are the golden's without the
+  five local `L` symbols (`cc` runs `as -gC`, the golden was assembled without `-C`). The editors'
+  shell commands are checked there too (`!` of both, em's `%`, `!!`, `|`).
+- **Against the emulated originals** (`tests/realbin/edcmp.py`; a case is a directory, a command line
+  and the script on the standard input - a file, and again through a pipe, which the seek after an
+  error cannot skip -, run in two copies with a MUTOS root each; the standard output and error, the exit
+  status and both trees compared): `edcmp.py cases` **244 cases: 225 the same, 7 refused, 12 where the
+  original loops for ever and the port refuses, no difference** - ed and em on every command, the error
+  paths, the 16-bit addresses, overrunning names, long lines, NUL and 8-bit bytes, a full temporary file
+  ("?TMP"), 4,000 lines; the kernel makefile's eddep scripts on it (18, and three of them in one run);
+  em's options, "sure?", `z`, `"`, `&`, `%`, `<`, `>`, `b`, `h`, `s///n`, a byte 0377, replayed logs,
+  and `fakeawk` on the real `mch.i`.
+- **Differential fuzzing** (`tests/realbin/edfuzz.py`: random files - tabs, control characters, for em
+  8-bit bytes - and random scripts of every command, address form, regular expression and replacement,
+  most through a pipe): no difference. Seed 1, 400 cases each for ed and em (`make check-realbin`: ed
+  400 the same; em 380 the same, 20 where em asks "sure?" for ever at the end of the script); seeds 1000
+  to 3999, 3,000 cases (2,919 the same, 1 refused, 80 where em asks "sure?" for ever).
+- **Refused on purpose** (exit status 125, a last message line ending in "refused"; what was written
+  before is the original's): em's screen mode `o`; a write or read past the bss arrays (ED-01, ED-02,
+  ED-06, EM-02 .. EM-04); a line table above 0xF000 (where the break fails is not measured); where the
+  originals loop for ever (ED-05, EM-05, EM-06) or read the stack's garbage (EM-05); the encryption
+  (`-x`, an `e` after `x`: ED-03) - `x` itself fails as the original's does without
+  `/usr/lib/makekey` (ED-04).
+- **The originals' bugs**: 21 in `docs/MUTOS_ORIGINAL_BUGS.md` - `ed`: the file name without a bound
+  (ED-01, ED-02), the encryption's errors (ED-03, ED-04), the empty group repeated (ED-05), a NUL in a
+  pattern (ED-06), the last line without a newline counted (ED-07), the address that wraps (ED-08);
+  `em` (ed's bugs, and): `!` alone takes the next line (EM-01), the shell command, `|` and `h` without a
+  bound (EM-02 .. EM-04), "sure?" reads the script (EM-05), `z` reads the standard error (EM-06), a byte
+  0377 ends the input (EM-07), 8-bit replacement text loses its top bit (EM-08), the byte after a
+  replayed log (EM-09), the line break that does nothing (EM-10), the log's first line number (EM-11),
+  `<` and `>` (EM-12), `|`'s signals (EM-13).
+- **Not verified**: what needs `fork()`, `pipe()` or a terminal - `!`, `|`, the prompt's 128-byte
+  reads from a terminal, the session log and its replay from a terminal, the lines and columns of a
+  terminal (the port takes the host's window size for MUTOS's `sgttyb` bytes 10 and 11), `z` with a
+  readable standard error, `-x` - is checked by reading the binaries (and `!`, `|` in
+  `check_editors.py` against what the reading says; em's prompt, log, "sure?" and replay through a
+  pseudo-terminal, by hand), not against the originals; where the kernel
+  refuses the break for a big line table is not known (the port refuses above 0xF000); nothing was run
+  on the hardware.
+- **Not done**: em's screen mode (`o`, an ANSI terminal with the A7100's function keys - refused); the
+  manual pages of the two tools (at the end, Workflow Guideline 10).
+
 ---
 
 ## `mutos_as` opcode coverage
@@ -1712,7 +1827,8 @@ far.
    through the driver too. `mutos_c2` followed on 2026-10-25 (Milestone 5), then
    `mutos_as`'s differential fuzzer (Milestone 2, step 5), then `mutos_ar` and
    `mutos_ranlib` (Milestone 6, step 6), `mutos_make` (step 7) and `mutos_nm`, `mutos_size`,
-   `mutos_strip`, `mutos_tsort`, `mutos_lorder` (step 8); next is step 9 - see "Next up".
+   `mutos_strip`, `mutos_tsort`, `mutos_lorder` (step 8) and `mutos_ed`, `mutos_em` (step 9);
+   what follows is the project owner's to order - see "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -

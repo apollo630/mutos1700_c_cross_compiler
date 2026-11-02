@@ -1,6 +1,6 @@
-# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib` and `make`
+# The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed` and `em`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), the ports of `ar` and `ranlib` (2026-10-26), and the port of `make` (2026-11-02).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), the ports of `ar` and `ranlib` (2026-10-26), the port of `make` (2026-11-02), the ports of `nm`, `size`, `strip`, `tsort` and `lorder` (2026-11-02) and those of `ed` and `em` (2026-11-02).
 
 ---
 
@@ -1849,3 +1849,92 @@ a stripped program (no symbols, the flag set, the file as long as header, text a
   edges 5,000 to 9,121) take 30 seconds each on the emulator; they were run two at a time and
   the results kept in the notes above, not in a test: `utilcmp.py cases tsort` has the chains of
   1900, 1974 and 1975 (the port's limit), 2010 and 2011 (the original's) as cases.
+
+## The ports of `ed` and `em` (2026-11-02)
+
+Step 9 of `docs/TOOLCHAIN_PLAN.md`. The project owner asked for the two editors with one hard
+requirement: the MUTOS kernel's makefile must work with them - it configures itself with
+`ed - Makefile <eddep` (the machine targets `7100`, `7150`, `1834`, 34 option targets,
+`depend`) and post-processes the preprocessed `mch.c` with `em mch.i <fakeawk >/dev/null`
+(`1`, `1,/\.globl/-1d`, `g-0x-s--/-gp`, `g-0X-s--/-gp`, `w`: the C preprocessor's hex constants
+`0x..` into the assembler's `/..`). Both files are in `tests/mutos_ed/kernel/` as given.
+
+### `ed` is v7's, with two changes - found by compiling v7
+
+As for `make` (step 7), the first try was to compile v7's `ed.c` with the project's own
+`cc -O -s` and to compare the result with the original binary. It differed in two places,
+which an instruction diff (capstone, the addresses masked) showed as an insertion in
+`command()` near `case 'j'` and one in `move()`. Variants of the two pieces of C were compiled
+until the binary was byte for byte the original - the last two bytes of difference
+(`cmp word ptr [addr1], 0` against `cmp dx, 0`) gave the exact form:
+
+    case 'j':
+        if (addr2==addr1) {
+            if (addr1==0)
+                addr1 = dot;
+            addr2 = addr1+1;
+        }
+
+and in `move()`, before the marks are cleared, `if (adt==addr1) return; if (adt==addr1-1)
+return;`. So the original is v7's `ed.c` with these two changes, nothing more; the symbol
+table of the rebuild is `tests/realbin/edmap.txt`. The port is that source with the 8086's
+representation made explicit: the line table's pointers as 16-bit addresses (`LA()`, `PD()` -
+the compiler's pointer difference is `sub`, `sbb dx`, `idiv 2`: exact -, `LW()` checks that a
+word is inside the table), the bss arrays `savedfile` .. `expbuf` as one array with checked
+reads and writes, signed chars. `_zero` (0x4104) was measured under the emulator, before and
+after the table grew: `realloc()` after `free()` keeps the block where it is, since nothing
+else in `ed` calls `malloc()`.
+
+### `em` has no source - found by matching ed
+
+`em` (0411, 27K of text) was matched function by function against the rebuilt `ed`
+(prologues `push bp; mov bp, sp` as starts, the instruction sequences with the addresses masked,
+difflib's ratio): 33 functions at 1.00, ten between 0.8 and 0.99 - each diffed instruction by
+instruction against ed's, with the data addresses mapped through the matched functions (the
+same instruction in both naming `_zero` gives em's address of `_zero`) -, and the rest em's own:
+`main()`, `commands()` (2,440 bytes, a switch hashed by `c % 10` with a table in the text),
+an input reader with a buffer of its own (`rdchr()`: 128 bytes at a time from a terminal, one
+otherwise, the log written, `-r`'s log read and echoed through stdio), `makelog()`, `ask()`
+("sure? ", reading `read(0, buf, 128)` itself), `confirm()` and `mark()` for `z`, the help, and
+the screen mode (from 30d8 on, half of the text: ANSI sequences, the A7100's function keys,
+menus). `tests/realbin/emmap.txt` has all of it. The line mode is what the kernel's makefile
+needs and what the port is; `o` is refused. With the real `mch.i`
+(`tests/mutos_cpp/c/mch.i.golden`) the emulated `em` and the port both give
+`tests/mutos_as/kernel_opt/mch.s` byte for byte - the real-hardware chain closes: `cc -P` with
+the kernel's 7100 options (the very `-D` flags the cpp golden was made with) gives `mch.i`, em
+gives `mch.s`, `as` gives `mch.o.golden` (through `cc -c`, which runs `as -gC`, without the
+five local `L` symbols).
+
+### What the emulator cannot answer
+
+`ed` needs no terminal but for the encryption; `em` asks `gtty()` before every read of its
+input, for its log and for its screens. The emulator's `ioctl()` is always "not a tty", it
+has no `pipe()` or `dup()`, and its `fork()` does not run the child: `!` (both), `|`, `z`'s
+answers from the standard error, the log and `-r` from a terminal were read in the binary, and
+`!`, `|` are checked against that reading in `tests/mutos_ed/check_editors.py`. Two things of
+the comparator matter: the script is a file for most cases, because the editors seek the
+standard input to its end after an error (v7's `lseek(0, 0L, 2)`: a script ends at its first
+error) - and a pipe as well (`edcmp.py`'s `|pipe` cases, most of `edfuzz.py`'s), which the
+seek cannot skip, so that a random script goes on past its errors; the emulator's standard
+input for that is a `BytesIO` that refuses `seek()`. And `eof_limit` stops the original's
+endless reads (em's "sure?" and `z` at the end of their input) quickly.
+
+### What the first runs found
+
+The ports agreed with the originals at the first full run but for two things, both of the
+port: em's failed substitution is "??" - `error("?")` where ed has `error(Q)`, not seen in the
+first reading -, and the temporary file's host path was kept in the static buffer that
+`mutos_path()` fills, which the help command's path overwrote: `quit()` unlinked the wrong
+file and left `tmp/eXXXXX` behind (`strdup()` now, in both). The eight-bit cases showed
+EM-08 on the emulator (`s/Q/\337/` puts `_`), the end-of-script cases EM-05 and EM-06.
+
+### The kernel's makefile, without an emulator
+
+`check_editors.py` builds a kernel tree (`conf/` with the makefile, `mdep/` with `mch.c` and
+`fakeawk`, `h/` with the kernel headers of `tests/mutos_cpp/h/`, a small source with
+`#ifdef <option>` for each option so that the targets' `touch` has files) and runs the targets
+through `mutos_make`. Its expectations are an independent reading of the eddep scripts in
+Python (`configure()`, `option()`, `depend()` - the `g/re/+,+4s/..` of the machine targets is
+"the four lines behind the heading"; `s/ *$/ X/` after a `g` acts on the last line the `g`
+matched). The recipes need the host's `/bin/sh` (`set -x`, `${X+..}`, `eval`) and, for
+`depend`, `/bin/grep` and `sed`.

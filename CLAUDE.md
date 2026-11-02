@@ -72,6 +72,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   tools of the root. Its README has the behaviour, the deltas from v7, what the port
   refuses and why an absolute path in a recipe (`/lib/c0`) needs a macro on the command
   line.
+* `/src/mutos_ed/` and `/src/mutos_em/` (since 2026-11-02): Source code for the Mutos Text Editor
+  and the Mutos Extended Text Editor - ports of the original MUTOS 1700 `ed` (v7's `ed.c` with two
+  MUTOS changes, which the project's own `cc -O -s` compiles to the original binary byte for byte)
+  and of the original `em`'s line mode (the original `ed` with em's own `main()`, `commands()`, input
+  reader, session log and commands; em has no source; its screen mode is refused), with the 8086's
+  16-bit addresses, line table and bss arrays kept. The MUTOS kernel's makefile runs both. Their
+  READMEs have the behaviour, the changes against v7 and ed, and what the ports refuse.
 * `/src/mutos_nm/`, `/src/mutos_size/`, `/src/mutos_strip/`, `/src/mutos_tsort/` and
   `/src/mutos_lorder/` (since 2026-11-02): Source code for the Mutos Name List, Segment
   Sizes, Symbol Stripper, Topological Sort and Library Orderer - ports of the original
@@ -86,7 +93,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   file system (`lib/crt0.o`, `lib/libc.a` at its `__.SYMDEF` time, the passes as
   symbolic links into `src/` - `lib/c0` .., `bin/as`, `bin/ld`, `bin/cc`, `bin/ar`,
   `bin/ranlib`, `bin/make`, `bin/nm`, `bin/size`, `bin/strip`, `bin/tsort`,
-  `bin/lorder` -, `usr/lib/`, `usr/include/` - the original headers, copied
+  `bin/lorder`, `bin/ed`, `bin/em` -, `usr/lib/`, `usr/include/` - the original headers, copied
   from `/mutos/mutos_include/usr/include/` (since 2026-10-25) -, `tmp/`); the tools look up every
   absolute MUTOS path under `$MUTOS_ROOT`, by default this directory
   (`docs/TOOLCHAIN_PLAN.md`, decisions 2 and 3; `src/h/mutos_root.h`).
@@ -166,7 +173,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   (`ranlibmap.txt`, `ranlibdis.py`, `ranlibcmp.py`, `ranlibfuzz.py`), since 2026-11-02 for
   `make` (`makemap.txt`, `makedis.py`, `maketables.py`, `makecmp.py`, `makefuzz.py`), since
   2026-11-02 for `nm`, `size`, `strip`, `tsort` and `lorder` (`nmmap.txt`, `sizemap.txt`,
-  `stripmap.txt`, `tsortmap.txt`, the `*dis.py` of the four, `utilcmp.py`, `utilfuzz.py`), and
+  `stripmap.txt`, `tsortmap.txt`, the `*dis.py` of the four, `utilcmp.py`, `utilfuzz.py`), since
+  2026-11-02 for `ed` and `em` (`edmap.txt`, `emmap.txt`, `eddis.py`, `emdis.py`, `edcmp.py`,
+  `edfuzz.py`), and
   the same measurement for `mutos_as`, a re-implementation (`ascmp.py`, `asfuzz.py`, the pinned
   `ascmp_goldens.txt`/`ascmp_cases.txt`). The
   emulator shifts by CL, and
@@ -185,6 +194,12 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `bin/`) on `crt0.o`, `libc.a` and a program the ported `cc` makes - the sizes and symbol
   tables as an independent reading of the headers gives them, `libc.a`'s `__.SYMDEF` as the
   table `nm -g` shows, a stripped program, `lorder libc.a | tsort` giving each member once.
+* `/tests/mutos_ed/`: `check_editors.py` (in `make test`, no emulator): the MUTOS kernel's
+  makefile (`kernel/conf.Makefile`, `kernel/fakeawk`, as the project owner gave them) run through
+  `mutos_make` in a scratch kernel tree - the machine and option targets and `depend`, which edit it
+  with `mutos_ed`, against an independent reading of their scripts, and the `mch` rule (`cc -P`,
+  `mutos_em` with `fakeawk`, `cc -c`) against the real-hardware `mch.i`, `mch.s` and `mch.o`; the
+  editors' shell commands.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
@@ -239,8 +254,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     `src/mutos_cc/README.md` on 2026-10-20 (the hand-written compiler, the floating
     constants of `mutos_as`), unchanged - true when written.
   * **`docs/MUTOS_ORIGINAL_BUGS.md`**: Every bug found in the original MUTOS 1700
-    binaries (`c0`, `c1`, `as`, `ld`, `cpp`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, the script `lorder`, `libc.a`, and
-    `ed`, `em` once they are read) in one place - symptom, trigger, mechanism with its offset in
+    binaries (`c0`, `c1`, `as`, `ld`, `cpp`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, the script `lorder`, `libc.a`, `ed`, `em`)
+    in one place - symptom, trigger, mechanism with its offset in
     the binary, evidence (golden, emulator run, or code reading only), what this
     project's tool does with it (reproduced / refused / modelled) and a fix idea - for
     fixing them later. Kept current by Workflow Guideline 9.
@@ -610,6 +625,15 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   link-compatible with the real `libc.a`/`crt0.o` (`docs/devlog/m5_c2_v30.md`).
 
 ### Milestone 6: `make`, `ar`, `ranlib` and the other MUTOS tools
+* **Step 9 done 2026-11-02**: `mutos_ed` is a port of the original `ed` - v7's `ed.c` with two MUTOS
+  changes (`j` with one address, `m` onto itself), rebuilt byte for byte by the project's own
+  `cc -O -s` - and `mutos_em` of the original `em`'s line mode (`docs/TOOLCHAIN_PLAN.md`, step 9; the
+  screen mode `o` is refused); `bin/ed` and `bin/em` in the MUTOS root. The MUTOS kernel's makefile
+  runs through `mutos_make` with them (`tests/mutos_ed/check_editors.py`, in `make test`): its targets
+  that edit it with `ed`, and its `mch` rule, whose `em` step gives the real `mch.s` from the real
+  `mch.i`. Checked against the emulated originals (`tests/realbin/edcmp.py`, `edfuzz.py`: no
+  difference); 21 bugs of the originals (`docs/MUTOS_ORIGINAL_BUGS.md`, ED-01 .., EM-01 ..) - see
+  `STATUS.md`.
 * **Step 8 done 2026-11-02**: `mutos_nm`, `mutos_size`, `mutos_strip` and `mutos_tsort` are
   ports of the original `nm`, `size`, `strip` and `tsort`, and `mutos_lorder` is the
   original shell script (`docs/TOOLCHAIN_PLAN.md`, step 8); `bin/nm`, `bin/size`,
@@ -641,7 +665,8 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   (`docs/TOOLCHAIN_PLAN.md`, decision 10). MUTOS makefiles then run on the host through
   `mutos_make`, and one that builds a library has `mutos_ar` and `mutos_ranlib`.
 * Order (`docs/TOOLCHAIN_PLAN.md`, steps 6 to 9, after `mutos_as`'s step 5): `ar` and
-  `ranlib` (done); `make` (done); `nm`, `size`, `strip`, `tsort`, `lorder` (done); `ed` and `em`.
+  `ranlib` (done); `make` (done); `nm`, `size`, `strip`, `tsort`, `lorder` (done); `ed` and `em`
+  (done).
 * The material is in the tree since 2026-10-25: the binaries (`/mutos/mutos_bin/`),
   their manual pages (`/mutos/mutos_man/`, `make`'s included), the original headers, and
   v7's sources (`/v7/make/`, `/v7/ar/`, ...; `em` has none).
