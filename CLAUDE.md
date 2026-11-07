@@ -255,7 +255,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     is the original kernel byte for byte.
   * **`docs/PROJECT_MEMORY.md`** (since 2026-11-07): the working agreements with the
     project owner, the owner's local setup and the context that sessions used to keep in
-    Claude's conversation memory - read at session start (Session-Start Protocol).
+    Claude's conversation memory - read at session start (Session-Start Protocol), and
+    kept in sync with that memory (Workflow Guideline 11).
   * **`docs/DEVLOG.md`**: the index of the development log, whose parts are in
     `docs/devlog/` - the detailed technical reference and debugging history (CPU/encoding
     facts, bug-fix history, debugging methodology, recurring process lessons) for every
@@ -299,7 +300,9 @@ You act as an expert systems programmer, compiler architect, and operating syste
   agreements with the project owner), `STATUS.md`, `docs/TOOLCHAIN_PLAN.md` and
   `docs/DEVLOG.md` (the index of the development log) - and the log parts in
   `docs/devlog/` that concern the task - before doing anything else — do not rely on
-  conversation memory for technical depth. Treat them as a single unit that must stay
+  conversation memory for technical depth. Compare Claude's conversation memory of the
+  claude.ai project with `docs/PROJECT_MEMORY.md`; what the file lacks goes into this
+  session's patch (Workflow Guideline 11). Treat them as a single unit that must stay
   in sync: after any significant change, `STATUS.md` reflects the new current state
   (see Workflow Guideline 6 below), and any new technical fact, bug, or methodology
   belongs in the development log (the part it concerns, see `docs/DEVLOG.md`) —
@@ -541,6 +544,16 @@ You act as an expert systems programmer, compiler architect, and operating syste
     repository's development documents or test files); **references to the other
     tools** (`SEE ALSO`, and wherever one tool hands work to another); **consistent
     wording and structure** across all pages.
+11. **Claude's memory synced into `docs/PROJECT_MEMORY.md` (mandatory, decided
+    2026-11-07)**: everything Claude keeps in its conversation memory of the claude.ai
+    project is in `docs/PROJECT_MEMORY.md` too - a working agreement, a decision of the
+    owner's, the owner's setup, a milestone. What Claude files in that memory goes into
+    the file (or into the document it belongs to, with a pointer from the file) in the
+    same session, as part of the session's patch (Guideline 7) - a patch of the file
+    alone when the session delivers no other. What the automatic memory pass files
+    after a turn is caught at the next session start: Claude compares its memory with
+    the file and puts what is missing into that session's patch. Where the two
+    disagree, the repository wins and the memory is corrected.
 
 ---
 
@@ -637,9 +650,11 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   original on every `.s` golden, hand-written cases and by differential fuzzing
   (`tests/realbin/c2cmp.py`, `c2fuzz.py`) - see `STATUS.md` and
   `src/mutos_cc/README.md`.
-* 80186/V30 code generation (`-mv30`) in `mutos_c1`/`mutos_c2`: deferred until the 8086
-  toolchain works completely; then decided. Settled ahead of it: such code must stay
-  link-compatible with the real `libc.a`/`crt0.o` (`docs/devlog/m5_c2_v30.md`).
+* 80186/V30 code generation in `mutos_c1`/`mutos_c2` - should it come, behind the switch
+  `-1`, as `mutos_as`'s 80186/V30 instructions (`docs/TOOLCHAIN_PLAN.md`, section 4):
+  deferred until the 8086 toolchain works completely; then decided. Settled ahead of
+  it: such code must stay link-compatible with the real `libc.a`/`crt0.o`
+  (`docs/devlog/m5_c2_v30.md`).
 
 ### Milestone 6: `make`, `ar`, `ranlib` and the other MUTOS tools
 * **The MUTOS kernel, 2026-11-07**: with steps 6 to 9 done, the project owner built the MUTOS

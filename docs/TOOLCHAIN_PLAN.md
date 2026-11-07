@@ -224,6 +224,14 @@ those instructions (`tests/mutos_as/kernel_opt/mch_insw_outsw.s`,
 immediate and of the shifts by a count are refused without `-1`, as the
 original refuses them; its 80186 words are the unknown words of AS-02.
 
+**The compiler's switch is `-1` too** (confirmed by the owner 2026-11-07):
+should 80186/V30 code generation in `c1`/`c2` come (decision 8), it is
+behind `-1` as well - the reasons above hold for `cc`. `-mv30`, the
+working name of the documents of Milestones 4 and 5 from before
+2026-10-20, was replaced by `-1` in them on 2026-11-07; only the comment of
+`tests/mutos_cc/01_expr/04_shift.c` keeps it, since that file is the
+source of real-hardware goldens.
+
 ## 5. What the originals showed (2026-10-20)
 
 Details and evidence: `docs/devlog/originals_and_ports.md`.

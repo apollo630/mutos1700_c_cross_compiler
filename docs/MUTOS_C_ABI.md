@@ -319,7 +319,7 @@ result back through the pointer).
 functions** — it only matters for the small, fixed set of built-in helpers the code
 generator itself must emit calls to for `long` multiply/divide/modulo (the 8086 has
 no 32×32 hardware multiply/divide, so this software fallback is presumably needed
-regardless of target CPU tier, including `-mv30`).
+regardless of target CPU tier, including the 80186/V30 code of `-1`).
 
 ### 1.9 Large stack frames: the `chkstk` guard
 

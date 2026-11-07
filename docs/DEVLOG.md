@@ -121,9 +121,9 @@ History: floating point beyond the corpus - `libc.a`'s compiled C and the `fltpr
 - The round-12 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-10)
 - The round-13 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-10)
 
-## [Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)](devlog/m5_c2_v30.md)
+## [Milestone 5 — Optimizer (`c2`) & NEC V30 (`-1`)](devlog/m5_c2_v30.md)
 
-The optimizer and the NEC V30: why `-mv30` code must keep the ABI, and why not `PREPARE`/`DISPOSE` (the port of `c2` itself: the part on the original binaries and the ports).
+The optimizer and the NEC V30: why code compiled with `-1` must keep the ABI, and why not `PREPARE`/`DISPOSE` (the port of `c2` itself: the part on the original binaries and the ports).
 
 - Hard constraint (settled)
 - Evidence: `docs/V20_V30_Users_Manual_Oct86.pdf`

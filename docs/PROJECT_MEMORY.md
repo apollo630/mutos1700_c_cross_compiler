@@ -11,7 +11,9 @@ those win, and this file is corrected.
 
 Keep it short and current: a new standing rule or decision of the owner's goes
 here (dated) in the same change that acts on it, or into the document it belongs
-to with a pointer here.
+to with a pointer here. Claude's conversation memory is still kept; since
+2026-11-07 everything in it is in this file too (`CLAUDE.md`, Workflow
+Guideline 11).
 
 ## Working agreements
 
@@ -23,6 +25,7 @@ to with a pointer here.
 | 2026-10-20 | Manual pages (`man/`) are written at the end of the project, in English, without development details, with references to the other tools and one wording and structure throughout; the existing ones stay as they are until then. | Workflow Guideline 10; `docs/TOOLCHAIN_PLAN.md`, decision 12 |
 | — | Everything in the repository is English (code comments, documents, manual pages). The owner writes to Claude in German; answers to him are German, what goes into the repository English. | `CLAUDE.md`, "AI Collaboration Persona & Rules" |
 | — | Decisions on direction are the owner's: Claude measures, recommends and waits. Open ones are listed below. | — |
+| 2026-11-07 | Claude's conversation memory of the claude.ai project is synced into this file: what Claude files there goes into this file in the same session's patch (a patch of this file alone if the session delivers no other); what the automatic memory pass files after a turn is caught at the next session start, when Claude compares its memory with this file. Where the two disagree, the repository wins and the memory is corrected. | `CLAUDE.md`, Workflow Guideline 11 and the Session-Start Protocol |
 
 ## The owner's decisions, and where they are recorded
 
@@ -38,10 +41,12 @@ to with a pointer here.
 | 2026-10-25 | The original headers (`mutos/mutos_include/usr/include/`) are copied into the root's `usr/include/`. | decision 3 |
 | 2026-10-25 | MUTOS makefiles are supported by porting `make` (not a wrapper around the host's `make`), and with it every other binary brought from the hardware: `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder` (a script), `ed`, `em`. | decisions 10 and 11 |
 | 2026-10-25 | All original MUTOS files live under `mutos/` (`mutos_bin/` binaries as base64 text, `mutos_include/`, `mutos_man/`), reference data never altered. | `mutos/README.md`; Workflow Guideline 2 |
+| 2026-11-07 | The switch for 80186/V30 code generation in `cc`/`c1`/`c2`, should it come, is `-1` as well, the name `mutos_as` has; the older working name was replaced in every Markdown document. | `docs/TOOLCHAIN_PLAN.md`, section 4 |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, section 3, and
 `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
-Milestone 2, "Step 5 of the plan"); 80186/V30 code generation in `c1`/`c2`;
+Milestone 2, "Step 5 of the plan"); 80186/V30 code generation in `c1`/`c2`
+(behind `-1`);
 `make install`; the manual pages.
 
 ## The owner's setup
