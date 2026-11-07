@@ -1,6 +1,6 @@
 # `src/mutos_cc/README.md` history — "Current scope" of the hand-written compiler
 
-The section "Current scope" of `src/mutos_cc/README.md`, moved here on 2026-10-20, unchanged. It grew with the hand-written `mutos_c0` (`c0_parser.c`, until 2026-10-18) and `mutos_c1` (`c1_gen.c`, until 2026-10-13). What it says about the real compiler's output - the `temp1`/`temp2` stream and the code each construct gets, as the goldens show them - still holds; what it says about those two programs is history. Both are replaced by ports of the originals (see [`src/mutos_cc/README.md`](../../src/mutos_cc/README.md)).
+The section "Current scope" of `src/mutos_cc/README.md`, moved here on 2026-10-20, unchanged but for one word (2026-11-07: an outdated switch name, `docs/TOOLCHAIN_PLAN.md`, section 4). It grew with the hand-written `mutos_c0` (`c0_parser.c`, until 2026-10-18) and `mutos_c1` (`c1_gen.c`, until 2026-10-13). What it says about the real compiler's output - the `temp1`/`temp2` stream and the code each construct gets, as the goldens show them - still holds; what it says about those two programs is history. Both are replaced by ports of the originals (see [`src/mutos_cc/README.md`](../../src/mutos_cc/README.md)).
 
 ---
 
@@ -44,7 +44,7 @@ c;` plus assignments and `+ - * / %`):
   the generic two-operand working register - the same register
   `00_smoke`'s `RFORCE` handler already used for a bare return value);
   `*` loads the left operand into `AX` then `imul`s the right operand
-  (single-operand `IMUL`, matching plain-8086 - no `-mv30` 3-operand
+  (single-operand `IMUL`, matching plain-8086 - no 80186 3-operand
   form); `/` and `%` both do `mov ax,<left> / cwd / idiv <right>`,
   the *same* two-instruction sequence, differing only in which
   register the result comes from afterward (`ax` for `/`, `dx` for

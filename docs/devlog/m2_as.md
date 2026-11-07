@@ -67,8 +67,9 @@ consistent with `docs/210973-001_AP-186_Introduction_to_the_80186_Microprocessor
 
 ## Assembly syntax
 
-Native MUTOS 1700 `as` syntax (not `as86`/Intel syntax). `-mv30` adds V30/80186
-mnemonics; it is not a separate assembler mode.
+Native MUTOS 1700 `as` syntax (not `as86`/Intel syntax). `-1` adds V30/80186
+mnemonics (since 2026-10-25; `docs/TOOLCHAIN_PLAN.md`, section 4); it is not a
+separate assembler mode.
 
 - **Statement**: `[label].[prefix]mnemonic[operand].[comment]`.
 - **Assignment**: `[label].name = expr`. Separators are newline or `;`.
@@ -203,9 +204,9 @@ and later goldens) unless marked *unconfirmed*. Standard 8086 ModRM throughout.
 `AB`/`AC`/`AD`; `rep` and `seg <sr>` are each their own 1-byte prefix
 pseudo-instruction (`F3`; `26`/`2E`/`36`/`3E` for es/cs/ss/ds) written on their own
 source line before the following real instruction. **`imul`/`imulb`** (base, no
-`-mv30`) is the classic **single-operand** 8086 group3 form (`F6`/`F7 /5`) — *not*
+`-1`) is the classic **single-operand** 8086 group3 form (`F6`/`F7 /5`) — *not*
 the 80186 three-operand extension (that needs `0x69`/`0x6B`, added separately under
-`-mv30` — see Opcode coverage audit).
+`-1` — see Opcode coverage audit).
 
 ## Object file / relocation table format
 

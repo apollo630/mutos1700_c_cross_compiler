@@ -1225,7 +1225,7 @@ right operands, small frames); the ports refuse none of them, and
 
 ---
 
-## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-mv30`)
+## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-1`)
 
 **Status: the optimizer is a port of the original `c2`, for the 8086** (since
 2026-10-25, `docs/TOOLCHAIN_PLAN.md`, decision 7 and step 4); the 80186/V30 half is
@@ -1304,10 +1304,12 @@ two more bytes, the registers read and written (`regmask()`).
 
 **80186/V30 code generation** in `mutos_c1` and `mutos_c2` is deferred: the decision
 whether and how it comes is taken once the 8086 toolchain works completely
-(decision 8). One design question was settled ahead of it and stands: code built
-for the V30 must stay link-compatible with the real, unmodified `libc.a`/`crt0.o` -
-no separate runtime is planned, so the ABI-visible frame layout from Milestone 4's
-ABI research can never change for it. Under that constraint, real NEC
+(decision 8). Its switch, should it come, is `-1`, the name `mutos_as` has for the
+80186/V30 instructions (`docs/TOOLCHAIN_PLAN.md`, section 4). One design question was
+settled ahead of it and stands: code built for the V30 must stay link-compatible
+with the real, unmodified `libc.a`/`crt0.o` - no separate runtime is planned, so the
+ABI-visible frame layout from Milestone 4's ABI research can never change for it.
+Under that constraint, real NEC
 µPD70116 (V30) timing data (`docs/V20_V30_Users_Manual_Oct86.pdf` - NEC calls
 `ENTER`/`LEAVE` `PREPARE`/`DISPOSE`) shows the only layout-compatible use of
 `PREPARE`/`DISPOSE` is an exact cycle-for-cycle tie against the discrete-instruction
