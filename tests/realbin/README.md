@@ -13,26 +13,27 @@ directory runs the toolchain on the modern host under an
 needs no hardware: the real compiler's answer for any input is one
 emulator run away. It is also where `mutos_c1`, `mutos_c0`, `mutos_cpp`,
 `mutos_ld`, `mutos_cc`, `mutos_c2`, `mutos_ar`, `mutos_ranlib`, `mutos_make`,
-`mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort` and `mutos_lorder` - since
-2026-10-13, 2026-10-18, 2026-10-22 (the next two), 2026-10-24, 2026-10-25,
-2026-10-26 (the next two) and 2026-11-02 (the last six) ports of the real `c1`,
-`c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip` and
-`tsort` and the real shell script `lorder` (`src/mutos_cc/c1port/`, `c0port/`,
-`src/mutos_cpp/`, `src/mutos_ld/`, `src/mutos_cc/ccport/`, `c2port/`,
-`src/mutos_ar/`, `src/mutos_ranlib/`, `src/mutos_make/`, `src/mutos_nm/`,
-`src/mutos_size/`, `src/mutos_strip/`, `src/mutos_tsort/`, `src/mutos_lorder/`,
+`mutos_nm`, `mutos_size`, `mutos_strip`, `mutos_tsort`, `mutos_lorder`, `mutos_ed`
+and `mutos_em` - since 2026-10-13, 2026-10-18, 2026-10-22 (the next two),
+2026-10-24, 2026-10-25, 2026-10-26 (the next two) and 2026-11-02 (the last eight)
+ports of the real `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`,
+`size`, `strip`, `tsort`, `ed` and `em` and the real shell script `lorder`
+(`src/mutos_cc/c1port/`, `c0port/`, `src/mutos_cpp/`, `src/mutos_ld/`,
+`src/mutos_cc/ccport/`, `c2port/`, `src/mutos_ar/`, `src/mutos_ranlib/`,
+`src/mutos_make/`, `src/mutos_nm/`, `src/mutos_size/`, `src/mutos_strip/`,
+`src/mutos_tsort/`, `src/mutos_lorder/`, `src/mutos_ed/`, `src/mutos_em/`,
 `docs/C1_PORT_PLAN.md`,
 `docs/C0_PORT_PLAN.md`, `src/mutos_cpp/README.md`, `src/mutos_ld/README.md`,
 `src/mutos_cc/README.md`, `src/mutos_ar/README.md`,
-`src/mutos_ranlib/README.md`, `src/mutos_make/README.md`, `src/mutos_nm/README.md`
-and the others of step 8) - are checked against the originals, on every
-golden and on random input.
+`src/mutos_ranlib/README.md`, `src/mutos_make/README.md`, `src/mutos_nm/README.md`,
+the others of step 8, `src/mutos_ed/README.md` and `src/mutos_em/README.md`) - are
+checked against the originals, on every golden and on random input.
 
 Requirements: Python 3 and the module `unicorn` (`pip install unicorn`)
 for running the binaries; `capstone` (`pip install capstone`) only for
 `c1dis.py`, `c0dis.py`, `cppdis.py`, `lddis.py`, `ccdis.py`, `c2dis.py`,
-`ardis.py`, `ranlibdis.py`, `makedis.py`, `sizedis.py`, `stripdis.py`, `nmdis.py` and
-`tsortdis.py`; a C
+`ardis.py`, `ranlibdis.py`, `makedis.py`, `sizedis.py`, `stripdis.py`, `nmdis.py`,
+`tsortdis.py`, `eddis.py` and `emdis.py`; a C
 compiler (`$CC`, default `cc`) for `ccstub.c` (`cccmp.py`, `ccfuzz.py`).
 
 ## Files
@@ -515,10 +516,12 @@ oracles"):
   exit status where the hardware's transcripts have them, `cc -P` 132/132
   `.i`, `cc -O -S` 9/9 of `kernel_opt/`'s optimized kernel sources. The
   port of `cc` is to be checked against these traces the way the ports
-  of `c0` and `c1` are checked against the emulated originals.
+  of `c0` and `c1` are checked against the emulated originals (done with the
+  port, 2026-10-24: "The port of `cc` against it" above).
 - **`as`**: the options it knows (`-o`, `-e`, `-g`, `-C`, `-l`) and its
   mnemonic table (the 8087 set, no 80186 mnemonic) - the basis of the
-  planned differential fuzzer for `mutos_as`.
+  differential fuzzer for `mutos_as` (built 2026-10-25: "`mutos_as` against
+  it" above).
 
 ## Limits of the emulator
 

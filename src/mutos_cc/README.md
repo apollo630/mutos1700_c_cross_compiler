@@ -490,10 +490,16 @@ The order is `../../docs/TOOLCHAIN_PLAN.md`'s (decided 2026-10-20); the
 driver (step 3) and `mutos_c2` (step 4) are done - every pass `cc` runs is
 a port of the original now. The assembler's differential fuzzer (step 5)
 is done too (2026-10-25: `tests/realbin/asfuzz.py`; the compiler's output
-assembles to the same object as the original's); what comes next is the
-ports of `ar` and `ranlib` (step 6). 80186/V30 code generation in
-`mutos_c1` and `mutos_c2` waits until the 8086 toolchain works completely
-(decision 8).
+assembles to the same object as the original's), and so are the ports of
+the other tools (steps 6 to 9, by 2026-11-02). On 2026-11-07 the MUTOS
+kernel was built with the cross toolchain and its original makefile: all
+61 of its objects - 58 sources through `cc -c -O -K1024`, `c.c` and
+`symtab.c` through `cc -c`, `mch` through `cc -P`, `em` and `cc -c` - are
+the real-hardware goldens of `tests/mutos_as/kernel_opt/`, and the kernel
+is the original build's byte for byte
+(`../../docs/KERNEL_BUILD.md`). 80186/V30 code generation in `mutos_c1`
+and `mutos_c2` waits for the project owner's decision (decision 8): the
+8086 toolchain works completely now.
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the

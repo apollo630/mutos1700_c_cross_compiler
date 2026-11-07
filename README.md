@@ -7,12 +7,14 @@ MUTOS 1700 was a lesser-known operating system for the East German (DDR) office 
 ### Project Goals & Philosophy
 
 * **100% V7 Compatibility**: Modernized to run on current systems while remaining strictly faithful to the original Unix V7 philosophy.
-* **Historical Baseline**: Built on the historic V7 sources (Dennis Ritchie’s compiler `cc`, the linker `ld`, John F. Reiser’s preprocessor `cpp`) and on the original MUTOS 1700 binaries themselves: the preprocessor `cpp`, the compiler passes `c0` and `c1`, the optimizer `c2`, the driver `cc`, the linker `ld`, the archiver `ar`, the archive indexer `ranlib` and `make` are ports of those binaries, read with the V7 sources as the scaffold and checked against the originals running under an 8086 emulator; `nm`, `size`, `strip`, `tsort`, `lorder` and the editors brought from the hardware are to follow the same way, and whether the assembler `as` does is decided after a differential comparison with the original.
+* **Historical Baseline**: Built on the historic V7 sources (Dennis Ritchie’s compiler `cc`, the linker `ld`, John F. Reiser’s preprocessor `cpp`) and on the original MUTOS 1700 binaries themselves: the preprocessor `cpp`, the compiler passes `c0` and `c1`, the optimizer `c2`, the driver `cc`, the linker `ld`, the archiver `ar`, the archive indexer `ranlib`, `make`, `nm`, `size`, `strip`, `tsort` and the editors `ed` and `em` are ports of those binaries, read with the V7 sources as the scaffold and checked against the originals running under an 8086 emulator, and `lorder` is the original shell script. The assembler `as` is a re-implementation, measured against the original by a differential comparison; whether it is ported too is still to be decided.
 * **Cross-Compilation**: Seamlessly compile legacy 16-bit x86 UNIX binaries directly from modern 64-bit Linux environments.
+* **Proven on the MUTOS kernel** (2026-11-07): the MUTOS 1700 kernel, built on Linux with its original, unchanged makefile, is the kernel built on the hardware byte for byte - see [`docs/KERNEL_BUILD.md`](docs/KERNEL_BUILD.md).
 
 ### Where to read on
 
 * [`STATUS.md`](STATUS.md) — what is built and verified, tool by tool.
+* [`docs/KERNEL_BUILD.md`](docs/KERNEL_BUILD.md) — building the MUTOS kernel with the cross toolchain, step by step.
 * [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md) — the decisions and the order of the work ahead.
 * [`CLAUDE.md`](CLAUDE.md) — the project guide: layout, rules, roadmap.
 * [`docs/DEVLOG.md`](docs/DEVLOG.md) — the development log (index of `docs/devlog/`).

@@ -1,6 +1,6 @@
 # The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed` and `em`
 
-Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), the ports of `ar` and `ranlib` (2026-10-26), the port of `make` (2026-11-02), the ports of `nm`, `size`, `strip`, `tsort` and `lorder` (2026-11-02) and those of `ed` and `em` (2026-11-02).
+Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEVLOG.md). From reading the original MUTOS 1700 binaries (2026-10-12) to the ports of `c1` (2026-10-13) and `c0` (2026-10-14, 2026-10-18), what the other originals showed (2026-10-20), the ports of `cpp` and `ld` (2026-10-22), `cc` (2026-10-24) and `c2` (2026-10-25), the measurement of `mutos_as` against the original `as` (2026-10-25), the ports of `ar` and `ranlib` (2026-10-26), the port of `make` (2026-11-02), the ports of `nm`, `size`, `strip`, `tsort` and `lorder` (2026-11-02), those of `ed` and `em` (2026-11-02), and the MUTOS kernel built with them all (2026-11-07).
 
 ---
 
@@ -1938,3 +1938,81 @@ Python (`configure()`, `option()`, `depend()` - the `g/re/+,+4s/..` of the machi
 "the four lines behind the heading"; `s/ *$/ X/` after a `g` acts on the last line the `g`
 matched). The recipes need the host's `/bin/sh` (`set -x`, `${X+..}`, `eval`) and, for
 `depend`, `/bin/grep` and `sed`.
+
+---
+
+## The MUTOS kernel, cross-built (2026-11-07)
+
+With steps 0 to 9 done, the project owner wanted to test the whole toolchain before
+going on: build a MUTOS kernel on Linux with the kernel's original `conf/Makefile`,
+unchanged, and his kernel tree (`~/sys` on his machine; not in the repository). The
+makefile he attached was `tests/mutos_ed/kernel/conf.Makefile` with the dependency
+lines of `make depend` appended - the first 306 lines the same, then 546 lines of
+dependencies.
+
+### Checked first with the repository's own material
+
+Before the owner's run, a kernel tree was put together in the sandbox (Ubuntu 24.04,
+`/bin/sh` dash, as on the owner's machine): the attached makefile, `tests/mutos_cpp/h/`
+as `h/`, `mch.c` and `fakeawk`, the thirteen real kernel sources the tree has (the nine
+of `tests/mutos_cc/11_kernel/`, their `#include "x.h"` made `"../h/x.h"`, and `main.c`,
+`sys.c`, `tty.c`, `v30ide.c` of `tests/mutos_cpp/c/`), and a one-line stand-in for each
+of the other 48. `mutos_root/bin/make` without a target, from a clean environment:
+
+- 62 `cc` calls - `cc -c -O -K1024 -DM7100 -DASK -DIFSS -DV24 -DV30IDE` for 58
+  sources, the same without `-O -K1024` for `c.c` and `symtab.c`, `cc -P`, `em` and `cc
+  -c` for `mch` -, then `Make:  Don't know how to make arith.a.  Stop.`: the kernel's
+  `conf/arith.a` is no source's product, and the repository has none.
+- The goldens answered what it holds: over the 61 `kernel_opt/` objects (`nm -g`),
+  the names referenced and defined by none are `lmul`, `ldiv`, `lrem`, `almul`,
+  `aldiv` (in `libc.a`) and `_locking` (`sysx.o`'s system-call table), `_locked`
+  (`sys2.o`), `_unlckf` (`fio.o`) - besides `_etext`/`_edata`, which `ld` defines,
+  and `_copymem`, `_mon_go`, `_mon_jp`, `_montest` of objects the 7100
+  configuration does not link (`ramfl.o`, `kdebug.o`). `fio.c` calls `unlckf()`
+  without an `#ifdef`, so `arith.a` had to hold the three as well. With an `arith.a`
+  of `libc.a`'s five members and a stand-in for the three, the link ran.
+- The thirteen real sources, compiled by the makefile's recipes, gave the
+  `kernel_opt/` objects (text, data, relocation; the symbols without the `L` ones) -
+  `acct.o`'s golden is empty, `acct.c` being all `#ifdef SYSACCT`, so even its
+  stand-in matched. That settles that `kernel_opt/` was compiled with this
+  configuration.
+- The 61 `kernel_opt/` objects copied over the built ones: `make` linked them
+  (`ld -i`, 0411, `48256+8288+44600`), a second `make` said `` `mutos' is up to
+  date.``, `touch ../h/v30ide.h` made the dependency rules touch `v30ide.c` and `mch.c`
+  and rebuilt the two objects and the kernel. An empty `arith.a` ends the link with
+  `ld:arith.a: Premature EOF`; a plain `make` (GNU) runs the host's `gcc`, which stops
+  at `-K1024`.
+- Bytes 0x80 and up in comments and strings compile.
+
+`scripts/kcmp.py` was written for the comparison: header but the symbol table's size,
+text and data, relocation with an external entry named by its symbol (the tables
+differ by the `L` symbols), the symbol tables apart. The guide, `docs/KERNEL_BUILD.md`,
+was then followed step by step on the owner's machine.
+
+### The owner's run
+
+- `arith.a` (1989): `locking.o` - `_locking`, `_locked`, `_unlckf`, `_deadloc`,
+  `_lockadd`, `_lockall`, `_lockfre` - and `aldiv.o`, `almul.o`, `alrem.o`, `ldiv.o`,
+  `lmul.o`, `lrem.o`, without `__.SYMDEF`. The guessed contents were right; `ld`
+  reads an archive without a table member by member, and an `arith.a` built that way
+  (`locking.o` first) linked in the sandbox without a message.
+- The build: 62 `cc` calls, 55 sources touched by the dependency rules (the headers
+  were newer than the sources), no message, exit status 0, 1.2 s; `size`:
+  `50496+8288+44600 = 103384b`. Data and bss are those of the sandbox's link of the
+  goldens; the text is 2,240 bytes longer, `locking.o`'s 2,264 for the stand-in's 24.
+- `kcmp.py` against `kernel_opt/`: `same: 61`. `msdos.o` among them settles `-K1024`
+  too: its 114-byte frame is a plain `sub sp`, where `c1`'s default threshold of 100
+  calls `chkstk`.
+- The kernel against the original build's `conf/mutos` (a second tree on the owner's
+  machine): the same MD5 sum, `5f60bb499b26df4d4adb6c82dd928b2e`.
+
+What that covers: `mutos_make` with the kernel's makefile as the hardware's `make` ran
+it (the shell in `SETOPT`, `$*`, the dependency rules, the default target); `cc` with
+`-K1024` and every pass on 61 sources, 48 of them never compiled in the repository
+before; `em` on the real `mch.i`; `ld -i` on 61 objects and an archive without a table
+of contents - the first 0411 output of `mutos_ld` compared with a link made on the
+hardware (`STATUS.md`, open item 1); and the explanation of the `L` labels by `-C`
+(open item 6): the original kernel build ran `cc -c`, as this one did.
+
+A note on the working method: the guide said `cp -a ~/sys ~/sys_cross`; a `mv` instead
+would have left no original to compare with, so the guide now says why the copy.

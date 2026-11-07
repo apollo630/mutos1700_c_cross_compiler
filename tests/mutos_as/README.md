@@ -1,5 +1,9 @@
 # `tests/mutos_as/` — the "-L" real-hardware experiment (concluded)
 
+**Answered since** (see "The answer" at the end): the `L` labels are a matter of the
+original `as`'s undocumented `-C`, not of `-L`; `mutos_as` has `-C` since 2026-10-25.
+The text below is the record of the experiment and keeps the state of 2026-09-28.
+
 `kernel_opt/` and `kernel_nonopt/` each hold a real-hardware-linked
 `<name>.o.golden` per `<name>.s` (real MUTOS 1700 kernel sources: the
 compiler's non-optimized and optimized - `c2`'s - output, and hand-written
@@ -127,3 +131,20 @@ Run under the emulator (`../realbin/`), the original `as` turned out to
 lack the manual's `-W`, `-D` and `-T` as well (each "Unknown option ...
 ignored."), and to know `-e`, `-g`, `-C` and `-l` instead - see
 `docs/MUTOS_ORIGINAL_BUGS.md`, AS-01.
+
+## The answer (2026-10-25, confirmed 2026-11-07)
+
+The emulated original `as` (`../realbin/ascmp.py options`, step 5 of
+`docs/TOOLCHAIN_PLAN.md`) has the option `-C`: it leaves out every defined,
+non-global symbol that starts with a capital `L`. The original `cc` runs `as -gC`
+on every source. An object made by `cc -c` therefore has no `L` symbols, and one
+made by a plain `as x.s` has them - the goldens of `kernel_opt/` and
+`kernel_nonopt/` were assembled that way from the `.s` the compiler wrote, while
+`libc.a`'s objects came from `cc -c`. `mutos_as` does the same since 2026-10-25:
+without `-C` it keeps the `L` symbols (every golden here, byte for byte), with
+`-C` it leaves them out, and `mutos_cc` passes `-gC`.
+
+The MUTOS kernel build of 2026-11-07 (`docs/KERNEL_BUILD.md`) confirmed it: run by
+the kernel's own makefile, `cc -c` made all 61 kernel objects as the goldens of
+`kernel_opt/` without their `L` symbols, and the kernel linked from them is the
+original build's byte for byte (`STATUS.md`, open item 6).
