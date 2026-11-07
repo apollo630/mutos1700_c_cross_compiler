@@ -26,6 +26,13 @@ post-processes `mch.s` with `em`, runs through `mutos_make` with them. What
 follows (section 3: the 80186/V30 decision, `make install`, the manual pages)
 is the project owner's to order; `STATUS.md`'s "Next up" follows this plan.
 
+**The test of it all (2026-11-07)**: the project owner built the MUTOS 1700
+kernel on Linux with its original, unchanged makefile, through `mutos_make` and
+the ported tools - all 61 objects are the real-hardware goldens of
+`tests/mutos_as/kernel_opt/`, and the kernel is the one the original build made
+on the hardware, byte for byte (`docs/KERNEL_BUILD.md`; `STATUS.md`, "The MUTOS
+kernel, built with the cross toolchain").
+
 ## 1. Where things stand
 
 | Tool | Today | Checked against |
@@ -35,7 +42,7 @@ is the project owner's to order; `STATUS.md`'s "Next up" follows this plan.
 | `mutos_c1` | port of the original `c1` (2026-10-13) | the emulated original at four depths, differential fuzzing |
 | `mutos_c2` | port of the original `c2` (2026-10-25) | the emulated original: every `.s` golden three ways (`c2 in out`, `c2 - in out`, `c2 <in >out`), hand-written cases, differential fuzzing; `tests/mutos_as/kernel_opt/`'s nine real-hardware sources, also through `mutos_cc -O -S` |
 | `mutos_as` | re-implementation (2026-10-25: measured against the original, step 5); `-g` (no effect), `-C` (leaves out the local `L` symbols) and `-1` (the 80186/V30 opcodes, off without it) as the original and the plan have them | 76 `.o` goldens, the floating conversion against `libc.a`'s own `atof`; the emulated original: every golden and compiler `.s`, differential fuzzing (`tests/realbin/ascmp.py`, `asfuzz.py`) |
-| `mutos_ld` | port of the original `ld` (2026-10-22; until then a port of v7's `ld.c` with the MUTOS deltas known then), `-r`/`-d` an extension | the emulated original: every compiled golden linked with a matrix of options, hand-written cases, differential fuzzing (its own goldens `myhello`/`idhello` are missing from the tree); the extension by running programs linked through `-r` |
+| `mutos_ld` | port of the original `ld` (2026-10-22; until then a port of v7's `ld.c` with the MUTOS deltas known then), `-r`/`-d` an extension | the emulated original: every compiled golden linked with a matrix of options, hand-written cases, differential fuzzing (its own goldens `myhello`/`idhello` are missing from the tree); the extension by running programs linked through `-r`; its `-i` output against the MUTOS kernel linked on the hardware (2026-11-07: the same bytes) |
 | `mutos_cc` | port of the original `cc` (2026-10-24) | the emulated original, its passes traced: a matrix of command lines, the corpus with the original passes run in both, the ported chain against the original chain and the goldens, differential fuzzing |
 | `mutos_ar` | port of the original `ar` (2026-10-26) | the emulated original: hand-written command sequences, differential fuzzing (files and archives changed between the commands, damaged archives); libc.a rebuilt from its 167 objects |
 | `mutos_ranlib` | port of the original `ranlib` (2026-10-26); runs `mutos_ar` through the root's `bin/ar` as the original runs `ar` through the shell | the emulated original `ranlib` and `ar`: hand-written cases, differential fuzzing; libc.a rebuilt from its 167 objects, `__.SYMDEF` included |
@@ -175,7 +182,7 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 | Step | What | Checked by |
 |---|---|---|
 | 0 | Infrastructure: `mutosemu.py` serves `fork`/`exece`/`wait` (faked as above), `fstat`, `chmod`, `umask`, `link`, and a tracer for `cc` joins `tests/realbin/`; `mutos_root/` and the `MUTOS_ROOT` lookup (one header in `src/h/` for every tool); a `.gitignore` (the repository had none) for `mutos_root/` and the build products; `mutos_as` accepts `-g`/`-C` | the real `cc` and `ld` run as oracles; `make test` unchanged. **Done 2026-10-20**: `cctrace.py goldens` - the traced `cc`, running the original passes, gives 132/132 `.s` (`cc -S`, with `c1`'s messages and exit status), 132/132 `.i` (`cc -P`), 9/9 `kernel_opt/` sources (`cc -O -S`); the original `ld` leaves its output (against `mutos_ld`: section 5); `make test` as before, plus `tests/mutos_root/check_root.py` |
-| 1 | Port of `cpp` | the emulated original on the 137 `.i` goldens with and without `-P`, differential fuzzing (macros, conditionals, includes, comments). **Done 2026-10-22**: `src/mutos_cpp/` is the original read from its binary, on an image of its data segment; `cppcmp.py goldens` 411/411 identical (with `-P`, without, into an output file), the differential fuzzing in `STATUS.md` (Milestone 3) without a difference; thirteen bugs of the original found (CPP-01 to CPP-13) |
+| 1 | Port of `cpp` | the emulated original on the 137 `.i` goldens with and without `-P`, differential fuzzing (macros, conditionals, includes, comments). **Done 2026-10-22**: `src/mutos_cpp/` is the original read from its binary, on an image of its data segment; `cppcmp.py goldens` 411/411 identical (with `-P`, without, into an output file), the differential fuzzing in `STATUS.md` (Milestone 3) without a difference; thirteen bugs of the original found (CPP-01 to CPP-13; a fourteenth, CPP-14, on 2026-10-25) |
 | 2 | Port of `ld` | the emulated original: every compiled golden linked with `crt0.o` and `libc.a`, with `-i`, `-n`, `-s`, `-x`, `-X`, `-u`, `-e`, `-o`, archive search, messages and exit status; this replaces the missing `myhello`/`idhello` goldens. **Done 2026-10-22**: `src/mutos_ld/` is the original read from its binary, on an image of its data segment; `ldcmp.py goldens` 1,572/1,572 the same (131 goldens, twelve command lines each: messages, exit status, the files left), the hand-written cases and the differential fuzzing in `STATUS.md` (Milestone 1) without a difference; the extension `-r`/`-d` checked by running programs linked through it (`tests/mutos_ld/check_rflag.py`); eight bugs of the original found (LD-01 to LD-08) |
 | 3 | Port of `cc` | the tracer: every pass's path and arguments, messages and exit status over a matrix of options, the original's against the port's; whole programs through the chain. **Done 2026-10-24**: `src/mutos_cc/ccport/` is the original read from its binary, on an image of its 64K segment (text, data, heap, `main()`'s frame); `cccmp.py` - the port's passes a stub that logs its arguments - 177 command lines traced (175 the same, 2 refused), the corpus with the original passes run in both 124/124, the ported chain against the original chain 124/124 (the same `a.out`) and against the goldens (`cc -S` 132/132, `cc -P` 132/132, `cc -O -S` 9/9 with the original `c2`), differential fuzzing in `STATUS.md` (Milestone 4) without a difference; six bugs of the original found (CC-01 to CC-06) |
 | 4 | Port of `c2` | the emulated original on all 132 `.s` goldens and on `c1fuzz.py`'s programs; `tests/mutos_as/kernel_opt/`'s nine sources from `11_kernel` (the original gives them byte for byte). **Done 2026-10-25**: `src/mutos_cc/c2port/` is the original read from its binary, on an image of its data segment with libc.a's stdio in it; `c2cmp.py goldens` 396/396 the same (132 goldens three ways: into a file, with the statistics, through stdin and stdout), the nine `kernel_opt/` sources byte for byte - also through `mutos_cc -O -S` (`check_driver.py`, `cccmp.py goldens`) -, the hand-written cases and the differential fuzzing (the real compiler's output for `c1fuzz.py`'s and `fuzz_c.py`'s programs, assembly made for `c2`'s passes, both damaged) in `STATUS.md` (Milestone 5) without a difference; seven bugs of the original found (C2-01 to C2-07), two of them endless loops the port refuses |
@@ -267,7 +274,8 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   messages depend on them (`e.c:3:` where the chain with the
   re-implementation said `4:`). Read in full for its port (2026-10-22):
   v7's `cpp` with local MUTOS deltas (`tests/realbin/cppmap.txt`), and
-  thirteen bugs (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 to CPP-13).
+  thirteen bugs (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 to CPP-13; CPP-14 was
+  found on 2026-10-25).
 
 ## 6. Open questions
 

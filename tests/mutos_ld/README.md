@@ -21,4 +21,8 @@ What is here:
 Not here: the real-hardware linked binaries `myhello` (0407) and `idhello`
 (`-i`, 0411) that the earlier `mutos_ld` was once checked against are
 missing from the tree; they would still be welcome as real-hardware
-evidence (`STATUS.md`, open item 1).
+evidence (`STATUS.md`, open item 1). A link on the hardware was compared
+once, outside the tree: on 2026-11-07 the MUTOS kernel - `ld -i` (0411) of
+61 objects and `arith.a`, run by the kernel's own makefile through
+`mutos_make` - had the MD5 sum of the kernel linked on the hardware
+(`docs/KERNEL_BUILD.md`).

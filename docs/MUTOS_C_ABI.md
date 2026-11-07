@@ -149,10 +149,13 @@ shape, though as a deliberately-conformant hand-written example rather than a se
 compiler sample. **`mutos_c1`'s non-optimizing code generator should replicate this
 unconditionally, with no leaf-function/register-usage-based elision** — there is no
 evidence anywhere in the `libc.a` corpus examined that a register is ever elided from
-this fixed frame. (Whether `mutos_c1`'s planned optimizer — Milestone 5's `c2` — ever
-should elide unused saves is a separate, open design question; no evidence either way
-was found here, since `mch.s`, the only kernel `.s` source available for direct
-inspection, turned out not to be `c2` output at all — see "Evidence sources".)
+this fixed frame. (Whether the optimizer — Milestone 5's `c2` — elides unused saves
+was open when this was written: `mch.s`, then the only kernel `.s` source looked at,
+turned out not to be compiler output at all — see "Evidence sources". Answered since:
+it does not. 58 of the `.s` files of `tests/mutos_as/kernel_opt/` are the original
+`c2`'s output (the MUTOS kernel's makefile compiles them with `cc -O`), and every one
+of their 387 functions opens with the same four instructions (counted 2026-11-07);
+`mutos_c2` is a port of that `c2` (2026-10-25).)
 
 ### 1.3 Parameter stack offsets
 

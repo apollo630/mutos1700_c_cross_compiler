@@ -97,6 +97,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   from `/mutos/mutos_include/usr/include/` (since 2026-10-25) -, `tmp/`); the tools look up every
   absolute MUTOS path under `$MUTOS_ROOT`, by default this directory
   (`docs/TOOLCHAIN_PLAN.md`, decisions 2 and 3; `src/h/mutos_root.h`).
+* `/scripts/`: `mutos_root.sh` (fills the MUTOS root), `check_docs.py` (`make
+  check-docs`, Workflow Guideline 6) and, since 2026-11-07, `kcmp.py`, which compares
+  the objects and the kernel of a MUTOS kernel build with the real-hardware goldens of
+  `/tests/mutos_as/kernel_opt/` or with another build (`docs/KERNEL_BUILD.md`, step 6).
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
@@ -199,7 +203,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `mutos_make` in a scratch kernel tree - the machine and option targets and `depend`, which edit it
   with `mutos_ed`, against an independent reading of their scripts, and the `mch` rule (`cc -P`,
   `mutos_em` with `fakeawk`, `cc -c`) against the real-hardware `mch.i`, `mch.s` and `mch.o`; the
-  editors' shell commands.
+  editors' shell commands. The whole kernel built with that makefile and the project owner's
+  kernel tree (not in the repository) is `docs/KERNEL_BUILD.md`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
@@ -210,7 +215,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   relocatable object must run as the same programs linked at once. The golden
   reference binaries (`myhello`/`idhello`) the earlier `mutos_ld`'s verification
   rested on are missing; the port of `ld` is checked against the emulated original
-  instead (`/tests/realbin/`). See its `README.md` and `STATUS.md`'s Open Items.
+  instead (`/tests/realbin/`), and its `-i` output against a real-hardware link by the
+  MUTOS kernel (2026-11-07, `docs/KERNEL_BUILD.md`). See its `README.md` and
+  `STATUS.md`'s Open Items.
 
 ### 📜 Legacy & Reference (`/v7`, `/mutos` & Documentation)
 * `/mutos/`: every original file from MUTOS 1700, in one directory since 2026-10-25 (until
@@ -243,6 +250,12 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     toolchain - the decisions of 2026-10-20 (MUTOS root, ports of `cpp`, `ld`, `cc`,
     `c2`, `ar`, `ranlib`, the `-1` switch, MUTOS makefiles) and of 2026-10-25 (the
     headers in the root; `make` and the other tools ported) and the order of work.
+  * **`docs/KERNEL_BUILD.md`** (since 2026-11-07): building the MUTOS 1700 kernel with
+    the cross toolchain and its original, unchanged makefile, step by step - the result
+    is the original kernel byte for byte.
+  * **`docs/PROJECT_MEMORY.md`** (since 2026-11-07): the working agreements with the
+    project owner, the owner's local setup and the context that sessions used to keep in
+    Claude's conversation memory - read at session start (Session-Start Protocol).
   * **`docs/DEVLOG.md`**: the index of the development log, whose parts are in
     `docs/devlog/` - the detailed technical reference and debugging history (CPU/encoding
     facts, bug-fix history, debugging methodology, recurring process lessons) for every
@@ -282,7 +295,8 @@ The objective is to develop a historically accurate Cross-Compiler Toolchain und
 You act as an expert systems programmer, compiler architect, and operating system archaeologist specializing in x86-16 Real Mode and Unix V7.
 
 * **Session-Start Protocol (mandatory, applies from message 1)**: At the start of any
-  session on this project, read `CLAUDE.md`, `STATUS.md`, `docs/TOOLCHAIN_PLAN.md` and
+  session on this project, read `CLAUDE.md`, `docs/PROJECT_MEMORY.md` (the working
+  agreements with the project owner), `STATUS.md`, `docs/TOOLCHAIN_PLAN.md` and
   `docs/DEVLOG.md` (the index of the development log) - and the log parts in
   `docs/devlog/` that concern the task - before doing anything else — do not rely on
   conversation memory for technical depth. Treat them as a single unit that must stay
@@ -330,10 +344,12 @@ You act as an expert systems programmer, compiler architect, and operating syste
      kernel build invoked `as -L`" as the explanation for why none of `libc.a`'s
      167 objects (compiled C included) has an `L`-number symbol while every kernel
      golden does — the flag is a no-op on this hardware either way, so no
-     per-invocation switch can produce that difference. The underlying
-     kernel-vs-libc discrepancy is still open; see `STATUS.md`'s open item 6 for
-     the new source-level angle (whether `L`-labels come from the compiler's C
-     sources, not the assembler's symbol-table policy).
+     per-invocation switch can produce that difference. The discrepancy was
+     explained on 2026-10-25 by the original's undocumented `-C` (below), which `cc`
+     always passes, and confirmed on 2026-11-07 by the kernel build: compiled by `cc
+     -c`, the kernel's objects are the goldens without their `L` symbols, and the
+     kernel linked from them is the original's byte for byte (`STATUS.md`'s open
+     item 6).
      **Found 2026-10-20 (emulated original)**: the binary does not implement the
      manual's `-W`, `-D` and `-T` either, but has `-e`, `-g`, `-C` and `-l`; the
      original `cc` always passes `-gC`, which `mutos_as` accepted and ignored from
@@ -448,8 +464,8 @@ You act as an expert systems programmer, compiler architect, and operating syste
      `STATUS.md` as soon as work on it starts, each claim dated ("verified 2026-10-20") or marked as
      carried from an earlier session without being re-run.
    * If a session cannot re-verify a previously-documented claim (e.g. missing golden
-     files, as currently the case for `mutos_ld` — see `STATUS.md`), that must be
-     stated explicitly in `STATUS.md` rather than silently repeating the old claim.
+     files, as the case for `mutos_ld`'s `myhello`/`idhello` — see `STATUS.md`), that must
+     be stated explicitly in `STATUS.md` rather than silently repeating the old claim.
    * This applies regardless of who or what makes the change — human contributor or AI
      assistant.
    * **`DEVLOG.md` companion**: dense technical detail that doesn't belong in
@@ -555,9 +571,10 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   goldens are missing) on every compiled golden with a matrix of options, on
   hand-written cases and by differential fuzzing - see `STATUS.md` and
   `src/mutos_ld/README.md`. Until then a port of v7's `ld.c` with the MUTOS deltas known
-  then (the git history).
+  then (the git history). Real-hardware evidence for its `-i` output since 2026-11-07:
+  the MUTOS kernel it links is the hardware's byte for byte (`docs/KERNEL_BUILD.md`).
 
-### Milestone 2: The Cross-Assembler (`mutos_as`) [CURRENT FOCUS]
+### Milestone 2: The Cross-Assembler (`mutos_as`)
 * Parsing MUTOS 1700 assembler syntax and emitting 8086 opcodes into MUTOS-compatible
   object files (`.o`): **provisionally complete** — see `STATUS.md`.
 * NEC V30/80186 instruction-set support: a set of 80186/V30 opcodes (PUSHA/POPA, PUSH
@@ -625,6 +642,12 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   link-compatible with the real `libc.a`/`crt0.o` (`docs/devlog/m5_c2_v30.md`).
 
 ### Milestone 6: `make`, `ar`, `ranlib` and the other MUTOS tools
+* **The MUTOS kernel, 2026-11-07**: with steps 6 to 9 done, the project owner built the MUTOS
+  1700 kernel on Linux with its original, unchanged makefile (the 7100 configuration) through
+  `mutos_make` and the ported tools: all 61 objects are `tests/mutos_as/kernel_opt/`'s
+  real-hardware goldens, and the kernel has the MD5 sum of the kernel the original build made
+  on the hardware. The guide is `docs/KERNEL_BUILD.md`, the comparison `scripts/kcmp.py`; see
+  `STATUS.md`, "The MUTOS kernel, built with the cross toolchain".
 * **Step 9 done 2026-11-02**: `mutos_ed` is a port of the original `ed` - v7's `ed.c` with two MUTOS
   changes (`j` with one address, `m` onto itself), rebuilt byte for byte by the project's own
   `cc -O -s` - and `mutos_em` of the original `em`'s line mode (`docs/TOOLCHAIN_PLAN.md`, step 9; the

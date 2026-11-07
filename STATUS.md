@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-02.
+Last updated: 2026-11-07.
 
 ---
 
@@ -172,6 +172,67 @@ same; em: 380 the same, 20 where em asks "sure?" for ever), all passed - and `ch
 checks passed); the targets before them are unchanged by the change (no source of another tool, only the root's
 two new links). The longer fuzzer run (seeds 1000 to 3999, 3,000 cases) ran in the working tree.
 
+Verified 2026-11-07 with the kernel build's documents (`docs/KERNEL_BUILD.md`, `docs/PROJECT_MEMORY.md`,
+`scripts/kcmp.py` and the documents brought up to date; no tool and no test changed), on a fresh clone of the
+commit with the change applied (`git apply`; the new files added with `git add`, which `check-docs` reads):
+`make clean && make all` with zero warnings; `make test` exit 0, its output the same as a second, unchanged
+clone's, line for line, but for a temporary directory's name; `make check-docs`; `scripts/kcmp.py` on a kernel
+tree built from the repository's sources (13 of 61 objects the goldens, the rest stand-ins) and on the 61 goldens
+linked through the kernel's makefile (`same: 61`). The kernel build itself: "The MUTOS kernel, built with the cross
+toolchain" below.
+
+---
+
+## The MUTOS kernel, built with the cross toolchain (verified 2026-11-07)
+
+**Status: the MUTOS 1700 kernel builds on Linux with its original, unchanged
+makefile, and is the kernel the original build made on the hardware, byte for
+byte.** The guide: [`docs/KERNEL_BUILD.md`](docs/KERNEL_BUILD.md); how it was found:
+`docs/devlog/originals_and_ports.md`, "The MUTOS kernel, cross-built". The kernel
+tree and the original kernel are the project owner's and not in this repository;
+its makefile is (`tests/mutos_ed/kernel/conf.Makefile`, without the dependency
+lines `make depend` appends).
+
+- **On the project owner's tree** (2026-11-07): the kernel's `conf/Makefile` - the
+  7100 configuration (`TYP = M7100`, `DRIVER = V30IDE V24 IFSS`), with the
+  dependency lines - run unchanged by `mutos_root/bin/make` in a copy of the tree
+  without its old objects: 62 `cc` calls (`cc -c -O -K1024 -DM7100 -DASK -DIFSS
+  -DV24 -DV30IDE` for 58 sources, `cc -c` with the same flags for `c.c` and
+  `symtab.c`, `cc -P`, `em mch.i <fakeawk` and `cc -c mch.s` for `mch.c`), 55
+  sources touched by the dependency rules (the headers were newer), `ld -i` with
+  `conf/arith.a`; no message, exit status 0; `size mutos`: `50496+8288+44600 =
+  103384b = 0311730b`.
+- **All 61 objects are the real-hardware goldens of `tests/mutos_as/kernel_opt/`**
+  (`scripts/kcmp.py`: `same: 61` - header, text, data and relocation, an external
+  one by its symbol's name; the symbols are the golden's without the local `L`
+  symbols, which `cc`'s `as -gC` leaves out). Until then the tests had compiled
+  only `11_kernel`'s nine sources (`cc -O -S`, `tests/mutos_cc/check_driver.py`) and
+  `mch` (`tests/mutos_ed/check_editors.py`) to them; of the other 51, 48 have no C
+  source in the tree. It settles too that `kernel_opt/`'s objects are what `cc -c -O
+  -K1024` makes with this configuration.
+- **The kernel `mutos` has the MD5 sum of the original build's `conf/mutos`**
+  (`5f60bb499b26df4d4adb6c82dd928b2e`): `mutos_make`, `mutos_cc` with `mutos_cpp`,
+  `mutos_c0`, `mutos_c1`, `mutos_c2` and `mutos_as`, `mutos_em` and `mutos_ld -i`
+  together give the hardware's kernel - the first real-hardware evidence for a
+  0411 output of `mutos_ld` (open item 1) and for a whole program through the
+  ported chain.
+- **`arith.a`** (the owner's `conf/arith.a`, dated 1989; no source makes it):
+  `locking.o` (`_locking`, `_locked`, `_unlckf`, `_deadloc`, `_lockadd`,
+  `_lockall`, `_lockfre`) and `libc.a`'s long routines `aldiv.o`, `almul.o`,
+  `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o`, without `__.SYMDEF` - `ld` reads it
+  member by member; no "out of date" warning.
+- **Checked beforehand with this repository's material** (2026-11-07, Ubuntu 24.04,
+  `/bin/sh` dash): a kernel tree of the makefile, `tests/mutos_cpp/h/`, `mch.c`,
+  `fakeawk`, the thirteen real kernel sources of `tests/mutos_cc/11_kernel/` and
+  `tests/mutos_cpp/c/` and stand-ins for the other 48: `mutos_make` ran the same 62
+  `cc` calls, `em`, `ld -i`, `size`; the thirteen gave the `kernel_opt/` objects;
+  the 61 `kernel_opt/` objects linked through the `mutos` rule (0411); a second
+  `make` did nothing; a newer header (`touch ../h/v30ide.h`) touched the two
+  sources that include it and rebuilt their objects and the kernel.
+- **Not checked**: the other configurations (7150, 1834, other drivers and
+  options), whose objects have no goldens; the kernel was not started on its own
+  (its bytes are the original's).
+
 ---
 
 ## Milestone 1 — `mutos_ld` (linker)
@@ -263,7 +324,7 @@ for them gone. Per function: `tests/realbin/ldmap.txt`.
 
 ---
 
-## Milestone 2 — `mutos_as` (cross-assembler) [CURRENT FOCUS]
+## Milestone 2 — `mutos_as` (cross-assembler)
 
 **Status: PROVISIONALLY COMPLETE for the real corpus** - every golden object
 byte-identical (76/76 with `-1` for the one that has an 80186 instruction), and the
@@ -1086,7 +1147,8 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
 1. ~~**Port of `cpp`**~~ - **done 2026-10-22** (Milestone 3): `mutos_cpp` is the
    original `cpp`, read from its binary - the `# N "file"` lines, `/usr/include` under
    the root, the original's behaviour where the re-implementation simplified, its bugs
-   (CPP-01 to CPP-13). Checked by `tests/realbin/cppcmp.py` and `cppfuzz.py`.
+   (CPP-01 to CPP-13; CPP-14 found 2026-10-25). Checked by `tests/realbin/cppcmp.py` and
+   `cppfuzz.py`.
 2. ~~**Port of `ld`**~~ - **done 2026-10-22** (Milestone 1): `mutos_ld` is the
    original `ld`, read from its binary - `-l` under the root, the six bytes of
    "jmp $", the byte-shifted relocations, its bugs (LD-01 to LD-08); `-r`/`-d` kept as
@@ -1147,6 +1209,11 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    `mch.s` and `mch.o`). **Next**: the plan's later items (`docs/TOOLCHAIN_PLAN.md`, section 3:
    the 80186/V30 decision for `c1`/`c2`, `make install`, the manual pages) and the open
    decision on a port of `as` - the project owner's to order.
+
+With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
+2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
+the kernel the original build's byte for byte (above, "The MUTOS kernel, built with the
+cross toolchain"; `docs/KERNEL_BUILD.md`).
 
 Steps 6 to 9 are Milestone 6 (below), all four done; their originals are in
 `mutos/mutos_bin/` since 2026-10-25, the order was proposed that day.
@@ -1803,9 +1870,12 @@ far.
 
 1. Milestone 1's golden binaries (`myhello`/`idhello`) are missing from the tree.
    Since the port of `ld` (2026-10-22) the emulated original `ld` is its oracle -
-   1,572 links of the compiled goldens and the fuzzing without a difference; the
-   goldens would still be welcome as real-hardware evidence (a link on the hardware
-   to compare with the emulated original's).
+   1,572 links of the compiled goldens and the fuzzing without a difference. Real-hardware
+   evidence came on 2026-11-07 from another side: the MUTOS kernel, linked by
+   `mutos_ld -i` (0411) from 61 objects and `arith.a`, has the MD5 sum of the kernel
+   linked on the hardware ("The MUTOS kernel, built with the cross toolchain"). The kernel
+   is the project owner's, not in the tree; the small goldens would still be welcome as
+   evidence in it.
 2. If real V30-targeted MUTOS source ever surfaces, prioritize re-checking INSB/OUTSB,
    PUSHA/POPA, PUSH imm, ENTER/LEAVE/BOUND, the IMUL immediate forms, and the
    count≠1/CL shift/rotate form — currently the only unconfirmed-by-corpus opcodes in
@@ -1850,8 +1920,12 @@ far.
    a reading, not a record: nothing in the tree says how `libc.a` was built, but the
    two facts fit and nothing else is known to. `mutos_as` does the same since
    2026-10-25: `-C` leaves them out, without it it keeps them (every kernel golden),
-   and `mutos_cc` passes `-gC` as the original does, so its objects have none. What
-   is not done: a whole `atof.o`/`ecvt.o` as a `libc_recon/` golden (the `L` labels
+   and `mutos_cc` passes `-gC` as the original does, so its objects have none.
+   **Confirmed 2026-11-07** by the kernel build: compiled by `cc -c` (`as -gC`), the 61
+   kernel objects are the goldens without their `L` symbols, and the kernel linked from
+   them is the original build's byte for byte - so the original kernel build, too, ran
+   `cc -c`, and the `L` symbols of the goldens come from assembling `kernel_opt/`'s `.s`
+   with a plain `as`. What is not done: a whole `atof.o`/`ecvt.o` as a `libc_recon/` golden (the `L` labels
    were their last blocker, item 7) - it needs the disassembly turned into a source.
 7. **Floating constants: settled (2026-09-29), overflow included.** The real
    conversion is re-enacted (Milestone 2's "The real conversion, re-enacted",
