@@ -19,6 +19,7 @@ static struct pending {
 	int		applied;
 	int		line;
 	c1_rule_check	*check;
+	const void	*ctx;
 	char		keys[160];
 } pending[NPENDING];
 static	int	npending;
@@ -26,7 +27,8 @@ static	int	logon = -1;	/* -1: not looked at yet */
 static	long	opstart;	/* where the current operation's output starts */
 
 void
-c1_rule(const char *rule, int applied, c1_rule_check *check, const char *fmt, ...)
+c1_rule(const char *rule, int applied, c1_rule_check *check, const void *ctx,
+    const char *fmt, ...)
 {
 	struct pending *e;
 
@@ -39,6 +41,7 @@ c1_rule(const char *rule, int applied, c1_rule_check *check, const char *fmt, ..
 	e->applied = applied;
 	e->line = line;
 	e->check = check;
+	e->ctx = ctx;
 	e->keys[0] = '\0';
 	if (fmt != NULL) {
 		va_list ap;
@@ -100,7 +103,7 @@ c1_rule_mark(void)
 				text = outtext(end, &n);
 				textread = 1;
 			}
-			if (text == NULL || !e->check(text, n, keys, sizeof keys))
+			if (!e->check(e->ctx, text, n, keys, sizeof keys))
 				continue;
 		}
 		mutos_rulelog("c1", e->rule, e->applied ? "applied" : "met",

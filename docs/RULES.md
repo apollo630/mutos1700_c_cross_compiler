@@ -57,10 +57,10 @@ A rule is in one of two states:
 
 | Rule | Tool | Switch | State | File | Hook | Record |
 |---|---|---|---|---|---|---|
-| C1-01 | c1 | `-F` | diagnostic | `src/mutos_cc/c1rules/c1_01.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template letter `H` | [C1-01](MUTOS_ORIGINAL_BUGS.md) |
-| C1-02 | c1 | `-F` | diagnostic | `src/mutos_cc/c1rules/c1_02.c` | `src/mutos_cc/c1port/c12.c`, `acommute()`: a product or AND that folds to 0 | [C1-02](MUTOS_ORIGINAL_BUGS.md) |
-| C1-03 | c1 | `-F` | diagnostic | `src/mutos_cc/c1rules/c1_03.c` | `src/mutos_cc/c1port/c10.c`, `delay()`: after the tree without its postfix `++`/`--` | [C1-03](MUTOS_ORIGINAL_BUGS.md) |
-| C1-06 | c1 | `-F` | diagnostic | `src/mutos_cc/c1rules/c1_06.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: a row once matched | [C1-06](MUTOS_ORIGINAL_BUGS.md) |
+| C1-01 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_01.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [C1-01](MUTOS_ORIGINAL_BUGS.md) |
+| C1-02 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_02.c` | `src/mutos_cc/c1port/c12.c`, `acommute()`: a product or AND that folds to 0 | [C1-02](MUTOS_ORIGINAL_BUGS.md) |
+| C1-03 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_03.c` | `src/mutos_cc/c1port/c10.c`, `delay()`: before the tree without its postfix `++`/`--` is compiled | [C1-03](MUTOS_ORIGINAL_BUGS.md) |
+| C1-06 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_06.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [C1-06](MUTOS_ORIGINAL_BUGS.md) |
 | LD-06 | ld | `-F` | diagnostic | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
 | LD-08 | ld | `-F` | diagnostic | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
 
@@ -88,9 +88,12 @@ output. `line=` is the source line, as the tool's messages give it.
 exclusive - that `c1` wrote for the intermediate-code operation the rule was
 met in: a whole statement, so that every byte a rule changes lies in its
 range. `c1` notes an entry when the hook is passed and writes it when the
-operation is done (`c1rules.c`); a rule that must see the code it concerns
-(C1-06 counts the bytes of two stores) reads it back from the output file
-then. The rest of the keys are the rule's own.
+operation is done (`c1rules.c`), after asking the rule, if it gave a check,
+whether the entry counts: a rule that must see the code it concerns (C1-06
+counts the bytes of two stores) gets it back from the output file then, and
+one that must see what compiling the statement did to a tree node (C1-03:
+whether the name node left in the tree stopped being a long) gets the node
+it named when its hook was passed. The rest of the keys are the rule's own.
 
 ## The accounting
 
@@ -111,4 +114,28 @@ log on, and requires:
   instructions only when a V30 rule was applied; `cc -S -1` reports none.
 
 With no active rule (step F0) that is: every output is the original's in
-every configuration. `--report` prints which rules the code met.
+every configuration. Since step F1 the corrections of `c1` are active;
+under `-F` (and `-F -1`) their `applied` entries account for what they
+change, `c2`'s output, the objects and the programs following from it.
+`--report` prints which rules the code met.
+
+## What a correction computes
+
+The accounting shows that every change belongs to a rule, not that the
+change is right. For that, C's semantics on a 16-bit `int` is the
+reference (`docs/TOOLCHAIN_PLAN.md`, section 7.2):
+`tests/rules/check_corrected.py` (in `make test`) compiles small programs
+that meet each active correction ("triggers") with `cc -S` as the
+original does, with `-H`, with `-F` and with `MUTOS_MODE=corrected`, and
+runs `c1`'s code under `tests/mutos_cc/fuzz/x86sim.py`: `main()`'s value
+must be the original's as pinned there (a wrong value, or the message
+`x86sim.py` stops with) without a switch and with `-H`, and C's with `-F`;
+every active correction of `c1` must have a trigger. Then it runs
+`fuzz_c.py --mode corrected` on two fixed seeds (one with longs): every
+program must compute what C says unless it fails through a bug of the
+original that the corrected mode does not correct yet - the rule log's
+`met` entries say which (or the code is C1-13's comparison of two
+immediates, which has no hook). With `--realbin` (in `make
+check-realbin`) the triggers are also linked against the MUTOS root's
+`crt0.o` and `libc.a`, with and without `c2` (`cc -o`, `cc -O -o`), and
+run under `tests/realbin/mutosemu.py`.

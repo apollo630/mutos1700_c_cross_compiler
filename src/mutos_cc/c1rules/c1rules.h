@@ -33,14 +33,17 @@ extern	const char *c1_outname;
  * goes to the rule log (src/h/mutos_mode.h) at the next c1_rule_mark(),
  * with out= the bytes c1 wrote for the intermediate-code operation that
  * was being compiled: the whole statement, so that every byte a rule
- * changes lies in its range. check, when not NULL, is asked then, with
- * those bytes as text, whether the entry counts (0: it is dropped); it may
- * write keys of its own into keys (nkeys bytes). fmt, when not NULL, gives
- * keys at once. Nothing is done when the rule log is off.
+ * changes lies in its range. check, when not NULL, is asked then whether
+ * the entry counts (0: it is dropped) - with ctx, the rule's own pointer
+ * (a tree node, say, whose fate the rule must see once the statement is
+ * compiled), and with those bytes as text (NULL when they cannot be read
+ * back); it may write keys of its own into keys (nkeys bytes). fmt, when
+ * not NULL, gives keys at once. Nothing is done when the rule log is off.
  */
-typedef	int	c1_rule_check(const char *text, size_t n, char *keys, size_t nkeys);
+typedef	int	c1_rule_check(const void *ctx, const char *text, size_t n,
+		char *keys, size_t nkeys);
 void	c1_rule(const char *rule, int applied, c1_rule_check *check,
-		const char *fmt, ...);
+		const void *ctx, const char *fmt, ...);
 
 /*
  * c1_rule_mark - at the top of getree()'s loop and at its EOFC: the
@@ -54,13 +57,13 @@ void	c1_rule_mark(void);
 struct	tnode;
 struct	table;
 
-/* C1-01: cexpr()'s template letter H in cctab (c10.c) */
-void	rule_c1_01(struct tnode *tree, struct table *table);
+/* C1-01: cexpr()'s template, once matched (c10.c) - returns the template */
+char	*rule_c1_01(struct tnode *tree, struct table *table, char *tabstring);
 /* C1-02: acommute()'s product or AND with 0 (c12.c) - returns the tree */
 struct	tnode *rule_c1_02(struct tnode *zero, int op, struct tnode **ops, int n);
-/* C1-03: delay() after the tree without its postfix ++/-- (c10.c) */
+/* C1-03: delay() before the tree without its postfix ++/-- (c10.c) */
 void	rule_c1_03(struct tnode *incdec);
-/* C1-06: cexpr()'s template, once matched (c10.c) */
-void	rule_c1_06(const char *tabstring);
+/* C1-06: cexpr()'s template, once matched (c10.c) - returns the template */
+char	*rule_c1_06(char *tabstring);
 
 #endif /* MUTOS_C1RULES_H */

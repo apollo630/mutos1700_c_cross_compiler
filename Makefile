@@ -249,10 +249,17 @@ clean:
 # without -F, -H and -1, the rule log on, and requires every byte that
 # differs to lie in a rule's logged range (ACCOUNTING_ARGS passes options,
 # e.g. ACCOUNTING_ARGS="--fuzz 500 --full", or "--report" for the rules
-# the code meets). tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
+# the code meets); tests/rules/check_corrected.py shows that what the
+# active corrections write computes what C says: each one's triggers under
+# x86sim.py - the original's value without a switch, C's with -F - and two
+# fixed-seed runs of fuzz_c.py --mode corrected, in which every program
+# must compute what C says unless it fails through a bug of the original
+# not corrected yet (CORRECTED_ARGS passes options, e.g. "--fuzz 3000").
+# tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
 # x86sim.py does with the three 80186/V30 forms (values, flags, V30
 # clocks), which mutos_as -1 must take.
 ACCOUNTING_ARGS =
+CORRECTED_ARGS =
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -286,9 +293,10 @@ test: all
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_binutils/check_tools.py
 	@echo "== mutos_ed and mutos_em on the MUTOS kernel's makefile (mutos_make, cc) =="
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_ed/check_editors.py
-	@echo "== the rules of -F and -1 (docs/RULES.md): register, and every difference accounted for =="
+	@echo "== the rules of -F and -1 (docs/RULES.md): register, every difference accounted for, what the corrections compute =="
 	@python3 scripts/check_rules.py
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_accounting.py $(ACCOUNTING_ARGS)
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py $(CORRECTED_ARGS)
 	@echo "== x86sim.py: the 80186/V30 forms of -1 and the V30 clocks =="
 	@python3 tests/mutos_cc/fuzz/check_x86sim_v30.py --as $(CURDIR)/src/mutos_as/mutos_as
 
@@ -398,7 +406,10 @@ check-libcatof: as ld cc
 # exit status and files left the originals' on hand-written scripts - from a
 # file and through a pipe, the kernel makefile's eddep scripts and fakeawk
 # on mch.i among them - and on two fixed-seed fuzz runs (edcmp.py,
-# edfuzz.py); then the original ld through mutos_root/ (check_root.py --realbin). Separate
+# edfuzz.py); then the original ld through mutos_root/ (check_root.py --realbin); then the
+# triggers of the corrected mode's rules linked against the root's libc.a
+# and run under the emulator, with and without c2 (check_corrected.py
+# --realbin): C's value with -F, the original's without a switch. Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
@@ -473,6 +484,7 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool ed
 	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool em
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py --realbin --fuzz 0
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

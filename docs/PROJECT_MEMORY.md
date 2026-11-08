@@ -53,8 +53,8 @@ Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
 Milestone 2, "Step 5 of the plan"); whether the kernel's `arith.a` gets the
 corrections of the long helpers too; which of step F4's corrections (C1-12 and
-C1-13, found with F0, are among the candidates); `make install`; the manual
-pages.
+C1-13, found with F0, and C1-14 and C1-15, found with F1, are among the
+candidates); `make install`; the manual pages.
 
 ## The owner's setup
 
@@ -70,7 +70,7 @@ pages.
   8086 has been replaced by a NEC V30, and an IDE interface added (said
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of step F0 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 and F1 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -86,3 +86,6 @@ pages.
 - 2026-11-08: step F0 of section 7 - the switches, the rule log and register, the
   accounting, the diagnostic hooks; no output changed (`STATUS.md`, "Step F0";
   `docs/RULES.md`).
+- 2026-11-08: step F1 - the four bugs of `c1` that make wrong code silently (C1-03,
+  C1-06, C1-02, C1-01) corrected in the corrected mode, four patches; without a
+  switch every output is still the original's (`STATUS.md`, "Step F1").

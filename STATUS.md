@@ -1841,6 +1841,95 @@ Nothing any tool writes changed; what F1 and the rules after it need is in place
   before the last changes, which touched `c0` and `c1` only where the rule log is on.
   A whole `make check-realbin` is the project owner's to run.
 
+### Step F1: the corrections of `c1` (verified 2026-11-08)
+
+The `c1` bugs that make wrong code silently, corrected in the corrected mode (`-F`,
+`MUTOS_MODE=corrected`), each a rule of `docs/RULES.md` delivered as a patch of its
+own; without a switch every output is still the original's (`check_accounting.py`).
+
+- **C1-03** (`x = l++` loses the carry), active: the increment of a long gets a copy
+  of its name node before `delay()` compiles the tree, so that `unoptim()`'s change of
+  the node left in the tree (the low word, for `(int)l`) is not done to the increment:
+  `mov di,2.+_l` / `add 2.+_l,*1.` / `adc _l,*0` where the original has `inc 2.+_l`.
+  The hook moved before the compilation; the rule log tells, once the statement is
+  compiled, whether the node in the tree stopped being a long ("met" in the original
+  mode, "applied" in the corrected one - `c1_rule()` hands a rule's check the pointer
+  it named, `c1rules.h`). In the tree's real code it changes the kernel's `amx.o` at
+  its two `(int)temp++` (lines 1344 and 1427 of `11_kernel/09_amx.c`); the corpus's
+  probes `p31_long4` and `p34_long5` compile as before (their `l++`'s value is never
+  converted to an int).
+- **C1-06** (`l <<= i` on a local long jumps into an instruction for `i == 0`),
+  active: the twelve rows with `jz .+16` skip the loop only - `jz .+8`, the
+  original's own form for the value of `l << i` -, and with a count of 0 the stores
+  write back the unchanged registers. Every such row changes, a file-scope long's too
+  (whose jump was right); no kernel source has one. `x86sim.py` reads `+2(bx)` now
+  and counts the stores' bytes for `jz .+16` (a long through a pointer is 2 + 3 bytes,
+  which it let pass); its results on the 132 `.s` goldens are unchanged.
+- **C1-02** (`e * 0` and `e & 0` drop `e`'s side effects), active: the operands with
+  a side effect stay, in their order, as a comma expression before the 0 (`SEQNC`
+  nodes with `optim()`'s degree); a list without one still folds to 0. The tree's
+  real code never meets it. Its triggers found a second way into C1-12: `(x * 0) ==
+  0`, a product only `c1` folds, gives "C error: const" (the emulated original
+  too); with a side effect in the product the corrected mode compiles it.
+- **C1-01** (branches on stale flags after `not` and `mov`), active: in `cctab`'s
+  row for `!`, `-`, `~`, `+`, `-`, `>>`, `<<`, `|`, `^`, the three that end in an
+  instruction setting no flags - `~` (`not`), `!` (its value by `mov r,*0.` /
+  `mov r,*1.`), a shift by a count that is not a constant (`sal r,cl` with 0) - get
+  `or r,r` (`orb` for a char) after the computation, the test `rcexpr()` appends where
+  `cctab` has no row; the hook moved from the template letter `H` to the template of a
+  row once matched, where C1-06's is. The tree's real code never meets it.
+- **Two new bugs of the original `c1`**, found by `fuzz_c.py --scope --mode corrected`
+  (seed 4, 3,000 programs: 2,997 correct, three failures no hooked bug explains; the
+  emulated original `c0` and `c1` write the same code): **C1-14**, `(rel) < 0` and
+  `(rel) >= 0` folded by `optim()` to 0 and 1 without the relation's side effects
+  (`((u = 6) != 7) < 0` leaves `u`), and **C1-15**, a signed comparison with 0 of a
+  shift by a count other than 1 (`(t >> 3) <= 0`: `sar di,cl` / `ble`) branching on
+  the overflow flag, which the 8086 leaves undefined after such a shift - whether the
+  hardware branches wrongly is not measured. Both are candidates for step F4
+  (`docs/MUTOS_ORIGINAL_BUGS.md`).
+- **`tests/rules/check_corrected.py`** (new, in `make test`): what an active
+  correction writes computes what C says. Its triggers - for C1-03 two, `x = l++` /
+  `x = m--` / `y = a++` (C 91, the original 0) and the kernel's `f((int)t++)` (C 10,
+  the original 1); for C1-06 two, a local, a file-scope and a pointed-to long shifted
+  by 0 and 2 (C 70) and a count computed first (C 44), where `x86sim.py` refuses the
+  original's code; for C1-02 three, the symptom's shape (C 752, the original 111),
+  a condition, an argument and a sum (C 131, the original 1001), and a char, an
+  unsigned, a long, an index, a pointer sum, `?:`, `switch` (C 347, the original
+  11); for C1-01 two, the symptom's `~a || n++` and `!y >= 0` and shifts by a count of
+  0 after a comparison (C 1230, the original 100) and `~(a + b)`, `(x << k) && a`, `?:`
+  and `~f()` (C 140, which `x86sim.py` refuses in the original's code) - compiled
+  without a switch, with `-H`, `-F` and `MUTOS_MODE=corrected` and run under
+  `x86sim.py`; then `fuzz_c.py --mode corrected` on seed 1, 1,000 programs with arrays
+  and 1,000 with longs: every program correct but those failing through a bug not
+  corrected yet (1,000 and 989 correct; 7 C1-13, 4 refused). With `--realbin` (in `make
+  check-realbin`) the triggers are linked against the root's `libc.a` and run under
+  `mutosemu.py`, with and without `c2`: C's value with `-F`, the original's without.
+- **`fuzz_c.py --mode original|corrected`**: `c0`, `c1` and `as` in that mode, the
+  semantic check alone, each build with a rule log; a failure through a bug of the
+  original (a `met` line in its log, or C1-13's `cmp` of two immediates) is tallied
+  by bug, not as WRONG or BAD. Seed 3, 3,000 programs with longs: the original mode
+  2,731 correct (C1-01 11, C1-02 1, C1-03 19, C1-06 220, C1-13 22 - a program can
+  meet more than one), the corrected mode with C1-03 2,742 (no C1-03 left), with
+  C1-06 too 2,959 (C1-01 9, C1-02 1, C1-13 26), with C1-02 too 2,960 (C1-01 9, C1-13
+  26), with all four 2,968 (C1-13 27), 5 refused, no WRONG or BAD in any. With all
+  four: seed 3 without longs 3,000 of 3,000 correct (the original mode: 2,989, C1-01
+  11); seed 5, 5,000 with longs and file scope, 4,934 correct, 18 refused, 48 C1-13.
+- **Verified** - each of the four patches (C1-03, C1-06, C1-02, C1-01, applied in
+  that order) on a fresh clone of `5d578a8` with the ones before it: `make clean &&
+  make all` without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test`
+  exit 0, its output the same as before but for the new line of
+  `check_corrected.py` (and the section's title); `make check-docs` clean. Without a
+  switch every output is the original's: `check_accounting.py` (177 sources, 694
+  stages, five configurations), and against the emulated originals on the final
+  tree - `c1tables.py --check-c`, `c1trees.py` at depths 2, 3 and 4 (131/132, 1
+  refused on purpose, each), `c1fuzz.py` (200, seed 1: 175 the same, none
+  different, the rest refused as before), `fuzz_c.py` with the oracle (300, seed 1:
+  300 correct; 300 with longs, seed 2: 272 correct, 28 as the real compiler, none
+  different), `cccmp.py goldens` (132/132, 132/132, 9/9), `c2fuzz.py --gen fuzz_c`
+  (100/100) - and `check_corrected.py --realbin` (the nine triggers linked and run
+  under `mutosemu.py`, with and without `c2`). A whole `make check-realbin` did not run
+  on the machine of the session (two cores); it is the project owner's to run.
+
 ## `mutos_as` opcode coverage
 
 This is the detailed breakdown requested for this document. "Confirmed real" means

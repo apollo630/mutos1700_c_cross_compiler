@@ -638,7 +638,8 @@ cexpr(struct tnode *atree, struct table *table, int areg)
 	}
 	tree->op = (int16_t)c;
 	string = opt->tabstring;
-	rule_c1_06(string);	/* EXTENSION: C1-06, docs/RULES.md */
+	string = rule_c1_06(string);	/* EXTENSION: C1-06, docs/RULES.md */
+	string = rule_c1_01(tree, table, string);	/* EXTENSION: C1-01, docs/RULES.md */
 	p1 = tree->tr1;
 	if (p1->op == FCON && p1->value > 0) {
 		printf(".data\nL%d:\t.double ", p1->value);
@@ -803,7 +804,6 @@ loop:
 
 	/* H */
 	case 'H':
-		rule_c1_01(tree, table);	/* EXTENSION: C1-01, docs/RULES.md */
 		p = tree;
 		flag = 04;
 
@@ -1249,8 +1249,8 @@ delay(struct tnode **treep, struct table *table, int reg)
 	if (p1 == 0)
 		p1 = sdelay(&p->tr1);
 	if (p1) {
-		r = rcexpr(optim(p), table, reg);
 		rule_c1_03(p1);		/* EXTENSION: C1-03, docs/RULES.md */
+		r = rcexpr(optim(p), table, reg);
 		*treep = p1;
 		return r + 1;
 	}

@@ -148,3 +148,150 @@ whole table (`v30_clocks()`); the dynamic ones - branches taken (14) or not
 are counted where they run. A range "according to data" (`imul`, `idiv`) is
 kept as a range. `check_x86sim_v30.py` pins twelve programs whose clocks were
 summed by hand from the manual.
+
+## Step F1: the corrections of `c1` (2026-11-08)
+
+The four bugs of `c1` that make wrong code without a message, in the
+order of the plan - the smallest change first -, each a patch of its own.
+
+### C1-03: a copy of the name node
+
+F0's hook sat after `delay()` had compiled the tree, where the damage is
+done: the name node `sdelay()` put back is in the tree and in the
+increment at once, and `unoptim()`'s LTOI case has already made it the
+low word. A correction there would have to undo what `unoptim()` did -
+`offset -= 2`, `type = LONG` -, which holds only as long as that case is
+the only one that touches the node. The hook moved before the
+compilation instead: in the corrected mode the increment of a long gets
+a copy of its name node (`getblk()`, the whole node), so the tree may do
+with its node what it does and the increment keeps the long. A tree that
+leaves the node alone compiles exactly as before, and so does the
+increment - the copy is the node, field for field.
+
+Whether the copy mattered is known only once the statement is compiled.
+The rule log's checks ran with the statement's text so far (C1-06's);
+`c1_rule()` now also hands a check the pointer the rule named when its
+hook was passed (`c1rules.h`), here the node left in the tree: it is
+looked at in `c1_rule_mark()`, before `getree()` reads the next
+expression into the same memory. In the original mode the node is the
+increment's too, so "met" means what F0's diagnostic hook meant, and the
+counts of F0 stayed (`check_accounting.py --report`: C1-03 four times,
+`09_amx.c` twice, `p31_long4`, `p34_long5`).
+
+### Checking what a correction computes
+
+`check_accounting.py` proves that a difference belongs to a rule, not
+that it is right. `tests/rules/check_corrected.py` adds the semantics:
+triggers per correction, run by `x86sim.py` without a switch (the
+original's value, pinned) and with `-F` (C's value), and with
+`--realbin` linked and run under `mutosemu.py`, through `c2` too -
+`x86sim.py` does not read `c2`'s output (`br`), the emulator runs the
+program as MUTOS would. The first draft of the kernel-shaped trigger gave
+0 in both modes: the second `x = (int)t--` brought the original's and
+C's values together again. A trigger has to keep the two apart to the
+end.
+
+`fuzz_c.py --mode corrected` is the other half: the original `c0` and
+`c1` cannot be the oracle of the corrected mode, so the semantic check
+decides alone, and a failure is excused only by a bug of the original
+the build met (its rule log) or by C1-13's code. Seed 3, 3,000 programs
+with longs, before and after C1-03: 2,731 and 2,742 correct, C1-03 19
+times and never; the 8 programs that met C1-03 and still fail meet
+C1-06, C1-01 or C1-13 as well.
+
+### C1-06: skip the loop, not the stores
+
+The plan's fix idea was a label after the two stores. A template cannot
+print one: its upper-case letters are directives (`L` among them), and
+`c1`'s labels are `L<n>`. Computing the right distance - 8 and the
+stores' bytes - would mean foreseeing what `pname()` prints for the
+destination and what `mutos_as` makes of it, before the row is printed.
+But a jump past the loop alone needs neither: the three instructions of
+the loop - the shift and the rotate by 1, `loop .-4` - are two bytes each
+whatever the operands (the original's `loop .-4` relies on it), and with
+a count of 0 the two stores write back the registers the row loaded from
+the place they store to. `jz .+8` is the original's own form in the rows
+for the value of `l << i` (s1944 ...). In the corrected mode
+`rule_c1_06()` returns the row's template with `jz\256+16` (or
+`jz\256+16.`) made `jz\256+8`, a copy made once per row and kept, since
+`cexpr()` may match an inner row of the same kind while it prints the
+outer one. Every such row changes, the file-scope long's whose jump was
+right too; no kernel source has one.
+
+The second trigger found two things around the rows through a pointer
+(`*p <<= i`: `mov (bx),di` / `mov +2(bx),si`): `x86sim.py` did not read the
+operand `+2(bx)` (it does now), and it let `jz .+16` pass over those
+stores - it checked only for the three-byte `*n.(bp)` form - though they
+are 2 and 3 bytes; it counts the bytes now (`store_bytes()`), as the rule's
+check does, which counted `+2(bx)` as four bytes (`mutos_as` gives a plain
+number from -128 to 127 a byte). Run over the 132 `.s` goldens, the old and
+the new `x86sim.py` give the same results. Seed 3, 3,000 programs with
+longs in the corrected mode: 2,959 correct after C1-06 (2,742 before), no
+C1-06 left.
+
+### C1-02: a comma before the 0
+
+`acommute()` has the operands of the flattened `*` or `&` list in
+`llist[]`, optimized already (`insert()` calls `optim()` on each), and the
+folded constant last. In the corrected mode `rule_c1_02()` keeps the
+operands with a side effect - by the F0 hook's own test: an assignment,
+`++`/`--`, a call, anywhere in the operand - in their order as `SEQNC`
+nodes before the 0, the node `c0` writes for a comma and `rcexpr()`,
+`cbranch()` and the argument code already take (the first operand for
+its effect, the second for the value). The nodes get the degree
+`optim()`'s last lines give a binary node, computed here rather than by
+calling `optim()` on them, which would optimize the operands a second
+time. The comma's type is the 0's, the type the original's result has.
+
+A trigger meant to check a comparison, `((u = 4) * 0) == 0`, stopped the
+original with "C error: const": the product folds to 0 in `c1`, not in
+`c0`, and the relation of two constants is C1-12's - a second way into
+it, confirmed under the emulator with `(x * 0) == 0` (no side effect, so
+the corrected mode meets it too). The trigger keeps to shapes the original
+compiles; the finding is in C1-12's entry. Seed 3, 3,000 programs with
+longs in the corrected mode: 2,960 correct, no C1-02 left; the generator
+writes `e * 0` with a side effect rarely, so the triggers carry the weight.
+
+### C1-01: the test the fallback appends
+
+The row 40c2 is `HA`: `H` compiles the tree through `cregtab` - a null
+table pointer in the original, which `cexpr()` turns into `regtab`, so that
+`rcexpr()`'s fallback from `cctab` with its `or r,r` is not taken - and the
+branch reads the flags of the computation's last instruction. Two ways to
+correct it were weighed. Returning -1 at `H` for the three ops would send
+the tree to `rcexpr()`'s fallback, which appends the test; but the
+fallback calls `cexpr()` directly, where `H` goes through `rcexpr()` with
+its `reorder()`, so the computation itself could change. A template
+`HAorJ\311A,IA\n` keeps the computation and only appends the test: `J`
+prints `b` for a char tree (as the fallback's `orb`), `\311` is a tab and
+`I`, `IA` the register `H` left the value in (`ax` after a call, `di`
+mostly). The hook moved to where C1-06's is - the template of a row once
+matched -, so both corrections of a template sit on two lines together,
+and `H` is the original's again.
+
+Triggers need flags that `x86sim.py` knows and that make the original
+branch wrongly: a comparison before (`if (y == 0)`, `if (k != 0)`) sets
+them. Under the emulator the original's code gives 100 without `c2` and
+44 with it - `c2`'s code leaves other flags behind -, C 1230.
+
+### Two more bugs, from the file-scope fuzz
+
+With every hook of `c1` active, the corrected mode has no `met` line of
+`c1` left to excuse a failure, so the semantic check sees everything
+else. `fuzz_c.py --scope --mode corrected`, seed 4: three of 3,000
+programs failed with no bug to put them down to (the original mode shows
+the same three), and the emulated original `c0` and `c1` write the same
+code - bugs of the original, not of the port:
+
+- **C1-14**: `optim()` replaces a relation of a relation with 0 - `< 0` by
+  0, `>= 0` by 1 - without a look at the inner relation's side effects,
+  as C1-02 does for a product (`((u = 6, a[i][i]) != 7) < 0`,
+  `((n-- != a[k][k]) < (6 >> 4))`).
+- **C1-15**: `(t >> 3) <= 0` branches with `ble` on the flags of `sar
+  di,cl`, whose overflow flag the 8086 leaves undefined for a count other
+  than 1; `x86sim.py` stops there. What the hardware's flag is after the
+  last step of a multi-bit shift is not measured.
+
+Neither is hooked; both are listed for step F4. A fuzz run that meets
+them in the corrected mode reports them as WRONG or BAD - `check_corrected.py`
+runs no `--scope` programs, and its two seed-1 runs meet neither.

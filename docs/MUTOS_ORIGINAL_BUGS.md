@@ -44,19 +44,21 @@ Last updated: 2026-11-08.
 
 | ID | Tool | Bug | Evidence | This project |
 |---|---|---|---|---|
-| C1-01 | `c1` | branches on stale flags after `not` / `mov` / a shift by `cl` (PDP-11 condition codes assumed) | emulator, fuzzing | reproduced; hooked (diagnostic) |
-| C1-02 | `c1` | `e * 0`, `e & 0` drop `e`'s side effects | emulator | reproduced; hooked (diagnostic) |
-| C1-03 | `c1` | `x = l++` (long `l`, int value) loses the carry | golden, emulator | reproduced; hooked (diagnostic) |
+| C1-01 | `c1` | branches on stale flags after `not` / `mov` / a shift by `cl` (PDP-11 condition codes assumed) | emulator, fuzzing | reproduced; corrected in the corrected mode (`-F`) |
+| C1-02 | `c1` | `e * 0`, `e & 0` drop `e`'s side effects | emulator | reproduced; corrected in the corrected mode (`-F`) |
+| C1-03 | `c1` | `x = l++` (long `l`, int value) loses the carry | golden, emulator | reproduced; corrected in the corrected mode (`-F`) |
 | C1-04 | `c1` | an assignment passed as a floating argument pops the floating-point stack twice | golden | reproduced, messages too |
 | C1-05 | `c1` | a hoisted `+=` under a comparison stored without a pop: values pile up on the floating-point stack | golden | reproduced, messages too |
-| C1-06 | `c1` | `l <<= i` / `l >>= i` on a local long jumps into an instruction when `i` is 0 | golden | reproduced; hooked (diagnostic) |
+| C1-06 | `c1` | `l <<= i` / `l >>= i` on a local long (or through a pointer) jumps into an instruction when `i` is 0 | golden | reproduced; corrected in the corrected mode (`-F`) |
 | C1-07 | `c1` | folding a long constant `>>` (any count) or `<<` (count 0) jumps into an instruction | emulator | refused |
 | C1-08 | `c1` | `longrel()` stores a label in the saved `xzero`; `xlongrel()` then reads past `lrtab[]` | code reading, fuzzing | refused |
 | C1-09 | `c1` | register "after" AX: `regname[-1]` prints 118 bytes of `_ctype_` as a register name | golden, emulator | refused |
 | C1-10 | `c1` | the SIGFPE handler is not re-armed: a second floating overflow kills `c1` | emulator | reproduced |
 | C1-11 | `c1` | bit-field `*=`, `/=`, `%=`, `<<=`, `>>=` rejected | emulator | reproduced |
-| C1-12 | `c1` | a relation of two constants, one a long constant cast to int: "C error: const", the relation replaced by its left constant | emulator, fuzzing | reproduced |
+| C1-12 | `c1` | a relation of two constants, one a long constant cast to int (or a product or AND with 0): "C error: const", the relation replaced by its left constant | emulator, fuzzing | reproduced |
 | C1-13 | `c1` | a relation of two long constants: `cmp` of two immediates, which `as` rejects | emulator, fuzzing | reproduced |
+| C1-14 | `c1` | a relation compared with 0 by `<` or `>=` folds to 0 or 1 and drops the relation's side effects | emulator, fuzzing | reproduced |
+| C1-15 | `c1` | a signed comparison with 0 of a shift by a count other than 1 branches on the overflow flag, which the 8086 leaves undefined | code reading, fuzzing | reproduced |
 | L-01 | `libc.a` `itod` | int to double writes the low mantissa byte into bytes 1 and 3: `1001` becomes `1001.0000152...` | emulator | modelled (`c1`) |
 | L-02 | `libc.a` `ltof` | `ltof(0)` leaves six bytes of the slot's last value | code reading | refused (`c1`) |
 | L-03 | `libc.a` `dtoi` | from 2\*\*15 compares with the word at address 8000 (an immediate was meant) | code reading | refused (`c1`) |
@@ -216,23 +218,43 @@ Last updated: 2026-11-08.
   `c0` and `c1` and executed with `tests/mutos_cc/fuzz/x86sim.py` (which
   models the 8086 flags). Most of `fuzz_c.py`'s "as the real compiler"
   programs (about 0.9% of all) are this.
-- **This project.** `mutos_c1` reproduces it (it is the original's table).
-- **Fix idea.** End op 38's (`~`) row and the logical-value path with a
-  flag-setting test (`or R,R`, as `rcexpr()` already appends when it
-  falls back from `cctab` to `regtab`); check the other ops of the list
-  for instructions that leave the flags (a shift by `cl` with a count of
-  0 does).
+- **This project.** `mutos_c1` reproduces it (it is the original's
+  table); **corrected in the corrected mode** (`-F`; step F1, 2026-11-08):
+  for `~`, `!` and a shift by a count that is not a constant, an int or
+  char tree, the row ends in `or r,r` (`orb` for a char) on the register
+  that holds the value - the row `HAorJ\311A,IA\n` -, the test `rcexpr()`
+  appends when `cctab` has no row at all; the computation is the
+  original's. The other six ops of the list end in an instruction that
+  sets the zero and the sign flag (`neg`, `add`, `sub`, `or`, `xor`, a
+  shift by a constant, folded when the constant is 0) and keep the row;
+  the overflow flag after a shift by a constant other than 1 is C1-15.
+- **Fix idea** (the one taken). End op 38's (`~`) row and the
+  logical-value path with a flag-setting test (`or R,R`, as `rcexpr()`
+  already appends when it falls back from `cctab` to `regtab`); check the
+  other ops of the list for instructions that leave the flags (a shift by
+  `cl` with a count of 0 does).
 - **A third form** (found 2026-11-08 by the diagnostic hook of step F0):
   `<<` and `>>` by a count that is not a constant are in the same list;
   `if (x << n)` is `mov di,_x` / `mov cx,_n` / `sal di,cl` / `beq L`, and
   with `n` 0 the shift leaves the flags as they were.
-- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_01()` reports
-  each use of the row for `~`, `!` and a shift by a variable count
-  (diagnostic: the code is the original's). Met in the tree's real code:
-  never - not in the construct corpus, the floating-point probes or the
-  kernel sources of the tree; in the 3,000 `fuzz_c.py` programs of
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_01()`, given
+  the template of a row once matched (until F1 at the template letter `H`,
+  diagnostic): it reports each use of the row for `~`, `!` and a shift by
+  a variable count - "met" in the original mode, and for a long or
+  floating tree, which it leaves alone; in the corrected mode it returns
+  the row with the test ("applied"). Met in the tree's real code: never -
+  not in the construct corpus, the floating-point probes or the kernel
+  sources of the tree; in the 3,000 `fuzz_c.py` programs of
   `tests/rules/check_accounting.py --fuzz 3000 --base-only` (seed 1, half
   of them with longs) 69 times, all `~`.
+- **Checked** (`tests/rules/check_corrected.py`): two triggers - the
+  symptom's `~a || n++` and `!y >= 0` with flags `x86sim.py` knows, and
+  `x << k`, `x >> k` with `k` 0 after a comparison that set the zero flag
+  (the original 100, C 1230); `~(a + b)`, `(x << k) && a`, `(x >> k) ?
+  :` and `~f()`, whose value is in `ax` (C 140; `x86sim.py` refuses the
+  original's code) - give C's values with `-F`, linked and run under
+  `mutosemu.py` with and without `c2` too, where the original's code gives
+  100 without `c2` and 44 with it (other instructions, other stale flags).
 
 ### C1-02 `e * 0` and `e & 0` drop `e`'s side effects
 
@@ -241,14 +263,27 @@ Last updated: 2026-11-08.
   returns the constant 0 of a `*` or `&` chain without looking at the
   other operands. A v7 bug, not a MUTOS one.
 - **Evidence.** Emulator (the trigger, `x86sim.py`); `fuzz_c.py`.
-- **This project.** Reproduced.
-- **Fix idea.** Return the constant only if no other operand has a side
-  effect (an assignment, `++`/`--`, a call); otherwise keep the operands
-  as a comma list before the 0.
+- **This project.** Reproduced; **corrected in the corrected mode** (`-F`;
+  step F1, 2026-11-08): the operands with a side effect are kept, in their
+  order, as a comma expression (`SEQNC`, as `c0` writes a comma) before the
+  0 - `(u = 7, x) * 0` is `((u = 7, x), 0)` -, the others dropped as the
+  original drops them all; a list without a side effect still folds to 0.
+- **Fix idea** (the one taken). Return the constant only if no other
+  operand has a side effect (an assignment, `++`/`--`, a call); otherwise
+  keep the operands as a comma list before the 0.
 - **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_02()` reports
-  a 0 returned for a list with an operand that has a side effect
-  (diagnostic). Met in the tree's real code: never; in the 3,000 programs
-  of C1-01's count once.
+  a 0 returned for a list with an operand that has a side effect ("met",
+  until F1 a diagnostic hook), and in the corrected mode returns the comma
+  expression ("applied"). Met in the tree's real code: never; in the
+  3,000 programs of C1-01's count once.
+- **Checked** (`tests/rules/check_corrected.py`): three triggers - the
+  symptom's shape with `&` and `++` too; in a condition, as an argument
+  (`f() * 0` calls `f`) and in a sum; into a char, an unsigned and a long,
+  as an index, in a pointer sum, under `?:`, `switch` and as an argument -
+  give the original's values without a switch and C's with `-F`, under
+  `x86sim.py` and, linked, under `mutosemu.py` with and without `c2`.
+  `((u = 4) * 0) == 0` compiles in the corrected mode; without it, it is
+  C1-12 (below).
 
 ### C1-03 `x = l++` loses the carry
 
@@ -268,19 +303,33 @@ Last updated: 2026-11-08.
 - **Evidence.** Golden `tests/mutos_cc/fltprobe/p31_long4.s.golden`
   (the code); emulator (the value, `x86sim.py`: returns 1 where C
   gives 11 for `(int)(l >> 16) * 10 + (x == -1)`).
-- **This project.** Reproduced.
-- **Fix idea.** Let `sdelay()` put a copy of a long's name node back into
-  the tree (or `unoptim()` change a copy), so that the increment keeps the
-  long.
-- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_03()` reports an
-  increment of a long whose operand is no longer a long, after `delay()`
-  has compiled the tree (diagnostic). **Met in the kernel**:
+- **This project.** Reproduced; **corrected in the corrected mode** (`-F`,
+  `MUTOS_MODE=corrected`; step F1, 2026-11-08): the increment of a long
+  gets a copy of its name node before the tree is compiled, so that what
+  `unoptim()` does to the node left in the tree is not done to the
+  increment's - `mov di,2.+_l` / `add 2.+_l,*1.` / `adc _l,*0`. A tree that
+  leaves the node alone compiles as before.
+- **Fix idea** (the one taken). Let `sdelay()` put a copy of a long's name
+  node back into the tree (or `unoptim()` change a copy), so that the
+  increment keeps the long.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_03()`, in
+  `delay()` before the tree is compiled; once the statement is compiled it
+  reports an increment of a long whose name node in the tree is no longer
+  a long - "met" in the original mode, "applied" (the copy kept the
+  increment a long's) in the corrected mode; until step F1 it was a
+  diagnostic hook after the compilation. **Met in the kernel**:
   `tests/mutos_cc/11_kernel/09_amx.c`, lines 1344 and 1427 -
   `setbyte(ds,(int)temp++,*src_off++)` and `x = getbyte(ds,(int)temp++)` on
   the local long `temp` (`inc *-16.(bp)`, its low word); also in the
   probes `fltprobe/p31_long4.c` and `p34_long5.c` (`--`); in the 3,000
   programs of C1-01's count 59 times (`fuzz_c.py --longs` writes `x =
-  r++`).
+  r++`). In the corrected mode the kernel's `amx.o` changes at both lines
+  (`inc *-16.(bp)` becomes `add *-16.(bp),*1.` / `adc *-18.(bp),*0`).
+- **Checked** (`tests/rules/check_corrected.py`): two triggers - `x = l++`
+  and `x = m--` on file-scope longs, `y = a++` on a local, and the
+  kernel's shape `f((int)t++)` - give the original's values without a
+  switch and C's with `-F`, under `x86sim.py` and, linked and run under
+  `mutosemu.py` with and without `c2`, as programs.
 
 ### C1-04 An assignment passed as a floating argument pops twice
 
@@ -317,22 +366,44 @@ Last updated: 2026-11-08.
 
 - **Symptom.** With a count of 0, `l <<= i` / `l >>= i` on a local
   (`bp`-relative) long jumps two bytes into the instruction after the
-  shift loop.
+  shift loop; through a pointer (`*p <<= i`) three bytes.
 - **Mechanism.** The template skips the shift loop and the two stores
   with `jz .+16`, counting four bytes per store - right for a file-scope
   long (`mov _l,di` is `89 3E lo hi`), wrong for a local (`mov
-  *-8.(bp),di` is `89 7E F8`, three bytes).
+  *-8.(bp),di` is `89 7E F8`, three bytes) and for a long through a
+  pointer (`mov (bx),di` / `mov +2(bx),si`, two and three bytes). Twelve
+  rows of `regtab` and `efftab` have it (`jz .+16` or `jz .+16.`).
 - **Evidence.** Golden `fltprobe/p38_long6.s.golden`; `x86sim.py`
-  refuses to run that path ("'jz .+16' with a count of 0 past three-byte
-  stores").
-- **This project.** Reproduced (the code is the original's).
-- **Fix idea.** A label after the stores instead of `.+16`.
-- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_06()` reports a
-  row with `jz .+16` whose two stores, as printed, are not 8 bytes
-  (diagnostic). Met in the tree's real code: never; in the probes
+  refuses to run that path ("'jz .+16' with a count of 0 past 6 bytes of
+  stores, not 8"; until 2026-11-08 it knew only the three-byte stores).
+- **This project.** Reproduced (the code is the original's); **corrected
+  in the corrected mode** (`-F`; step F1, 2026-11-08): the row's jump
+  skips the loop only, `jz .+8` - the original's own form in its rows for
+  the value of `l << i` -, whatever the stores are; with a count of 0 the
+  stores then write back the two registers the row loaded from the place
+  they store to. Every such row is changed, a file-scope long's too, where
+  the original's jump was right: the stores' bytes cannot be foreseen
+  before the row prints them, and two stores more with a count of 0 cost
+  nothing in what the program computes.
+- **Fix idea.** A label after the stores instead of `.+16`; taken
+  instead: `jz .+8`, past the loop of three two-byte instructions (the
+  distance the original's `loop .-4` relies on as well).
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_06()`, given
+  the template of a row once matched: in the original mode it reports a
+  row with `jz .+16` whose two stores, as printed, are not 8 bytes ("met",
+  `stores=`; since F1 a `+2(bx)` counts as the three bytes `mutos_as`
+  makes of it, not four); in the corrected mode it returns the row with
+  `jz .+8` and reports it ("applied"). Met in the tree's real code: never
+  - no kernel source has such a shift (the kernel's `c2` output of
+  `tests/mutos_as/kernel_opt/` has no `jz .+16`); in the probes
   `fltprobe/p38_long6.c` (lines 33, 35) and `p42_long7.c` (43, 45), each
   with stores of 6 bytes; in the 3,000 programs of C1-01's count 237 times
   (`p <<= i` on a local long).
+- **Checked** (`tests/rules/check_corrected.py`): two triggers - a local,
+  a file-scope long and one through a pointer shifted by 0 and by 2, and a
+  count computed first (the rows with `pop cx`) - `x86sim.py` refuses
+  without a switch (the stores 6 bytes) and gives C's values with `-F`,
+  linked and run under `mutosemu.py` with and without `c2` as well.
 
 ### C1-07 Folding a long constant shift jumps into an instruction
 
@@ -440,9 +511,19 @@ Last updated: 2026-11-08.
 - **Evidence.** Emulator: the trigger above, the original `c0` and `c1`
   (the same `.s` and messages as `mutos_c1`'s); found 2026-11-08 by
   `fuzz_c.py --longs` with the oracle (once in 150 programs).
+- **A second way in** (found 2026-11-08 with C1-02's triggers): any
+  operand that only `c1` makes a constant. `if ((x * 0) == 0) y = 1;`:
+  `c0` does not fold `x * 0`, `acommute()` does (C1-02's path), and the
+  relation `0 == 0` goes to `const_()` - "5: C error: const", exit status
+  1, and the code tests the 0 (`mov di,*0.` / `test di,di` / `beq`), so the
+  branch is never taken. Emulator: the original `c0` and `c1` give the same
+  `.s` and message as `mutos_c1`. With a side effect in the product
+  (`((u = 4) * 0) == 0`) the corrected mode has no constant there any more
+  (C1-02's correction) and compiles it; `(x * 0) == 0` still meets C1-12
+  in either mode.
 - **This project.** Reproduced, the message too.
 - **Fix idea.** Fold the relations in `const_()` (or have `c0` fold an
-  LTOI of a long constant first).
+  LTOI of a long constant first - which would not reach the second way in).
 
 ### C1-13 A relation of two long constants: `cmp` of two immediates
 
@@ -461,6 +542,59 @@ Last updated: 2026-11-08.
   as the original `as` does.
 - **Fix idea.** Fold the relation of two long constants in `lconst()` (or
   in `c0`).
+
+### C1-14 A relation compared with 0 by `<` or `>=` drops its side effects
+
+- **Symptom.** `t = ((u = 6) != 7) < 0;` sets `t` to 0 and leaves `u`
+  unchanged; `t = (n-- == 3) >= 0;` sets `t` to 1 and leaves `n`
+  (`main()` returning `u * 100 + n * 10 + t` gives 151, C 641).
+- **Mechanism.** `optim()` (text 3e3c; the port's `c12.c`, the RELAT case
+  after the operands): a relation whose left operand is a relation and
+  whose right is the constant 0 is replaced - `== 0` and `<= 0` by the
+  inner relation reversed, `!= 0` and `> 0` by the inner relation, `< 0`
+  by the constant 0 (`czero`), `>= 0` by 1 (`cone`) - without looking at
+  the inner relation's operands. A relation's value is 0 or 1, so the
+  constants are right, but an assignment, `++`/`--` or a call in the
+  inner relation is lost, as in C1-02. `c0` writes the relations (`LESS`,
+  `GREATEQ` in the `.1`); it folds only relations of two constants. v7's
+  `c1` has the same lines.
+- **Evidence.** Emulator: the trigger, the original `c0` and `c1` (the same
+  `.s` as `mutos_c1`'s, `mov _t,*0.` and no store to `u`); found
+  2026-11-08 by `fuzz_c.py --scope --mode corrected` (seed 4: two of 3,000
+  programs, `((u = 6, a[i][i]) != 7) < 0` and `((n-- != a[k][k]) < (6 >>
+  4))`), which put them down to no hooked bug.
+- **This project.** Reproduced.
+- **Fix idea.** Return the constant only when the inner relation has no
+  side effect (C1-02's test), else a comma expression of the relation and
+  the constant, as C1-02's correction does.
+
+### C1-15 A signed comparison with 0 of a shift branches on an undefined flag
+
+- **Symptom.** `return (t >> 3) <= 0;` compiles to `mov di,_t` / `mov
+  cx,*3.` / `sar di,cl` / `ble L`: `ble` takes the zero flag or the sign
+  flag against the overflow flag, and the 8086 leaves the overflow flag
+  undefined after a shift by more than one bit (the V30 too, by NEC's
+  manual: "V undefined").
+- **Mechanism.** `cctab`'s row for a relation with 0 compiles the left
+  operand through the row of C1-01 (list 40c2: compute, branch on the
+  flags of the last instruction). For a shift that is right for `==` and
+  `!=` (the zero flag) and for the sign alone, but `<`, `<=`, `>`, `>=`
+  branch on the sign flag against the overflow flag, which only a shift by
+  1 (`sal r,*1`) defines - `sal`/`sar`/`shr` by `cl` with a count of 2 or
+  more leave it undefined.
+- **Evidence.** Code reading; fuzzing - `fuzz_c.py --scope --mode
+  corrected`, seed 4 (one of 3,000 programs, `((t >> 3) <= 0)`), where
+  `x86sim.py` stops on the branch ("'ble' on flags the checker does not
+  know"); the original `c0` and `c1` under the emulator write the same
+  code. Whether the hardware's overflow flag makes the branch go wrong is
+  not measured: the 8086 shifts a bit at a time, and after the last step of
+  a `sar` the flag may be 0, which would be right; after `sal` it may be
+  the last step's sign change, which would not.
+- **This project.** Reproduced (the code is the original's).
+- **Fix idea.** End the row for a shift by a count other than 1 with
+  `or r,r` too (C1-01's correction), or take the sign by `or r,r` before a
+  signed branch. A shift by a constant with `-1` (V30-SHIFT, `sal
+  r,*n.`) leaves the flag undefined as well.
 
 ## `libc.a`
 

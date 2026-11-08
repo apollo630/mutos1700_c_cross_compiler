@@ -177,13 +177,17 @@ python3 ~/mutos1700_c_cross_compiler/scripts/rulelog_summary.py /tmp/rules.log
 cmp mutos ~/mutossys/sys/conf/mutos && echo "kernel the same"
 ```
 
-While no rule is active (step F0: every rule is a diagnostic hook) the
-kernel is the original's in either mode, so `cmp` says the same. The summary
-lists each rule met, with the source and line - `09_amx.c` meets C1-03
-twice (`(int)temp++`), found in the repository's copy of it; the other
-sources of the kernel are not in the repository. From step F1 on, the
-corrected mode changes the objects of the sources that meet a corrected
-rule, and `kcmp.py` shows them; the plan's step F5 accounts for each.
+While no rule was active (step F0) the kernel was the original's in either
+mode. Since step F1 the corrected mode corrects C1-03, C1-06, C1-02 and C1-01
+(`docs/RULES.md`). In the repository's copy of `09_amx.c` the two
+`(int)temp++` meet C1-03: `inc *-16.(bp)` becomes `add *-16.(bp),*1.` /
+`adc *-18.(bp),*0`, so `amx.o` - and with it the kernel - is no longer the
+original's, and `cmp` says so; `kcmp.py` (step 6) names the objects that
+differ. The summary lists each rule met (the original's path) or applied
+(corrected), with the source and line; the kernel's other sources are not
+in the repository, and the summary shows what they meet. Without
+`MUTOS_MODE` the kernel is the original's, as in step 6. The plan's step F5
+accounts for each difference.
 
 ## When it goes wrong
 
