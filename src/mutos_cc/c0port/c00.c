@@ -13,12 +13,16 @@
 
 #include <stdlib.h>
 
+#include "../../h/mutos_mode.h"
+
 extern	FILE	*c0_in;
 
 /*
  * 00b6 main - same. The source becomes stdin, temp1 stdout, temp2
  * sbufp; the keywords' hash slots are marked; then extdef() to the end
- * of the file and two EOFC, one in each temp file.
+ * of the file and two EOFC, one in each temp file. EXTENSION: the mode
+ * of docs/TOOLCHAIN_PLAN.md, decision 13, from MUTOS_MODE (cc puts -F's
+ * or -H's there; a bad value ends c0 with status 1).
  */
 int
 main(int argc, char **argv)
@@ -28,6 +32,7 @@ main(int argc, char **argv)
 	uint16_t ip;
 
 	c0_init();
+	c0_mode = mutos_mode_init("c0");	/* EXTENSION: MUTOS_MODE */
 	if (argc < 4) {
 		error("Arg count");
 		c0_exit(1);

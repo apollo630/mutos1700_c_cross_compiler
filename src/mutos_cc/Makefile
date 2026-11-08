@@ -62,10 +62,14 @@ C2_OBJS = $(C2_SRCS:.c=.o)
 C2_TARGET = mutos_c2
 
 C1_PORT = c1port/c10.c c1port/c11.c c1port/c12.c c1port/c1tab.c c1port/c1lib.c
+# c1's rules (docs/RULES.md): c1rules.c and one file per rule, each
+# reached through one hook in c1port/ - a rule is taken out by deleting
+# its file, so the list is the directory's.
+C1_RULES = $(sort $(wildcard c1rules/*.c))
 # c1_fltdec.c: libc.a's ecvt() for c1's "%.17e"; mutos_as's
 # floating-constant conversion (libc.a's atof(), exactly) compiled in as
 # it is - see c1port/c1lib.c.
-C1_SRCS = $(C1_PORT) c1_fltdec.c
+C1_SRCS = $(C1_PORT) $(C1_RULES) c1_fltdec.c
 FLTCONST = ../mutos_as/fltconst.c
 C1_OBJS = $(C1_SRCS:.c=.o) c1_fltconst.o
 C1_TARGET = mutos_c1
@@ -93,9 +97,10 @@ $(C2_TARGET): $(C2_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(C2_OBJS)
 
 $(CC_OBJS): ccport/cc.h
-ccport/cclib.o: ../h/mutos_root.h
+ccport/cclib.o: ../h/mutos_root.h ../h/mutos_mode.h
 $(C0_OBJS): c0port/c0.h
-$(C1_PORT:.c=.o): c1port/c1.h
+c0port/c00.o: ../h/mutos_mode.h
+$(C1_PORT:.c=.o) $(C1_RULES:.c=.o): c1port/c1.h c1rules/c1rules.h ../h/mutos_mode.h
 $(C2_OBJS): c2port/c2.h
 c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
 c1_fltdec.o: c1_fltdec.c c1_fltdec.h ../mutos_as/fltconst.h

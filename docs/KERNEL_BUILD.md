@@ -161,6 +161,30 @@ same bytes can only be expected from a kernel built from these sources and
 this `arith.a` in the 7100 configuration; a kernel taken from the A7100's
 disk is compared with `cmp` the same way.
 
+## Step 7 (since 2026-11-08): the corrected mode and the rule log
+
+The corrections of `docs/TOOLCHAIN_PLAN.md`, section 7, are chosen by
+`MUTOS_MODE=corrected` - the kernel's makefile passes no switch to its `c.c`,
+`symtab.c` and `mch` rules or to `ld` - and the rule log
+(`docs/RULES.md`) says which of the hooked bugs the kernel's code meets. In a
+fresh copy (step 3):
+
+```sh
+cd ~/sys_cross/conf
+rm -f /tmp/rules.log
+MUTOS_MODE=corrected MUTOS_RULELOG=/tmp/rules.log $M/make 2>&1 | tee ../build.log
+python3 ~/mutos1700_c_cross_compiler/scripts/rulelog_summary.py /tmp/rules.log
+cmp mutos ~/mutossys/sys/conf/mutos && echo "kernel the same"
+```
+
+While no rule is active (step F0: every rule is a diagnostic hook) the
+kernel is the original's in either mode, so `cmp` says the same. The summary
+lists each rule met, with the source and line - `09_amx.c` meets C1-03
+twice (`(int)temp++`), found in the repository's copy of it; the other
+sources of the kernel are not in the repository. From step F1 on, the
+corrected mode changes the objects of the sources that meet a corrected
+rule, and `kcmp.py` shows them; the plan's step F5 accounts for each.
+
 ## When it goes wrong
 
 | Message | Cause | Remedy |

@@ -102,8 +102,16 @@ As v7's `ld`, with these MUTOS deltas (`tests/realbin/ldmap.txt`):
 ## Options and files
 
 `mutos_ld [-o name] [-u sym] [-e sym] [-D size] [-v name] [-lX] [-x] [-X]
-[-S] [-s] [-i] [-n] [-O] [-t] [-r] [-d] file ...`, letter by letter as
-the original reads them (`-xs`), an option's argument the next word.
+[-S] [-s] [-i] [-n] [-O] [-t] [-r] [-d] [-F] [-H] file ...`, letter by
+letter as the original reads them (`-xs`), an option's argument the next
+word. `-F` and `-H` (since 2026-11-08, `docs/RULES.md`) choose the
+corrected mode and the original's behaviour wherever they stand
+(`ldrules/ldrules.c` reads them before the original's `main()` reads the
+rest; the last one counts); without them `MUTOS_MODE` does. The original
+says "bad flag" to both. `ldrules/` holds `ld`'s rules: since step F0
+two diagnostic hooks, LD-06 (`error()`) and LD-08 (`middle()`), that report
+in the rule log where the original's wrong path is taken - the link is the
+original's.
 
 Paths: what the original has compiled in as an absolute path of the MUTOS
 file system - `/lib/libX.a`, `/usr/lib/libX.a`, `/tmp/ldaXXXXXX` - is
@@ -136,6 +144,8 @@ none of it runs. There is no original to compare with; checked by
 - `ld.h` - the memory image, the original's data addresses, the strings.
 - `ld.c` - `ld.o`'s functions in the binary's order, `delexit()` to
   `flush()`, `bytrel()` after `load2td()`; the extension marked.
+- `ldrules/` - the rules of the corrected mode (`docs/RULES.md`):
+  `ldrules.h`, `ldrules.c` (the mode) and one file per rule.
 - `ldlib.c` - the machine: the image's initial state (crt0's argument
   words), the system calls on the host's files, libc.a's printf (stdout
   in 512-byte blocks), `atoi()`, `mktemp()`, `strncmp()`, `exit()`, the

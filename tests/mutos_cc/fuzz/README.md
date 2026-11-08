@@ -108,6 +108,7 @@ tests/mutos_cc/fuzz/fuzz_c.py --baseline /tmp/base   # compare with an earlier b
 | `--baseline DIR` | also run the `mutos_c0`/`mutos_c1` found in `DIR` (an earlier build) and compare |
 | `--no-arrays` | scalars only |
 | `--scope` | some of `x`/`y`/`s`/`t` become file-scope variables (plain, `static`, or `extern` before `main()` and defined after it), and some statements become nested blocks declaring a local that shadows one - checked at the globals' fixed addresses |
+| `--longs` | `long` variables and expressions too (since 2026-11-08, see "Longs" below) |
 | `--reasons` | list every refusal reason (and every "as the real compiler" kind) with its count |
 | `--oracle real\|none` | `real` (default): also through the emulated original `c0` and `c1`, whose output must be matched byte for byte (needs `unicorn`); `none`: the semantic check alone |
 | `--keep DIR` | where to save problem programs (default: a new directory under `/tmp`) |
@@ -193,6 +194,49 @@ a power of two, no `x = y;`, a right operand that is usually simple, and
 frames of at most 80 bytes. The port refuses none of these; the shapes
 the generator leaves out are covered by `tests/realbin/c1fuzz.py`'s own
 generator, which has no such limits.
+
+## Longs (`--longs`, since 2026-11-08)
+
+Step F0 of `docs/TOOLCHAIN_PLAN.md` (section 7) asked for longs, for the
+corrections of `c1`'s long bugs and of `libc.a`'s long helpers. With
+`--longs` (`generate(..., longs=True)`) a program also has `long p, q, r;`:
+`p` and `q` ordinary, `r` touched only by `++`/`--` (as `n`, so that no value
+depends on C's order of evaluation), initialized from constants around the
+16-bit borders (65535, 65536, -32769, ...). Long expressions use `+ - * / %
+& | ^`, shifts by a constant 1 to 17, long constants, ints where a long is
+expected and `r++` and the like; no two constants meet under one operator
+and no constant is shifted (a folded long constant shifted is C1-07, which
+the port refuses). Int expressions take `(int)(...)` of a long and
+comparisons of longs; statements `p = e;`, `p op= e;`, `p <<= i;` (`i` a
+subscript, 0 or 1: a count of 0 is C1-06's case) and `x = <long>` (`x =
+r++`: C1-03's shape). The expected values follow C's 32-bit
+two's-complement semantics; `x86sim.py` reads a long local as two words,
+the high one first, as `c1` stores it. To keep the frame small the arrays
+take at most 48 bytes. Without `--longs` the generator draws no random
+number for them: `c0fuzz.py`, `c1fuzz.py`, `c2fuzz.py` and
+`tests/rules/check_accounting.py`, which call `generate()`, get the programs
+they got.
+
+The first runs (2026-11-08): against the original `c0` and `c1`, 150
+programs - 138 correct, 12 as the real compiler, no difference; two of
+those are bugs of the original found here, C1-12 (`(int)100L <= 13`: "C
+error: const") and C1-13 (a relation of two long constants: `cmp` of two
+immediates) in `docs/MUTOS_ORIGINAL_BUGS.md`.
+
+## The 80186/V30 forms and the V30 clocks of `x86sim.py` (since 2026-11-08)
+
+For the rules of `-1` (`docs/RULES.md`) `x86sim.py` runs the three
+80186/V30 forms - `push` of a constant, a shift by a constant count, `imul`
+by a constant with two or three operands - with `run(text, v30=True)`
+only, with the flags of the NEC V20/V30 manual (a shift: CY the last bit
+out, S and Z of the result, V undefined; `imul`: the low word into its
+destination, DX untouched, CY = V = the product past 16 bits, S and Z
+undefined). Every run counts its V30 clocks (`Result.clocks`, the lowest and
+the highest where the manual gives a range; the uPD70116 at even
+addresses; a runtime call counted as the call alone, `Result.runtime_calls`).
+`check_x86sim_v30.py` (in `make test`) pins twelve programs' values and
+clocks, three undefined flags, and that `mutos_as -1` assembles them.
+`x86sim.py --v30 --clocks file.s` from the command line.
 
 ## Formerly known `mutos_c1` bugs
 

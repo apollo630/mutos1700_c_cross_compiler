@@ -34,6 +34,11 @@
 #include "symtab.h"
 #include "objwrite.h"
 #include "fltconst.h"
+#include "../h/mutos_mode.h"
+
+/* The mode (docs/TOOLCHAIN_PLAN.md, decision 13; src/h/mutos_mode.h):
+ * -F, -H or MUTOS_MODE. mutos_as has no correction yet (docs/RULES.md). */
+int as_mode = MUTOS_MODE_DEFAULT;
 
 typedef enum { SEG_TEXT, SEG_DATA, SEG_BSS } Segment;
 
@@ -728,6 +733,8 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                 size_t before = target->len;
                 bool okenc = encode_instruction(target, &s.mnemonic_or_name, ops, s.noperands,
                                                  *lc, &as->st, pass2, rl);
+                if (okenc && pass2 && target != &scratch)   /* -1's report */
+                    encode_count_186(target->data + before, target->len - before);
                 if (!okenc && s.noperands == 0 && !encode_is_known_mnemonic(&s.mnemonic_or_name)) {
                     /* A BARE IDENTIFIER statement (no label, no colon,
                      * no operands at all) is a genuine syntactic
@@ -1027,11 +1034,17 @@ int main(int argc, char **argv)
      * "-1" (2026-10-25, docs/TOOLCHAIN_PLAN.md section 4): the 80186/V30
      * instructions. The original has none of them and calls the letter
      * "Unknown option 1 ignored."; here it is the extension that switches
-     * them on (encode_set_186()). */
+     * them on (encode_set_186()).
+     *
+     * "-F" and "-H" (2026-11-08, docs/TOOLCHAIN_PLAN.md decision 13): the
+     * corrected mode and the original's behaviour, the last one given
+     * counting; without either, MUTOS_MODE (src/h/mutos_mode.h). cc puts
+     * its own -F or -H into MUTOS_MODE, so it does not pass them. */
     bool verbose = false;
     bool opt_W = false;
     bool opt_1 = false;
     bool opt_C = false;
+    int opt_mode = -1;
     const char *opt_o = NULL;
     const char *filenames[128];
     int nfilenames = 0;
@@ -1040,7 +1053,7 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if (strcmp(a, "-o") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "usage: %s [-gCW1] [-o output] [file ...]\n", argv[0]);
+                fprintf(stderr, "usage: %s [-gCW1FH] [-o output] [file ...]\n", argv[0]);
                 return 1;
             }
             opt_o = argv[++i];
@@ -1050,24 +1063,26 @@ int main(int argc, char **argv)
             opt_o = a + 2; /* attached form, e.g. "-ofoo.o" */
             continue;
         }
-        if (a[0] == '-' && a[1] != '\0' && strspn(a + 1, "gCvW1") == strlen(a + 1)) {
+        if (a[0] == '-' && a[1] != '\0' && strspn(a + 1, "gCvW1FH") == strlen(a + 1)) {
             for (const char *p = a + 1; *p; p++) {
                 if (*p == 'v') verbose = true;
                 else if (*p == 'W') opt_W = true;
                 else if (*p == '1') opt_1 = true;
                 else if (*p == 'C') opt_C = true;
+                else if (*p == 'F' || *p == 'H') opt_mode = mutos_mode_letter(*p);
                 /* 'g': accepted, no effect (see above) */
             }
             continue;
         }
         if (a[0] == '-' && a[1] != '\0') {
-            fprintf(stderr, "usage: %s [-gCW1] [-o output] [file ...]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-gCW1FH] [-o output] [file ...]\n", argv[0]);
             return 1;
         }
         if (nfilenames < (int)(sizeof(filenames) / sizeof(filenames[0])))
             filenames[nfilenames++] = a;
     }
     encode_set_186(opt_1);
+    as_mode = opt_mode >= 0 ? opt_mode : mutos_mode_init("as");
 
     /* as.1: "Die Eingabe des zu assemblierenden Quellprogramms erfolgt
      * entweder über Standardeingabe, oder es werden die miteinander
@@ -1200,6 +1215,11 @@ int main(int argc, char **argv)
      * success, and the original cc (and so mutos_cc, its port) runs as
      * for every source - the line would show on every compile
      * (docs/TOOLCHAIN_PLAN.md, step 3). */
+    /* -1 reports the 80186/V30 instructions of the object it wrote, one
+     * line on the standard error (docs/TOOLCHAIN_PLAN.md, decision 16) -
+     * also under -W, which silences errors, not this. */
+    if (opt_1)
+        encode_report_186(stderr);
     if (verbose)
         fprintf(stderr, "%s: text=%zu bytes, data=%zu bytes, bss=%ld bytes, %d symbols, "
                 "%zu text reloc(s), %zu data reloc(s) -> %s\n",

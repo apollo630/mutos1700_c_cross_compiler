@@ -60,7 +60,8 @@
 #   make fuzz       # semantic fuzzing of mutos_c0/mutos_c1 (see
 #                   # tests/mutos_cc/fuzz/README.md); FUZZ_ARGS passes
 #                   # options, e.g. make fuzz FUZZ_ARGS="-n 2000 -s 7"
-#   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py)
+#   make check-docs # check the Markdown docs for drift (see scripts/check_docs.py),
+#                   # and the rules against docs/RULES.md (scripts/check_rules.py)
 #   make check-libcatof # .float/.double against libc.a's own atof, and
 #                   # mutos_c1's floating-constant and float-initializer
 #                   # text against libc.a's own ecvt and fstsp, run under
@@ -241,6 +242,17 @@ clean:
 # mutos_ed, against an independent reading of their scripts, and the mch
 # rule - cc -P, mutos_em with fakeawk, cc -c - against the real-hardware
 # mch.i, mch.s and mch.o; and the editors' shell commands.
+# scripts/check_rules.py checks the rules of the corrected mode and of -1
+# against their register (docs/RULES.md): one file and one hook each, a
+# row, the bug's entry; tests/rules/check_accounting.py compiles the
+# corpus, the probes, the kernel sources and fuzz_c.py's programs with and
+# without -F, -H and -1, the rule log on, and requires every byte that
+# differs to lie in a rule's logged range (ACCOUNTING_ARGS passes options,
+# e.g. ACCOUNTING_ARGS="--fuzz 500 --full", or "--report" for the rules
+# the code meets). tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
+# x86sim.py does with the three 80186/V30 forms (values, flags, V30
+# clocks), which mutos_as -1 must take.
+ACCOUNTING_ARGS =
 test: all
 	@echo "== mutos_as goldens (kernel_nonopt) =="
 	@cd tests/mutos_as/kernel_nonopt && MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as ../run_goldens.sh
@@ -274,6 +286,11 @@ test: all
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_binutils/check_tools.py
 	@echo "== mutos_ed and mutos_em on the MUTOS kernel's makefile (mutos_make, cc) =="
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/mutos_ed/check_editors.py
+	@echo "== the rules of -F and -1 (docs/RULES.md): register, and every difference accounted for =="
+	@python3 scripts/check_rules.py
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_accounting.py $(ACCOUNTING_ARGS)
+	@echo "== x86sim.py: the 80186/V30 forms of -1 and the V30 clocks =="
+	@python3 tests/mutos_cc/fuzz/check_x86sim_v30.py --as $(CURDIR)/src/mutos_as/mutos_as
 
 # Checks every *.md file for the kind of drift a rebuild/regression run
 # can't catch: numbers restated in more than one place that disagree,
@@ -284,6 +301,7 @@ test: all
 # header for exactly what it checks and why each check is shaped that way.
 check-docs:
 	@python3 scripts/check_docs.py
+	@python3 scripts/check_rules.py
 
 # mutos_as's .float/.double conversion against libc.a's own atof() on
 # libc.a's own floating-point runtime, run under an 8086 emulator

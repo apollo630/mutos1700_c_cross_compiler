@@ -392,7 +392,9 @@ other originals as oracles"):
   letter as the original reads them (plan decision 9): the original `cc`'s
   `as -gC -o x.o tmp` works. They ignored both then; `-g` still does, `-C` leaves out the
   `L` symbols since 2026-10-25, as the original's (below), and `-1` is the switch for
-  the 80186 instructions. Every other option is still its usage error.
+  the 80186 instructions - since 2026-11-08 with one line on the standard error that
+  counts them by kind (`docs/TOOLCHAIN_PLAN.md`, decision 16) -, `-F` and `-H` the mode
+  of `docs/RULES.md` (2026-11-08). Every other option is still its usage error.
 - **Output** (checked under the emulator, 2026-10-20): `mutos_as` wrote a summary
   line (`x.s: text=... -> x.o`) to stderr on every run, the original nothing -
   **since 2026-10-24 only with `-v`**, so that the driver (step 3), which runs `as`
@@ -519,7 +521,8 @@ switch of the plan, section 4.
 - *Command line.* The original reads its options letter by letter: `-e` (only external
   symbols in the symbol table) and `-l` (a listing, `x.L`) are not in `mutos_as`;
   `Unknown option X ignored.` and go on (`-L -D -T -X -u -`, `-W`, `-1`), where `mutos_as` has
-  the usage error or - for `-W`, `-1`, `-v`, its own - takes them; `-oNAME` (attached) is
+  the usage error or - for `-W`, `-1`, `-v` and, since 2026-11-08, `-F` and `-H`, its own -
+  takes them; `-oNAME` (attached) is
   `mutos_as`'s only. The default output is the input name with its last character
   made `o` (`x.s` gives `x.o`; any name: `prog` gives `proo`), `mutos_as` writes `a.out`
   unless `-o`; stdin and several inputs (the original: `Warning input file ... does not
@@ -1213,6 +1216,12 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    `c1`/`c2` behind `-1`, three rules -, in the order F0 (shared infrastructure, no
    change to any output), F1, F2, F3, F3b, V1 to V4, F4, F5. Then `make
    install` and the manual pages. The decision on a port of `as` is still open.
+   **F0 done 2026-11-08** ("The corrected mode and `-1`" below, `docs/RULES.md`): the
+   switches `-F`/`-H`, `MUTOS_MODE` and `-1` reach the passes, the rule log, register
+   and accounting checks, diagnostic hooks at C1-01, C1-02, C1-03, C1-06, LD-06 and
+   LD-08 (real kernel code meets C1-03), `mutos_as`'s report of `-1`, longs in
+   `fuzz_c.py`, the V30 forms and clocks in `x86sim.py`; every output unchanged. Next:
+   F1.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1307,7 +1316,9 @@ to mov", "ors -> tests", "long branches to short") and no "sob's added". The nod
 two more bytes, the registers read and written (`regmask()`).
 
 **80186/V30 code generation** in `mutos_c1` and `mutos_c2` was decided on 2026-11-08
-(`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; not begun): behind `-1`, the
+(`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; no rule yet - step F0 made
+`-1` reach `c1` and `c2`, with their output unchanged, and `x86sim.py` run the three
+forms: "The corrected mode and `-1`" below): behind `-1`, the
 name `mutos_as` has for the 80186/V30 instructions (section 4), three rules - a
 constant pushed (`c2`), a shift by a constant count and a multiplication by a constant
 (`c1`) -, and every assembly with `-1` reports the 80186/V30 instructions it produced
@@ -1724,6 +1735,111 @@ refused.**
   manual pages of the two tools (at the end, Workflow Guideline 10).
 
 ---
+
+## The corrected mode and `-1` (`docs/TOOLCHAIN_PLAN.md`, section 7)
+
+Decided by the project owner on 2026-11-08: the bugs of the originals are corrected
+in a corrected mode that becomes the default at the end (decision 13), and `c1`/`c2`
+write 80186/V30 code behind `-1` (decision 15), each change a rule of its own, listed
+in [`docs/RULES.md`](docs/RULES.md).
+
+### Step F0: the shared infrastructure (verified 2026-11-08)
+
+Nothing any tool writes changed; what F1 and the rules after it need is in place.
+
+- **The switches** (names confirmed by the project owner on 2026-11-08): `-F` the
+  corrected mode, `-H` the original's behaviour, to `cc`, `as` and `ld` (the last one
+  counts; `ld` finds them wherever they stand, `ldrules/ldrules.c`); without them
+  `MUTOS_MODE=corrected|original` (unset or empty: the default, the original's until
+  F5; any other value: exit status 1). `cc` puts the mode a switch chose into the
+  environment of its passes - `c0` takes any fourth argument for `-p`, so no pass gets
+  a new argument for it - and takes `-1` itself, which the original hands to `ld`: `c1`
+  gets an argument `-1` after its others (the original reads its characters and ignores
+  both), `c2` a first argument `-1` (taken off before the original's `main()`), `as`
+  `-1` after `-gC`. None of it is in `cc`'s image: a command line without them does what
+  the original does (`tests/realbin/ccfuzz.py` no longer counts `1`, `F`, `H` among the
+  letters the original hands to `ld`). `src/h/mutos_mode.h` is the shared code.
+- **Rules and the register**: a rule is a file of its own in its tool's rules
+  directory (`src/mutos_cc/c1rules/`, `src/mutos_ld/ldrules/`), one hook in the ported
+  code and a row of `docs/RULES.md`; `scripts/check_rules.py` (in `make test` and `make
+  check-docs`) checks the three against each other and against the bug's entry.
+- **The rule log** (`MUTOS_RULELOG=<file>`, a developer aid): a line per hook passed -
+  `c1 C1-03 met src=09_amx.c line=1344 out=41935-42035 op=++` -, `out=` the bytes of
+  `c1`'s output that came from the statement; `cc` names the source
+  (`MUTOS_RULELOG_SRC`) when the log is on. `scripts/rulelog_summary.py` sums a log up
+  by rule - for the whole kernel: `MUTOS_RULELOG=/tmp/rules.log mutos_root/bin/make` in
+  its `conf/`.
+- **The accounting** (`tests/rules/check_accounting.py`, in `make test`): the 62
+  programs of the construct corpus, the 61 floating-point probes, the kernel sources
+  of the tree (the nine of `11_kernel/`, the five of `tests/mutos_cpp/c/`) and 40 programs of
+  `fuzz_c.py` (half with longs) through `cc -S`, `cc -O -S`, `cc -O -c` and `cc -o`, each
+  without a switch and with `-H`, `-F`, `-1` and `-F -1`, the rule log on: every byte
+  that differs must lie in an `applied` rule's range - with no active rule, every
+  output is the same in all five (177 sources, 694 stages); `ld`'s two cases of LD-06
+  and LD-08 the same in every mode. Checked against a planted difference (a line
+  appended under `-F`: six failures).
+- **Diagnostic hooks** at the bugs F1 and F2 correct (`docs/RULES.md`, state
+  "diagnostic": they report "met", the code is the original's): C1-01, C1-02, C1-03,
+  C1-06, LD-06, LD-08. What the code meets (`check_accounting.py --report`, and
+  `--fuzz 3000 --base-only` for the fuzz programs, seed 1): **the kernel source
+  `11_kernel/09_amx.c` meets C1-03 twice** (`setbyte(ds,(int)temp++,...)`, `x =
+  getbyte(ds,(int)temp++)`: the local long's increment is done on its low word); the
+  construct corpus, the other kernel sources and the probes meet nothing else but
+  C1-03 (`p31_long4`, `p34_long5`) and C1-06 (`p38_long6`, `p42_long7`), as the
+  probes were written to; in the 3,000 fuzz programs C1-01 69 times (all `~`), C1-02
+  once, C1-03 59 times, C1-06 237 times. `ld`'s two cases meet LD-06 and LD-08. The
+  whole kernel (62 sources) is the project owner's to run (above). Reading the hooks
+  found more: C1-03's mechanism is a node shared by `delay()`'s tree and the increment
+  (the entry said `unoptim()` distributed the conversion), and C1-01 has a third form,
+  a shift by a variable count (`sal di,cl` with a count of 0 leaves the flags).
+- **`mutos_as -1` reports** (decision 16): one line on the standard error per
+  assembly, `as: -1: 12 80186/V30 instructions: push 7, shift 3, imul 2` or `as: -1:
+  no 80186/V30 instructions`, counted by opcode from the bytes written; also under
+  `-W`; `cc -S -1` assembles nothing and reports nothing. The seven
+  `v30_speculative/` sources' lines are pinned (`v30_with_1.report`, in
+  `check_switches.sh`), their counts checked against `objdump -m i8086`.
+- **`fuzz_c.py --longs`**: `long` variables `p`, `q` and `r` (`r` only through
+  `++`/`--`), long constants around the 16-bit borders, `+ - * / % & | ^`, shifts by a
+  constant and, as statements, `p op= e`, `p <<= i` (a count of 0 when `i` is), `x =
+  r++`, conversions and comparisons in int expressions, under C's 32-bit semantics;
+  `x86sim.py` reads a long local as two words, the high one first. Without `--longs`
+  the generator gives the programs it gave (checked on 1,200 programs; `c0fuzz.py`,
+  `c1fuzz.py`, `c2fuzz.py` use it so). Against the emulated original c0 and c1, 150
+  programs (seed 1): 138 correct, 12 "as the real compiler", no difference; without
+  the oracle, 1,500 (seed 3): every wrong or failing program meets one of the hooked
+  bugs or C1-13. **Two new bugs of the original `c1`** (`docs/MUTOS_ORIGINAL_BUGS.md`):
+  C1-12, a relation of a long constant cast to int (`(int)100L <= 13`) reported as
+  "C error: const" and replaced by its left constant, and C1-13, a relation of two
+  long constants compiled to `cmp` of two immediates, which `as` rejects.
+- **`x86sim.py`**: the three V30 forms - `push` of a constant, a shift by a constant
+  (`shr` too), `imul` by a constant with two or three operands - run with `v30=True`
+  only, with the NEC manual's flags (shift: CY the last bit out, V undefined; `imul`:
+  CY = V = the product past 16 bits, S and Z undefined, DX untouched); every run
+  counts its V30 clocks (`Result.clocks`, lowest and highest; the manual's uPD70116
+  figures at even addresses; a runtime call counted as the call). The 132 `.s`
+  goldens give what they gave. `tests/mutos_cc/fuzz/check_x86sim_v30.py` (in `make
+  test`) pins twelve programs' values and clocks, three undefined flags, and that
+  `mutos_as -1` takes their syntax.
+- **Verified** on a fresh clone of `5d40048` with the patch: `make clean && make all`
+  without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0,
+  its output the same as before but for the new lines (the `-1` report in
+  `check_switches.sh`, `check_rules.py`, `check_accounting.py`,
+  `check_x86sim_v30.py`); `make check-docs` clean. `make check-realbin` did not run
+  whole on the machine of the session (two cores); the parts of the tools F0 changed
+  ran against the final tree, all with exit status 0: `cctables`, `cccmp.py cases`
+  (177 runs: 175 the same, 2 refused), `run` and `programs` (124/124 each),
+  `goldens` (132/132, 132/132, 9/9), `ccfuzz.py` (200: 197 the same, 3 refused);
+  `ldtables`, `ldcmp.py cases` (91: 89, 2 refused) and `goldens` (1,572/1,572),
+  `ldfuzz.py` plain and `--mutate 0.5` (200 each: 195 the same, 5 refused),
+  `check_rflag.py` (248/248); `c2tables`, `c2cmp.py goldens` (396/396) and `cases`
+  (66: 59 the same, 6 the original fails, 1 refused), `c2fuzz.py` with the four
+  generators (as before); `ascmp.py goldens` and `cases` against their pins,
+  `asfuzz.py --gen cc --strict` (300: 251 the same object of the 251 the original
+  accepts); `check_root.py --realbin`; `makecmp.py corpus` (312/312). The checks of
+  `c0`, `c1` and `cpp` (`check_real.py`, `c1trees.py`, `c1fuzz.py`, `c0cmp.py`,
+  `c0fuzz.py`, `cppcmp.py`, `cppfuzz.py`) passed against a tree of the session from
+  before the last changes, which touched `c0` and `c1` only where the rule log is on.
+  A whole `make check-realbin` is the project owner's to run.
 
 ## `mutos_as` opcode coverage
 

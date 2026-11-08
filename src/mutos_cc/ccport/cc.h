@@ -284,6 +284,16 @@ int16_t	cc_fork(void);
 void	cc_execv(void);
 int16_t	cc_wait(uint16_t *status);
 
+/*
+ * EXTENSION (docs/TOOLCHAIN_PLAN.md, section 7), outside the image:
+ * cc_x_option() takes -1, -F or -H (the letter); cc_x_mode(), after the
+ * options, puts the mode a switch chose into the environment of the
+ * passes (MUTOS_MODE, src/h/mutos_mode.h) or checks the one given;
+ * cc_prepare_exec() gives -1 to c1, c2 and as.
+ */
+void	cc_x_option(int c);
+void	cc_x_mode(void);
+
 /* ---- the original's functions -------------------------------------- */
 
 extern	uint16_t cc_bp;		/* main()'s BP: its frame in the image */

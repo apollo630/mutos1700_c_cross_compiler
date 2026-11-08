@@ -498,9 +498,38 @@ kernel was built with the cross toolchain and its original makefile: all
 the real-hardware goldens of `tests/mutos_as/kernel_opt/`, and the kernel
 is the original build's byte for byte
 (`../../docs/KERNEL_BUILD.md`). 80186/V30 code generation in `mutos_c1`
-and `mutos_c2` was decided by the project owner on 2026-11-08 and is not
-begun (`../../docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4), nor
-are the corrections of the originals' bugs decided with it (section 7.3).
+and `mutos_c2` was decided by the project owner on 2026-11-08
+(`../../docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4), and the
+corrections of the originals' bugs with it (section 7.3); step F0 laid
+what they share (2026-11-08, "The corrected mode and `-1`" below), the
+rules themselves come from step F1 on.
+
+## The corrected mode and `-1` (step F0, 2026-11-08)
+
+`../../docs/RULES.md` has the whole of it; for the compiler:
+
+- `mutos_cc` takes `-F` (the corrected mode), `-H` (the original's
+  behaviour) and `-1` (80186/V30 code), which the original hands to `ld`.
+  They are kept outside its image (`ccport/cclib.c`, "EXTENSION"): `-F`
+  and `-H` go into `MUTOS_MODE`, which the passes inherit (without a
+  switch, `cc` checks the value it finds there); `-1` goes to `c1` as a
+  last argument, to `c2` as its first and to `as` after `-gC`. With the
+  rule log on (`MUTOS_RULELOG`) `cc` names each source for the passes
+  (`MUTOS_RULELOG_SRC`).
+- `mutos_c0` and `mutos_c1` read `MUTOS_MODE` (`c0_mode`, `c1_mode`); a
+  value that is neither `corrected` nor `original` ends them with status 1.
+  `mutos_c1 temp1 temp2 output.s [options] [-1]`: an argument `-1` sets
+  `c1_v30`. `mutos_c2 [-1] [+] [-] [input [output]]`: a first argument `-1`
+  sets `c2_v30` and is taken off before the original's `main()` runs.
+  No rule uses `-1` yet: the output is the same with and without it.
+- `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the rule
+  log - an entry noted at the hook, written with the bytes of output of the
+  statement at the next operation, `c1_rule_mark()` in `getree()`) and one
+  file per rule, reached through one hook line in `c1port/`. Since F0 four
+  diagnostic hooks report where the original's wrong path is taken - C1-01
+  (`cexpr()`'s template letter `H`), C1-02 (`acommute()`), C1-03 (`delay()`)
+  and C1-06 (`cexpr()`, a row with `jz .+16`) -; the code stays the
+  original's.
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the
@@ -528,13 +557,15 @@ assembler step either way.
   image's initial state, crt0's words, `sbrk()`, libc.a's stdio on the
   image, the system calls on the host, the refusals), `c2data.c`
   (generated: the binary's data), `main.c`; invoked as `cc` invokes it:
-  `mutos_c2 [+] [-] [input [output]]`.
+  `mutos_c2 [-1] [+] [-] [input [output]]` (`-1`: the extension of step F0).
 - `c0port/` - `mutos_c0`, the port of the real `c0` (see "The port of
   the real `c0`"); invoked as v7's `cc` invokes `c0`: `mutos_c0
   source.i temp1 temp2 [profileflag]`.
 - `c1port/` - `mutos_c1`, the port of the real `c1` (see "The port of
   the real `c1`"); invoked as v7's `cc` invokes `c1`: `mutos_c1 temp1
-  temp2 output.s [options]`.
+  temp2 output.s [options] [-1]`.
+- `c1rules/` - `mutos_c1`'s rules of the corrected mode and of `-1`
+  (`../../docs/RULES.md`): `c1rules.h`, `c1rules.c` and one file per rule.
 - `c1_fltdec.h`/`c1_fltdec.c` - `libc.a`'s `ecvt()` on the MUTOS double,
   for `mutos_c1`'s `%.17e` (and `fltdec_test`, below).
 

@@ -73,6 +73,71 @@ static bool is_only_186(const Token *mnemonic)
     return false;
 }
 
+/* The report of -1 (docs/TOOLCHAIN_PLAN.md, decision 16): the 80186/V30
+ * instructions of the object, by kind, counted from the bytes each
+ * instruction was encoded to - the opcodes the 8086 does not have (on it,
+ * 0x60..0x6F are conditional jumps and 0xC0, 0xC1 returns; mutos_as
+ * writes neither for them), after any prefix. */
+static const struct { unsigned char op; const char *kind; } KIND_186[] = {
+    {0x68, "push"}, {0x6A, "push"},          /* push of a constant */
+    {0xC0, "shift"}, {0xC1, "shift"},        /* shift/rotate by a constant */
+    {0x69, "imul"}, {0x6B, "imul"},          /* imul by a constant */
+    {0x60, "pusha"}, {0x61, "popa"}, {0x62, "bound"},
+    {0x6C, "insb"}, {0x6D, "insw"}, {0x6E, "outsb"}, {0x6F, "outsw"},
+    {0xC8, "enter"}, {0xC9, "leave"},
+};
+#define NKIND_186 (sizeof(KIND_186) / sizeof(KIND_186[0]))
+static long g_count_186[NKIND_186];
+
+void encode_count_186(const unsigned char *b, size_t n)
+{
+    size_t i = 0;
+
+    while (i < n && (b[i] == 0x26 || b[i] == 0x2E || b[i] == 0x36 || b[i] == 0x3E
+                     || b[i] == 0xF0 || b[i] == 0xF2 || b[i] == 0xF3))
+        i++;
+    if (i >= n)
+        return;
+    for (size_t k = 0; k < NKIND_186; k++)
+        if (KIND_186[k].op == b[i]) {
+            g_count_186[k]++;
+            return;
+        }
+}
+
+void encode_report_186(FILE *f)
+{
+    long total = 0;
+    bool first = true;
+
+    for (size_t k = 0; k < NKIND_186; k++)
+        total += g_count_186[k];
+    if (total == 0) {
+        fprintf(f, "as: -1: no 80186/V30 instructions\n");
+        return;
+    }
+    fprintf(f, "as: -1: %ld 80186/V30 instruction%s:", total, total == 1 ? "" : "s");
+    /* each kind once, in the table's order, with the counts of its opcodes */
+    for (size_t k = 0; k < NKIND_186; k++) {
+        long c = 0;
+        size_t j;
+
+        for (j = 0; j < k; j++)
+            if (strcmp(KIND_186[j].kind, KIND_186[k].kind) == 0)
+                break;
+        if (j < k)
+            continue;
+        for (j = k; j < NKIND_186; j++)
+            if (strcmp(KIND_186[j].kind, KIND_186[k].kind) == 0)
+                c += g_count_186[j];
+        if (c == 0)
+            continue;
+        fprintf(f, "%s %s %ld", first ? "" : ",", KIND_186[k].kind, c);
+        first = false;
+    }
+    fprintf(f, "\n");
+}
+
 /* ------------------------------------------------------------------ */
 /* RelocList - trivial growable relocation-entry list                   */
 /* ------------------------------------------------------------------ */

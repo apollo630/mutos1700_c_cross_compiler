@@ -47,13 +47,14 @@ Guideline 11).
 | 2026-11-08 | First: `libc.a` stays the original. Revised the same day, after Claude's recommendation: the original archive stays untouched and is the original mode's library; the corrected mode links a corrected copy in which only measured runtime bugs are corrected (L-04, L-05 and what step F3 finds), each member with its interface kept, so that the copy also works with the original `cc`/`ld` on the hardware. | decision 14; steps F3, F3b |
 | 2026-11-08 | `c1`/`c2` generate 80186/V30 code behind `-1`, for faster code on his V30; a closed list of three rules. | decision 15; section 7.4 |
 | 2026-11-08 | A run with `-1` prints briefly which and how many 80186/V30 instructions were generated (counted by `mutos_as`, one line per assembly). | decision 16 |
+| 2026-11-08 | The names, chosen from Claude's proposals with step F0: `-F` the corrected mode ("fixed"), `-H` the original's behaviour ("historic"), in `cc`, `as` and `ld`; the environment variable `MUTOS_MODE` with `corrected` or `original`. | `docs/TOOLCHAIN_PLAN.md`, section 6; `docs/RULES.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
-Milestone 2, "Step 5 of the plan"); the names of the corrected mode's switch and
-environment variable (proposed with step F0); whether the kernel's `arith.a`
-gets the corrections of the long helpers too; which of step F4's corrections;
-`make install`; the manual pages.
+Milestone 2, "Step 5 of the plan"); whether the kernel's `arith.a` gets the
+corrections of the long helpers too; which of step F4's corrections (C1-12 and
+C1-13, found with F0, are among the candidates); `make install`; the manual
+pages.
 
 ## The owner's setup
 
@@ -68,8 +69,9 @@ gets the corrections of the long helpers too; which of step F4's corrections;
   come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
   8086 has been replaced by a NEC V30, and an IDE interface added (said
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
-- The claude.ai project also holds short German summaries of steps 5 to 9 and of
-  the kernel build (`claude/step*_*.md`, `claude/kernelbuild_pruefung_2026-11-07.md`);
+- The claude.ai project also holds short German summaries of steps 5 to 9, of
+  the kernel build, of the plan of 2026-11-08 and of step F0 (`claude/step*_*.md`,
+  `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
 
@@ -81,3 +83,6 @@ gets the corrections of the long helpers too; which of step F4's corrections;
   unchanged makefile through the cross toolchain, is the original kernel byte for
   byte (`docs/KERNEL_BUILD.md`; `STATUS.md`, "The MUTOS kernel, built with the
   cross toolchain").
+- 2026-11-08: step F0 of section 7 - the switches, the rule log and register, the
+  accounting, the diagnostic hooks; no output changed (`STATUS.md`, "Step F0";
+  `docs/RULES.md`).

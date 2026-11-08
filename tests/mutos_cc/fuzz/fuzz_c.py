@@ -26,7 +26,7 @@ declining a shape it has no golden for; refusals are tallied by reason.
 
 Usage:
     fuzz_c.py [-n COUNT] [-s SEED] [-j JOBS] [--baseline DIR]
-              [--no-arrays] [--scope] [--keep DIR] [--reasons]
+              [--no-arrays] [--scope] [--longs] [--keep DIR] [--reasons]
 
 See README.md in this directory for what is generated and why.
 """
@@ -61,6 +61,21 @@ def w(v):
     return v - 0x10000 if v & 0x8000 else v
 
 
+def wl(v):
+    """C long arithmetic on this target: 32 bits, two's complement."""
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+def cdiv(lv, rv):
+    """C's long quotient and remainder (truncated toward zero); Skip for a
+    division by 0 or the one that overflows."""
+    if rv == 0 or (lv == -(1 << 31) and rv == -1):
+        raise Skip()
+    q = abs(lv) // abs(rv) * (1 if (lv < 0) == (rv < 0) else -1)
+    return wl(q), wl(lv - q * rv)
+
+
 class Skip(Exception):
     """The program would divide by zero / overflow a division: dropped."""
 
@@ -71,6 +86,14 @@ class Skip(Exception):
 # Nodes are tuples: ("con", v) ("var", name) ("el2", arr, i, j)
 # ("el1", arr, i) ("bin", op, l, r) ("un", op, e) ("cond", c, t, f)
 # ("comma", e1, e2) - "(u = e1, e2)" - and ("inc", form, name).
+#
+# With longs (generate(..., longs=True), --longs; 2026-11-08), long nodes:
+# ("lcon", v) a constant "vL", ("lvar", name) p or q, ("lbin", op, l, r)
+# with at least one long operand, ("lint", e) an int expression where a
+# long is expected (C converts it), ("linc", form, "r") ++/-- of the long
+# r; and int nodes of them: ("ltoi", e) "(int)(e)", ("limp", e) a long
+# converted by an assignment to an int ("x = r++;", C1-03's shape), and
+# ("lrel", op, l, r) a comparison of longs.
 # ---------------------------------------------------------------------
 
 def render(n):
@@ -91,10 +114,49 @@ def render(n):
         return f"({render(n[1])} ? {render(n[2])} : {render(n[3])})"
     if k == "comma":
         return f"(u = {render(n[1])}, {render(n[2])})"
-    if k == "inc":
+    if k in ("inc", "linc"):
         return {"post++": f"{n[2]}++", "pre++": f"++{n[2]}",
                 "post--": f"{n[2]}--", "pre--": f"--{n[2]}"}[n[1]]
+    if k == "lcon":
+        return f"{n[1]}L" if n[1] >= 0 else f"(-{-n[1]}L)"
+    if k == "lvar":
+        return n[1]
+    if k in ("lbin", "lrel"):
+        return f"({render(n[2])} {n[1]} {render(n[3])})"
+    if k in ("lint", "limp"):
+        return render(n[1])
+    if k == "ltoi":
+        return f"((int)({render(n[1])}))"
     raise ValueError(k)
+
+
+def levaluate(n, env):
+    """Value of the long node `n` under C semantics (32 bits), applying its
+    side effects to env."""
+    k = n[0]
+    if k == "lcon":
+        return n[1]
+    if k == "lvar":
+        return env[n[1]]
+    if k == "lint":
+        return evaluate(n[1], env)
+    if k == "linc":
+        old = env[n[2]]
+        new = wl(old + (1 if "++" in n[1] else -1))
+        env[n[2]] = new
+        return old if n[1].startswith("post") else new
+    op = n[1]
+    lv = levaluate(n[2], env)
+    if op in ("<<", ">>"):
+        rv = evaluate(n[3], env)
+        return wl(lv << rv) if op == "<<" else lv >> rv
+    rv = levaluate(n[3], env)
+    if op in ("/", "%"):
+        q, r = cdiv(lv, rv)
+        return q if op == "/" else r
+    return {"+": lambda: wl(lv + rv), "-": lambda: wl(lv - rv),
+            "*": lambda: wl(lv * rv), "&": lambda: wl(lv & rv),
+            "|": lambda: wl(lv | rv), "^": lambda: wl(lv ^ rv)}[op]()
 
 
 def evaluate(n, env):
@@ -122,6 +184,12 @@ def evaluate(n, env):
         new = w(old + (1 if "++" in n[1] else -1))
         env[n[2]] = new
         return old if n[1].startswith("post") else new
+    if k in ("ltoi", "limp"):
+        return w(levaluate(n[1], env))
+    if k == "lrel":
+        lv, rv = levaluate(n[2], env), levaluate(n[3], env)
+        return int({"<": lv < rv, "<=": lv <= rv, ">": lv > rv, ">=": lv >= rv,
+                    "==": lv == rv, "!=": lv != rv}[n[1]])
     op = n[1]
     lv = evaluate(n[2], env)
     if op == "&&":
@@ -172,10 +240,20 @@ INDEXES = ["i", "j", "k"]
 
 GLOBAL_KINDS = ["plain", "static", "extern"]
 
+# With longs: p and q ordinary long scalars, r touched only through ++/--
+# (as n); constants around the 16-bit borders, where a lost carry shows.
+LONGS = ["p", "q"]
+LBINOPS = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
+LRELOPS = ["<", "<=", ">", ">=", "==", "!="]
+LCONSTS = [0, 1, 2, 3, 7, 10, 100, 1000, 32767, 32768, 65535, 65536, 65537,
+           70000, 100000, 1000000, 0x12345678, -1, -2, -100, -32768, -32769,
+           -65535, -65536, -70000, -1000000]
+
 
 class Gen:
-    def __init__(self, rnd, arrays, scope=False):
+    def __init__(self, rnd, arrays, scope=False, longs=False):
         self.r = rnd
+        self.longs = longs
         self.a2 = {}
         self.a1 = {}
         # name -> "plain" | "static" | "extern" (see the comment above)
@@ -193,7 +271,7 @@ class Gen:
                            for name in ("a", "b", "c")[: rnd.randint(1, 3)]}
                 self.a1 = {"v": 4} if rnd.random() < 0.5 else {}
                 size = sum(2 * r * c for r, c in self.a2.values()) + 8 * len(self.a1)
-                if size <= 60:
+                if size <= (48 if longs else 60):   # longs: p, q, r take 12
                     break
         self.side_effect_used = False
 
@@ -233,6 +311,8 @@ class Gen:
         se = self.side_effect(depth, cond_ctx)
         if se:
             return se
+        if self.longs and self.r.random() < 0.12:
+            return self.from_long(max(depth - 1, 0), cond_ctx)
         if depth <= 0 or self.r.random() < 0.25:
             return self.leaf(allow_const=not truth)
         r = self.r.random()
@@ -262,6 +342,75 @@ class Gen:
             right = ("con", self.r.choice([3, 5, 6, 7, 9, 10, 11, 12]))
         return ("bin", op, left, right)
 
+    # ---- longs (only with longs=True: the RNG of the others is untouched)
+
+    def from_long(self, depth, cond_ctx):
+        """An int made of longs: a conversion, or a comparison."""
+        if self.r.random() < 0.5:
+            return ("ltoi", self.lexpr(depth, cond_ctx))
+        return ("lrel", self.r.choice(LRELOPS), self.lexpr(depth, cond_ctx),
+                self.lexpr(0, cond_ctx))
+
+    def linc(self):
+        """r++ and the like, if this statement has no side effect yet."""
+        if self.side_effect_used:
+            return None
+        self.side_effect_used = True
+        return ("linc", self.r.choice(["post++", "pre++", "post--", "pre--"]), "r")
+
+    def lleaf(self, cond_ctx, allow_const=True):
+        k = self.r.random()
+        if k < 0.25 and allow_const:
+            return ("lcon", self.r.choice(LCONSTS))
+        if k < 0.65:
+            return ("lvar", self.r.choice(LONGS))
+        if k < 0.88:
+            return ("lint", ("var", self.r.choice(SCALARS + INDEXES[:1])))
+        if self.r.random() < 0.6:
+            inc = self.linc()
+            if inc:
+                return inc
+        return ("lvar", self.r.choice(LONGS))
+
+    def lexpr(self, depth, cond_ctx=False):
+        """A long expression; no two constants under one operator (c1 folds
+        them, and a folded constant shifted is C1-07, which the port
+        refuses), no constant shifted."""
+        if depth <= 0 or self.r.random() < 0.3:
+            return self.lleaf(cond_ctx)
+        op = self.r.choice(LBINOPS)
+        if op in ("<<", ">>"):
+            left = self.lexpr(depth - 1, cond_ctx)
+            if left[0] in ("lcon", "lint"):
+                left = ("lvar", self.r.choice(LONGS))
+            return ("lbin", op, left, ("con", self.r.randint(1, 17)))
+        left = self.lexpr(depth - 1, cond_ctx)
+        right = self.lexpr(depth - 1 if self.r.random() < 0.3 else 0, cond_ctx)
+        if left[0] in ("lcon", "lint") and right[0] in ("lcon", "lint"):
+            right = ("lvar", self.r.choice(LONGS))
+        return ("lbin", op, left, right)
+
+    def lstatement(self):
+        k = self.r.random()
+        name = self.r.choice(LONGS)
+        if k < 0.35:
+            e = self.lexpr(self.r.choice([1, 2, 2, 3]))
+            while e[0] == "lvar":
+                e = self.lexpr(2)
+            return ("lassign", name, e)
+        if k < 0.5:
+            # an int assigned a long: x = r++ is C1-03's shape
+            e = self.linc() if self.r.random() < 0.4 else None
+            return ("assign", self.target(), ("limp", e or self.lexpr(2)))
+        if k < 0.75:
+            return ("lasop", name, self.r.choice(["+", "-", "*", "/", "%", "&", "|", "^"]),
+                    self.lexpr(self.r.choice([0, 1, 2])))
+        # a shift by a variable: i, j, k are 0 or 1, and a count of 0 is
+        # C1-06's case for a local long
+        return ("lshift", name, self.r.choice(["<<", ">>"]),
+                ("var", self.r.choice(INDEXES)) if self.r.random() < 0.7
+                else ("con", self.r.randint(1, 17)))
+
     def leaf_el2(self):
         name = self.r.choice(list(self.a2))
         return ("el2", name, self.r.choice(INDEXES), self.r.choice(INDEXES))
@@ -282,6 +431,8 @@ class Gen:
 
     def statement(self, nested=False):
         self.side_effect_used = False
+        if self.longs and self.r.random() < 0.35:
+            return self.lstatement()
         if self.globals and not nested and self.r.random() < 0.2:
             # A block shadowing one global with a local of its name.
             var = self.r.choice(list(self.globals))
@@ -324,6 +475,11 @@ class Gen:
         for name in names[:-1]:            # not m: its first store is a marker
             env[name] = self.r.randint(0, 1) if name in INDEXES else self.r.randint(-5, 9)
             init.append(f"\t{name} = {env[name]};")
+        if self.longs:
+            decl.append("\tlong " + ", ".join(LONGS + ["r"]) + ";")
+            for name in LONGS + ["r"]:
+                env[name] = self.r.choice(LCONSTS)
+                init.append(f"\t{name} = {render(('lcon', env[name]))};")
         body = []
         self.snaps = []
         self.stmts = []
@@ -361,6 +517,12 @@ class Gen:
     def execute(self, st, env):
         if st[0] == "assign":
             self.store(st[1], evaluate(st[2], env), env)
+        elif st[0] == "lassign":
+            env[st[1]] = levaluate(st[2], env)
+        elif st[0] == "lasop":
+            env[st[1]] = levaluate(("lbin", st[2], ("lvar", st[1]), st[3]), env)
+        elif st[0] == "lshift":
+            env[st[1]] = levaluate(("lbin", st[2], ("lvar", st[1]), st[3]), env)
         elif st[0] == "block":
             # The inner local hides the global for the block's duration;
             # the global's own value is untouched by the block.
@@ -377,6 +539,10 @@ class Gen:
     def render_stmt(self, st):
         if st[0] == "assign":
             return f"\t{render(st[1])} = {render(st[2])};"
+        if st[0] == "lassign":
+            return f"\t{st[1]} = {render(st[2])};"
+        if st[0] in ("lasop", "lshift"):
+            return f"\t{st[1]} {st[2]}= {render(st[3])};"
         if st[0] == "block":
             inner = "\n".join("\t" + line for line in
                                "\n".join(self.render_stmt(x) for x in st[3]).split("\n"))
@@ -388,9 +554,9 @@ class Gen:
         return s
 
 
-def generate(rnd, arrays, scope=False):
+def generate(rnd, arrays, scope=False, longs=False):
     while True:
-        g = Gen(rnd, arrays, scope)
+        g = Gen(rnd, arrays, scope, longs)
         try:
             src, env, ret = g.program()
         except Skip:
@@ -473,6 +639,12 @@ def state_diffs(r, env, g):
             else:
                 off = r.locals[name] + 2 * key[1]
             label = f"{name}{''.join(f'[{x}]' for x in key[1:])}"
+        elif g.longs and key in LONGS + ["r"]:
+            off = r.locals[key]
+            got = wl((r.word(off) << 16) | (r.word(off + 2) & 0xFFFF))
+            if got != val:
+                diffs.append(f"{key} (long) = {got}, expected {val}")
+            continue
         elif key in g.globals:
             # A file-scope variable: its fixed address, not a frame slot
             # (a block's shadowing local of the same name registers
@@ -582,6 +754,8 @@ def main():
                     help="scalars only (no 1-D/2-D arrays)")
     ap.add_argument("--scope", action="store_true",
                     help="file-scope variables and shadowing nested blocks")
+    ap.add_argument("--longs", action="store_true",
+                    help="long variables and expressions too (p, q, r)")
     ap.add_argument("--keep", metavar="DIR", help="where to save BAD programs "
                     "(default: a new directory under /tmp)")
     ap.add_argument("--reasons", action="store_true",
@@ -603,7 +777,8 @@ def main():
             sys.exit(f"fuzz_c: {path} not found - build first (make) or set "
                      f"MUTOS_{name.upper()}")
     rnd = random.Random(args.seed)
-    progs = [generate(rnd, not args.no_arrays, args.scope) for _ in range(args.count)]
+    progs = [generate(rnd, not args.no_arrays, args.scope, args.longs)
+             for _ in range(args.count)]
 
     counts, reasons, bad, cmp = {}, {}, [], {}
     with tempfile.TemporaryDirectory(prefix="fuzz_c.") as workroot:
@@ -639,6 +814,7 @@ def main():
     print(f"fuzz_c: {n} programs, seed {args.seed}"
           f"{', scalars only' if args.no_arrays else ''}"
           f"{', file scope' if args.scope else ''}"
+          f"{', longs' if args.longs else ''}"
           f"{', against the real c0 and c1' if args.oracle == 'real' else ''}")
     print(f"  correct {counts.get('ok', 0)}, refused {counts.get('refused', 0)}, "
           f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}"

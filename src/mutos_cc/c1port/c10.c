@@ -80,7 +80,11 @@ atoi16(const char *p)
  * 00d6 main - delta: options after the three file names (a, b, c, d, r
  * switch on the debug traces, s<n> sets the frame size from which a
  * function calls chkstk); signal(SIGFPE, fpeintr); ".data" where v7
- * writes ".globl\n.data".
+ * writes ".globl\n.data". EXTENSION (docs/TOOLCHAIN_PLAN.md, section 7):
+ * the mode from MUTOS_MODE (a bad value ends c1 with status 1), and an
+ * argument "-1" after the three file names, which cc gives with its -1
+ * (the original reads its characters and ignores both); the rule log
+ * (../c1rules/c1rules.c) learns the output's name.
  */
 int
 main(int argc, char *argv[])
@@ -89,10 +93,12 @@ main(int argc, char *argv[])
 	char *p;
 	char c;
 
+	c1_mode = mutos_mode_init("c1");	/* EXTENSION */
 	if (argc < 4) {
 		error("Arg count");
 		exit(1);
 	}
+	c1_outname = argv[3];			/* EXTENSION: the rule log */
 	if (freopen(argv[1], "r", stdin) == NULL) {
 		error("Missing temp file");
 		exit(1);
@@ -101,7 +107,11 @@ main(int argc, char *argv[])
 		error("Can't create %s", argv[3]);
 		exit(1);
 	}
-	for (i = 4; i < argc; i++)
+	for (i = 4; i < argc; i++) {
+		if (strcmp(argv[i], "-1") == 0) {	/* EXTENSION */
+			c1_v30 = 1;
+			continue;
+		}
 		for (p = argv[i]; (c = *p) != 0; p++)
 			switch (c) {
 			case 'a':
@@ -123,6 +133,7 @@ main(int argc, char *argv[])
 				stkthresh = atoi16(p + 1);
 				break;
 			}
+	}
 	/*
 	 * The original calls signal(SIGFPE, fpeintr) here. The port's atof()
 	 * raises no host signal; c1_atof() calls fpeintr() where libc.a's
@@ -627,6 +638,7 @@ cexpr(struct tnode *atree, struct table *table, int areg)
 	}
 	tree->op = (int16_t)c;
 	string = opt->tabstring;
+	rule_c1_06(string);	/* EXTENSION: C1-06, docs/RULES.md */
 	p1 = tree->tr1;
 	if (p1->op == FCON && p1->value > 0) {
 		printf(".data\nL%d:\t.double ", p1->value);
@@ -791,6 +803,7 @@ loop:
 
 	/* H */
 	case 'H':
+		rule_c1_01(tree, table);	/* EXTENSION: C1-01, docs/RULES.md */
 		p = tree;
 		flag = 04;
 
@@ -1237,6 +1250,7 @@ delay(struct tnode **treep, struct table *table, int reg)
 		p1 = sdelay(&p->tr1);
 	if (p1) {
 		r = rcexpr(optim(p), table, reg);
+		rule_c1_03(p1);		/* EXTENSION: C1-03, docs/RULES.md */
 		*treep = p1;
 		return r + 1;
 	}

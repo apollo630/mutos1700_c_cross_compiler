@@ -838,6 +838,7 @@ getree(void)
 	curbase = funcbase;
 	sp = expstack;
 	for (;;) {
+		c1_rule_mark();		/* EXTENSION: the rule log (c1rules.h) */
 		if (sp >= &expstack[STKS])
 			error("Stack overflow botch");
 		op = geti();
@@ -853,6 +854,7 @@ getree(void)
 			break;
 
 		case EOFC:
+			c1_rule_mark();	/* EXTENSION: the rule log */
 			return;
 
 		case BDATA:

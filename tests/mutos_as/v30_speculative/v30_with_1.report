@@ -1,0 +1,7 @@
+bound_test.s	as: -1: 18 80186/V30 instructions: bound 18
+enter_leave_test.s	as: -1: 14 80186/V30 instructions: enter 9, leave 5
+imul_imm_test.s	as: -1: 19 80186/V30 instructions: imul 19
+insb_outsb_test.s	as: -1: 4 80186/V30 instructions: insb 2, outsb 2
+push_imm_test.s	as: -1: 16 80186/V30 instructions: push 16
+pusha_popa_test.s	as: -1: 8 80186/V30 instructions: pusha 4, popa 4
+shift_rotate_imm_count_test.s	as: -1: 21 80186/V30 instructions: shift 21

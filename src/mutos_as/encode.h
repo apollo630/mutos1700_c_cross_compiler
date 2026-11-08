@@ -20,6 +20,8 @@
 #ifndef MUTOS_AS_ENCODE_H
 #define MUTOS_AS_ENCODE_H
 
+#include <stdio.h>
+
 #include "pass2.h"
 #include "symtab.h"
 
@@ -110,6 +112,14 @@ bool encode_is_known_mnemonic(const Token *mnemonic);
  * starts an expression (a word referring to an undefined external of
  * that name), the operand forms are errors. */
 void encode_set_186(bool on);
+
+/* The report of -1 (docs/TOOLCHAIN_PLAN.md, decision 16): the driver
+ * hands encode_count_186() the bytes of each instruction it writes into
+ * the object in pass 2; encode_report_186() prints one line - "as: -1: 12
+ * 80186/V30 instructions: push 7, shift 3, imul 2", or "as: -1: no
+ * 80186/V30 instructions". */
+void encode_count_186(const unsigned char *b, size_t n);
+void encode_report_186(FILE *f);
 
 /* Exposes the internal expression resolver for callers that need to
  * evaluate a plain expression outside of instruction encoding (e.g.

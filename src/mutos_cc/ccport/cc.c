@@ -106,6 +106,14 @@ printf0(uint16_t fmt)
  * unlinks tmp1 and tmp2), c2, then "as -gC -o x.o" (v7: as -u) with no
  * cunlink() of tmp1, tmp2, tmp4 before it. The link: "ld -X pref [-o
  * out] files [-l2 | [-lf] -lc]" (v7's -lfpsim after pref is gone).
+ *
+ * EXTENSION (docs/TOOLCHAIN_PLAN.md, section 7): -1, -F and -H, which the
+ * original's default case hands to ld, are this port's - -1 the
+ * 80186/V30 code (decision 15), -F and -H the corrected and the original
+ * mode (decision 13). Like the original's options, the letter after the
+ * '-' decides. They are kept outside the image (cclib.c): the image is the
+ * original's, so a command line without them does exactly what the
+ * original does.
  */
 int16_t
 ccmain(void)
@@ -218,6 +226,11 @@ ccmain(void)
 			if (rb(rw(npassname)) == 0)
 				ww(npassname, S_USRSRCO);
 			break;
+		case '1':	/* EXTENSION: -1, -F, -H (cc_x_option()); */
+		case 'F':	/* the original sends them to ld */
+		case 'H':
+			cc_x_option(c);
+			break;
 		}
 		continue;
 passa:
@@ -256,6 +269,7 @@ passa:
 		}
 	}
 
+	cc_x_mode();			/* EXTENSION: the mode for the passes */
 	if (rw(npassname) != 0 && rw(chpass) == 0)
 		ww(chpass, S_012P2);
 	if (rw(chpass) != 0 && rw(npassname) == 0)
