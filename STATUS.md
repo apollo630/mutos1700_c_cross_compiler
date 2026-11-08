@@ -1839,7 +1839,7 @@ Nothing any tool writes changed; what F1 and the rules after it need is in place
   `c0`, `c1` and `cpp` (`check_real.py`, `c1trees.py`, `c1fuzz.py`, `c0cmp.py`,
   `c0fuzz.py`, `cppcmp.py`, `cppfuzz.py`) passed against a tree of the session from
   before the last changes, which touched `c0` and `c1` only where the rule log is on.
-  A whole `make check-realbin` is the project owner's to run.
+  A whole `make check-realbin` ran after F1 (see "Step F1": exit 0).
 
 ### Step F1: the corrections of `c1` (verified 2026-11-08)
 
@@ -1927,8 +1927,22 @@ own; without a switch every output is still the original's (`check_accounting.py
   300 correct; 300 with longs, seed 2: 272 correct, 28 as the real compiler, none
   different), `cccmp.py goldens` (132/132, 132/132, 9/9), `c2fuzz.py --gen fuzz_c`
   (100/100) - and `check_corrected.py --realbin` (the nine triggers linked and run
-  under `mutosemu.py`, with and without `c2`). A whole `make check-realbin` did not run
-  on the machine of the session (two cores); it is the project owner's to run.
+  under `mutosemu.py`, with and without `c2`).
+- **`make check-realbin` whole** (2026-11-08, after F0 and F1): on a fresh clone of
+  `2a10c55` (the four patches committed) in a cloud session, two cores, after
+  `make all` without a warning: exit 0, every check passed, 75 minutes. The
+  numbers are those of the steps before: `c1trees.py` 131/132 at depths 2-4 (1
+  refused on purpose), `c1fuzz.py` 175 the same, 0 different; `c0cmp.py` 137/137;
+  `cppcmp.py` 411/411; `ldcmp.py goldens` 1,572/1,572; `cccmp.py` cases 175 of 177
+  (2 refused), `run` and `programs` 124/124, `goldens` 132/132, 132/132, 9/9;
+  `ccfuzz.py` 1,000: 985 the same, 15 refused; `c2cmp.py goldens` 396/396;
+  `ascmp.py goldens` and `cases` as their pins; `asfuzz.py --strict` 251 the same
+  object of the 251 the original accepts; `arcmp.py` 364 of 366 (2 refused);
+  `libc.a` rebuilt the same; `makecmp.py` 430 of 457 and 312/312; `utilcmp.py`
+  1,118 cases, 3,729 runs the same, none different; `edcmp.py` 244 cases, 225 the
+  same, none different; `edfuzz.py` ed 400/400, em 380 the same, 20 the original
+  asks "sure?" for ever; `check_root.py --realbin`; `check_corrected.py --realbin`
+  (the nine triggers of C1-01, C1-02, C1-03, C1-06). This covers F0 too.
 
 ## `mutos_as` opcode coverage
 
