@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "../../h/mutos_mode.h"
 #include "../../h/mutos_root.h"
 
 uint8_t	ccm[65536];
@@ -704,6 +705,78 @@ static	char	*ex_path;
 static	char	**ex_argv;
 static	pid_t	ex_child;
 
+/* ---- EXTENSION: -1, -F, -H ----------------------------------------------- */
+
+/*
+ * docs/TOOLCHAIN_PLAN.md, section 7. -1 (decision 15) goes to c1, c2 and
+ * as: c1 gets it as a last argument (c1 reads the characters of its
+ * arguments after the third, and the original ignores '-' and '1'), c2
+ * as its first (before the original's "+" and "-"), as after "-gC". -F
+ * and -H (decision 13) choose the mode, which the passes find in
+ * MUTOS_MODE (src/h/mutos_mode.h): c0, c1, as and ld read it. None of
+ * them is in the image - a command line without them is the original's.
+ */
+static	int	x_v30;			/* -1 given */
+static	int	x_mode = -1;		/* the mode -F or -H chose, or -1 */
+
+void
+cc_x_option(int c)
+{
+	if (c == '1')
+		x_v30 = 1;
+	else
+		x_mode = mutos_mode_letter(c);
+}
+
+/*
+ * After the options: the mode a switch chose goes into the environment
+ * the passes inherit; without a switch, MUTOS_MODE is checked here, so
+ * that a bad value is reported once, before any pass runs ("cc:
+ * MUTOS_MODE=...", exit status 1).
+ */
+void
+cc_x_mode(void)
+{
+	if (x_mode >= 0) {
+		if (setenv(MUTOS_MODE_ENV, mutos_mode_name(x_mode), 1) != 0)
+			cctrap("setenv() of MUTOS_MODE failed");
+	} else
+		(void)mutos_mode_init("cc");
+}
+
+/*
+ * The source the passes compile, for the rule log: when MUTOS_RULELOG is
+ * set, cpp's first argument goes into MUTOS_RULELOG_SRC, which the passes
+ * after it inherit and write into their entries (src=, src/h/mutos_mode.h)
+ * - c1 knows only line numbers. Without the log the environment is left
+ * as it was.
+ */
+static void
+x_source(const char *name)
+{
+	if (mutos_rulelog_on() && setenv(MUTOS_RULELOG_SRC_ENV, name, 1) != 0)
+		cctrap("setenv() of MUTOS_RULELOG_SRC failed");
+}
+
+/* "-1" into ex_argv[] (n arguments, room for one more) for c1, c2, as */
+static void
+x_add_v30(uint16_t f, size_t n)
+{
+	size_t at;
+
+	if (f == PASS1)
+		at = n;			/* c1 t1 t2 out [kopt] -1 */
+	else if (f == PASS2)
+		at = 1;			/* c2 -1 in out */
+	else if (f == PASSA)
+		at = n < 2 ? n : 2;	/* as -gC -1 -o x.o tmp */
+	else
+		return;
+	memmove(&ex_argv[at + 1], &ex_argv[at], sizeof(*ex_argv) * (n + 1 - at));
+	if ((ex_argv[at] = strdup("-1")) == NULL)
+		cctrap("no memory for a pass's arguments");
+}
+
 static char *
 host_dup(uint16_t name)
 {
@@ -733,12 +806,16 @@ cc_prepare_exec(uint16_t f, uint16_t v)
 	for (a = v; rw(a) != 0; a = (uint16_t)(a + 2))
 		if (++n > MAXEXARG)
 			cctrap("an argument list longer than the port takes");
-	ex_argv = malloc(sizeof(*ex_argv) * (n + 1));
+	ex_argv = malloc(sizeof(*ex_argv) * (n + 2));
 	if (ex_argv == NULL)
 		cctrap("no memory for a pass's arguments");
 	for (i = 0, a = v; i < n; i++, a = (uint16_t)(a + 2))
 		ex_argv[i] = host_dup(rw(a));
 	ex_argv[n] = NULL;
+	if (x_v30)
+		x_add_v30(f, n);
+	if (f == PASSP && n >= 2)
+		x_source(ex_argv[1]);
 	printf_check(S_CANTFIND, &f, 1);
 }
 

@@ -28,6 +28,12 @@ and the shifts are refused - and `tests/realbin/ascmp.py goldens` runs
 these seven files through the original (under the emulator) and `mutos_as`
 without `-1`, which treat them alike.
 
+With `-1` the assembler reports, on one line of the standard error, the
+80186/V30 instructions of the object by kind (`docs/TOOLCHAIN_PLAN.md`,
+decision 16, since 2026-11-08); `v30_with_1.report` pins the seven
+files' lines (`../check_switches.sh`), their counts checked against
+`objdump -D -b binary -m i8086` on the objects' text, opcode by opcode.
+
 ## Verification already performed on these seven files
 
 - All seven assemble cleanly with the current `mutos_as` (zero errors).

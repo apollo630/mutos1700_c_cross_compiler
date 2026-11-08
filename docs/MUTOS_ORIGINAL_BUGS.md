@@ -44,17 +44,19 @@ Last updated: 2026-11-08.
 
 | ID | Tool | Bug | Evidence | This project |
 |---|---|---|---|---|
-| C1-01 | `c1` | branches on stale flags after `not` / `mov` (PDP-11 condition codes assumed) | emulator, fuzzing | reproduced |
-| C1-02 | `c1` | `e * 0`, `e & 0` drop `e`'s side effects | emulator | reproduced |
-| C1-03 | `c1` | `x = l++` (long `l`, int value) loses the carry | golden, emulator | reproduced |
+| C1-01 | `c1` | branches on stale flags after `not` / `mov` / a shift by `cl` (PDP-11 condition codes assumed) | emulator, fuzzing | reproduced; hooked (diagnostic) |
+| C1-02 | `c1` | `e * 0`, `e & 0` drop `e`'s side effects | emulator | reproduced; hooked (diagnostic) |
+| C1-03 | `c1` | `x = l++` (long `l`, int value) loses the carry | golden, emulator | reproduced; hooked (diagnostic) |
 | C1-04 | `c1` | an assignment passed as a floating argument pops the floating-point stack twice | golden | reproduced, messages too |
 | C1-05 | `c1` | a hoisted `+=` under a comparison stored without a pop: values pile up on the floating-point stack | golden | reproduced, messages too |
-| C1-06 | `c1` | `l <<= i` / `l >>= i` on a local long jumps into an instruction when `i` is 0 | golden | reproduced |
+| C1-06 | `c1` | `l <<= i` / `l >>= i` on a local long jumps into an instruction when `i` is 0 | golden | reproduced; hooked (diagnostic) |
 | C1-07 | `c1` | folding a long constant `>>` (any count) or `<<` (count 0) jumps into an instruction | emulator | refused |
 | C1-08 | `c1` | `longrel()` stores a label in the saved `xzero`; `xlongrel()` then reads past `lrtab[]` | code reading, fuzzing | refused |
 | C1-09 | `c1` | register "after" AX: `regname[-1]` prints 118 bytes of `_ctype_` as a register name | golden, emulator | refused |
 | C1-10 | `c1` | the SIGFPE handler is not re-armed: a second floating overflow kills `c1` | emulator | reproduced |
 | C1-11 | `c1` | bit-field `*=`, `/=`, `%=`, `<<=`, `>>=` rejected | emulator | reproduced |
+| C1-12 | `c1` | a relation of two constants, one a long constant cast to int: "C error: const", the relation replaced by its left constant | emulator, fuzzing | reproduced |
+| C1-13 | `c1` | a relation of two long constants: `cmp` of two immediates, which `as` rejects | emulator, fuzzing | reproduced |
 | L-01 | `libc.a` `itod` | int to double writes the low mantissa byte into bytes 1 and 3: `1001` becomes `1001.0000152...` | emulator | modelled (`c1`) |
 | L-02 | `libc.a` `ltof` | `ltof(0)` leaves six bytes of the slot's last value | code reading | refused (`c1`) |
 | L-03 | `libc.a` `dtoi` | from 2\*\*15 compares with the word at address 8000 (an immediate was meant) | code reading | refused (`c1`) |
@@ -107,9 +109,9 @@ Last updated: 2026-11-08.
 | LD-03 | `ld` | `ldrand()` reads a symbol type through a null pointer (crt0's word 8) | code reading | reproduced |
 | LD-04 | `ld` | an undefined external's word does not complete a byte-shifted word before it: the carry goes one word on | emulator | reproduced (completed under the extension `-r`) |
 | LD-05 | `ld` | "Entry point not in text" leaves the last input's entry word in the header | emulator | reproduced |
-| LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced |
+| LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced; hooked (diagnostic) |
 | LD-07 | `ld` | an object of 32K or more of text or data: its symbol table is looked for 64K too early | emulator, code reading | refused |
-| LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced |
+| LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced; hooked (diagnostic) |
 | CC-01 | `cc` | a source's name of 50 characters or more runs past `ts[]` into `av[]`, or past its `malloc()` block into the next block's header | emulator | reproduced; refused where a pointer leads past the break |
 | CC-02 | `cc` | `-P` and `-E` fill `ptemp[]` without a check: the 101st overwrites `main()`'s `pv`, `cpp` gets words of the frame as arguments | emulator | reproduced; refused from about 150 `-P` (libc.a's buffers) |
 | CC-03 | `cc` | a `-K` of 9 characters or more runs over the passes' paths (`Can't find `) | emulator | reproduced |
@@ -220,6 +222,17 @@ Last updated: 2026-11-08.
   falls back from `cctab` to `regtab`); check the other ops of the list
   for instructions that leave the flags (a shift by `cl` with a count of
   0 does).
+- **A third form** (found 2026-11-08 by the diagnostic hook of step F0):
+  `<<` and `>>` by a count that is not a constant are in the same list;
+  `if (x << n)` is `mov di,_x` / `mov cx,_n` / `sal di,cl` / `beq L`, and
+  with `n` 0 the shift leaves the flags as they were.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_01()` reports
+  each use of the row for `~`, `!` and a shift by a variable count
+  (diagnostic: the code is the original's). Met in the tree's real code:
+  never - not in the construct corpus, the floating-point probes or the
+  kernel sources of the tree; in the 3,000 `fuzz_c.py` programs of
+  `tests/rules/check_accounting.py --fuzz 3000 --base-only` (seed 1, half
+  of them with longs) 69 times, all `~`.
 
 ### C1-02 `e * 0` and `e & 0` drop `e`'s side effects
 
@@ -232,21 +245,42 @@ Last updated: 2026-11-08.
 - **Fix idea.** Return the constant only if no other operand has a side
   effect (an assignment, `++`/`--`, a call); otherwise keep the operands
   as a comma list before the 0.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_02()` reports
+  a 0 returned for a list with an operand that has a side effect
+  (diagnostic). Met in the tree's real code: never; in the 3,000 programs
+  of C1-01's count once.
 
 ### C1-03 `x = l++` loses the carry
 
 - **Symptom.** `long l; int x; l = 65535; x = l++;` leaves `l` 0, not
   65536.
-- **Mechanism.** `unoptim()` (text 4746) distributes the int conversion
-  (LTOI) into the `++` as into a `+`: the increment is done on the low word
-  as an int - `mov di,2.+_l` / `inc 2.+_l` -, the carry into the high
-  word lost.
+- **Mechanism.** `delay()` (text 1bd0) takes the postfix `++` out of the
+  tree with `sdelay()` (text 1c94), which puts its operand back as
+  `ncopy()` (text 1cfe) gives it - a copy only of a register variable, so
+  any other name's node is then in the tree and in the increment at once.
+  Compiling `x = (int)l` with that node, `unoptim()`'s LTOI case (text
+  4746) turns the node itself into the long's low word - its offset raised
+  by 2, its type int -, and the increment that follows is an int increment
+  of the low word: `mov di,2.+_l` / `inc 2.+_l`, the carry into the high
+  word lost. (Read 2026-11-08 for the hook of step F0; until then this
+  entry said `unoptim()` distributed the conversion into the `++`.) `x =
+  l--` loses the borrow the same way (`dec 2.+_m`).
 - **Evidence.** Golden `tests/mutos_cc/fltprobe/p31_long4.s.golden`
   (the code); emulator (the value, `x86sim.py`: returns 1 where C
   gives 11 for `(int)(l >> 16) * 10 + (x == -1)`).
 - **This project.** Reproduced.
-- **Fix idea.** Do not distribute an LTOI into `++`/`--` (or a compound
-  assignment) of a long.
+- **Fix idea.** Let `sdelay()` put a copy of a long's name node back into
+  the tree (or `unoptim()` change a copy), so that the increment keeps the
+  long.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_03()` reports an
+  increment of a long whose operand is no longer a long, after `delay()`
+  has compiled the tree (diagnostic). **Met in the kernel**:
+  `tests/mutos_cc/11_kernel/09_amx.c`, lines 1344 and 1427 -
+  `setbyte(ds,(int)temp++,*src_off++)` and `x = getbyte(ds,(int)temp++)` on
+  the local long `temp` (`inc *-16.(bp)`, its low word); also in the
+  probes `fltprobe/p31_long4.c` and `p34_long5.c` (`--`); in the 3,000
+  programs of C1-01's count 59 times (`fuzz_c.py --longs` writes `x =
+  r++`).
 
 ### C1-04 An assignment passed as a floating argument pops twice
 
@@ -293,6 +327,12 @@ Last updated: 2026-11-08.
   stores").
 - **This project.** Reproduced (the code is the original's).
 - **Fix idea.** A label after the stores instead of `.+16`.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_c1_06()` reports a
+  row with `jz .+16` whose two stores, as printed, are not 8 bytes
+  (diagnostic). Met in the tree's real code: never; in the probes
+  `fltprobe/p38_long6.c` (lines 33, 35) and `p42_long7.c` (43, 45), each
+  with stores of 6 bytes; in the 3,000 programs of C1-01's count 237 times
+  (`p <<= i` on a local long).
 
 ### C1-07 Folding a long constant shift jumps into an instruction
 
@@ -383,6 +423,44 @@ Last updated: 2026-11-08.
 - **Evidence.** Emulator.
 - **This project.** Reproduced (messages, status, `.s`).
 - **Fix idea.** Rewrite them as `s.f = s.f op x` in `lvfield()`.
+
+### C1-12 A relation of a long constant cast to int: "C error: const"
+
+- **Symptom.** `x = ((int)100L <= 13);` makes `c1` report `5: C error:
+  const` (exit status 1, the `.s` written whole) and store 100 into `x`
+  (`mov *-6.(bp),*100.`); `if (((int)100L <= 13) != x)` compares `x`
+  with 100.
+- **Mechanism.** `c0` folds a relation of two int constants, but not
+  `(int)100L`, an LTOI of a long constant. `c1`'s `unoptim()` (text 4746,
+  the LTOI case) makes that a constant; `optim()` (text 3e3c) then sends the
+  relation, now of two constants, to `const_()` (text 5416), which has no
+  case for a relation: it reports "C error: const" and leaves the left
+  constant, which `optim()` returns in place of the relation. v7's `c0`
+  folds every relation of constants, so v7's `c1` never meets one.
+- **Evidence.** Emulator: the trigger above, the original `c0` and `c1`
+  (the same `.s` and messages as `mutos_c1`'s); found 2026-11-08 by
+  `fuzz_c.py --longs` with the oracle (once in 150 programs).
+- **This project.** Reproduced, the message too.
+- **Fix idea.** Fold the relations in `const_()` (or have `c0` fold an
+  LTOI of a long constant first).
+
+### C1-13 A relation of two long constants: `cmp` of two immediates
+
+- **Symptom.** `if ((-70000L) < 100L) x = 7;` compiles without a message
+  to `cmp *-2.,*0` / `bgt L5` / `blt L10000` / `cmp #-4464.,*100.` / `bhis
+  L5`: a comparison of two immediates, which the 8086 has not. The
+  original `as` reports `***ERROR*** syntax error` for both lines (as
+  `mutos_as` refuses them).
+- **Mechanism.** Neither `c0` nor `c1` folds a relation of two long
+  constants; `c1`'s long comparison compiles it half by half, high words
+  first, and prints each half of each constant as an immediate operand.
+- **Evidence.** Emulator: the original `c0`, `c1` and `as` on the trigger
+  (`c1`'s `.s` is `mutos_c1`'s); found 2026-11-08 by `fuzz_c.py --longs`
+  with the oracle (once in 150 programs).
+- **This project.** Reproduced (`mutos_c1`); `mutos_as` rejects the lines
+  as the original `as` does.
+- **Fix idea.** Fold the relation of two long constants in `lconst()` (or
+  in `c0`).
 
 ## `libc.a`
 
@@ -1322,6 +1400,9 @@ like `-i`.
 - **Evidence.** Emulator (`ldcmp.py cases`: `a warning clears an error`).
 - **This project.** Reproduced.
 - **Fix idea.** Raise `errlev`, never lower it.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_06()` reports a
+  level that goes down (diagnostic); `tests/rules/check_accounting.py`
+  links the case above.
 
 ### LD-07 Objects of 32K or more of text or data
 
@@ -1350,6 +1431,9 @@ like `-i`.
 - **Evidence.** Emulator (`ldcmp.py cases`: `text 65530 (6 bytes wrap)`).
 - **This project.** Reproduced.
 - **Fix idea.** `tsize = add(tsize, 6, "text overflow")`.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_08()` reports a
+  sum past 65,535 (diagnostic); `tests/rules/check_accounting.py` links the
+  case above.
 
 ## `cc`
 

@@ -22,6 +22,7 @@
  * -r and -d none of it runs.
  */
 #include "ld.h"
+#include "ldrules/ldrules.h"
 
 int	x_rflag, x_arflag, x_dflag;
 
@@ -113,7 +114,9 @@ delexit(void)
  * (outname, "..ldtmpXXXXXX"); -o sets outname to the output's name too;
  * -r and -d are refused - EXTENSION: here they are v7's; -n sets iflag
  * (the binary has no NMAGIC output; nflag is never set). The switch is a
- * hashed one (c % 6) - the same cases.
+ * hashed one (c % 6) - the same cases. EXTENSION: -F and -H, the mode
+ * (docs/TOOLCHAIN_PLAN.md, decision 13), which ld_mode_init() has read
+ * before; here they are passed over.
  */
 int16_t
 ldmain(int16_t argc, uint16_t argv)
@@ -235,6 +238,10 @@ ldmain(int16_t argc, uint16_t argv)
 
 			case 't':
 				trace++;
+				continue;
+
+			case 'F':	/* EXTENSION: the mode, read before */
+			case 'H':	/* (ldrules/ldrules.c) */
 				continue;
 
 			default:
@@ -558,7 +565,7 @@ middle(void)
 	/*
 	 * Now set symbols to their final value
 	 */
-	tsize = (uint16_t)(tsize + 6);
+	tsize = rule_ld_08(tsize);	/* EXTENSION: LD-08, docs/RULES.md */
 	if (nflag || iflag)
 		tsize = (uint16_t)((tsize + 077) & ~077);
 	dorigin = tsize;
@@ -1269,7 +1276,7 @@ error(int16_t n, uint16_t s)
 	pf1(S_PCTSNL, s);
 	if (n > 1)
 		delexit();
-	errlev = n;
+	errlev = rule_ld_06(errlev, n);	/* EXTENSION: LD-06, docs/RULES.md */
 }
 
 /* lookloc (1ede) */

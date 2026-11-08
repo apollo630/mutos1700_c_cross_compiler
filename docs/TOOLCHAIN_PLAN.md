@@ -340,10 +340,14 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   (bytes 10 and 11 of MUTOS's `sgttyb`; 20 and 80 without a terminal) and for
   the screen mode, which the port refuses. The emulator's `ioctl()` is
   always "not a tty": the terminal's paths are checked by reading.
-- The names of the mode's switch and of its environment variable
-  (decision 13): proposed with step F0, for the project owner to confirm.
-  The switch must be free in `cc` (whose unknown options go to `ld`), `ld`,
-  `as`, `c0` and `c1`.
+- ~~The names of the mode's switch and of its environment variable
+  (decision 13)~~ - **confirmed by the project owner on 2026-11-08** (step
+  F0): `-F` the corrected mode ("fixed"), `-H` the original's behaviour
+  ("historic"), in `cc`, `as` and `ld`, the last one counting; the
+  environment variable `MUTOS_MODE`, `corrected` or `original`. The
+  letters are free in all three (`cc`'s options were S o O p a f E P c K 2
+  D I U C t B, `ld`'s o u e v D l x X S r d s n i O t, `as`'s o g C v W 1);
+  `c0` and `c1` take the mode from the environment, where `cc` puts it.
 - Whether the kernel's `conf/arith.a` (from the owner's kernel tree; its
   long helpers are likely the code of `libc.a`'s) gets the corrections of
   decision 14 too: compare its members with `libc.a`'s after F3.
@@ -374,8 +378,8 @@ this section.
     checks against the goldens and the emulated originals run in the
     original mode. The mode reaches `c0`, `c1`, `as` (its floating constants,
     decision 14) and `ld` (its own corrections, and which `libc.a` `-lc`
-    means); `c2` has no correction planned and gets `-1` only. Names:
-    section 6.
+    means); `c2` has no correction planned and gets `-1` only. Names
+    (confirmed 2026-11-08, section 6): `-F` and `-H`, `MUTOS_MODE`.
 14. **The original `libc.a` stays; the corrected mode links a corrected
     copy** (decided 2026-11-08; the same day's first decision, `libc.a`
     unchanged, was revised after Claude's recommendation). The original
@@ -469,12 +473,12 @@ this section.
 
 | Step | What |
 |---|---|
-| F0 | Infrastructure, shared with stage V: `cc` passes the mode to `c0`, `c1`, `as` and `ld` and `-1` to `c1`, `c2` and `as` (today an unknown option such as `-1` goes to `ld`), the environment variable read where the switch is (decision 13); the rule log and the accounting checker (7.2); `fuzz_c.py` generates longs; `x86sim.py` executes the three V30 forms (with the NEC manual's flag rules) and counts V30 clocks; `mutos_as`'s report (decision 16). Hooks at the known bug sites in `c1` and `ld` report, in a diagnostic mode, when the original's wrong path is taken - output unchanged -, run over the corpus and the kernel's sources: which bugs real code meets. Nothing the tools write changes. |
+| F0 | Infrastructure, shared with stage V: `cc` passes the mode to `c0`, `c1`, `as` and `ld` and `-1` to `c1`, `c2` and `as` (today an unknown option such as `-1` goes to `ld`), the environment variable read where the switch is (decision 13); the rule log and the accounting checker (7.2); `fuzz_c.py` generates longs; `x86sim.py` executes the three V30 forms (with the NEC manual's flag rules) and counts V30 clocks; `mutos_as`'s report (decision 16). Hooks at the known bug sites in `c1` and `ld` report, in a diagnostic mode, when the original's wrong path is taken - output unchanged -, run over the corpus and the kernel's sources: which bugs real code meets. Nothing the tools write changes. **Done 2026-11-08** (`STATUS.md`, "Step F0"; `docs/RULES.md`): `src/h/mutos_mode.h`; `cc` takes `-1`, `-F`, `-H` outside its image and passes the mode through the environment; the rules directories `c1rules/` and `ldrules/`, `scripts/check_rules.py`, the rule log with `out=` ranges, `tests/rules/check_accounting.py` (every output the same in all five configurations); hooks at C1-01, C1-02, C1-03, C1-06, LD-06 and LD-08 - the kernel's `amx.c` meets C1-03; `as: -1: ...`; `fuzz_c.py --longs` (two new bugs of `c1`: C1-12, C1-13); `x86sim.py`'s V30 forms (`v30=True`) and clocks. |
 | F1 | The `c1` bugs that make wrong code silently: C1-03 (`x = l++` loses the carry), C1-06 (`l <<= i` on a local long, `i == 0`, jumps into an instruction), C1-02 (`e * 0`, `e & 0` lose `e`'s side effects), C1-01 (a branch on stale flags after `not` and `mov`; with C1-02 about 0.9% of `fuzz_c.py`'s programs) - the smallest change first. |
 | F2 | `ld`: LD-06 (a warning clears an earlier error: exit status 0 and an executable), LD-08 (a text of 65,530 bytes or more wraps). |
 | F3 | Measure the runtime compiled code calls: the routines `c1`'s code tables call (in the corpus's and the kernel's code: `fldd`, `fstdp`, `faddd`, `itof`, `ftoi`, `fmuld`, `fcmp`, `lmul`, `ldiv`, `lrem`, `aldiv` ...), fourteen members of `libc.a` - `aldiv.o`, `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o`, `chkstk.o`, `convert.o` (`itof`, `ftoi`, `itod`, `dtoi`), `lconvert.o` (`ltof`, `ftol`), `dmath.o` (`dadd`, `dsub`, `dmul`, `ddiv`), `stacks.o`, `stkmath.o`, `singles.o`, `doubles.o` -, which in turn pull in `fperr.o` (`__ovfl`, `__div0`: the SIGFPE), `cret.o`, `atof.o` and `fltpr.o` (through `__fltu3`, `__fltu2`). Measured so far: `aldiv`/`alrem` (L-04), `dmul` (L-05) and, through `atof`, `ldexp` (L-06). Each entry point under `mutosemu.py` against Python's arithmetic (exact rationals for the floating ones), on edge values and many random ones, as `tests/mutos_as/float_coverage/libcatof.py` does for `atof`. Findings into `docs/MUTOS_ORIGINAL_BUGS.md`. |
 | F3b | The corrected copy of `libc.a` (decision 14), member by member, for the findings of F3 that compute wrongly in ordinary programs: first a source reconstructed from the original member that `mutos_as` assembles to that member byte for byte (as `tests/mutos_as/libc_recon/ldexp.s` is for `ldexp.o`) - the proof of the reconstruction -, then the correction as a small change of that source (L-05 is one displacement, `2[di]` for `4[di]`). The sources in a directory of their own; the archive built from the original by replacing those members in place (`mutos_ar`, `mutos_ranlib`), so that order and every other member stay. Checked: each entry point exhaustively at the edges and on many random values against Python; the interface by linking the corpus programs the original compiler made (the goldens) with the copy and running them under `mutosemu.py` - the same values but where a bug is corrected; the `c1`/`as` re-enactments against the copy; on the hardware, a program linked by hand with `ld` against the copy before it replaces anything. Which library `ld` takes for `-lc` in which mode, and where the copy lives in the root, is settled with this step. |
-| F4 | As the owner chooses: what the ports refuse or the original reports today - C1-07 first (a long constant shifted by a constant: common in real code), then C1-11, C1-09, C1-08, C1-04, C1-05, C1-10, and `c0`'s crashes. |
+| F4 | As the owner chooses: what the ports refuse or the original reports today - C1-07 first (a long constant shifted by a constant: common in real code), then C1-11, C1-09, C1-08, C1-04, C1-05, C1-10, and `c0`'s crashes; since F0 also C1-12 and C1-13 (relations of long constants, found by `fuzz_c.py --longs`). |
 | F5 | The change of default (decision 13), in one change: the corrected mode, with the corrected `libc.a`, is what `cc` and `ld` do without a switch; the checks against the originals run in the original mode; the kernel built in the corrected mode, its differences from the original accounted for, booted on the hardware from a test disk. |
 
 Not planned: the bugs of `cpp` and `c2` that need exotic input (CPP-12,
@@ -492,7 +496,7 @@ project": corrected in the corrected mode) in the same change.
 
 | Step | Rule | What |
 |---|---|---|
-| V0 | - | Part of F0. With `-1` passed through and no rule yet, `c1`'s and `c2`'s output with and without `-1` is the same. |
+| V0 | - | Part of F0. With `-1` passed through and no rule yet, `c1`'s and `c2`'s output with and without `-1` is the same. **Done 2026-11-08** with F0 (`tests/rules/check_accounting.py`). |
 | V1 | V30-PUSH | In `c2`: `pushopt()` makes `mov r,x` / `push r` into `push x` already, but not for a constant `x` (one condition, `src/mutos_cc/c2port/c21.c`), since the 8086 cannot push one. Under `-1` the condition goes. The test that `r` is not read again is the original's: `regmask()` follows the branches and takes an op it does not know as reading and writing every register. `c2` counts `push *n.` as 4 bytes (it is 2 or 3): branch lengths stay safe. |
 | V2 | V30-SHIFT | In `c1`: a shift by a constant count of 3 to 15 as `sal r,*n.` (and `sar`, `shr`), not `mov cx,*n.` / `sal r,cl` - the same result and the same flags, CX not loaded. A row of `c1`'s code tables, used only under `-1`. `c2` counts the form as 4 bytes (it is 3). |
 | V3 | V30-IMUL | In `c1`, last: `imul ax,*n.` (or the form with a memory operand) for `mov cx,*n.` / `imul cx`. First `c2` must learn the form's length: `isreg()` reads only an operand's first two characters, so `c2` takes `imul ax,*30.` for a 2-byte instruction (it is 3 or 4) and could make a branch too short to reach. |

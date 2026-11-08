@@ -20,6 +20,7 @@ int	c0_members;
 int	c0_stmtdepth;
 int	c0_tree_stmtdepth;
 int	c0_cp_funchead;
+int	c0_mode;
 
 static	uint16_t c0_brk = C0_END;	/* the break */
 static	uint16_t c0_sp = C0_STACKTOP;	/* the stack area's top */

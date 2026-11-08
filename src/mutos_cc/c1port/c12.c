@@ -701,8 +701,8 @@ acommute(struct tnode *atree)
 	} else if (op == TIMES || op == AND) {
 		t1 = acl.llist[acl.nextl];
 		if (t1->op == CON) {
-			if (t1->value == 0)
-				return t1;
+			if (t1->value == 0)	/* EXTENSION: C1-02, docs/RULES.md */
+				return rule_c1_02(t1, op, acl.llist, acl.nextl);
 			if (op == AND && (t1->value & 0177400) == 0) {
 				for (i = 0; i < acl.nextl; i++) {
 					t2 = &acl.llist[i];

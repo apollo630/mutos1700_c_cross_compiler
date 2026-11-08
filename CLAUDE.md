@@ -27,7 +27,15 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ### Core Toolchain for the MUTOS1700 Cross C Compiler (`/src`)
 * `/src/h/`: Core header files (`.h`). Contains shared definitions and system structures:
   `mutos_aout.h` (the `a.out` format) and `mutos_root.h` (the lookup of an absolute MUTOS
-  path under the MUTOS root, `$MUTOS_ROOT` or the compiled-in default - for every tool).
+  path under the MUTOS root, `$MUTOS_ROOT` or the compiled-in default - for every tool),
+  and since 2026-11-08 `mutos_mode.h` (the corrected mode - `-F`, `-H`, `MUTOS_MODE` -
+  and the rule log, `MUTOS_RULELOG`, of `docs/RULES.md`).
+* The rules directories (since 2026-11-08, `docs/RULES.md`): `/src/mutos_cc/c1rules/`
+  and `/src/mutos_ld/ldrules/` - one file per rule of the corrected mode or of `-1`,
+  each reached through one hook line in the ported code (`c1port/`, `ld.c`), and a file
+  of what the rules share (`c1rules.c`: the mode, `-1`, the rule log with its output
+  ranges; `ldrules.c`: the mode). Taking a rule out is deleting its file, its hook and
+  its row in `docs/RULES.md`; `scripts/check_rules.py` checks that they agree.
 * `/src/mutos_ld/`: Source code for the Mutos Linker - since 2026-10-22 a port of the
   original MUTOS 1700 `ld` read from its binary (v7's `ld.c` with the MUTOS deltas),
   running on an image of its data segment (`ld.h`), with `-r`/`-d` as a documented
@@ -100,7 +108,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/scripts/`: `mutos_root.sh` (fills the MUTOS root), `check_docs.py` (`make
   check-docs`, Workflow Guideline 6) and, since 2026-11-07, `kcmp.py`, which compares
   the objects and the kernel of a MUTOS kernel build with the real-hardware goldens of
-  `/tests/mutos_as/kernel_opt/` or with another build (`docs/KERNEL_BUILD.md`, step 6).
+  `/tests/mutos_as/kernel_opt/` or with another build (`docs/KERNEL_BUILD.md`, step 6);
+  since 2026-11-08 `check_rules.py` (`make test`, `make check-docs`: the rules against
+  `docs/RULES.md`) and `rulelog_summary.py` (a rule log summed up by rule - which hooked
+  bugs a build, the kernel's for one, meets).
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
@@ -205,6 +216,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `mutos_em` with `fakeawk`, `cc -c`) against the real-hardware `mch.i`, `mch.s` and `mch.o`; the
   editors' shell commands. The whole kernel built with that makefile and the project owner's
   kernel tree (not in the repository) is `docs/KERNEL_BUILD.md`.
+* `/tests/rules/`: `check_accounting.py` (in `make test`, since 2026-11-08): the corpus,
+  the probes, the kernel sources of the tree and `fuzz_c.py`'s programs compiled with
+  and without `-F`, `-H` and `-1`, the rule log on - every byte that differs must lie in
+  an applied rule's logged range (`docs/RULES.md`, "The accounting"); `--report` lists
+  the bugs the code meets.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
@@ -253,6 +269,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   * **`docs/KERNEL_BUILD.md`** (since 2026-11-07): building the MUTOS 1700 kernel with
     the cross toolchain and its original, unchanged makefile, step by step - the result
     is the original kernel byte for byte.
+  * **`docs/RULES.md`** (since 2026-11-08): the register of the rules of the corrected
+    mode and of `-1` (`docs/TOOLCHAIN_PLAN.md`, section 7) - each rule's file, hook,
+    state and bug -, the switches and variables, the rule log and the accounting.
   * **`docs/PROJECT_MEMORY.md`** (since 2026-11-07): the working agreements with the
     project owner, the owner's local setup and the context that sessions used to keep in
     Claude's conversation memory - read at session start (Session-Start Protocol), and
@@ -329,7 +348,7 @@ You act as an expert systems programmer, compiler architect, and operating syste
 ### 📋 Strict Core Requirements
 1. **K&R Compatibility**: The C compiler frontend/backend must be 100% K&R compatible.
 2. **Binary Format**: The object file and executable format must use the original MUTOS 1700 `a.out` layout.
-3. **CLI Interface**: `mutos_cc`, `mutos_as`, `mutos_cpp`, and `mutos_ld` - and every port of Milestone 6 - must support identical command-line arguments and switches as their Unix V7 counterparts - in practice as the original MUTOS 1700 binaries, which the ports reproduce (decided 2026-10-20). Where the originals look for files by absolute path, the tools look under `$MUTOS_ROOT` instead (`docs/TOOLCHAIN_PLAN.md`, decision 2); that adds no option.
+3. **CLI Interface**: `mutos_cc`, `mutos_as`, `mutos_cpp`, and `mutos_ld` - and every port of Milestone 6 - must support identical command-line arguments and switches as their Unix V7 counterparts - in practice as the original MUTOS 1700 binaries, which the ports reproduce (decided 2026-10-20). Where the originals look for files by absolute path, the tools look under `$MUTOS_ROOT` instead (`docs/TOOLCHAIN_PLAN.md`, decision 2); that adds no option. The decided extensions: `ld`'s `-r`/`-d`, `as`'s and `cc`'s `-1` (80186/V30), and since 2026-11-08 `-F`/`-H` in `cc`, `as` and `ld` (the corrected mode, `docs/RULES.md`); without them every tool does what the original does.
    * **Known, deliberate exception**: `mutos_as` does **not** implement `as.1`'s `-L`
      switch (control over whether compiler-internal `L`-prefixed labels appear in the
      written symbol table). Every real hardware-linked golden `.o` this project

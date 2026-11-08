@@ -572,6 +572,8 @@ extern	int	c0_members;	/* strdec()'s member and enum lists, nested */
 extern	int	c0_stmtdepth;	/* statement()s nested (dogoto()) */
 extern	int	c0_tree_stmtdepth;	/* ... when tree() was last called */
 extern	int	c0_cp_funchead;	/* cp last set by funchead() */
+/* EXTENSION: the mode (src/h/mutos_mode.h; docs/RULES.md), from MUTOS_MODE */
+extern	int	c0_mode;
 void	c0_exit(int status);
 void	c0_vfprintf(FILE *f, const char *fmt, const uint16_t *args);
 void	c0_init(void);

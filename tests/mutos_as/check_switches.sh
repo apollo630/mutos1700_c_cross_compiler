@@ -17,6 +17,10 @@
 #      and the shifts are refused, as the original does (AS-02 in
 #      docs/MUTOS_ORIGINAL_BUGS.md; tests/realbin/ascmp.py compares the
 #      two runs with the emulated original).
+#   3. With -1 the one line on the standard error that reports the
+#      80186/V30 instructions (docs/TOOLCHAIN_PLAN.md, decision 16) is the
+#      one in v30_speculative/v30_with_1.report - its counts checked on
+#      2026-11-08 against objdump -m i8086 on the objects' text, by opcode.
 #
 # -C (found 2026-10-25 by running the original, tests/realbin/ascmp.py): a
 # symbol that is defined, not .globl and starts with a capital L is left out
@@ -48,6 +52,11 @@ while read -r sum name; do
         echo "FAIL  $base.s: -1 gives another object ($got, recorded $sum)"
         bad=$((bad + 1))
     fi
+    want="$(awk -F'\t' -v s="$base.s" '$1 == s { print $2 }' v30_with_1.report)"
+    if [ "$(cat "$tmp/log")" != "$want" ]; then
+        echo "FAIL  $base.s: -1 reports \"$(cat "$tmp/log")\", recorded \"$want\""
+        bad=$((bad + 1))
+    fi
     rm -f "$tmp/$name"
     if "$MUTOS_AS" "$base.s" -o "$tmp/$name" >"$tmp/log" 2>&1 && \
        [ "$(md5sum < "$tmp/$name" | cut -d' ' -f1)" = "$sum" ]; then
@@ -69,7 +78,7 @@ if [ "$(syms "$tmp/c0.o")" != 48 ] || [ "$(syms "$tmp/c1.o")" != 24 ] || \
 fi
 
 if [ "$bad" -eq 0 ]; then
-    echo "switches: -1 gives the recorded object of $n/$n sources (not without it); -C leaves out the local L symbols"
+    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it); -C leaves out the local L symbols"
     exit 0
 fi
 echo "switches: $bad failures"

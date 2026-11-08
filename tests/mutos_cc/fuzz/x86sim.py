@@ -49,12 +49,33 @@ computes, among them 02_long/02_muldiv (24), 08_float/01_floatbas
 them 05_nestst (40), 06_union (3) and 07_bitfield (12: "and *-6.(bp),
 #/ff0f", "sar si,cl").
 
+The 80186/V30 forms that cc's -1 may produce (docs/TOOLCHAIN_PLAN.md,
+section 7.4; since 2026-11-08) run with v30=True only, with the flags
+the NEC V20/V30 manual (docs/V20_V30_Users_Manual_Oct86.pdf) gives them:
+"push" of a constant (no flags); a shift by a constant count other than
+1 ("sal r,*3.": CY the last bit out, S and Z of the result, V undefined);
+"imul" by a constant ("imul ax,*30.", "imul ax,cx,*30.": the low word of
+the product into the first operand, DX untouched, CY = V = the product
+not fitting in 16 bits, S and Z undefined). Without v30 each is an
+error: they exist only behind mutos_as -1.
+
+Every run also counts its V30 clocks (Result.clocks: the lowest and the
+highest count where the manual gives a range "according to data"): the
+NEC manual's figures for the uPD70116 (V30) at even addresses, per
+instruction and operand form - see v30_clocks(). A call into the floating
+or long runtime counts as the call alone (Result.runtime_calls says how
+many such bodies were not counted).
+
 Usage:
-    x86sim.py file.s        prints "ret=<n>", then "<name>=<off>" per
+    x86sim.py [--v30] [--clocks] file.s
+                            prints "ret=<n>", then "<name>=<off>" per
                             local, "<sym>@<addr>=<n>" per fixed-address
-                            variable and "w<off>=<n>" per frame word
+                            variable and "w<off>=<n>" per frame word;
+                            --clocks adds "clocks=<lo>..<hi>" (V30)
 As a module:
-    r = x86sim.run(text)    -> Result (r.ret, r.locals, r.word(off))
+    r = x86sim.run(text)    -> Result (r.ret, r.locals, r.word(off),
+                               r.clocks)
+    x86sim.run(text, v30=True)  the 80186/V30 forms too
 """
 import re
 import sys
@@ -75,7 +96,7 @@ STEP_LIMIT = 200000   # generated programs have no loops; goldens do
 # "imul", "idiv", "rcl", "rcr" or a call) is unknown, and a branch that
 # reads an unknown flag stops the checker.
 FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
-                "dec", "sal", "shl", "sar", "imul", "idiv", "neg", "orb",
+                "dec", "sal", "shl", "sar", "shr", "imul", "idiv", "neg", "orb",
                 "rcl", "rcr", "test"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi", "blo",
             "bhis"}
@@ -209,8 +230,11 @@ def sx8(v):
 
 
 class Result:
-    def __init__(self, ret, bp, locals_, mem, snapshots=(), data=None):
+    def __init__(self, ret, bp, locals_, mem, snapshots=(), data=None,
+                 clocks=(0, 0), runtime_calls=0):
         self.ret = ret
+        self.clocks = clocks        # V30 clocks, (lowest, highest)
+        self.runtime_calls = runtime_calls
         self.bp = bp
         self.locals = locals_       # name -> bp-relative offset
         self.data = data or {}      # fixed-address variable -> address
@@ -229,11 +253,65 @@ class Result:
         return s16(self._mem.get(a, 0) | (self._mem.get((a + 1) & M16, 0) << 8))
 
 
+IMM_RE = re.compile(r"^[*#](-?\d+)\.?$|^[*#]/[0-9a-f]+$")
+
+
+def v30_clocks(mnem, kinds):
+    """(lowest, highest) V30 clocks of an instruction by its operand
+    kinds ("r" register, "m" memory, "i" immediate; "i8" a byte immediate,
+    marked "*"), from the NEC V20/V30 user's manual (uPD70116, even
+    addresses; the "When W=1" figure for a word, "When W=0" for a byte).
+    None for an instruction whose clocks depend on what it does (branches,
+    "loop", "jz", shifts by CL or a constant, "cwd", calls, returns): the
+    caller counts those."""
+    k = tuple(x[0] for x in kinds)
+    if mnem in ("mov", "movb"):
+        return {("r", "r"): 2, ("r", "i"): 4, ("m", "r"): 9, ("r", "m"): 11,
+                ("m", "i"): 11}.get(k)
+    if mnem in ("add", "sub", "and", "or", "xor", "adc", "sbb", "orb"):
+        return {("r", "r"): 2, ("r", "i"): 4, ("r", "m"): 11, ("m", "r"): 16,
+                ("m", "i"): 18}.get(k)
+    if mnem in ("cmp", "cmpb"):
+        return {("r", "r"): 2, ("r", "i"): 4, ("r", "m"): 11, ("m", "r"): 11,
+                ("m", "i"): 13}.get(k)
+    if mnem == "test":
+        return {("r", "r"): 2, ("r", "i"): 4, ("r", "m"): 10, ("m", "r"): 10,
+                ("m", "i"): 11}.get(k)
+    if mnem in ("inc", "dec", "not", "neg"):
+        return {("r",): 2, ("m",): 16}.get(k)
+    if mnem in ("rcl", "rcr"):
+        return {("r", "i"): 2, ("m", "i"): 16}.get(k)
+    if mnem == "lea":
+        return 4
+    if mnem == "cbw":
+        return 2
+    if mnem == "sahf":
+        return 3
+    if mnem == "push":
+        return {("r",): 8, ("m",): 18}.get(k) or (7 if kinds[0] == "i8" else 8)
+    if mnem == "pop":
+        return {("r",): 8, ("m",): 17}.get(k)
+    if mnem == "imul":
+        if len(k) == 1:
+            return (41, 47) if k == ("r",) else (47, 53)
+        src = k[-2] if len(k) == 3 else k[0]
+        byte = kinds[-1] == "i8"
+        if src == "r":
+            return (28, 34) if byte else (36, 42)
+        return (34, 40) if byte else (42, 48)
+    if mnem == "idiv":
+        return (38, 43) if k == ("r",) else (44, 49)
+    return None
+
+
 class Sim:
     REGS = ("ax", "bx", "cx", "dx", "si", "di", "sp", "bp")
 
-    def __init__(self, text, watch=None):
+    def __init__(self, text, watch=None, v30=False):
         self.watch = watch
+        self.v30 = v30
+        self.clocks = [0, 0]
+        self.runtime_calls = 0
         self.snapshots = []
         self.regs = {r: 0 for r in self.REGS}
         self.regs["sp"] = SP0
@@ -327,6 +405,33 @@ class Sim:
         self.prog.append((mnem, ops))
 
     # -- operands -------------------------------------------------------
+    def kind(self, op):
+        """"r", "i8" (a constant marked "*"), "i" (another constant, an
+        address "#_x") or "m"."""
+        if op in self.regs or op == "cl":
+            return "r"
+        if IMM_RE.match(op) or (op.startswith("#") and op[1:] in self.data):
+            return "i8" if op.startswith("*") else "i"
+        return "m"
+
+    def tick(self, lo, hi=None):
+        self.clocks[0] += lo
+        self.clocks[1] += lo if hi is None else hi
+
+    def shift_clocks(self, ops, n):
+        """A shift: by 1 2 (16 to memory), by CL or a constant 7 + n (19 +
+        n to memory)."""
+        mem = self.kind(ops[0]) == "m"
+        if self.kind(ops[1]) != "r" and n == 1:
+            self.tick(16 if mem else 2)
+        else:
+            self.tick((19 if mem else 7) + n)
+
+    def need_v30(self, what):
+        if not self.v30:
+            raise SimError(f"{what} is an 80186/V30 form (x86sim.run(..., "
+                           "v30=True); mutos_as accepts it only with -1)")
+
     def _rd(self, a):
         a &= M16
         return self.mem.get(a, 0) | (self.mem.get((a + 1) & M16, 0) << 8)
@@ -533,6 +638,9 @@ class Sim:
                 raise SimError("ran off the end of the code")
             mnem, ops = self.prog[pc]
             pc += 1
+            c = v30_clocks(mnem, [self.kind(o) for o in ops])
+            if c is not None:
+                self.tick(*(c if isinstance(c, tuple) else (c,)))
             prev = self.cmp
             if mnem in FLAG_WRITERS:
                 self.cmp = None
@@ -542,6 +650,10 @@ class Sim:
             if mnem != "sahf" and not (mnem == "call" and ops[0] == "fcmp"):
                 self.fflags = None
             if mnem == "jmp":
+                self.tick(12)
+                if ops[0] == "cret":
+                    # lea sp,-4(bp) / pop si / pop di / pop bp / ret
+                    self.tick(4 + 3 * 8 + 15)
                 if ops[0] == "cret" and depth > 0:
                     # cret (docs/MUTOS_C_ABI.md): lea sp,-4(bp) / pop si /
                     # pop di / pop bp / ret
@@ -557,7 +669,8 @@ class Sim:
                 if ops[0] == "cret":
                     return Result(s16(self.regs["ax"]), self.regs["bp"],
                                   dict(self.locals), self.mem, self.snapshots,
-                                  data=self.data)
+                                  data=self.data, clocks=tuple(self.clocks),
+                                  runtime_calls=self.runtime_calls)
                 if ops[0] not in self.labels:
                     raise SimError(f"jump target '{ops[0]}' not supported")
                 pc = self.labels[ops[0]]
@@ -573,6 +686,7 @@ class Sim:
                         "beq": zf, "bne": not zf,
                         "blos": cf or zf, "bhi": not cf and not zf,
                         "blo": cf, "bhis": not cf}[mnem]
+                self.tick(14 if take else 4)
                 if take:
                     pc = self.labels[ops[0]]
             elif mnem == "sahf":
@@ -642,8 +756,13 @@ class Sim:
                 # CF set unless the operand was 0 - for a 'long' negated,
                 # "neg di" / "neg si" / "sbb di,*0" (fltprobe/p25_long3)
                 self.carry_next = 1 if a & M16 else 0
+            elif mnem in ("sal", "shl", "sar", "shr") and len(ops) == 2 \
+                    and self.kind(ops[1]) != "r" and self.get(ops[1]) != 1 \
+                    and not self.v30:
+                self.need_v30(f"'{mnem}' by a constant other than 1")
             elif mnem in ("sal", "shl"):
                 a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
+                self.shift_clocks(ops, n)
                 r = (a << n) & M16
                 self.put(ops[0], r)
                 if n == 1:              # CF, for an "rcl" right after it
@@ -654,8 +773,22 @@ class Sim:
                     cf = bool((a << n) & 0x10000) if n <= 16 else False
                     self.cmp = (r == 0, bool(r & 0x8000),
                                 (bool(r & 0x8000) != cf) if n == 1 else None, cf)
+            elif mnem == "shr":
+                a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
+                self.shift_clocks(ops, n)
+                r = (a & M16) >> n if n < 16 else 0
+                self.put(ops[0], r)
+                if n == 1:
+                    self.carry_next = a & 1
+                if n == 0:
+                    self.cmp = prev
+                else:
+                    cf = bool(((a & M16) >> (n - 1)) & 1) if n <= 16 else False
+                    self.cmp = (r == 0, bool(r & 0x8000),
+                                bool(a & 0x8000) if n == 1 else None, cf)
             elif mnem == "sar":
                 a, n = self.get(ops[0]), self.get(ops[1]) & 0x1F
+                self.shift_clocks(ops, n)
                 r = (s16(a) >> n) & M16
                 self.put(ops[0], r)
                 if n == 1:              # CF, for an "rcr" right after it
@@ -686,6 +819,7 @@ class Sim:
                 if not (ok8 or ok16) or self.cmp is None or self.cmp[0] is None:
                     raise SimError("'jz' other than past a long shift's loop "
                                    "after 'or cx,cx'")
+                self.tick(14 if self.cmp[0] else 4)
                 if self.cmp[0]:
                     if ok8:
                         pc += 3
@@ -709,6 +843,7 @@ class Sim:
                     raise SimError("'loop' other than back over a one-bit "
                                    "long shift pair")
                 self.regs["cx"] = (self.regs["cx"] - 1) & M16
+                self.tick(13 if self.regs["cx"] != 0 else 5)
                 if self.regs["cx"] != 0:
                     pc -= 3
             elif mnem in ("rcl", "rcr"):
@@ -726,6 +861,20 @@ class Sim:
                     self.carry_next = a & 1
                 self.put(ops[0], res)
                 self.carry = None
+            elif mnem == "imul" and len(ops) in (2, 3):
+                # the 80186/V30 form: "imul r,*n." is "imul r,r,*n."; the
+                # low word of the product into r, DX untouched; CY and V
+                # set when the product does not fit in 16 bits, S, Z
+                # undefined (NEC manual, MUL reg16,reg16,imm)
+                self.need_v30("'imul' by a constant")
+                if self.kind(ops[-1]) == "r" or self.kind(ops[0]) != "r":
+                    raise SimError("'imul' with two or three operands other "
+                                   "than register, operand, constant")
+                prod = s16(self.get(ops[-2] if len(ops) == 3 else ops[0])) * \
+                    s16(self.get(ops[-1]))
+                self.put(ops[0], prod & M16)
+                big = not -0x8000 <= prod <= 0x7FFF
+                self.cmp = (None, None, big, big)
             elif mnem == "imul":
                 prod = s16(self.regs["ax"]) * s16(self.get(ops[0]))
                 self.regs["ax"] = prod & M16
@@ -743,12 +892,18 @@ class Sim:
                 self.regs["ax"] = q & M16
                 self.regs["dx"] = (n - q * d) & M16
             elif mnem == "call" and ops[0] in FP_RUNTIME:
+                self.tick(16)
+                self.runtime_calls += 1
                 self._fp_call(ops[0])
                 self.cmp = None
             elif mnem == "call" and ops[0] in LONG_RUNTIME:
+                self.tick(16)
+                self.runtime_calls += 1
                 self._long_call(ops[0])
                 self.cmp = None
             elif mnem == "call" and ops[0] == "chkstk":
+                self.tick(16)
+                self.runtime_calls += 1
                 # The large-frame allocation helper (docs/MUTOS_C_ABI.md
                 # sect. 1.9): sp -= ax, as "sub sp,ax" would, returning
                 # with the return address left in ax.
@@ -759,6 +914,7 @@ class Sim:
                 # indirect call has no code here to run).
                 if ops[0] not in self.labels:
                     raise SimError(f"call target '{ops[0]}' not supported")
+                self.tick(16)
                 self.regs["sp"] = (self.regs["sp"] - 2) & M16
                 self._wr(self.regs["sp"], pc)
                 pc = self.labels[ops[0]]
@@ -770,8 +926,11 @@ class Sim:
                 al = self.regs["ax"] & 0xFF
                 self.regs["ax"] = (al | 0xFF00) if al & 0x80 else al
             elif mnem == "cwd":
+                self.tick(5 if self.regs["ax"] & 0x8000 else 4)
                 self.regs["dx"] = M16 if self.regs["ax"] & 0x8000 else 0
             elif mnem == "push":
+                if self.kind(ops[0]) in ("i", "i8"):
+                    self.need_v30("'push' of a constant")
                 self.regs["sp"] = (self.regs["sp"] - 2) & M16
                 self._wr(self.regs["sp"], self.get(ops[0]))
             elif mnem == "pop":
@@ -783,23 +942,28 @@ class Sim:
         raise SimError("step limit reached")
 
 
-def run(text, watch=None):
+def run(text, watch=None, v30=False):
     """Executes mutos_c1 output `text`; returns a Result. With `watch`
     (a local's name), every store to that local also records a snapshot
-    of the whole frame - fuzz_c.py's per-statement markers."""
-    return Sim(text, watch).run()
+    of the whole frame - fuzz_c.py's per-statement markers. With v30, the
+    80186/V30 forms of -1 run too."""
+    return Sim(text, watch, v30).run()
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if a not in ("--v30", "--clocks")]
+    if len(args) != 1:
         print(__doc__.split("Usage:")[1].split("As a module")[0], file=sys.stderr)
         return 2
     try:
-        r = run(open(sys.argv[1]).read())
+        r = run(open(args[0]).read(), v30="--v30" in sys.argv[1:])
     except SimError as e:
         print(f"x86sim: {e}", file=sys.stderr)
         return 2
     print(f"ret={r.ret}")
+    if "--clocks" in sys.argv[1:]:
+        print(f"clocks={r.clocks[0]}..{r.clocks[1]} (V30, even addresses; "
+              f"{r.runtime_calls} runtime call(s) counted as the call only)")
     for name, off in sorted(r.locals.items(), key=lambda kv: kv[1]):
         print(f"{name}={off}")
     for name, addr in sorted(r.data.items(), key=lambda kv: kv[1]):

@@ -153,6 +153,12 @@ The original binaries read and run under an emulator; the ports of `c1` and `c0`
 - The ports of `ed` and `em` (2026-11-02)
 - The MUTOS kernel, cross-built (2026-11-07)
 
+## [Milestone 7 — the corrected mode and `-1`: the rules](devlog/m7_rules.md)
+
+The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corrected mode, 80186/V30 code behind `-1`, every change a rule (`docs/RULES.md`). Step F0 (2026-11-08): the names, how the mode and `-1` reach the passes, a rule's shape, the rule log and the accounting, what the diagnostic hooks found (C1-03 in the kernel's `amx.c`), longs in `fuzz_c.py` and the two bugs they found (C1-12, C1-13), the V30 forms and clocks in `x86sim.py`.
+
+- Step F0: the shared infrastructure (2026-11-08)
+
 ## [Recurring process lessons](devlog/process_lessons.md)
 
 Lessons that apply to every milestone.

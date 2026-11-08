@@ -13,7 +13,11 @@ CC      = cc
 MUTOS_ROOT_DEFAULT ?= $(abspath $(CURDIR)/../../mutos_root)
 CFLAGS  = -std=c11 -Wall -Wextra -Wpedantic -O2 -g \
           -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
-SRCS    = main.c ld.c ldlib.c lddata.c
+# ld's rules (docs/RULES.md): ldrules.c and one file per rule, each
+# reached through one hook in ld.c - a rule is taken out by deleting its
+# file, so the list is the directory's.
+RULES   = $(sort $(wildcard ldrules/*.c))
+SRCS    = main.c ld.c ldlib.c lddata.c $(RULES)
 OBJS    = $(SRCS:.c=.o)
 TARGET  = mutos_ld
 
@@ -23,6 +27,7 @@ $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS)
 
 ldlib.o: ../h/mutos_root.h
+main.o ld.o $(RULES:.c=.o): ldrules/ldrules.h ../h/mutos_mode.h
 
 %.o: %.c ld.h
 	$(CC) $(CFLAGS) -c -o $@ $<

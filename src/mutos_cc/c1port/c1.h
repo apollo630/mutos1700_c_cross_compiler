@@ -137,6 +137,9 @@ extern	int32_t	totspace;	/* 4332 */
 extern	int16_t	xlab1, xlab2, xop, xzero;
 extern	jmp_buf	fpejmp;		/* 434a */
 
+/* EXTENSION: the mode, -1 and the rules (docs/RULES.md) */
+#include "../c1rules/c1rules.h"
+
 /*
 	operators
 */

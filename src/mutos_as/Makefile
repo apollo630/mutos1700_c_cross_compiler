@@ -110,7 +110,8 @@ CLASSIFY_SRCS := lexer.c parser.c pass2.c classify_test.c
 CLASSIFY_OBJS := $(CLASSIFY_SRCS:.c=.o)
 FLTTEST_SRCS  := fltconst.c fltconst_test.c
 FLTTEST_OBJS  := $(FLTTEST_SRCS:.c=.o)
-HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h fltconst.h mutos_aout.h
+HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h fltconst.h mutos_aout.h \
+                 ../h/mutos_mode.h
 
 TARGET    := mutos_as
 PARSE     := parse_dump

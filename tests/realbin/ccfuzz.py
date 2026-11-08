@@ -58,7 +58,10 @@ import cccmp          # noqa: E402
 
 PROG = b'main()\n{\n\treturn 0;\n}\n'
 PASSES = ('/lib/cpp', '/lib/c0', '/lib/c1', '/lib/c2', '/bin/as', '/bin/ld')
-UNKNOWN = 'xsinXduveghjklmqrwyzABFGHJLMNQRTVWYZ013456789!$%.=_'
+# Letters the original's cc does not know (they go to ld) - but 1, F and
+# H, which the port takes as its extensions -1, -F and -H (docs/RULES.md;
+# taken out on 2026-11-08: the original hands them to ld).
+UNKNOWN = 'xsinXduveghjklmqrwyzABGJLMNQRTVWYZ03456789!$%.=_'
 
 
 class Gen:

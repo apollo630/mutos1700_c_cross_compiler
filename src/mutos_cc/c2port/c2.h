@@ -388,6 +388,15 @@ shl16(uint16_t v, unsigned cnt)
 /* ---- the machine (c2lib.c) ----------------------------------------- */
 
 void	c2_init(int argc, char **argv, uint16_t *mutos_argv);
+
+/*
+ * EXTENSION (docs/TOOLCHAIN_PLAN.md, section 7, decision 15): the first
+ * argument "-1", which cc gives with its -1 - 80186/V30 code. main.c takes
+ * it off the command line before the image is made, so the original's
+ * main() sees what the original would have been given without it. c2 has
+ * no correction (decision 13): no mode.
+ */
+extern	int	c2_v30;
 NORETURN void	c2_exit(int16_t status);
 int16_t	c2_sbrk(int16_t n);
 int16_t	c_getc(void);			/* getc(stdin) */
