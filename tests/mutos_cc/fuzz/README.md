@@ -223,6 +223,26 @@ those are bugs of the original found here, C1-12 (`(int)100L <= 13`: "C
 error: const") and C1-13 (a relation of two long constants: `cmp` of two
 immediates) in `docs/MUTOS_ORIGINAL_BUGS.md`.
 
+## The corrected mode: `--mode` (since 2026-11-08)
+
+The corrections of step F1 (`docs/RULES.md`) cannot be checked against the
+original `c0` and `c1` - they are meant to differ - so `fuzz_c.py --mode
+corrected` runs `c0`, `c1` and `mutos_as` with `MUTOS_MODE=corrected` and
+the semantic check alone (`--oracle none` is implied; `--oracle real` with
+`--mode` is an error). Each build gets a rule log of its own
+(`MUTOS_RULELOG`). A program that computes wrongly, or whose code does not
+assemble or cannot be executed, is put down to a bug of the original when
+it is one: when its rule log has a `met` line - the original's path taken
+at a rule's hook, in the corrected mode a bug not corrected yet - or when
+its code compares two immediates (C1-13, which has no hook). Those are
+tallied by bug (the summary's "a bug of the original", then a line with
+each bug and its count) and are not WRONG or BAD; anything else is. `--mode original` does the same in the
+original mode, where every hooked bug shows. A hook that is met harmlessly
+in a program that fails for another reason would hide that reason; once a
+tool's hooks are all active, the corrected mode has none of its own left
+to hide behind. `tests/rules/check_corrected.py` (in `make test`) runs
+`--mode corrected` on seed 1, once without and once with `--longs`.
+
 ## The 80186/V30 forms and the V30 clocks of `x86sim.py` (since 2026-11-08)
 
 For the rules of `-1` (`docs/RULES.md`) `x86sim.py` runs the three

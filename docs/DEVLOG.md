@@ -155,9 +155,10 @@ The original binaries read and run under an emulator; the ports of `c1` and `c0`
 
 ## [Milestone 7 — the corrected mode and `-1`: the rules](devlog/m7_rules.md)
 
-The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corrected mode, 80186/V30 code behind `-1`, every change a rule (`docs/RULES.md`). Step F0 (2026-11-08): the names, how the mode and `-1` reach the passes, a rule's shape, the rule log and the accounting, what the diagnostic hooks found (C1-03 in the kernel's `amx.c`), longs in `fuzz_c.py` and the two bugs they found (C1-12, C1-13), the V30 forms and clocks in `x86sim.py`.
+The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corrected mode, 80186/V30 code behind `-1`, every change a rule (`docs/RULES.md`). Step F0 (2026-11-08): the names, how the mode and `-1` reach the passes, a rule's shape, the rule log and the accounting, what the diagnostic hooks found (C1-03 in the kernel's `amx.c`), longs in `fuzz_c.py` and the two bugs they found (C1-12, C1-13), the V30 forms and clocks in `x86sim.py`. Step F1 (2026-11-08): the corrections of `c1` - C1-03 (a copy of the name node), C1-06 (`jz .+8`, the loop skipped), C1-02 (a comma before the 0; a second way into C1-12), C1-01 (the test the fallback appends) -, and how what a correction computes is checked (`check_corrected.py`, `fuzz_c.py --mode`); the two bugs the file-scope fuzz found then (C1-14, C1-15).
 
 - Step F0: the shared infrastructure (2026-11-08)
+- Step F1: the corrections of `c1` (2026-11-08)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

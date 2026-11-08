@@ -18,6 +18,16 @@ compared: a program the baseline compiled correctly that the new build
 now refuses or miscompiles is a regression. No knowledge of the change
 under test is needed; the semantic check classifies every difference.
 
+With --mode corrected (or original) c0, c1 and as run in that mode
+(MUTOS_MODE, docs/RULES.md) with the rule log on, and the semantic check
+alone decides (the original c0 and c1 are no oracle for the corrected
+mode). A program that computes wrongly, or whose code does not assemble
+or cannot be executed, is then put down to a bug of the original when it
+is one: when the rule log says the original's path was taken at a rule's
+hook ("met" - in the corrected mode, a bug not corrected yet), or when
+the code is the original's comparison of two immediates (C1-13, which
+has no hook). Those are tallied by bug, not counted as WRONG or BAD.
+
 Exit status 1 if anything is BAD: wrong code, output that does not
 assemble, a crash / sanitizer report / "internal:" diagnostic, code
 x86sim.py cannot execute, or (with --baseline) a regression. An
@@ -27,6 +37,7 @@ declining a shape it has no golden for; refusals are tallied by reason.
 Usage:
     fuzz_c.py [-n COUNT] [-s SEED] [-j JOBS] [--baseline DIR]
               [--no-arrays] [--scope] [--longs] [--keep DIR] [--reasons]
+              [--mode original|corrected]
 
 See README.md in this directory for what is generated and why.
 """
@@ -578,10 +589,65 @@ def reason_of(stderr):
     return re.sub(r"-?\d+", "N", line)[:100]
 
 
+# --mode: the mode c0, c1 and as run in (MUTOS_MODE), or None - the
+# environment as it is
+MODE = None
+# the rule log's "met" lines: "c1 C1-06 met line=7 ..."
+MET_RE = re.compile(r"^\S+ (\S+) met\b", re.M)
+# an immediate operand of mutos_as: "*12.", "#-4464.", "*0" - no "(reg)"
+IMMEDIATE_RE = re.compile(r"^[*#][^(]*$")
+
+
+def tool_env(wd, tag):
+    """The environment of a build's c0, c1 and as: with --mode, MUTOS_MODE
+    and a rule log of its own."""
+    if MODE is None:
+        return None
+    e = dict(os.environ)
+    e["MUTOS_MODE"] = MODE
+    e["MUTOS_RULELOG"] = str(wd / f"{tag}.rules")
+    return e
+
+
+def originals_bug(wd, tag, text):
+    """With --mode: the bug of the original a wrong or bad build is down
+    to - the rules whose hooks were passed on the original's path (the
+    rule log's "met" lines), else C1-13 when the code compares two
+    immediates (docs/MUTOS_ORIGINAL_BUGS.md) - or None."""
+    try:
+        log = (wd / f"{tag}.rules").read_text(encoding="latin1")
+    except OSError:
+        log = ""
+    met = sorted(set(MET_RE.findall(log)))
+    if met:
+        return " ".join(met)
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0] == "cmp":
+            ops = parts[1].split(",")
+            if len(ops) == 2 and all(IMMEDIATE_RE.match(o) for o in ops):
+                return "C1-13"
+    return None
+
+
 def run_build(wd, tag, c0, c1, env, ret, g):
+    """Outcome of one build: ('ok'|'wrong'|'refused'|'bad'|'original', detail,
+    .s) - 'original' only with --mode: wrong or bad, and down to a bug of
+    the original (originals_bug(); the detail names it first)."""
+    out = build(wd, tag, c0, c1, env, ret, g)
+    if MODE is not None and out[0] in ("wrong", "bad"):
+        bug = originals_bug(wd, tag, out[2])
+        if bug is not None:
+            return "original", f"{bug}: {out[0]}: {out[1]}", out[2]
+    return out
+
+
+def build(wd, tag, c0, c1, env, ret, g):
     """Outcome of one build: ('ok'|'wrong'|'refused'|'bad', detail, .s)"""
     i_file, one, two, s_file = wd / "p.i", wd / f"{tag}.1", wd / f"{tag}.2", wd / f"{tag}.s"
-    p = subprocess.run([c0, str(i_file), str(one), str(two)], capture_output=True, text=True)
+    tenv = tool_env(wd, tag)
+    p = subprocess.run([c0, str(i_file), str(one), str(two)], capture_output=True, text=True,
+                       env=tenv)
     (wd / f"{tag}.c0st").write_text(str(p.returncode))
     # 1: the original's own error messages; 2: refused - the port of c0
     # stops where the real c0 traps or reads state it does not model
@@ -590,7 +656,8 @@ def run_build(wd, tag, c0, c1, env, ret, g):
         return "bad", f"mutos_c0 crashed or reported an internal error: {p.stderr.strip()[-300:]}", ""
     if p.returncode:
         return "refused", "c0: " + reason_of(p.stderr), ""
-    p = subprocess.run([c1, str(one), str(two), str(s_file)], capture_output=True, text=True)
+    p = subprocess.run([c1, str(one), str(two), str(s_file)], capture_output=True, text=True,
+                       env=tenv)
     (wd / f"{tag}.c1err").write_text(p.stderr, encoding="latin1")
     (wd / f"{tag}.c1st").write_text(str(p.returncode))
     if p.returncode not in (0, 1, 2) or any(m in p.stderr.replace("internal limit", "") for m in BUG_MARKERS):
@@ -602,7 +669,7 @@ def run_build(wd, tag, c0, c1, env, ret, g):
         return "refused", "c1: " + reason_of(p.stderr), ""
     text = s_file.read_text()
     p = subprocess.run([TOOLS["as"], "-o", str(wd / f"{tag}.o"), str(s_file)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=tenv)
     if p.returncode:
         return "bad", f"output does not assemble: {p.stderr.strip()[-300:]}", text
     try:
@@ -760,11 +827,23 @@ def main():
                     "(default: a new directory under /tmp)")
     ap.add_argument("--reasons", action="store_true",
                     help="list every refusal reason with its count")
-    ap.add_argument("--oracle", choices=("real", "none"), default="real",
+    ap.add_argument("--oracle", choices=("real", "none"), default=None,
                     help="real (the default): every program also through the original "
                     "c0 and c1 under tests/realbin/mutosemu.py, whose output the "
-                    "build must give byte for byte; none: the semantic check alone")
+                    "build must give byte for byte; none: the semantic check alone "
+                    "(the default with --mode)")
+    ap.add_argument("--mode", choices=("original", "corrected"),
+                    help="run c0, c1 and as in this mode (MUTOS_MODE) with the rule "
+                    "log on; the semantic check alone, and a program that fails "
+                    "through a bug of the original (one not corrected in the "
+                    "corrected mode) is tallied by that bug")
     args = ap.parse_args()
+    if args.oracle is None:
+        args.oracle = "none" if args.mode else "real"
+    elif args.mode and args.oracle == "real":
+        sys.exit("fuzz_c: --mode runs the semantic check alone (--oracle none)")
+    global MODE
+    MODE = args.mode
     if args.oracle == "real":
         try:
             import unicorn  # noqa: F401
@@ -780,7 +859,7 @@ def main():
     progs = [generate(rnd, not args.no_arrays, args.scope, args.longs)
              for _ in range(args.count)]
 
-    counts, reasons, bad, cmp = {}, {}, [], {}
+    counts, reasons, bad, cmp, bugs = {}, {}, [], {}, {}
     with tempfile.TemporaryDirectory(prefix="fuzz_c.") as workroot:
         jobs = [(i, *progs[i], args, workroot) for i in range(args.count)]
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
@@ -792,6 +871,9 @@ def main():
             reasons[new[1]] = reasons.get(new[1], 0) + 1
         if new[0] in ("bad", "wrong"):
             bad.append((idx, "new build: " + new[0], new[1], src))
+        if new[0] == "original":
+            for b in new[1].split(":", 1)[0].split():
+                bugs[b] = bugs.get(b, 0) + 1
         if new[0] == "as-real":
             reasons["as the real compiler: " + re.sub(r"-?\d+", "N", new[1])[:90]] = \
                 reasons.get("as the real compiler: " + re.sub(r"-?\d+", "N", new[1])[:90], 0) + 1
@@ -815,11 +897,17 @@ def main():
           f"{', scalars only' if args.no_arrays else ''}"
           f"{', file scope' if args.scope else ''}"
           f"{', longs' if args.longs else ''}"
-          f"{', against the real c0 and c1' if args.oracle == 'real' else ''}")
+          f"{', against the real c0 and c1' if args.oracle == 'real' else ''}"
+          f"{', the ' + args.mode + ' mode' if args.mode else ''}")
     print(f"  correct {counts.get('ok', 0)}, refused {counts.get('refused', 0)}, "
           f"WRONG {counts.get('wrong', 0)}, BAD {counts.get('bad', 0)}"
           + (f", as the real compiler {counts.get('as-real', 0)}"
-             if args.oracle == "real" else ""))
+             if args.oracle == "real" else "")
+          + (f", a bug of the original {counts.get('original', 0)}"
+             if args.mode else ""))
+    if bugs:
+        print("  the bugs of the original: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(bugs.items())))
     if args.baseline:
         print("  vs baseline: " + ", ".join(f"{v} {k}" for k, v in sorted(cmp.items())))
     if args.reasons:

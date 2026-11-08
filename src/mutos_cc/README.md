@@ -504,7 +504,7 @@ corrections of the originals' bugs with it (section 7.3); step F0 laid
 what they share (2026-11-08, "The corrected mode and `-1`" below), the
 rules themselves come from step F1 on.
 
-## The corrected mode and `-1` (step F0, 2026-11-08)
+## The corrected mode and `-1` (steps F0 and F1, 2026-11-08)
 
 `../../docs/RULES.md` has the whole of it; for the compiler:
 
@@ -522,14 +522,19 @@ rules themselves come from step F1 on.
   `c1_v30`. `mutos_c2 [-1] [+] [-] [input [output]]`: a first argument `-1`
   sets `c2_v30` and is taken off before the original's `main()` runs.
   No rule uses `-1` yet: the output is the same with and without it.
-- `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the rule
-  log - an entry noted at the hook, written with the bytes of output of the
-  statement at the next operation, `c1_rule_mark()` in `getree()`) and one
-  file per rule, reached through one hook line in `c1port/`. Since F0 four
-  diagnostic hooks report where the original's wrong path is taken - C1-01
-  (`cexpr()`'s template letter `H`), C1-02 (`acommute()`), C1-03 (`delay()`)
-  and C1-06 (`cexpr()`, a row with `jz .+16`) -; the code stays the
-  original's.
+- `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the
+  rule log: an entry noted at the hook, written with the bytes of output
+  of the statement at the next operation, `c1_rule_mark()` in `getree()`,
+  after a check the rule may give, which sees those bytes or a pointer the
+  rule named) and one file per rule, reached through one hook line in
+  `c1port/`. The four hooks of F0 report where the original's wrong path
+  is taken: C1-01 and C1-06 (`cexpr()`, the template of a row once
+  matched), C1-02 (`acommute()`) and C1-03 (`delay()`). Since step F1
+  all four correct it in the corrected mode: C1-03 (the increment of a
+  long gets a copy of its name node), C1-06 (the rows with `jz .+16` get
+  `jz .+8`), C1-02 (the operands with a side effect stay, as a comma
+  expression before the 0) and C1-01 (`or r,r` after `~`, `!` and a shift
+  by a variable count); without a switch the code is the original's.
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the

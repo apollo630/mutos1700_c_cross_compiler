@@ -29,7 +29,8 @@ bit at a time ("sal si,*1" / "rcl di,*1", "sar di,*1" / "rcr si,*1"),
 also CX times ("loop .-4" back over the pair) or by a variable count
 ("or cx,cx" / "jz .+8" past the pair and the loop when CX is 0 - "jz
 .+16" past the stores of a compound assignment too, when they are
-four-byte ones), and
+four-byte ones, counted as mutos_as encodes them; a long through a pointer
+is "(bx)" and "+2(bx)"), and
 "neg". It is a checker, not an emulator: anything outside the subset
 (a libc or indirect call, a
 branch on a flag the 8086 leaves undefined, ...) stops it with exit
@@ -253,6 +254,24 @@ class Result:
         return s16(self._mem.get(a, 0) | (self._mem.get((a + 1) & M16, 0) << 8))
 
 
+def store_bytes(dst):
+    """The bytes of "mov <dst>,<word register>" as mutos_as encodes it:
+    opcode and ModRM, then the displacement - none for "(reg)" but "(bp)"
+    (a byte), a byte for "*n.(reg)" and for a plain number from -128 to 127
+    ("+2(bx)"), a word for "#..." and for an address or a symbol."""
+    if "(" not in dst:
+        return 4
+    disp = dst[:dst.index("(")]
+    if disp == "":
+        return 3 if dst.startswith("(bp)") else 2
+    if disp.startswith("*"):
+        return 3
+    m = re.match(r"^\+?(-?\d+)\.?$", disp)
+    if m and -128 <= int(m.group(1)) <= 127:
+        return 3
+    return 4
+
+
 IMM_RE = re.compile(r"^[*#](-?\d+)\.?$|^[*#]/[0-9a-f]+$")
 
 
@@ -453,19 +472,22 @@ class Sim:
         if m and m.group(2) in self.data:
             # an element or member of a fixed-address object: "16.+_ga"
             return (self.data[m.group(2)] + int(m.group(1))) & M16
-        # "(bx)", "*2.(si)", "#-132.(bp)", and an array element with a
-        # symbol for its displacement: "_text(bx)", "#_text(bx)" (the
+        # "(bx)", "*2.(si)", "#-132.(bp)", "+2(bx)" (the second word of a
+        # long through a pointer: c1's "#+2(IJ)"), and an array element with
+        # a symbol for its displacement: "_text(bx)", "#_text(bx)" (the
         # marker a load through v7's "#1" template writes)
-        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+))?\((\w+)\)$", op)
-        if not m or m.group(3) not in self.regs:
+        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+)|\+(\d+)\.?)?\((\w+)\)$", op)
+        if not m or m.group(4) not in self.regs:
             return None
         if m.group(2):
             if m.group(2) not in self.data:
                 return None
             disp = self.data[m.group(2)]
+        elif m.group(3):
+            disp = int(m.group(3))
         else:
             disp = int(m.group(1)) if m.group(1) else 0
-        return (self.regs[m.group(3)] + disp) & M16
+        return (self.regs[m.group(4)] + disp) & M16
 
     def get(self, op):
         if op in self.regs:
@@ -807,8 +829,10 @@ class Sim:
                 # di,*1" / "loop .-4"). "jz .+16" is a compound assignment's
                 # (p38_long6's "l <<= i"): past the loop AND the two stores
                 # back - when each takes four bytes (a file-scope long); a
-                # local's take three ("*-8."), and the real code jumps into
-                # the middle of the next instruction - not run.
+                # local's take three ("*-8."), a long's through a pointer
+                # two and three ("(bx)", "+2(bx)"), and the real code jumps
+                # into the middle of the next instruction - not run (C1-06;
+                # the corrected mode's rows have "jz .+8").
                 nxt = [self.prog[k] if 0 <= k < len(self.prog) else None
                        for k in (pc, pc + 1, pc + 2, pc + 3, pc + 4)]
                 ok8 = ops == [".+8"] and None not in nxt[:3] and \
@@ -823,10 +847,12 @@ class Sim:
                 if self.cmp[0]:
                     if ok8:
                         pc += 3
-                    elif any(nxt[k][1][0].startswith("*") for k in (3, 4)):
+                    elif sum(store_bytes(nxt[k][1][0]) for k in (3, 4)) != 8:
                         raise SimError("'jz .+16' with a count of 0 past "
-                                       "three-byte stores: the real code "
-                                       "jumps into the next instruction")
+                                       "%d bytes of stores, not 8: the real "
+                                       "code jumps into the next instruction"
+                                       % sum(store_bytes(nxt[k][1][0])
+                                             for k in (3, 4)))
                     else:
                         pc += 5
             elif mnem == "loop":

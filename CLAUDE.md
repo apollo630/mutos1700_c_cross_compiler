@@ -220,7 +220,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   the probes, the kernel sources of the tree and `fuzz_c.py`'s programs compiled with
   and without `-F`, `-H` and `-1`, the rule log on - every byte that differs must lie in
   an applied rule's logged range (`docs/RULES.md`, "The accounting"); `--report` lists
-  the bugs the code meets.
+  the bugs the code meets. `check_corrected.py` (in `make test`, since step F1): each
+  active correction's triggers under `x86sim.py` - the original's value without a
+  switch, C's with `-F` - and `fuzz_c.py --mode corrected`, every failure a bug not yet
+  corrected (`docs/RULES.md`, "What a correction computes"); with `--realbin` (in `make
+  check-realbin`) the triggers linked and run under `mutosemu.py`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
