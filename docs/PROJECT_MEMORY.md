@@ -69,6 +69,10 @@ candidates); `make install`; the manual pages.
   come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
   8086 has been replaced by a NEC V30, and an IDE interface added (said
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
+- The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
+  check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
+  There it took 75 minutes on two cores (after F1): run it in the background with
+  a log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
   the kernel build, of the plan of 2026-11-08 and of steps F0 and F1 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
@@ -88,4 +92,5 @@ candidates); `make install`; the manual pages.
   `docs/RULES.md`).
 - 2026-11-08: step F1 - the four bugs of `c1` that make wrong code silently (C1-03,
   C1-06, C1-02, C1-01) corrected in the corrected mode, four patches; without a
-  switch every output is still the original's (`STATUS.md`, "Step F1").
+  switch every output is still the original's (`STATUS.md`, "Step F1"). The same
+  day, a whole `make check-realbin` on `2a10c55`: exit 0.
