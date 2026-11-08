@@ -123,12 +123,13 @@ History: floating point beyond the corpus - `libc.a`'s compiled C and the `fltpr
 
 ## [Milestone 5 — Optimizer (`c2`) & NEC V30 (`-1`)](devlog/m5_c2_v30.md)
 
-The optimizer and the NEC V30: why code compiled with `-1` must keep the ABI, and why not `PREPARE`/`DISPOSE` (the port of `c2` itself: the part on the original binaries and the ports).
+The optimizer and the NEC V30: why code compiled with `-1` must keep the ABI, why not `PREPARE`/`DISPOSE`, and where the three rules of 2026-11-08 go and why (the port of `c2` itself: the part on the original binaries and the ports).
 
 - Hard constraint (settled)
 - Evidence: `docs/V20_V30_Users_Manual_Oct86.pdf`
 - `PREPARE`/`DISPOSE` vs. the discrete instruction sequence — real numbers
 - Recommendation
+- The rules for `c1` and `c2` (2026-11-08)
 
 ## [The original binaries and the ports of `c1`, `c0`, `cpp`, `ld`, `cc`, `c2`, `ar`, `ranlib`, `make`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed` and `em`](devlog/originals_and_ports.md)
 

@@ -42,11 +42,17 @@ Guideline 11).
 | 2026-10-25 | MUTOS makefiles are supported by porting `make` (not a wrapper around the host's `make`), and with it every other binary brought from the hardware: `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder` (a script), `ed`, `em`. | decisions 10 and 11 |
 | 2026-10-25 | All original MUTOS files live under `mutos/` (`mutos_bin/` binaries as base64 text, `mutos_include/`, `mutos_man/`), reference data never altered. | `mutos/README.md`; Workflow Guideline 2 |
 | 2026-11-07 | The switch for 80186/V30 code generation in `cc`/`c1`/`c2`, should it come, is `-1` as well, the name `mutos_as` has; the older working name was replaced in every Markdown document. | `docs/TOOLCHAIN_PLAN.md`, section 4 |
+| 2026-11-08 | After weighing the correction of the originals' bugs against 80186/V30 code generation - his first concern: no wrong code, no existing code broken little by little by special cases, a clean and testable code base -: both come, in the order of the plan's section 7.5 (shared infrastructure first, then the corrections that matter, then the V30 rules). | `docs/TOOLCHAIN_PLAN.md`, section 7 |
+| 2026-11-08 | The corrected mode becomes the default at the end; until then a switch chooses it, and afterwards the original's behaviour stays selectable (switch and environment variable; names to be proposed). | decision 13 |
+| 2026-11-08 | First: `libc.a` stays the original. Revised the same day, after Claude's recommendation: the original archive stays untouched and is the original mode's library; the corrected mode links a corrected copy in which only measured runtime bugs are corrected (L-04, L-05 and what step F3 finds), each member with its interface kept, so that the copy also works with the original `cc`/`ld` on the hardware. | decision 14; steps F3, F3b |
+| 2026-11-08 | `c1`/`c2` generate 80186/V30 code behind `-1`, for faster code on his V30; a closed list of three rules. | decision 15; section 7.4 |
+| 2026-11-08 | A run with `-1` prints briefly which and how many 80186/V30 instructions were generated (counted by `mutos_as`, one line per assembly). | decision 16 |
 
-Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, section 3, and
-`STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
-Milestone 2, "Step 5 of the plan"); 80186/V30 code generation in `c1`/`c2`
-(behind `-1`);
+Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
+and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
+Milestone 2, "Step 5 of the plan"); the names of the corrected mode's switch and
+environment variable (proposed with step F0); whether the kernel's `arith.a`
+gets the corrections of the long helpers too; which of step F4's corrections;
 `make install`; the manual pages.
 
 ## The owner's setup
@@ -59,7 +65,9 @@ Milestone 2, "Step 5 of the plan"); 80186/V30 code generation in `c1`/`c2`
   makefile is (`tests/mutos_ed/kernel/conf.Makefile`, without the dependency
   lines).
 - The real MUTOS 1700 hardware (A7100) for golden runs: the goldens in `tests/`
-  come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12).
+  come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
+  8086 has been replaced by a NEC V30, and an IDE interface added (said
+  2026-11-08): the machine for the hardware checks of the 80186/V30 code.
 - The claude.ai project also holds short German summaries of steps 5 to 9 and of
   the kernel build (`claude/step*_*.md`, `claude/kernelbuild_pruefung_2026-11-07.md`);
   their content is in `STATUS.md` and the development log, which are

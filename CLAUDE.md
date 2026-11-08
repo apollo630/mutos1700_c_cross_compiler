@@ -650,11 +650,12 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   original on every `.s` golden, hand-written cases and by differential fuzzing
   (`tests/realbin/c2cmp.py`, `c2fuzz.py`) - see `STATUS.md` and
   `src/mutos_cc/README.md`.
-* 80186/V30 code generation in `mutos_c1`/`mutos_c2` - should it come, behind the switch
-  `-1`, as `mutos_as`'s 80186/V30 instructions (`docs/TOOLCHAIN_PLAN.md`, section 4):
-  deferred until the 8086 toolchain works completely; then decided. Settled ahead of
-  it: such code must stay link-compatible with the real `libc.a`/`crt0.o`
-  (`docs/devlog/m5_c2_v30.md`).
+* 80186/V30 code generation in `mutos_c1`/`mutos_c2` - decided 2026-11-08, not begun:
+  behind the switch `-1`, as `mutos_as`'s 80186/V30 instructions, a closed list of three
+  rules (`docs/TOOLCHAIN_PLAN.md`, sections 4 and 7.4). Settled ahead of it: such code
+  must stay link-compatible with the real `libc.a`/`crt0.o` (`docs/devlog/m5_c2_v30.md`).
+  Decided with it: the bugs of the originals are corrected in a mode that becomes the
+  default at the end, the original's behaviour selectable (section 7.3).
 
 ### Milestone 6: `make`, `ar`, `ranlib` and the other MUTOS tools
 * **The MUTOS kernel, 2026-11-07**: with steps 6 to 9 done, the project owner built the MUTOS

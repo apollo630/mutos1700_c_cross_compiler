@@ -22,9 +22,14 @@ step 8, the ports of `nm`, `size`, `strip`, `tsort` and `lorder`, with `bin/nm`,
 `bin/size`, `bin/strip`, `bin/tsort` and `bin/lorder` in the root, and step 9,
 the ports of `ed` and of `em`'s line mode, with `bin/ed` and `bin/em` in the
 root - the MUTOS kernel's makefile, which edits itself with `ed` and
-post-processes `mch.s` with `em`, runs through `mutos_make` with them. What
-follows (section 3: the 80186/V30 decision, `make install`, the manual pages)
-is the project owner's to order; `STATUS.md`'s "Next up" follows this plan.
+post-processes `mch.s` with `em`, runs through `mutos_make` with them.
+
+**What follows (decided 2026-11-08)**: the bugs of the originals are
+corrected in a mode of their own, which becomes the default at the end, and
+`c1`/`c2` generate 80186/V30 code behind `-1` - section 7 (decisions 13 to
+16, stages F and V). The corrected mode links a corrected copy of `libc.a`,
+in which only measured runtime bugs are corrected; the original stays.
+`make install` and the manual pages come after; `STATUS.md`'s "Next up" follows this plan.
 
 **The test of it all (2026-11-07)**: the project owner built the MUTOS 1700
 kernel on Linux with its original, unchanged makefile, through `mutos_make` and
@@ -124,7 +129,8 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
    original has no 80186/V30 transformation).
 8. **`mutos_c1` and `mutos_c2` stay without 80186/V30 code generation**
    until the 8086 toolchain works completely; whether and how it comes is
-   decided then.
+   decided then. **Decided 2026-11-08**: it comes, behind `-1`, as a closed
+   list of three rules (decision 15, section 7).
 9. **`mutos_as` is not ported now.** It takes `-g` and `-C` (which the
    original `cc` always passes): `-g` has no effect in the original and
    none here; `-C` leaves the defined, non-global symbols starting with `L`
@@ -194,8 +200,8 @@ oracles (2026-10-20)"; the points that shape this plan are in section 5.
 
 Steps 6 to 9 in this order were proposed on 2026-10-25 (the archiver
 first, since `make`'s library makefiles need it; the editors last, since
-no makefile does). Later: the 80186/V30 decision for `c1`/`c2`, `make
-install`, the manual pages.
+no makefile does). After step 9: the corrections and the 80186/V30 code of
+section 7 (decided 2026-11-08), then `make install` and the manual pages.
 
 ## 4. The switch `-1` (decided 2026-10-20)
 
@@ -226,7 +232,10 @@ original refuses them; its 80186 words are the unknown words of AS-02.
 
 **The compiler's switch is `-1` too** (confirmed by the owner 2026-11-07):
 should 80186/V30 code generation in `c1`/`c2` come (decision 8), it is
-behind `-1` as well - the reasons above hold for `cc`. `-mv30`, the
+behind `-1` as well - the reasons above hold for `cc`. It comes (decision
+15, 2026-11-08): `cc -1` passes the switch to `c1`, `c2` and `as`, and every
+assembly with `-1` reports the 80186/V30 instructions it produced (decision
+16, section 7). `-mv30`, the
 working name of the documents of Milestones 4 and 5 from before
 2026-10-20, was replaced by `-1` in them on 2026-11-07; only the comment of
 `tests/mutos_cc/01_expr/04_shift.c` keeps it, since that file is the
@@ -331,3 +340,201 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   (bytes 10 and 11 of MUTOS's `sgttyb`; 20 and 80 without a terminal) and for
   the screen mode, which the port refuses. The emulator's `ioctl()` is
   always "not a tty": the terminal's paths are checked by reading.
+- The names of the mode's switch and of its environment variable
+  (decision 13): proposed with step F0, for the project owner to confirm.
+  The switch must be free in `cc` (whose unknown options go to `ld`), `ld`,
+  `as`, `c0` and `c1`.
+- Whether the kernel's `conf/arith.a` (from the owner's kernel tree; its
+  long helpers are likely the code of `libc.a`'s) gets the corrections of
+  decision 14 too: compare its members with `libc.a`'s after F3.
+
+## 7. Corrections and 80186/V30 code (decided 2026-11-08)
+
+With steps 0 to 9 done and the kernel built byte for byte (2026-11-07), the
+project owner weighed two directions: correcting the known bugs of the
+originals (`docs/MUTOS_ORIGINAL_BUGS.md`), and 80186/V30 code generation in
+`c1`/`c2`. His first concern is code that is wrong, or existing code broken
+little by little by special cases; the code base is to stay clean and
+testable. Claude's analysis and recommendation of that day are the basis of
+this section.
+
+### 7.1 Decisions (2026-11-08)
+
+13. **The bugs of the originals are corrected, in a corrected mode that
+    becomes the default at the end.** While the corrections are made, the
+    default stays the original's behaviour and a switch chooses the
+    corrected mode. Once stage F is done (7.3), one change makes the
+    corrected mode the default; the original's behaviour stays selectable.
+    Besides the switch, an environment variable chooses the mode, either way
+    - for makefiles whose command lines cannot carry a switch: the corpus's
+    `Makefile.mutos` files, and the kernel's makefile, whose `c.c`,
+    `symtab.c` and `mch` rules do not use `$(CFLAGS)` and whose link runs
+    `ld` itself. So the kernel can be built in the corrected mode before the
+    change, and in the original mode after it. From the change on, the
+    checks against the goldens and the emulated originals run in the
+    original mode. The mode reaches `c0`, `c1`, `as` (its floating constants,
+    decision 14) and `ld` (its own corrections, and which `libc.a` `-lc`
+    means); `c2` has no correction planned and gets `-1` only. Names:
+    section 6.
+14. **The original `libc.a` stays; the corrected mode links a corrected
+    copy** (decided 2026-11-08; the same day's first decision, `libc.a`
+    unchanged, was revised after Claude's recommendation). The original
+    archive stays untouched where it is (`tests/mutos1700_libc/`) and is
+    the library of the original mode. The copy differs only in
+    members whose routines are measured to compute wrongly in ordinary
+    programs: the runtime that compiled code calls without the programmer
+    naming it (step F3 lists its fourteen members) - L-04 (`aldiv`,
+    `alrem`) and L-05 (`dmath.o`'s `dmul`) so far, and what F3 finds. No
+    general revision of the library: its other members are not examined.
+    Each corrected member keeps its interface exactly - its symbols, the
+    private calling convention of `docs/MUTOS_C_ABI.md` (section 1.8 for the
+    long helpers: `bx` saved as well, the result written through the
+    pointer and left in DX:AX), the registers it preserves, no new external
+    reference - so that the copy is an ordinary MUTOS archive for the
+    original `cc` and `ld` on the hardware as well, and objects compiled by
+    the original compiler link with it. It stays 8086 code (no `-1`): it
+    must run on every A7100 and A7150. Where `c1` and `as` re-enact a
+    routine of the library for a constant (`c1`'s `itod` and `aldiv`,
+    `fltconst.c`'s `atof` with `dmul`, `ldexp`), the corrected mode re-enacts
+    the corrected routine, checked against the corrected library under the
+    emulator - so a program computes the same whether a constant is folded
+    or computed at run time, in either mode. Limits: the original `c1` and
+    `as` on the hardware carry their own copies of the old routines, so a
+    program compiled there folds constants the old way; the kernel does
+    not link `libc.a` but its own `conf/arith.a` (with `aldiv`, `alrem`,
+    `ldiv` ...), which this decision does not touch.
+15. **`c1` and `c2` generate 80186/V30 code behind `-1`** (replaces decision
+    8). The target is the project owner's Robotron A7100, whose 8086 he has
+    replaced by a NEC V30 (and to which he has added an IDE interface): the
+    machine for the hardware checks of stage V. The goal is faster code. The
+    rules are a closed list of three (7.4); nothing is added without a
+    measured gain. The frame layout and the link compatibility with the
+    original `libc.a` and `crt0.o` stay as `docs/devlog/m5_c2_v30.md` settled
+    them.
+16. **`-1` reports what it produced**: an assembly with `-1` prints one line
+    to the standard error - how many 80186/V30 instructions the object holds,
+    by kind (`push` of a constant, shift by a constant, `imul` by a
+    constant, and any other form `-1` accepts). `mutos_as` counts them as it
+    encodes them, so the count is the object's, whichever pass produced the
+    instruction: `cc -1` prints a line for each source it assembles (after
+    `cc`'s own `x.c:` line when there are several), hand-written assembler is
+    counted too, and `cc -S -1`, which assembles nothing, prints none.
+
+### 7.2 How the work is kept safe
+
+- **The default stays the original until decision 13's change.** Every
+  existing check - the goldens, the emulated originals, the fuzzers, the
+  kernel built byte for byte - runs as it does today. That is what keeps
+  the existing code from being damaged: a change that reaches the default
+  fails them.
+- **A closed list of rules.** Each correction (named by its bug, C1-03 ..)
+  and each V30 rule (V30-PUSH, V30-SHIFT, V30-IMUL) is in a source file of
+  its own, reached through a one-line hook in the ported code, guarded by
+  its switch, and delivered as a patch of its own. A check in the style of
+  `scripts/check_docs.py` compares the hooks with the list and the
+  documents. Taking a rule out is deleting its file and its hook.
+- **Every difference accounted for.** A developer option makes `c1`, `c2`,
+  `as` and `ld` log each rule they apply (its name and the source line). A
+  checker compiles the corpus, the kernel's sources and fuzz programs with
+  and without the switch: every byte that differs must belong to a logged
+  rule, or the check fails. A rule cannot have a side effect unnoticed. The
+  same for the library: the corrected copy differs from the original archive
+  only in the members replaced and in `__.SYMDEF`.
+- **Semantics instead of bytes where no golden can exist.** For a
+  correction, C's semantics on a 16-bit `int` is the reference:
+  `tests/mutos_cc/fuzz/fuzz_c.py` computes it and `x86sim.py` executes the
+  generated code, modelling the flags and stopping on a flag the 8086 leaves
+  undefined. For `-1`, the same program compiled without `-1` is the
+  reference: the V30 computes as the 8086 (shifts by `cl` not masked, a
+  quotient of -32768 a divide error - `docs/devlog/m2_as.md`, "CPU
+  reference"), so both must give the same values. `tests/realbin/mutosemu.py`
+  runs whole programs with the original `libc.a` or its corrected copy (Unicorn emulates an 80386
+  and masks shift counts; the V30 rules use counts 3 to 15 only, where that
+  makes no difference). `x86sim.py` stands in for the runtime routines by
+  C's semantics (its `aldiv` computes C's quotient): it checks the compiler,
+  not the library. The library is checked by running its own code under
+  `mutosemu.py` against Python's arithmetic.
+- **The hardware for acceptance**, not for every change: probes of each
+  80186/V30 form with edge values, a program per stage that prints its
+  values (compared on the host, not by the compiler under test), and the
+  kernel, built in the corrected mode and with `-1`, booted from a test
+  disk. The owner's machine has a V30: it shows what the V30 does, not what
+  an 8086 would. What keeps code built without `-1` 8086 code is `mutos_as`,
+  which refuses the 80186 forms without `-1`, and `x86sim.py`, which stops on
+  a flag the 8086 leaves undefined (the two processors may leave different
+  values there). A check on an unmodified A7100 or A7150, should one be at
+  hand, would add to it.
+
+### 7.3 Stage F: the corrections
+
+| Step | What |
+|---|---|
+| F0 | Infrastructure, shared with stage V: `cc` passes the mode to `c0`, `c1`, `as` and `ld` and `-1` to `c1`, `c2` and `as` (today an unknown option such as `-1` goes to `ld`), the environment variable read where the switch is (decision 13); the rule log and the accounting checker (7.2); `fuzz_c.py` generates longs; `x86sim.py` executes the three V30 forms (with the NEC manual's flag rules) and counts V30 clocks; `mutos_as`'s report (decision 16). Hooks at the known bug sites in `c1` and `ld` report, in a diagnostic mode, when the original's wrong path is taken - output unchanged -, run over the corpus and the kernel's sources: which bugs real code meets. Nothing the tools write changes. |
+| F1 | The `c1` bugs that make wrong code silently: C1-03 (`x = l++` loses the carry), C1-06 (`l <<= i` on a local long, `i == 0`, jumps into an instruction), C1-02 (`e * 0`, `e & 0` lose `e`'s side effects), C1-01 (a branch on stale flags after `not` and `mov`; with C1-02 about 0.9% of `fuzz_c.py`'s programs) - the smallest change first. |
+| F2 | `ld`: LD-06 (a warning clears an earlier error: exit status 0 and an executable), LD-08 (a text of 65,530 bytes or more wraps). |
+| F3 | Measure the runtime compiled code calls: the routines `c1`'s code tables call (in the corpus's and the kernel's code: `fldd`, `fstdp`, `faddd`, `itof`, `ftoi`, `fmuld`, `fcmp`, `lmul`, `ldiv`, `lrem`, `aldiv` ...), fourteen members of `libc.a` - `aldiv.o`, `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o`, `chkstk.o`, `convert.o` (`itof`, `ftoi`, `itod`, `dtoi`), `lconvert.o` (`ltof`, `ftol`), `dmath.o` (`dadd`, `dsub`, `dmul`, `ddiv`), `stacks.o`, `stkmath.o`, `singles.o`, `doubles.o` -, which in turn pull in `fperr.o` (`__ovfl`, `__div0`: the SIGFPE), `cret.o`, `atof.o` and `fltpr.o` (through `__fltu3`, `__fltu2`). Measured so far: `aldiv`/`alrem` (L-04), `dmul` (L-05) and, through `atof`, `ldexp` (L-06). Each entry point under `mutosemu.py` against Python's arithmetic (exact rationals for the floating ones), on edge values and many random ones, as `tests/mutos_as/float_coverage/libcatof.py` does for `atof`. Findings into `docs/MUTOS_ORIGINAL_BUGS.md`. |
+| F3b | The corrected copy of `libc.a` (decision 14), member by member, for the findings of F3 that compute wrongly in ordinary programs: first a source reconstructed from the original member that `mutos_as` assembles to that member byte for byte (as `tests/mutos_as/libc_recon/ldexp.s` is for `ldexp.o`) - the proof of the reconstruction -, then the correction as a small change of that source (L-05 is one displacement, `2[di]` for `4[di]`). The sources in a directory of their own; the archive built from the original by replacing those members in place (`mutos_ar`, `mutos_ranlib`), so that order and every other member stay. Checked: each entry point exhaustively at the edges and on many random values against Python; the interface by linking the corpus programs the original compiler made (the goldens) with the copy and running them under `mutosemu.py` - the same values but where a bug is corrected; the `c1`/`as` re-enactments against the copy; on the hardware, a program linked by hand with `ld` against the copy before it replaces anything. Which library `ld` takes for `-lc` in which mode, and where the copy lives in the root, is settled with this step. |
+| F4 | As the owner chooses: what the ports refuse or the original reports today - C1-07 first (a long constant shifted by a constant: common in real code), then C1-11, C1-09, C1-08, C1-04, C1-05, C1-10, and `c0`'s crashes. |
+| F5 | The change of default (decision 13), in one change: the corrected mode, with the corrected `libc.a`, is what `cc` and `ld` do without a switch; the checks against the originals run in the original mode; the kernel built in the corrected mode, its differences from the original accounted for, booted on the hardware from a test disk. |
+
+Not planned: the bugs of `cpp` and `c2` that need exotic input (CPP-12,
+CPP-13, C2-04, ...); those of `ar`, `ranlib`, `make`, `nm`, `size`,
+`strip`, `tsort`, `lorder`, `ed` and `em` (refused or harmless - and a
+correction to `ed` or `em` would change what the kernel makefile's scripts
+do); AS-03 to AS-14, which `mutos_as`, a re-implementation, does not
+reproduce; the members of `libc.a` outside the runtime of F3, and the
+kernel's `arith.a` (decision 14).
+
+Each correction changes its entry in `docs/MUTOS_ORIGINAL_BUGS.md` ("This
+project": corrected in the corrected mode) in the same change.
+
+### 7.4 Stage V: 80186/V30 code
+
+| Step | Rule | What |
+|---|---|---|
+| V0 | - | Part of F0. With `-1` passed through and no rule yet, `c1`'s and `c2`'s output with and without `-1` is the same. |
+| V1 | V30-PUSH | In `c2`: `pushopt()` makes `mov r,x` / `push r` into `push x` already, but not for a constant `x` (one condition, `src/mutos_cc/c2port/c21.c`), since the 8086 cannot push one. Under `-1` the condition goes. The test that `r` is not read again is the original's: `regmask()` follows the branches and takes an op it does not know as reading and writing every register. `c2` counts `push *n.` as 4 bytes (it is 2 or 3): branch lengths stay safe. |
+| V2 | V30-SHIFT | In `c1`: a shift by a constant count of 3 to 15 as `sal r,*n.` (and `sar`, `shr`), not `mov cx,*n.` / `sal r,cl` - the same result and the same flags, CX not loaded. A row of `c1`'s code tables, used only under `-1`. `c2` counts the form as 4 bytes (it is 3). |
+| V3 | V30-IMUL | In `c1`, last: `imul ax,*n.` (or the form with a memory operand) for `mov cx,*n.` / `imul cx`. First `c2` must learn the form's length: `isreg()` reads only an operand's first two characters, so `c2` takes `imul ax,*30.` for a 2-byte instruction (it is 3 or 4) and could make a branch too short to reach. |
+| V4 | - | On the V30: probes of each form with edge values, a program per rule that prints its values, the kernel built with `make CFLAGS="-c -O -K1024 -1"` and booted from a test disk; the gain measured (V30 clocks in `x86sim.py`, run times on the hardware). |
+
+Then the list is closed. Left out, with the reasons:
+
+- `enter`/`leave`: with the fixed frame layout no faster than the
+  instructions they replace, and longer (`docs/devlog/m5_c2_v30.md`).
+- `pusha`/`popa`: they save eight registers in their own order; a compiled
+  function saves `bp`, `di` and `si` at fixed places. For hand-written
+  assembler only.
+- Two `sar r,*1` made into `sar r,*2`: slower on the V30 (2 clocks each
+  against 7 + n) and the overflow flag undefined instead of 0 - `c1`
+  branches on the flags of a shift's result.
+- A pass after `c2`: `c2` keeps constants in registers. In the kernel's
+  `amx.s`, after `mov cx,*30.` / `imul cx` it uses `cx` for 30 in two more
+  `imul cx` and in an `add ax,cx` that `c1` wrote as `add ax,*30.`; rewriting
+  the first pair afterwards would leave `cx` undefined there. 32 `imul cx` of
+  the kernel's `c2` output have no `mov cx` right before them.
+- NEC-only instructions: `-1` is the set the 80186 and the V30 share
+  (section 4).
+
+The gain, counted in the `c2` output of the kernel's 62 sources
+(`tests/mutos_as/kernel_opt/`) - upper bounds, since whether the register
+is used again was not checked; clocks from the NEC manual, V30, even
+addresses:
+
+| Today | With `-1` | Places | Gain each |
+|---|---|---|---|
+| `mov r,` constant / `push r` | `push` constant | 478 (389 of them 8-bit) | 1 or 2 bytes; `push imm8` 7 clocks for the `mov` and a `push` of 8 |
+| `mov cx,*n.` / `sal r,cl` | `sal r,*n.` | 210 | 2 bytes and the `mov`; CX stays free |
+| `mov cx,` constant / `imul cx` | `imul ax,` constant | 215 (203 of them 8-bit) | 1 or 2 bytes; 28-34 (8-bit) or 36-42 clocks for the `mov` and 41-47 |
+
+Together at most 1,705 of the kernel's 50,496 bytes of text (3.4%).
+
+A program compiled with `-1` must not run on an 8086: there 0x60-0x6F are
+conditional jumps and 0xC0/0xC1 are `ret`, so it goes wrong without a
+message. The manual pages will say so.
+
+### 7.5 Order
+
+F0 (with V0), F1, F2, F3, F3b, then V1 to V4, then F4 as the owner chooses,
+then F5. Each step is a patch of its own, checked as every step before it
+(`make test`, `make check-realbin`, `make check-docs`, a fresh clone).
