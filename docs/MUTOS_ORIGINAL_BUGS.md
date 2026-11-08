@@ -4,10 +4,14 @@ This file collects every bug found in the original MUTOS 1700 binaries
 (`mutos/mutos_bin/`) - `c0`, `c1`, `as`, `ld`, `cpp`, `cc`, `c2` and
 `libc.a`, and `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`,
 `ed` and `em` as their ports read them
-(`docs/TOOLCHAIN_PLAN.md`) - in one place, for the day this project offers to fix them (a
-`mutos_*` option, say, that leaves the faithful default alone). Until then
-the project's tools reproduce the original's behaviour wherever it can be
-reproduced, bugs included, and refuse where it cannot (see each entry).
+(`docs/TOOLCHAIN_PLAN.md`) - in one place, so that they can be corrected. The
+corrections are planned (decided 2026-11-08, `docs/TOOLCHAIN_PLAN.md`, section 7.3):
+a corrected mode, chosen by a switch while the corrections are made and the default
+once they are done, the original's behaviour still selectable; for the runtime bugs
+of `libc.a`, a corrected copy of the archive in the corrected mode, the original
+archive unchanged. Until a correction is made, the project's tools reproduce the original's
+behaviour wherever it can be reproduced, bugs included, and refuse where it cannot
+(see each entry).
 `CLAUDE.md`'s Workflow Guideline 9 makes keeping this file current part of
 the change that finds a bug.
 
@@ -34,7 +38,7 @@ it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib`,
 message's last line ending in "refused") where the original's
 output depends on state that is not modelled.
 
-Last updated: 2026-11-02.
+Last updated: 2026-11-08.
 
 ## Overview
 

@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-07.
+Last updated: 2026-11-08.
 
 ---
 
@@ -1206,9 +1206,13 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    Checked by `tests/realbin/edcmp.py` and `edfuzz.py` against the emulated originals, and in
    `make test` by `tests/mutos_ed/check_editors.py` (the MUTOS kernel's makefile through
    `mutos_make`: its targets that edit it with `ed`, its `mch` rule with `em` - the real
-   `mch.s` and `mch.o`). **Next**: the plan's later items (`docs/TOOLCHAIN_PLAN.md`, section 3:
-   the 80186/V30 decision for `c1`/`c2`, `make install`, the manual pages) and the open
-   decision on a port of `as` - the project owner's to order.
+   `mch.s` and `mch.o`). **Next** (decided by the project owner 2026-11-08,
+   `docs/TOOLCHAIN_PLAN.md`, section 7): stage F - the bugs of the originals corrected in
+   a mode that becomes the default at the end, with a corrected copy of `libc.a` for the
+   runtime bugs measured (the original archive stays) - and stage V - 80186/V30 code in
+   `c1`/`c2` behind `-1`, three rules -, in the order F0 (shared infrastructure, no
+   change to any output), F1, F2, F3, F3b, V1 to V4, F4, F5. Then `make
+   install` and the manual pages. The decision on a port of `as` is still open.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1228,8 +1232,8 @@ right operands, small frames); the ports refuse none of them, and
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-1`)
 
 **Status: the optimizer is a port of the original `c2`, for the 8086** (since
-2026-10-25, `docs/TOOLCHAIN_PLAN.md`, decision 7 and step 4); the 80186/V30 half is
-deferred (below). `src/mutos_cc/README.md` ("The port of the real `c2`") describes the
+2026-10-25, `docs/TOOLCHAIN_PLAN.md`, decision 7 and step 4); the 80186/V30 half was
+decided on 2026-11-08 and is not begun (below). `src/mutos_cc/README.md` ("The port of the real `c2`") describes the
 port; how it went: `docs/devlog/originals_and_ports.md`, "The port of `c2`".
 
 ### `mutos_c2` is the port of the real `c2` (verified 2026-10-25)
@@ -1302,10 +1306,13 @@ statistics have four new counters ("mov/push converted to push", "pop/push conve
 to mov", "ors -> tests", "long branches to short") and no "sob's added". The node has
 two more bytes, the registers read and written (`regmask()`).
 
-**80186/V30 code generation** in `mutos_c1` and `mutos_c2` is deferred: the decision
-whether and how it comes is taken once the 8086 toolchain works completely
-(decision 8). Its switch, should it come, is `-1`, the name `mutos_as` has for the
-80186/V30 instructions (`docs/TOOLCHAIN_PLAN.md`, section 4). One design question was
+**80186/V30 code generation** in `mutos_c1` and `mutos_c2` was decided on 2026-11-08
+(`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; not begun): behind `-1`, the
+name `mutos_as` has for the 80186/V30 instructions (section 4), three rules - a
+constant pushed (`c2`), a shift by a constant count and a multiplication by a constant
+(`c1`) -, and every assembly with `-1` reports the 80186/V30 instructions it produced
+(decision 16). The target is the project owner's A7100 with a NEC V30 in place of its
+8086. One design question was
 settled ahead of it and stands: code built for the V30 must stay link-compatible
 with the real, unmodified `libc.a`/`crt0.o` - no separate runtime is planned, so the
 ABI-visible frame layout from Milestone 4's ABI research can never change for it.
@@ -1313,8 +1320,9 @@ Under that constraint, real NEC
 µPD70116 (V30) timing data (`docs/V20_V30_Users_Manual_Oct86.pdf` - NEC calls
 `ENTER`/`LEAVE` `PREPARE`/`DISPOSE`) shows the only layout-compatible use of
 `PREPARE`/`DISPOSE` is an exact cycle-for-cycle tie against the discrete-instruction
-prologue/epilogue, with a small code-size regression - so not those; `PUSHA`/`POPA`
-and multi-bit shift-by-immediate remain ABI-safe candidates. Full numbers and
+prologue/epilogue, with a small code-size regression - so not those. `PUSHA`/`POPA`,
+once listed as candidates, do not fit a compiled function's frame (they save eight
+registers in their own order) and are left to hand-written assembler (2026-11-08). Full numbers and
 derivation in `docs/devlog/m5_c2_v30.md`.
 
 ---

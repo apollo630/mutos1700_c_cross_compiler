@@ -498,8 +498,9 @@ kernel was built with the cross toolchain and its original makefile: all
 the real-hardware goldens of `tests/mutos_as/kernel_opt/`, and the kernel
 is the original build's byte for byte
 (`../../docs/KERNEL_BUILD.md`). 80186/V30 code generation in `mutos_c1`
-and `mutos_c2` waits for the project owner's decision (decision 8): the
-8086 toolchain works completely now.
+and `mutos_c2` was decided by the project owner on 2026-11-08 and is not
+begun (`../../docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4), nor
+are the corrections of the originals' bugs decided with it (section 7.3).
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the
