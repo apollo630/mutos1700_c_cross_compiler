@@ -34,6 +34,10 @@
 /src/mutos_cc/mutos_c2
 /src/mutos_cc/mutos_cc
 /src/mutos_cc/fltdec_test
+/src/libc_fixed/libc.a
+/src/libc_fixed/libc.a.new
+/src/libc_fixed/arith.a
+/src/libc_fixed/arith.a.new
 
 # The objects "make test" assembles next to the .s files it checks
 # (tests/mutos_as/run_goldens.sh writes <name>.o beside <name>.o.golden).

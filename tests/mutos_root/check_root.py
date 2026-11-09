@@ -8,7 +8,8 @@ paths under $MUTOS_ROOT, by default that directory
 
   1. the root: lib/crt0.o and lib/libc.a byte for byte the references
      in tests/ (decoded from their base64 text), libc.a's modification
-     time its __.SYMDEF time (602282477, 1989-01-31 20:41:17 UTC), the
+     time its __.SYMDEF time (602282477, 1989-01-31 20:41:17 UTC),
+     lib/fixed/libc.a the corrected copy src/libc_fixed/ built, the
      links of the passes and tools to the right files under src/ (a tool
      not built yet is listed, not an error), usr/lib/, usr/include/ and
      tmp/; usr/include/ holds every file of mutos/mutos_include/usr/include/
@@ -20,7 +21,9 @@ paths under $MUTOS_ROOT, by default that directory
   3. the time: mutos_ld links a compiled golden (08_float/01_floatbas,
      which pulls in much of libc.a) against the root's crt0.o and libc.a
      without "out of date", and with a copy of libc.a with a new time
-     with it - the check can fail;
+     with it - the check can fail; with -lc, in the corrected mode it
+     takes lib/fixed/libc.a (LIBC-F, logged), without a switch, or
+     without the copy in the root, lib/libc.a;
   4. the headers: mutos_cc compiles and links a program that includes
      <stdio.h>, <sys/types.h> and <sys/stat.h> through the root;
   5. with --realbin (needs the Python module "unicorn"): the same as 3
@@ -113,6 +116,13 @@ def check_files(root):
         t = int(os.stat(libc).st_mtime)
         check(t == SYMDEF_TIME, "lib/libc.a's time is its __.SYMDEF time "
               '(%d, found %d)' % (SYMDEF_TIME, t))
+    # the corrected copy (step F3b): what src/libc_fixed/ built, with its
+    # time (that of its own __.SYMDEF)
+    fixed = os.path.join(root, 'lib', 'fixed', 'libc.a')
+    built = os.path.join(SRC, 'libc_fixed', 'libc.a')
+    check(os.path.isfile(fixed) and os.path.isfile(built) and read(fixed) == read(built)
+          and int(os.stat(fixed).st_mtime) == int(os.stat(built).st_mtime),
+          'lib/fixed/libc.a is src/libc_fixed/libc.a, with its time')
     missing = []
     for mpath, tool in LINKS:
         p = os.path.join(root, mpath)
@@ -225,6 +235,34 @@ def check_mutos_ld(root):
             check(r.returncode == 0 and ('out of date' in out) == warn,
                   '%s (status %d%s)' % (what, r.returncode,
                                         ', ' + out.strip() if out else ''))
+        # -lc in the corrected mode: lib/fixed/libc.a first (LIBC-F,
+        # docs/RULES.md), the rule log saying so; without the copy in the
+        # root, the original's lib/libc.a, nothing logged
+        bare = os.path.join(tmp, 'bare')
+        for d in ('lib/fixed', 'tmp'):
+            os.makedirs(os.path.join(bare, d))
+        for f in ('crt0.o', 'libc.a'):
+            os.symlink(os.path.join(root, 'lib', f), os.path.join(bare, 'lib', f))
+        for r_, sw, want, what in (
+                (root, [], None, '-lc without a switch: lib/libc.a, nothing logged'),
+                (root, ['-F'], 'ld LIBC-F applied lib=/lib/fixed/libc.a',
+                 '-lc with -F: lib/fixed/libc.a, "LIBC-F applied"'),
+                (bare, ['-F'], None, '-lc with -F and no lib/fixed/libc.a in the root: '
+                 'lib/libc.a, nothing logged')):
+            log = os.path.join(tmp, 'rules.log')
+            if os.path.exists(log):
+                os.unlink(log)
+            env = dict(os.environ, MUTOS_ROOT=r_, MUTOS_RULELOG=log)
+            env.pop('MUTOS_MODE', None)
+            r = subprocess.run([ld] + sw + ['-X', os.path.join(r_, 'lib', 'crt0.o'), '-o',
+                                            os.path.join(tmp, 'a.out'), obj, '-lc'],
+                               capture_output=True, text=True, env=env)
+            # (one line for each of ld's two passes, which both open it)
+            got = set(open(log).read().split('\n')) - {''} if os.path.exists(log) else None
+            if got is not None and len(got) == 1:
+                got = got.pop()
+            check(r.returncode == 0 and not (r.stdout + r.stderr) and got == want,
+                  '%s (status %d, log %r)' % (what, r.returncode, got))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

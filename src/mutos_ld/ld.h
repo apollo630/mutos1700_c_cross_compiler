@@ -342,6 +342,7 @@ int16_t	ld_atoi(uint16_t s);
 uint16_t ld_mktemp(uint16_t as);
 
 int16_t	sys_open(uint16_t name, int16_t mode);
+int16_t	sys_open_root(const char *mpath);	/* EXTENSION: LIBC-F */
 int16_t	sys_creat(uint16_t name, int16_t mode);
 int16_t	sys_close(int16_t fd);
 int16_t	sys_read(int16_t fd, uint16_t buf, uint16_t n);

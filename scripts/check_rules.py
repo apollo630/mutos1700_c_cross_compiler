@@ -20,9 +20,20 @@ file, its hook and its row. This script checks that the three agree:
      sources has its row;
   4. a correction's bug has its entry in docs/MUTOS_ORIGINAL_BUGS.md
      ("### C1-03 ..."), and that entry names docs/RULES.md; a V30 rule is
-     named in docs/TOOLCHAIN_PLAN.md, section 7.4.
+     named in docs/TOOLCHAIN_PLAN.md, section 7.4; LIBC-F, which links the
+     corrected copy of libc.a, in docs/RULES.md's section on the copy.
 
 What a rule changes is checked by running it: tests/rules/check_accounting.py.
+
+The corrections of libc.a's runtime are changes of reconstructed sources,
+not rules of a tool (docs/RULES.md, "The corrected copy of libc.a"):
+
+  5. every line of src/libc_fixed/fixed/<name>.s that differs from
+     src/libc_fixed/orig/<name>.s lies in a change with a comment naming a
+     correction ("| L-03 ..."), and each correction named there is a row
+     of docs/RULES.md's register of the copy for the member <name>.o;
+     every row has its change, its source, and its entry in
+     docs/MUTOS_ORIGINAL_BUGS.md naming docs/RULES.md.
 
 Usage:
     python3 scripts/check_rules.py
@@ -30,6 +41,7 @@ Usage:
 Exit status 0 if everything agrees, 1 otherwise. Standard library only.
 """
 
+import difflib
 import os
 import re
 import sys
@@ -65,18 +77,18 @@ def slug(rule):
     return rule.lower().replace('-', '_')
 
 
-def register():
-    """The rows of docs/RULES.md's register: a list of dicts."""
+def register(header=r'\|\s*Rule\s*\|\s*Tool\s*\|', what='| Rule | Tool | ...'):
+    """The rows of a register table of docs/RULES.md: a list of dicts."""
     rows = []
     text = read('docs/RULES.md')
     lines = text.splitlines()
     start = None
     for i, line in enumerate(lines):
-        if re.match(r'\|\s*Rule\s*\|\s*Tool\s*\|', line):
+        if re.match(header, line):
             start = i
             break
     if start is None:
-        issue('docs/RULES.md: no register table (a header "| Rule | Tool | ...")')
+        issue('docs/RULES.md: no register table (a header "%s")' % what)
         return rows
     head = [c.strip() for c in lines[start].strip().strip('|').split('|')]
     for line in lines[start + 2:]:
@@ -180,7 +192,15 @@ def main():
             if rule not in line:
                 issue('%s: the hook line %s:%d (or the line above it) does not name '
                       'the rule' % (rule, p, n))
-        if row.get('Switch') == '-F':
+        if rule.startswith('LIBC-'):
+            # the rule that links the corrected copy of libc.a: its record is
+            # docs/RULES.md's section on the copy
+            sec = re.search(r'^## The corrected copy of `libc\.a`.*?(?=^## |\Z)',
+                            read('docs/RULES.md'), re.M | re.S)
+            if sec is None or rule not in sec.group(0):
+                issue('%s: not named in docs/RULES.md\'s section "The corrected copy of '
+                      'libc.a"' % rule)
+        elif row.get('Switch') == '-F':
             m = re.search(r'^### %s .*?(?=^### |^## |\Z)' % re.escape(rule), bugs, re.M | re.S)
             if m is None:
                 issue('%s: no entry "### %s ..." in docs/MUTOS_ORIGINAL_BUGS.md' % (rule, rule))
@@ -201,13 +221,78 @@ def main():
         if fn not in listed_fns:
             for p, n, _ in sites:
                 issue('%s:%d: %s() is not in docs/RULES.md' % (p, n, fn))
+    ncopy = check_copy(bugs)
     if ISSUES:
         for m in ISSUES:
             print('check_rules: ' + m)
         print('check_rules: %d problem(s)' % len(ISSUES))
         return 1
-    print('check_rules: %d rules - files, hooks, register and records agree' % len(rows))
+    print('check_rules: %d rules - files, hooks, register and records agree; %d '
+          'correction(s) of the libc.a copy - sources, marks, register and records agree'
+          % (len(rows), ncopy))
     return 0
+
+
+COPY = 'src/libc_fixed'
+MARK = re.compile(r'\bL-\d\d\b')     # in a line's comment, after its '|'
+
+
+def check_copy(bugs):
+    """Check 5: the corrected sources of the libc.a copy against their
+    reconstructions and the register. The number of rows."""
+    rows = register(r'\|\s*Correction\s*\|\s*Member\s*\|', '| Correction | Member | ...')
+    want = {}
+    for row in rows:
+        c, member = row.get('Correction', ''), row.get('Member', '')
+        if not re.fullmatch(r'L-\d\d', c) or not member.endswith('.o'):
+            issue('docs/RULES.md, the copy\'s register: a row %r for %r' % (c, member))
+            continue
+        name = member[:-2]
+        src = '%s/fixed/%s.s' % (COPY, name)
+        if row.get('Source') != src:
+            issue('%s: the source is %r, it must be %s' % (c, row.get('Source'), src))
+        want.setdefault(name, set()).add(c)
+        m = re.search(r'^### %s .*?(?=^### |^## |\Z)' % re.escape(c), bugs, re.M | re.S)
+        if m is None:
+            issue('%s: no entry "### %s ..." in docs/MUTOS_ORIGINAL_BUGS.md' % (c, c))
+        elif 'RULES.md' not in m.group(0):
+            issue('%s: its entry in docs/MUTOS_ORIGINAL_BUGS.md does not name '
+                  'docs/RULES.md' % c)
+    fdir = os.path.join(REPO, COPY, 'fixed')
+    names = sorted(n[:-2] for n in os.listdir(fdir) if n.endswith('.s')) \
+        if os.path.isdir(fdir) else []
+    for name in sorted(set(want) - set(names)):
+        issue('%s: the register names %s.o, there is no %s/fixed/%s.s'
+              % (', '.join(sorted(want[name])), name, COPY, name))
+    for name in names:
+        orig = '%s/orig/%s.s' % (COPY, name)
+        if not os.path.isfile(os.path.join(REPO, orig)):
+            issue('%s/fixed/%s.s: no reconstruction %s' % (COPY, name, orig))
+            continue
+        a = read(orig).splitlines()
+        b = read('%s/fixed/%s.s' % (COPY, name)).splitlines()
+        found = set()
+        changes = 0
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+            if tag == 'equal':
+                continue
+            changes += 1
+            lines = b[j1:j2] if j2 > j1 else b[max(j1 - 1, 0):j1 + 1]
+            marks = {c for line in lines if '|' in line
+                     for c in MARK.findall(line[line.index('|'):])}
+            if not marks:
+                issue('%s/fixed/%s.s:%d: a change without a mark naming its correction'
+                      % (COPY, name, j1 + 1))
+            for c in sorted(marks):
+                if c not in want.get(name, set()):
+                    issue('%s/fixed/%s.s:%d: %s is not a correction of %s.o in docs/RULES.md'
+                          % (COPY, name, j1 + 1, c, name))
+            found |= marks
+        if not changes:
+            issue('%s/fixed/%s.s: the same as its reconstruction' % (COPY, name))
+        for c in sorted(want.get(name, set()) - found):
+            issue('%s: no change in %s/fixed/%s.s is marked with it' % (c, COPY, name))
+    return len(rows)
 
 
 if __name__ == '__main__':

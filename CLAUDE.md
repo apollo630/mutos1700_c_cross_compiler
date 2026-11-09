@@ -64,6 +64,15 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   (`src/mutos_cc/c2port/`, v7's `c2` rewritten for the 8086 with new passes), running on
   an image of its data segment, libc.a's stdio included; `src/mutos_cc/README.md` has
   the driver's and `c2`'s behaviour, their deltas from v7 and what the ports refuse.
+* `/src/libc_fixed/` (since 2026-11-09, step F3b of `docs/TOOLCHAIN_PLAN.md`): the
+  corrected copy of `libc.a` that the corrected mode links (decision 14) - `orig/`, the
+  sources of the runtime members it corrects, reconstructed so that `mutos_as -C` gives
+  the original members byte for byte; `fixed/`, those sources with their corrections,
+  each change marked with its bug (`docs/RULES.md`, "The corrected copy of `libc.a`");
+  `fix_archive.py`, which replaces the members in place (the copy, built by `make` as
+  the root's `lib/fixed/libc.a`, and the kernel's `arith.a`); `check_copy.py` (in `make
+  test`). `ld -F` takes `lib/fixed/libX.a` for `-lX` (the rule LIBC-F). See its
+  `README.md`.
 * `/src/mutos_ar/` and `/src/mutos_ranlib/` (since 2026-10-26): Source code for the Mutos
   Archiver and the Mutos Archive Indexer - ports of the original MUTOS 1700 `ar` and
   `ranlib` read from their binaries (v7's `ar.c` and `ranlib.c` with the MUTOS
@@ -116,13 +125,20 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all `*.o.base64.txt` object files and `libc.a.base64.txt`.
+* `/tests/mutos1700_arith/`: the MUTOS kernel's `conf/arith.a` (`arith.a.base64.txt`, added by the
+  project owner 2026-11-09) and its seven members: `locking.o` and the long helpers `aldiv.o`,
+  `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o` - `libc.a`'s byte for byte; make builds its
+  corrected copy `src/libc_fixed/arith.a` (step F3b).
 * `/tests/libc_runtime/`: `rtcheck.py` (`make check-runtime`, and in `make check-realbin`;
   since 2026-11-09, step F3 of `docs/TOOLCHAIN_PLAN.md`): the routines of `libc.a` that
   compiled code calls - the long helpers, `chkstk`, the conversions, the floating-point
   stack and its operations - each entry point called under `tests/realbin/mutosemu.py`
   against Python's arithmetic, every difference a model of a known bug
-  (`docs/MUTOS_ORIGINAL_BUGS.md`, L-01 to L-05, L-08 to L-14); `--archive` for the
-  corrected copy of step F3b. See its `README.md`.
+  (`docs/MUTOS_ORIGINAL_BUGS.md`, L-01 to L-05, L-08 to L-14); `--copy` (and
+  `--archive`/`--fixed`) for the corrected copy of step F3b; `linkcheck.py` the copy on
+  whole programs - the goldens linked with both archives run the same, and
+  `triggers/*.c` (one program per correction) give the original's result with `cc` and
+  C's with `cc -F`. See its `README.md`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds, `cc -O` - the original `c2`'s output - plus hand-written kernel assembler such as `mch.s`), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Rule 3's "Known, deliberate exception") — **concluded 2026-09-28**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated. See `STATUS.md`'s open item 6.
@@ -478,7 +494,7 @@ You act as an expert systems programmer, compiler architect, and operating syste
    * The same holds for everything under `/mutos/` - the original binaries, headers and
      manual pages: never regenerated, re-encoded, reformatted or altered (see its
      `README.md`).
-   * **Caution — `.o` is ambiguous in this repo**: every `*.o.golden` under `tests/mutos_as/` is precious real hardware-linked **reference data**, not a regenerable build byproduct, even though it shares the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy those. `tests/mutos1700_libc/*.o.base64.txt`, `tests/mutos1700_libc/libc.a.base64.txt`, and `tests/mutos1700_crt0/crt0.o.base64.txt` are the same kind of precious real hardware-linked reference data — stored as base64 *text* (the raw `.o`/`.a` binaries were deleted 2026-09-27) specifically so a `.o`-glob cleanup can't catch them by accident, but they must never be regenerated, re-encoded, or otherwise altered either. Always scope any build-artifact cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
+   * **Caution — `.o` is ambiguous in this repo**: every `*.o.golden` under `tests/mutos_as/` is precious real hardware-linked **reference data**, not a regenerable build byproduct, even though it shares the `.o` extension with actual build artifacts (e.g. `src/mutos_as/*.o`). A blanket `find . -name "*.o" -delete` or `make clean`-style cleanup run from the repo root will destroy those. `tests/mutos1700_libc/*.o.base64.txt`, `tests/mutos1700_libc/libc.a.base64.txt`, `tests/mutos1700_arith/*.base64.txt` and `tests/mutos1700_crt0/crt0.o.base64.txt` are the same kind of precious real hardware-linked reference data — stored as base64 *text* (the raw `.o`/`.a` binaries were deleted 2026-09-27) specifically so a `.o`-glob cleanup can't catch them by accident, but they must never be regenerated, re-encoded, or otherwise altered either. Always scope any build-artifact cleanup to the specific `src/mutos_<tool>/` build directory being cleaned, never to `/tests/`.
      Extend the same care to `tests/mutos_as/v30_speculative/`'s `*.o.crosschecked` files
      (if/when present) — do not delete them in a cleanup sweep either, but also never
      treat them as equivalent to a real `*.o.golden`: they are cross-checked against

@@ -461,6 +461,30 @@ sys_open(uint16_t name, int16_t mode)
 	return newfd(h);
 }
 
+/*
+ * open(mpath, 0) of a MUTOS path given as a C string, under the MUTOS
+ * root - for the corrected mode's library (ldrules/libc_f.c), whose name
+ * is not in the original's image. -1 if there is no such file.
+ */
+int16_t
+sys_open_root(const char *mpath)
+{
+	char path[4096 + 1024];
+	struct stat st;
+	int h;
+
+	if (mutos_path(path, sizeof(path), mpath) == NULL)
+		ldtrap("a file name longer than the host takes");
+	h = open(path, O_RDONLY);
+	if (h < 0)
+		return -1;
+	if (fstat(h, &st) == 0 && S_ISDIR(st.st_mode)) {
+		close(h);
+		return -1;
+	}
+	return newfd(h);
+}
+
 /* creat(name, mode): mode less the umask for a new file, as the kernel */
 int16_t
 sys_creat(uint16_t name, int16_t mode)

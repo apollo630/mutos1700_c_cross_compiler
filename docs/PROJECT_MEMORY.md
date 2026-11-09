@@ -48,15 +48,13 @@ Guideline 11).
 | 2026-11-08 | `c1`/`c2` generate 80186/V30 code behind `-1`, for faster code on his V30; a closed list of three rules. | decision 15; section 7.4 |
 | 2026-11-08 | A run with `-1` prints briefly which and how many 80186/V30 instructions were generated (counted by `mutos_as`, one line per assembly). | decision 16 |
 | 2026-11-08 | The names, chosen from Claude's proposals with step F0: `-F` the corrected mode ("fixed"), `-H` the original's behaviour ("historic"), in `cc`, `as` and `ld`; the environment variable `MUTOS_MODE` with `corrected` or `original`. | `docs/TOOLCHAIN_PLAN.md`, section 6; `docs/RULES.md` |
+| 2026-11-09 | The corrected copy of `libc.a` (step F3b) takes, besides the bugs that compute wrongly in ordinary programs (L-01, L-04, L-05, L-08, L-11), the edge bugs L-12, L-10, L-03 and L-14; L-13, L-09 and L-02 are left out, and documented as such. | `docs/TOOLCHAIN_PLAN.md`, F3b; `docs/MUTOS_ORIGINAL_BUGS.md` |
+| 2026-11-09 | The copy is the MUTOS root's `lib/fixed/libc.a`; in the corrected mode `ld`'s `-lX` looks for `/lib/fixed/libX.a` first (chosen from Claude's proposals). | `docs/RULES.md`, "The corrected copy of `libc.a`" (LIBC-F) |
+| 2026-11-09 | The kernel's `conf/arith.a` - its long helpers measured by him with `rtcheck.py --archive`: the same results as `libc.a`'s - gets a corrected copy from the same sources, for the kernel in the corrected mode; the old one stays for the original mode. | `docs/TOOLCHAIN_PLAN.md`, section 6; `src/libc_fixed/README.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
-Milestone 2, "Step 5 of the plan"); whether the kernel's `arith.a` gets the
-corrections of the long helpers too (since F3 measurable on his machine:
-`tests/libc_runtime/rtcheck.py --archive ~/sys/conf/arith.a long`); which of
-F3's edge bugs the corrected copy of `libc.a` takes besides the ones that
-compute wrongly in ordinary programs (L-03, L-09, L-10, L-12, L-13, L-14;
-recommendation in `docs/TOOLCHAIN_PLAN.md`, F3b); which of step F4's corrections
+Milestone 2, "Step 5 of the plan"); which of step F4's corrections
 (C1-12 and C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and
 LD-11, found with F2, are among the candidates); `make install`; the manual
 pages.
@@ -74,12 +72,16 @@ pages.
   come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
   8086 has been replaced by a NEC V30, and an IDE interface added (said
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
+- The kernel's `conf/arith.a` is in the repository since 2026-11-09
+  (`tests/mutos1700_arith/`, added by the owner): `locking.o` and the six long
+  helpers, which are `libc.a`'s byte for byte.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
-  There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3: run it in the
-  background with a log, and record the result in `STATUS.md`.
+  There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3 and
+  after F3b's copy: run it in the background with a log, and record the result
+  in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -110,3 +112,10 @@ pages.
   at run time (`itof` is `itod`; `ldiv`/`lrem` share L-04 - `99999L / 100000` is
   2), seven new bugs L-08 to L-14; wrong in ordinary programs, so for the copy of
   F3b: L-01, L-04, L-05, L-08, L-11 (`STATUS.md`, "Step F3").
+- 2026-11-09: step F3b, the corrected copy of `libc.a` - the nine members
+  reconstructed byte for byte (`src/libc_fixed/orig/`), the nine corrections
+  (L-01, L-03, L-04, L-05, L-08, L-10, L-11, L-12, L-14) a patch each, `ld`'s
+  LIBC-F, the copy of `arith.a`; checked by `rtcheck.py --copy`, `linkcheck.py`
+  and a trigger program per correction (`STATUS.md`, "Step F3b"). Still to do in
+  F3b: the re-enactments of `c1` and `as` to follow the copy in the corrected
+  mode.

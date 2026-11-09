@@ -123,8 +123,12 @@ ends with exit status 1 and the output is not made executable, its bytes
 the same (a message after that warning has no `ld:`) -, and a text of
 65,530 bytes or more, which the six bytes of "jmp $" wrap, is a `text
 overflow` (LD-08), with the same end; so is a text that `-i`'s or `-n`'s
-rounding to 64 bytes wraps (LD-09, from 65,468 bytes). Without a switch
-every link is the original's.
+rounding to 64 bytes wraps (LD-09, from 65,468 bytes). Since step F3b
+(2026-11-09) the corrected mode also links the corrected copy of `libc.a`:
+`-lX` looks for `/lib/fixed/libX.a` before the original's `/lib/libX.a` and
+`/usr/lib/libX.a` (LIBC-F, `getfile()`; the copy is `src/libc_fixed/`'s, the
+root's `lib/fixed/libc.a`), the messages still naming `/lib/libX.a`. Without
+a switch every link is the original's.
 
 Paths: what the original has compiled in as an absolute path of the MUTOS
 file system - `/lib/libX.a`, `/usr/lib/libX.a`, `/tmp/ldaXXXXXX` - is

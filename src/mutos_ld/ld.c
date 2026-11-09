@@ -1143,7 +1143,9 @@ getfile(uint16_t acp)
 		wb((uint16_t)(filname + c + 12), '.');
 		wb((uint16_t)(filname + c + 13), 'a');
 		wb((uint16_t)(filname + c + 14), '\0');
-		if ((infil = sys_open((uint16_t)(filname + 4), 0)) >= 0)
+		/* EXTENSION: LIBC-F, docs/RULES.md - the copy, -F */
+		if ((infil = rule_libc_f((uint16_t)(filname + 4))) >= 0 ||
+		    (infil = sys_open((uint16_t)(filname + 4), 0)) >= 0)
 			filname = (uint16_t)(filname + 4);
 	}
 	if (infil == -1 && (infil = sys_open(filname, 0)) < 0)

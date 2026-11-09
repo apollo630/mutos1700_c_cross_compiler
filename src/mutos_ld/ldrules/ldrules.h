@@ -3,7 +3,8 @@
  * section 7; the list is docs/RULES.md).
  *
  * Each rule of ld - the correction of one bug of the original
- * (docs/MUTOS_ORIGINAL_BUGS.md) - is a file of its own in this directory,
+ * (docs/MUTOS_ORIGINAL_BUGS.md), or LIBC-F, the corrected mode's copy of
+ * libc.a - is a file of its own in this directory,
  * named after the rule (LD-06: ld_06.c), with one function rule_<name>(),
  * called from one line in ld.c: its hook. Taking a rule out is deleting
  * its file, its hook and its line in docs/RULES.md; scripts/check_rules.py
@@ -43,5 +44,11 @@ uint16_t rule_ld_08(uint16_t size, int16_t (*add)(int16_t, int16_t, uint16_t));
  * rounded size (the corrected mode: the sum through add, as LD-08's)
  */
 uint16_t rule_ld_09(uint16_t size, int16_t (*add)(int16_t, int16_t, uint16_t));
+/*
+ * LIBC-F: getfile() opens -lX's "/lib/libX.a" (name: its address in the
+ * image) - returns the open file of "/lib/fixed/libX.a" in the corrected
+ * mode, if there is one, else -1 (the original's lookup goes on)
+ */
+int16_t	rule_libc_f(uint16_t name);
 
 #endif /* MUTOS_LDRULES_H */

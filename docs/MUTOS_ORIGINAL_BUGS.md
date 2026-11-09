@@ -61,20 +61,20 @@ Last updated: 2026-11-09.
 | C1-13 | `c1` | a relation of two long constants: `cmp` of two immediates, which `as` rejects | emulator, fuzzing | reproduced |
 | C1-14 | `c1` | a relation compared with 0 by `<` or `>=` folds to 0 or 1 and drops the relation's side effects | emulator, fuzzing | reproduced |
 | C1-15 | `c1` | a signed comparison with 0 of a shift by a count other than 1 branches on the overflow flag, which the 8086 leaves undefined | code reading, fuzzing | reproduced |
-| L-01 | `libc.a` `itod`, `itof` | int to double writes the low mantissa byte into bytes 1 and 3: `1001` becomes `1001.0000152...` - at run time too, `itof` being the same routine | emulator | modelled (`c1`) |
-| L-02 | `libc.a` `ltof` | `ltof(0)` leaves six bytes of the slot's last value (no value changes) | code reading, emulator | refused (`c1`) |
-| L-03 | `libc.a` `dtoi`, `ftoi` | from 2\*\*15 compares with the word at address 8000 (an immediate was meant): `(int)-32768.0` raises SIGFPE | emulator | refused (`c1`) |
-| L-04 | `libc.a` `aldiv`/`ldiv`/`alrem`/`lrem` | long `/`, `/=` wrong for divisors 98304..131071 (`99999L / 100000` is 2), for -2\*\*31, and for a negative one-word divisor once the quotient reaches 65536 (±65535); `%`, `%=` for -2\*\*31 | emulator | modelled (`c1`) |
-| L-05 | `libc.a` `dmath.o` | `pmuld` takes one partial product from the wrong word: `dmul` not correctly rounded | golden, emulator | modelled (`as`) |
+| L-01 | `libc.a` `itod`, `itof` | int to double writes the low mantissa byte into bytes 1 and 3: `1001` becomes `1001.0000152...` - at run time too, `itof` being the same routine | emulator | modelled (`c1`); corrected in the copy (`-F`) |
+| L-02 | `libc.a` `ltof` | `ltof(0)` leaves six bytes of the slot's last value (no value changes) | code reading, emulator | refused (`c1`); not corrected in the copy |
+| L-03 | `libc.a` `dtoi`, `ftoi` | from 2\*\*15 compares with the word at address 8000 (an immediate was meant): `(int)-32768.0` raises SIGFPE | emulator | refused (`c1`); corrected in the copy (`-F`) |
+| L-04 | `libc.a` `aldiv`/`ldiv`/`alrem`/`lrem` | long `/`, `/=` wrong for divisors 98304..131071 (`99999L / 100000` is 2), for -2\*\*31, and for a negative one-word divisor once the quotient reaches 65536 (±65535); `%`, `%=` for -2\*\*31 | emulator | modelled (`c1`); corrected in the copy (`-F`) |
+| L-05 | `libc.a` `dmath.o` | `pmuld` takes one partial product from the wrong word: `dmul` not correctly rounded | golden, emulator | modelled (`as`); corrected in the copy (`-F`) |
 | L-06 | `libc.a` `ldexp` | the exponent wraps silently | golden | modelled (`as`) |
 | L-07 | `libc.a` `atof` | 5\*\*k overflows from k = 55: valid constants below about 1e-38 raise SIGFPE | golden | reproduced (`as`), modelled (`c1`) |
-| L-08 | `libc.a` `alrem` | for a divisor outside -32768..32767 the value of `l %= m` (DX:AX, which compiled code reads) is not the remainder | emulator | linked unchanged |
-| L-09 | `libc.a` `fsubrs` | subtracts the top of the floating-point stack from the eight bytes after its float operand (compiled code does not call it) | emulator | linked unchanged |
-| L-10 | `libc.a` `fcmp` | compares by subtracting: large values of opposite signs raise SIGFPE, different values below about 1e-22 can compare equal | emulator | linked unchanged |
-| L-11 | `libc.a` `ftol` | raises SIGFPE from 2\*\*30 in magnitude, not 2\*\*31: `(long)1.5e9` | emulator | refused (`c1`) |
-| L-12 | `libc.a` `stacks.o` | the floating-point stack's ends are compared signed: placed across address 0x8000, the stack overflows at the first push or underflows at the first pop | emulator | linked unchanged |
-| L-13 | `libc.a` `chkstk` | a frame larger than the stack pointer's offset wraps the check: no stack request, no SIGSEGV, the stack pointer high in the segment | emulator | linked unchanged |
-| L-14 | `libc.a` `dmath.o` | `dadd`/`dsub` drop an operand 57 binary orders below the other: a power of two minus such a value stays the power of two (`2 - 1.5e-17` is 2) | emulator | linked unchanged |
+| L-08 | `libc.a` `alrem` | for a divisor outside -32768..32767 the value of `l %= m` (DX:AX, which compiled code reads) is not the remainder | emulator | linked unchanged; corrected in the copy (`-F`) |
+| L-09 | `libc.a` `fsubrs` | subtracts the top of the floating-point stack from the eight bytes after its float operand (compiled code does not call it) | emulator | linked unchanged; not corrected in the copy (not called) |
+| L-10 | `libc.a` `fcmp` | compares by subtracting: large values of opposite signs raise SIGFPE, different values below about 1e-22 can compare equal | emulator | linked unchanged; corrected in the copy (`-F`) |
+| L-11 | `libc.a` `ftol` | raises SIGFPE from 2\*\*30 in magnitude, not 2\*\*31: `(long)1.5e9` | emulator | refused (`c1`); corrected in the copy (`-F`) |
+| L-12 | `libc.a` `stacks.o` | the floating-point stack's ends are compared signed: placed across address 0x8000, the stack overflows at the first push or underflows at the first pop | emulator | linked unchanged; corrected in the copy (`-F`) |
+| L-13 | `libc.a` `chkstk` | a frame larger than the stack pointer's offset wraps the check: no stack request, no SIGSEGV, the stack pointer high in the segment | emulator | linked unchanged; not corrected in the copy |
+| L-14 | `libc.a` `dmath.o` | `dadd`/`dsub` drop an operand 57 binary orders below the other: a power of two minus such a value stays the power of two (`2 - 1.5e-17` is 2) | emulator | linked unchanged; corrected in the copy (`-F`) |
 | AS-01 | `as` | `-L`, `-W`, `-D`, `-T` documented, not implemented ("Unknown option L ignored"); `-e`, `-g`, `-C`, `-l` undocumented | real hardware, emulator | not reproduced (`mutos_as`: no `-L`, `-W` as documented; `-g` as the original, `-C` implemented; `-e`, `-l` missing) |
 | AS-02 | `as` | an unknown mnemonic (`insw`, `pusha`, `enter`, ...) assembled silently as a word with an undefined external | emulator | reproduced for the 80186 words (`mutos_as` without `-1`); not for the 8086 spellings |
 | AS-03 | `as` | the floating-overflow abort message prints garbage where a file name belongs | real hardware | not reproduced |
@@ -645,7 +645,11 @@ integers of every length). L-08 to L-14 were found with it.
   runtime's `itof` with `tests/libc_runtime/rtcheck.py` (`show itof
   1001`; every int of its cases is what the model predicts).
 - **This project.** `mutos_c1` re-enacts it (`c1port/c1lib.c`'s
-  `c1_itod()`); programs get the original `itof`.
+  `c1_itod()`); programs get the original `itof` in the original mode.
+  Corrected in the copy of `libc.a` that the corrected mode links (step
+  F3b; `docs/RULES.md`, "The corrected copy of `libc.a`"): `sub ax,ax`
+  before the store loop (`src/libc_fixed/fixed/convert.s`) - each of the
+  65,536 ints converts exactly.
 - **Fix idea.** Clear AX before the store loop.
 
 ### L-02 `ltof(0)` leaves the slot's old bytes
@@ -660,7 +664,9 @@ integers of every length). L-08 to L-14 were found with it.
   measured there takes an exponent byte of 0 for zero, whatever the other
   bytes.
 - **This project.** `mutos_c1` refuses an LTOF of a constant 0 ("ltof of
-  0"; 22 of 6,000 fuzz programs).
+  0"; 22 of 6,000 fuzz programs). Not corrected in the copy of `libc.a`
+  (decided by the project owner, 2026-11-09): no value changes. Its
+  `lconvert.o` is replaced for L-11 and keeps this.
 - **Fix idea.** Clear all eight bytes.
 
 ### L-03 `dtoi` compares with memory instead of a constant
@@ -679,9 +685,16 @@ integers of every length). L-08 to L-14 were found with it.
   8000 set to 0, to 0x8000 and to the value's top bits; `show ftoi
   -32768`).
 - **This project.** `mutos_c1` refuses the conversion of such a
-  constant.
+  constant. Corrected in the copy of `libc.a` that the corrected mode
+  links (step F3b; `docs/RULES.md`, "The corrected copy of `libc.a`"):
+  the immediate 0x8000, and the test of the first fraction bit that
+  followed it left out, so that -32768 to -32768.99... truncate to
+  -32768 and every other value from 2\*\*15 raises SIGFPE
+  (`src/libc_fixed/fixed/convert.s`). The original mode links the
+  original.
 - **Fix idea.** The immediate operand (`cmp bx,#0x8000`, the same
-  length).
+  length) - and without the fraction bit's test, which made
+  `(int)-32768.5` raise SIGFPE even then.
 
 ### L-04 `aldiv`, `ldiv`, `alrem` and `lrem` are not C's division
 
@@ -724,9 +737,26 @@ integers of every length). L-08 to L-14 were found with it.
   words (`c1_aldiv()`, `c1_alrem()`) for its folding of long constants;
   `rtcheck.py`'s `model_div()` and `model_rem()` are the same. Programs
   get the original routines. `x86sim.py` computes C's quotient, so a
-  compiled program's `l / m` at run time is not modelled there.
+  compiled program's `l / m` at run time is not modelled there. The
+  MUTOS kernel links its own `conf/arith.a`, whose long helpers give
+  every result of `rtcheck.py --archive arith.a long` as `libc.a`'s do
+  (measured by the project owner, 2026-11-09): the kernel has L-04 and
+  L-08 too. Corrected in the copy of `libc.a` that the corrected mode
+  links (step F3b; `docs/RULES.md`, "The corrected copy of `libc.a`";
+  `src/libc_fixed/fixed/aldiv.s`, `ldiv.s`, `alrem.s`, `lrem.s`), and
+  from the same sources in a copy of `arith.a` (`fix_archive.py`,
+  decided 2026-11-09; `src/libc_fixed/arith.a` from the owner's
+  `tests/mutos1700_arith/`, whose long helpers are `libc.a`'s byte for
+  byte): the divisions' short path only for a divisor of
+  0 to 32767; every other divisor below 2\*\*16 in magnitude - the
+  remainders' too, from 32768 - takes two `div`s once both operands are
+  positive; from 2\*\*16 the sixteen steps, whose quotient is then below
+  2\*\*16, compared unsigned. `rtcheck.py`'s long group (seeds 1 to 3, up
+  to 20,000 cases per entry point and set): every result of the copy C's.
 - **Fix idea.** Compare the high word with the sign extension itself
   (not negated), and do 32 steps on the long way with unsigned compares.
+  (The copy keeps the sixteen steps for divisors from 2\*\*16 and takes
+  every smaller one to the two `div`s instead.)
 
 ### L-05 `dmath.o`'s multiplication uses a wrong partial product
 
@@ -750,7 +780,11 @@ integers of every length). L-08 to L-14 were found with it.
   `fmuld` and `fmuls` is what the model predicts).
 - **This project.** `mutos_as`'s `fltconst.c` (also in `mutos_c1`)
   re-enacts that product (`RM_LIBC_MUL`); programs get the original
-  `dmul`.
+  `dmul` in the original mode. Corrected in the copy of `libc.a` that the
+  corrected mode links (step F3b; `docs/RULES.md`, "The corrected copy
+  of `libc.a`"): `mov dx,4.(di)` (`src/libc_fixed/fixed/dmath.s`) -
+  `rtcheck.py`'s products of `dmul`, `fmul`, `fmuld` and `fmuls` all
+  correctly rounded.
 - **Fix idea.** `mov dx,4[di]`.
 
 ### L-06 `ldexp` wraps the exponent
@@ -797,8 +831,11 @@ integers of every length). L-08 to L-14 were found with it.
   result to DX:AX.
 - **Evidence.** Emulator (`rtcheck.py`, `show alrem 1000000 70000`);
   `cc -S` of `i = (l %= m);` gives `call alrem` / `add sp,*6.` / `mov
-  _i,ax`.
-- **This project.** Linked unchanged.
+  _i,ax`. The kernel's `arith.a` has it too (see L-04).
+- **This project.** The original mode links it unchanged. Corrected in
+  the copy of `libc.a` that the corrected mode links (step F3b;
+  `docs/RULES.md`, "The corrected copy of `libc.a`"): `mov dx,ax` / `mov
+  ax,di` after the stores (`src/libc_fixed/fixed/alrem.s`).
 - **Fix idea.** `mov dx,ax` / `mov ax,di` before the return, as `lrem`
   does.
 
@@ -817,7 +854,9 @@ integers of every length). L-08 to L-14 were found with it.
   float's address + 4.
 - **Evidence.** Emulator (`rtcheck.py`: every case what the model
   predicts).
-- **This project.** Linked unchanged.
+- **This project.** Linked unchanged. Not corrected in the copy of
+  `libc.a` (decided by the project owner, 2026-11-09): compiled code does
+  not call it.
 - **Fix idea.** `mov si,di` (the same length).
 
 ### L-10 `fcmp` compares by subtracting
@@ -834,7 +873,13 @@ integers of every length). L-08 to L-14 were found with it.
   gives 0 when it underflows. `ftest` (one operand) is right.
 - **Evidence.** Emulator (`rtcheck.py`: in its edge cases; `show fcmp
   1e38 -1e38`).
-- **This project.** Linked unchanged.
+- **This project.** The original mode links it unchanged. Corrected in
+  the copy of `libc.a` that the corrected mode links (step F3b;
+  `docs/RULES.md`, "The corrected copy of `libc.a`"): the fix idea below,
+  the flags and AH set as before (`src/libc_fixed/fixed/stkmath.s`) -
+  measured on `rtcheck.py`'s cases (seeds 1 to 3, up to 46,000 pairs) and
+  on 120,032 pairs that differ in one bit, of both signs, and zeros of
+  every form: every comparison right.
 - **Fix idea.** Compare without subtracting: signs, then exponent bytes,
   then mantissas from the top, the order reversed for negative values,
   every zero equal to every other.
@@ -852,7 +897,13 @@ integers of every length). L-08 to L-14 were found with it.
   (`add cx,0x1f` / `jle ftolov`, text 0034).
 - **Evidence.** Emulator (`rtcheck.py`, `show ftol 1.5e9`).
 - **This project.** `mutos_c1` refuses such a constant (`c1_ftol()`);
-  programs get the original `ftol`.
+  programs get the original `ftol` in the original mode. Corrected in the
+  copy of `libc.a` that the corrected mode links (step F3b;
+  `docs/RULES.md`, "The corrected copy of `libc.a`"): no shift for a
+  count of 0, an overflow from e = 32 but for -2\*\*31 to
+  -2\*\*31-0.99... (`src/libc_fixed/fixed/lconvert.s`) - measured on
+  20,072 doubles (exponents 1 to 40, and around 2\*\*29, 2\*\*30,
+  2\*\*31 and 2\*\*32 of both signs), every result C's.
 - **Fix idea.** Skip the shift for a count of 0; overflow from e = 32,
   but for -2\*\*31.
 
@@ -871,7 +922,10 @@ integers of every length). L-08 to L-14 were found with it.
 - **Evidence.** Emulator (`rtcheck.py`'s layout group links the runtime
   with up to 36K of data before `fpstk`, placing it from 0x7e00 to
   0x9000: right below 0x7fc0 and from 0x8010).
-- **This project.** Linked unchanged.
+- **This project.** The original mode links it unchanged. Corrected in
+  the copy of `libc.a` that the corrected mode links (step F3b;
+  `docs/RULES.md`, "The corrected copy of `libc.a`"): `jae` and `jb`
+  (`src/libc_fixed/fixed/stacks.s`).
 - **Fix idea.** `jae` and `jb` (the same lengths).
 
 ### L-13 `chkstk` wraps round the segment
@@ -888,7 +942,9 @@ integers of every length). L-08 to L-14 were found with it.
   looked at.
 - **Evidence.** Emulator (`rtcheck.py`, where `mutosemu.py` grants every
   stack request).
-- **This project.** Linked unchanged.
+- **This project.** Linked unchanged. Not corrected in the copy of
+  `libc.a` (decided by the project owner, 2026-11-09): a program that meets
+  it is out of stack either way.
 - **Fix idea.** A `jb` to the request after the `sub` as well.
 
 ### L-14 `dadd` and `dsub` drop an operand 57 binary orders below
@@ -907,10 +963,16 @@ integers of every length). L-08 to L-14 were found with it.
   differ by more than 56.
 - **Evidence.** Emulator (`rtcheck.py`: found by its edge cases, whose
   pairs include powers of two and operands 55 to 59 binary orders below).
-- **This project.** Linked unchanged.
+- **This project.** The original mode links it unchanged. Corrected in
+  the copy of `libc.a` that the corrected mode links (step F3b;
+  `docs/RULES.md`, "The corrected copy of `libc.a`"): `cmp ah,*/39`
+  (`src/libc_fixed/fixed/dmath.s`). Measured: for exponent differences
+  of 50 to 65, a larger operand a power of two or not, both signs and
+  orders, 6,000 additions and subtractions each, every result of the
+  copy correctly rounded (the original: 1,201 of the 6,000 at 57 one
+  unit too large).
 - **Fix idea.** Let a difference of 57 through to the alignment (`cmp
-  ah,0x39`), whose sticky bit then rounds it - to be checked against the
-  model.
+  ah,0x39`), whose sticky bit then rounds it.
 
 ## `as`
 
