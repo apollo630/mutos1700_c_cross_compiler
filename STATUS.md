@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-08.
+Last updated: 2026-11-09.
 
 ---
 
@@ -299,7 +299,11 @@ went: `docs/devlog/originals_and_ports.md`, "The port of `ld`".
   characters or more written over the messages (LD-01), more than 256 archive
   entries run past `liblist[]` (LD-02, "internal error: symbol not found"), a
   warning that clears an earlier error (LD-06), a text of 65,530 bytes that wraps
-  (LD-08).
+  (LD-08). Found 2026-11-09 with step F2 (below, "The corrected mode and `-1`"):
+  LD-09 to LD-11, three more ways to an output its header does not describe - with
+  `-i` or `-n` a text of 65,468 bytes rounded to 0, `-D` without `-i` padding the
+  data short (or "Multiply defined"), an object cut where one of its parts begins;
+  the port reproduces them, `ldcmp.py cases` has a case of each (96 cases since).
 
 ### What the binary does differently from v7 (read 2026-10-22)
 
@@ -1220,8 +1224,9 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    switches `-F`/`-H`, `MUTOS_MODE` and `-1` reach the passes, the rule log, register
    and accounting checks, diagnostic hooks at C1-01, C1-02, C1-03, C1-06, LD-06 and
    LD-08 (real kernel code meets C1-03), `mutos_as`'s report of `-1`, longs in
-   `fuzz_c.py`, the V30 forms and clocks in `x86sim.py`; every output unchanged. Next:
-   F1.
+   `fuzz_c.py`, the V30 forms and clocks in `x86sim.py`; every output unchanged.
+   **F1 done 2026-11-08**: the four corrections of `c1`. **F2** (2026-11-09, "Step F2"
+   below): the corrections of `ld`.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1943,6 +1948,101 @@ own; without a switch every output is still the original's (`check_accounting.py
   same, none different; `edfuzz.py` ed 400/400, em 380 the same, 20 the original
   asks "sure?" for ever; `check_root.py --realbin`; `check_corrected.py --realbin`
   (the nine triggers of C1-01, C1-02, C1-03, C1-06). This covers F0 too.
+
+### Step F2: the corrections of `ld` (verified 2026-11-09)
+
+The bugs of `ld` that let a link end wrongly - with exit status 0 and an executable
+output where the original reported an error or wrote an output its header does not
+describe -, corrected in the corrected mode, each a rule of `docs/RULES.md` and a
+patch of its own; without a switch every link is still the original's.
+
+- **LD-06** (a warning clears an earlier error), active: `errlev` is raised, never
+  lowered (`rule_ld_06()` returns the higher level in the corrected mode). The case
+  of the bug - `No relocation bits`, then `out of date (warning)` - ends with exit
+  status 1 and the output not executable, its bytes the same as the original's. One
+  message changes with it: `error()` writes `ld:` only while `errlev` is 0, so a
+  message after such a warning has none, as a message after an error never has (the
+  original, its level back at 0, starts it with `ld:` again).
+- **LD-08** (a text of 65,530 bytes or more wraps), active: the six bytes of "jmp $"
+  are added by the original's own `add()`, which `middle()` hands to the rule, so a
+  sum past 65,535 is `ld:text overflow` at level 1, as an overflow of pass 1 is - exit
+  status 1, the output not executable, its bytes the same (the header still says
+  the wrapped size). A text of 65,528 bytes (65,534 with the six) links as before.
+- **LD-09** (`-i` and `-n` round a text of 65,468 bytes or more to 0), found with F2
+  (below) and active: the 077 of `middle()`'s rounding to 64 bytes is added by
+  `add()` as well, so a `-i` or `-n` link whose rounding passes 65,535 is a `text
+  overflow` too - the same end as LD-08's. Without it LD-08's correction left `ld -i`
+  with 65,468 to 65,529 bytes of text wrapping without a message, where the same link
+  without `-i` is right or reported.
+- **How `ld`'s corrections are checked** (new with F2):
+  `tests/rules/check_corrected.py` links triggers of each active correction of `ld`
+  (LD-06: five - an error then a warning, the warning twice, an error after them,
+  and two links it must leave alone, a warning before an error and a warning alone;
+  LD-08: five - a text of 65,530 bytes, three objects that add up to it, the same
+  with `-i`, after an error, and 65,528 bytes, which it must leave alone; LD-09:
+  three - 65,528 bytes with `-i`, three objects of 65,468 with `-n`, and 65,466 with
+  `-i`, which rounds to 65,472)
+  without a switch, with `-H`, with `-F` and with `MUTOS_MODE=corrected`: without a
+  switch the original's end (exit status, whether the output is executable, the
+  messages - pinned, and with `--realbin` the emulated original's), with `-F` the
+  corrected mode's (pinned) and the end of a right link - exit status 0 exactly when
+  every message is a warning, the output executable exactly then and as long as its
+  header says -; the output's bytes the same in all four, `met` and `applied` in the
+  rule log exactly where the end changes. `tests/rules/check_accounting.py`'s cases
+  of LD-06, LD-08 and LD-09 check what the accounting asks of every rule (`-H` changes
+  nothing, the corrected runs agree, a different end only with an `applied` entry,
+  the output's bytes never). `tests/realbin/ldcmp.py cases` and `ldfuzz.py` take
+  `--mode corrected` (in `make check-realbin`): the port in the corrected mode
+  against the emulated original - a difference only in the exit status, the
+  messages or the files' modes, and only with an `applied` entry of `ld` in the
+  port's rule log ("corrected").
+- **Three new bugs of the original `ld`** (`docs/MUTOS_ORIGINAL_BUGS.md`), each v7's
+  own and run under the emulator: **LD-09**, `-i` and `-n` round the text to 64 bytes
+  without `add()`'s check - 65,528 bytes with `-i` (or 65,468 from three objects with
+  `-n`) link with exit status 0 and the header says text 0 (found measuring LD-08's
+  limits); **LD-10**, `-D` without `-i` pads the data up to an address, not a size,
+  so `tsize` bytes too little - a data symbol defined after it is "Multiply defined"
+  (the existing case `-D` shows it), and without one the output is `tsize` bytes
+  shorter than its header says, exit status 0 (`ld main.o foo.o -D 4000`: 14 bytes);
+  **LD-11**, an object cut where one of its parts begins is read as if the part were
+  empty - no message, the output short (cut inside a part: "Premature EOF"). LD-10
+  and LD-11 came out of trying the test of a right link on `ldfuzz.py`'s random links
+  (seeds 2 to 4, 1,500 each, plain and damaged); the rest it flagged there were
+  damaged objects with an odd text size, read out of step as the original reads
+  them, so the test stays with the triggers and the fuzz runs check the accounting.
+  `ldcmp.py cases` has a case of each (and `-D -i`, which is right): 96 cases. LD-09
+  is corrected with F2 (above), as a patch of its own; LD-10 and LD-11 are candidates
+  for step F4.
+- **Verified** - each of the three patches (LD-06, LD-08, LD-09, applied in that
+  order) on a fresh clone of `14db7e6` with the ones before it: `make clean && make
+  all` without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit
+  0, its output the same as before but for two lines (`check_accounting.py`'s "ld's
+  cases", `check_corrected.py`'s triggers of `ld`) and, with LD-09,
+  `check_rules.py`'s count (7 rules); `make check-docs` clean. The parts of `make
+  check-realbin` for `ld`, on each: `ldtables.py --check-c`, `ldcmp.py goldens`
+  (1,572/1,572 the same), `cases` (96: 94 the same, 2 refused), `ldfuzz.py` seed 1
+  plain and `--mutate 0.5` (300 each: 294 the same, 6 refused), the same three with
+  `--mode corrected` (cases: 1 corrected with LD-06, 2 with LD-08 - LD-06's case and
+  `text 65530 (6 bytes wrap)` -, 4 with LD-09 - and the two cases of LD-09 -, 2
+  refused, the rest the same; fuzz: 1 corrected, 6 refused, the rest the same, in
+  the plain run, 6 refused and the rest the same in the damaged one),
+  `check_rflag.py` (248/248), `check_corrected.py --realbin` (the triggers of `c1`
+  emulated, `ld`'s five, ten and thirteen the emulated original's); and, with
+  LD-06, `ldfuzz.py --mode corrected` on seeds 2 to 4, 1,500 cases each, plain and
+  damaged: 41 corrected, no difference.
+- **`make check-realbin` whole** (2026-11-09, after F2): on the fresh clone of
+  `14db7e6` with the three patches, in a cloud session, two cores: exit 0, every
+  check passed, 63 minutes. The numbers of the tools F2 did not touch are those of
+  F1's run: `c1trees.py` 131/132 at depths 2-4 (1 refused on purpose), `c1fuzz.py`
+  175 the same, 0 different; `c0cmp.py` 137/137; `cppcmp.py` 411/411; `cccmp.py`
+  cases 175 of 177 (2 refused), `run` and `programs` 124/124; `ccfuzz.py` 1,000: 985
+  the same, 15 refused; `c2cmp.py goldens` 396/396; `ascmp.py goldens` and `cases`
+  as their pins; `asfuzz.py` 251 the same; `arcmp.py` 364 of 366 (2 refused);
+  `libc.a` rebuilt the same; `makecmp.py` 430 of 457 and 312/312; `utilcmp.py`
+  1,118 cases, 3,729 runs the same, none different; `edcmp.py` 244 cases, 225 the
+  same, none different; `edfuzz.py` ed 400/400, em 380 the same; `check_root.py
+  --realbin`; `check_corrected.py --realbin` (the nine triggers of `c1`, the 13 of
+  `ld`). `ld`'s: as above.
 
 ## `mutos_as` opcode coverage
 

@@ -224,7 +224,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   active correction's triggers under `x86sim.py` - the original's value without a
   switch, C's with `-F` - and `fuzz_c.py --mode corrected`, every failure a bug not yet
   corrected (`docs/RULES.md`, "What a correction computes"); with `--realbin` (in `make
-  check-realbin`) the triggers linked and run under `mutosemu.py`.
+  check-realbin`) the triggers linked and run under `mutosemu.py`. Since step F2 also
+  `ld`'s corrections: links that end as the original's do without a switch (with
+  `--realbin` checked against the emulated original `ld`) and as a right link must with
+  `-F` - and `tests/realbin/ldcmp.py`/`ldfuzz.py` take `--mode corrected`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of

@@ -27,10 +27,14 @@ What a case is made of:
     name, an option's argument missing, an unknown flag.
 With --mutate P, each file is damaged with probability P (bytes changed,
 words set to extreme values, the file cut short), for the error paths.
+With --mode corrected the port runs in the corrected mode (ldcmp.py's
+docstring; docs/RULES.md): the cases are the same, and a difference must
+be an applied rule's, in how the link ends (exit status, messages, the
+files' modes), not in what it writes.
 
 Usage:
-    ldfuzz.py [-n N] [-s SEED] [--mutate P] [-j N] [--port PATH]
-              [--show N] [--keep DIR]
+    ldfuzz.py [-n N] [-s SEED] [--mutate P] [--mode corrected] [-j N]
+              [--port PATH] [--show N] [--keep DIR]
 
 The port's refusals are checked as ldcmp.py checks them: what it wrote
 before must be a prefix of the original's messages, and where the
@@ -266,7 +270,7 @@ class Gen:
 
 
 def _one(job):
-    seed, mutate, port, keep = job
+    seed, mutate, port, keep, mode = job
     g = Gen(seed, mutate)
     args, files, extra = g.case()
     with tempfile.TemporaryDirectory(prefix='ldfuzz') as tmp:
@@ -280,13 +284,13 @@ def _one(job):
             if t is not None:
                 os.utime(p, (t, t))
         root = ldcmp.make_root(os.path.join(tmp, 'root'), extra)
-        kind, detail = ldcmp.compare(args, src, root, port, keep)
+        kind, detail = ldcmp.compare(args, src, root, port, keep, mode)
     return seed, args, kind, detail
 
 
 def main(argv):
     n, seed, mutate, jobs = 200, 1, 0.0, os.cpu_count() or 1
-    port, show, keep = ldcmp.PORT, 0, None
+    port, show, keep, mode = ldcmp.PORT, 0, None, None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -296,6 +300,8 @@ def main(argv):
             seed = int(argv[i + 1])
         elif a == '--mutate':
             mutate = float(argv[i + 1])
+        elif a == '--mode' and argv[i + 1] == 'corrected':
+            mode = argv[i + 1]
         elif a == '-j':
             jobs = int(argv[i + 1])
         elif a == '--port':
@@ -307,12 +313,12 @@ def main(argv):
         else:
             sys.exit(__doc__.split('Usage:')[1].split('The port')[0])
         i += 2
-    work = [(seed * 1000003 + k, mutate, port, keep) for k in range(n)]
+    work = [(seed * 1000003 + k, mutate, port, keep, mode) for k in range(n)]
     counts, bad, shown = {}, [], 0
     with concurrent.futures.ProcessPoolExecutor(jobs) as ex:
         for s, args, kind, detail in ex.map(_one, work):
             counts[kind] = counts.get(kind, 0) + 1
-            if kind in ('DIFFERENT', 'BAD-REFUSAL'):
+            if kind in ldcmp.BAD:
                 bad.append('case %d (ld %s): %s: %s' % (s, ' '.join(args), kind,
                                                        detail))
             elif kind != 'same' and shown < show:
@@ -320,8 +326,9 @@ def main(argv):
                 print('case %d: %s: %s' % (s, kind, detail))
     for b in bad[:max(show, 20)]:
         print(b)
-    print('ld fuzz (seed %d%s): %d cases, %s' % (
-        seed, ', mutate %g' % mutate if mutate else '', n,
+    print('ld fuzz (seed %d%s%s): %d cases, %s' % (
+        seed, ', mutate %g' % mutate if mutate else '',
+        ', the port in the corrected mode' if mode else '', n,
         ', '.join('%d %s' % (c, k) for k, c in sorted(counts.items()))))
     return 1 if bad else 0
 

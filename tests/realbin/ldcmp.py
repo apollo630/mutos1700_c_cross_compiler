@@ -18,6 +18,13 @@ messages must agree as far as the shorter goes. -r and -d are the port's
 extension: the original refuses them, so a command line with them is not
 compared.
 
+With --mode corrected (since step F2 of docs/TOOLCHAIN_PLAN.md, section
+7) the port runs in the corrected mode (MUTOS_MODE=corrected, the rule
+log on; docs/RULES.md) and the original stays the original: a difference
+is then allowed in the exit status, the messages on stdout and the
+files' modes - not in the files' names or bytes, nor on stderr - and
+only when the port's rule log has an "applied" entry of ld ("corrected").
+
 Usage:
     ldcmp.py goldens [-j N] [--port PATH] [--show N] [--keep DIR]
         every .s.golden of tests/mutos_cc, assembled by mutos_as, linked
@@ -29,11 +36,14 @@ Usage:
         archives without a table of contents, bad and short files
     ldcmp.py files [ARG...]
         one command line, in a copy of the current directory
+    --mode corrected (before or after the command word): the port in the
+        corrected mode, as above
 
-As a module: compare(args, srcdir, root, ...) -> (kind, detail), kind
-one of 'same', 'refused', 'orig-fails' (the original does not finish,
-the port refused), 'endless' (both stopped by the limits), 'DIFFERENT',
-'BAD-REFUSAL'; make_root(), ar() and ranlib() build roots and archives.
+As a module: compare(args, srcdir, root, ..., mode=None) -> (kind,
+detail), kind one of 'same', 'refused', 'orig-fails' (the original does
+not finish, the port refused), 'endless' (both stopped by the limits),
+'DIFFERENT', 'BAD-REFUSAL', and with mode 'corrected' also 'corrected';
+make_root(), ar() and ranlib() build roots and archives.
 
 Requires the Python module "unicorn" (pip install unicorn).
 """
@@ -203,10 +213,15 @@ def _limits():
     resource.setrlimit(resource.RLIMIT_FSIZE, (16 << 20, 16 << 20))
 
 
-def run_port(args, cwd, root, port=PORT):
-    """(status, stdout, stderr); status None for a run a limit stopped."""
+def run_port(args, cwd, root, port=PORT, mode=None, log=None):
+    """(status, stdout, stderr); status None for a run a limit stopped.
+    mode: MUTOS_MODE for the port, log: its rule log (MUTOS_RULELOG)."""
     env = dict(os.environ)
     env['MUTOS_ROOT'] = root
+    if mode is not None:
+        env['MUTOS_MODE'] = mode
+    if log is not None:
+        env['MUTOS_RULELOG'] = log
     with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
         r = subprocess.run([port] + list(args), cwd=cwd, stdout=fo, stderr=fe,
                            env=env, preexec_fn=_limits)
@@ -234,17 +249,35 @@ def is_extension(args):
     return False
 
 
-def compare(args, srcdir, root, port=PORT, keep=None):
+BAD = ('DIFFERENT', 'BAD-REFUSAL')
+
+
+def _rulelog(path):
+    """[(tool, rule, what)] of a rule log (docs/RULES.md)."""
+    try:
+        with open(path, encoding='latin1') as f:
+            return [tuple(ln.split()[:3]) for ln in f if len(ln.split()) >= 3]
+    except OSError:
+        return []
+
+
+def compare(args, srcdir, root, port=PORT, keep=None, mode=None):
     """The port against the original: the same arguments in copies of
-    srcdir. keep: a directory to leave both copies in on a difference."""
+    srcdir. keep: a directory to leave both copies in on a difference.
+    mode 'corrected': the port in the corrected mode (the module's
+    docstring)."""
     with tempfile.TemporaryDirectory(prefix='ldcmp') as tmp:
         do, dp = os.path.join(tmp, 'orig'), os.path.join(tmp, 'port')
         shutil.copytree(srcdir, do, symlinks=True)
         shutil.copytree(srcdir, dp, symlinks=True)
         ost, oout, oerr, why = run_orig(args, do, root)
-        pst, pout, perr = run_port(args, dp, root, port)
+        log = os.path.join(tmp, 'rulelog') if mode else None
+        pst, pout, perr = run_port(args, dp, root, port, mode, log)
         kind, detail = _judge(args, ost, oout, oerr, why, pst, pout, perr, do, dp)
-        if keep and kind in ('DIFFERENT', 'BAD-REFUSAL'):
+        if mode:
+            kind, detail = _judge_mode(kind, detail, oerr, pst, perr, do, dp,
+                                       _rulelog(log))
+        if keep and kind in BAD:
             os.makedirs(keep, exist_ok=True)
             k = tempfile.mkdtemp(dir=keep, prefix='case')
             shutil.copytree(do, os.path.join(k, 'orig'), symlinks=True)
@@ -253,6 +286,19 @@ def compare(args, srcdir, root, port=PORT, keep=None):
             with open(os.path.join(k, 'args'), 'w') as f:
                 f.write(' '.join(args) + '\n' + kind + ': ' + detail + '\n')
         return kind, detail
+
+
+def _judge_mode(kind, detail, oerr, pst, perr, do, dp, log):
+    """The corrected mode's verdict on _judge()'s: a difference in the exit
+    status, the messages on stdout or the files' modes is a correction's
+    when the port's rule log has an applied entry of ld."""
+    applied = sorted({r for t, r, w in log if t == 'ld' and w == 'applied'})
+    if kind == 'DIFFERENT' and applied and pst is not None:
+        so, sp = snapshot(do), snapshot(dp)
+        if perr == oerr and set(so) == set(sp) and \
+                all(so[n][0] == sp[n][0] for n in so):
+            return 'corrected', ' '.join(applied)
+    return kind, detail
 
 
 def _judge(args, ost, oout, oerr, why, pst, pout, perr, do, dp):
@@ -356,7 +402,7 @@ def _assemble(golden, out):
 
 
 def _golden_one(job):
-    golden, port, keep, root = job
+    golden, port, keep, root, mode = job
     results = []
     with tempfile.TemporaryDirectory(prefix='ldgold') as tmp:
         src = os.path.join(tmp, 'src')
@@ -374,7 +420,7 @@ def _golden_one(job):
                 os.utime(lp, (t, t))
             elif os.path.exists(lp):
                 os.unlink(lp)
-            kind, detail = compare(args, src, root, port, keep)
+            kind, detail = compare(args, src, root, port, keep, mode)
             results.append((name, kind, detail))
     return golden, results
 
@@ -453,6 +499,8 @@ def cases():
     case('_end defined twice', ['foo.o', 'end.o'],
          dict(base, **{'end.o': mkobj(text=w(0x90c3), syms=[('_end', 0x22, 0)])}))
     case('-D', ['-D', '40', 'foo.o', 'main.o'], base)
+    case('-D -i', ['-i', '-D', '40', 'foo.o', 'main.o'], base)
+    case('-D after the files', ['main.o', 'foo.o', '-D', '4000'], base)
     case('-D too small', ['main.o', 'foo.o', '-D', '1'], base)
     case('-D missing', ['foo.o', '-D'], base)
     case('-o missing', ['foo.o', '-o'], base)
@@ -496,6 +544,8 @@ def cases():
     case('bad magic', ['bad.o'], {'bad.o': mkobj(magic=0o410, text=w(0x90c3))})
     case('short object', ['short.o'], {'short.o': main_o[:30]})
     case('short symbols', ['short.o'], {'short.o': main_o[:-6]})
+    case('an object of its header only', ['foo.o', 'h.o'], dict(base, **{'h.o': mkobj(
+        text=w(0x90c3), data=w(5, 6), syms=[('_h', 0x22, 0)])[:16]}))
     case('empty archive', ['e.a'], {'e.a': struct.pack('<H', 0o177545)})
     case('archive member short', ['main.o', 's.a'],
          dict(base, **{'s.a': plain_a[:60]}))
@@ -534,6 +584,12 @@ def cases():
         ('_c1', 0x20, 30000), ('_c2', 0x20, 30000)])})
     case('text 65530 (6 bytes wrap)', ['big.o'],
          {'big.o': mkobj(text=b'\x90' * 65530, syms=[('_big', 0x22, 0)])})
+    case('text 65528 -i (the rounding wraps)', ['-i', 'big.o'],
+         {'big.o': mkobj(text=b'\x90' * 65528, syms=[('_big', 0x22, 0)])})
+    t30k = lambda s: mkobj(text=b'\x90' * 30000, syms=[(s, 0x22, 0)])
+    case('texts of 65468 -n (the rounding wraps)', ['-n', 'a.o', 'b.o', 'c.o'],
+         {'a.o': t30k('_a'), 'b.o': t30k('_b'),
+          'c.o': mkobj(text=b'\x90' * 5468, syms=[('_c', 0x22, 0)])})
     big = bytearray(b'\x90' * 0x8000)
     big[0:3] = b'\xe8\0\0'
     rel = bytearray(0x8000)
@@ -571,7 +627,7 @@ def cases():
 
 
 def _case_one(job):
-    (name, args, files, extra), port, keep = job
+    (name, args, files, extra), port, keep, mode = job
     with tempfile.TemporaryDirectory(prefix='ldcase') as tmp:
         src = os.path.join(tmp, 'src')
         os.makedirs(src)
@@ -581,23 +637,28 @@ def _case_one(job):
             with open(p, 'wb') as f:
                 f.write(data)
         root = make_root(os.path.join(tmp, 'root'), extra)
-        return name, [('', ) + compare(args, src, root, port, keep)]
+        return name, [('', ) + compare(args, src, root, port, keep, mode)]
 
 
 def _files_one(job):
-    args, port, keep = job
+    args, port, keep, mode = job
     with tempfile.TemporaryDirectory(prefix='ldfiles') as tmp:
         root = make_root(os.path.join(tmp, 'root'))
-        return ' '.join(args), [('', ) + compare(args, os.getcwd(), root, port, keep)]
+        return ' '.join(args), [('', ) + compare(args, os.getcwd(), root, port, keep,
+                                                  mode)]
 
 
 def main(argv):
-    jobs, port, show, keep = os.cpu_count() or 1, PORT, 0, None
+    jobs, port, show, keep, pmode = os.cpu_count() or 1, PORT, 0, None, None
     args = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == '-j' and not args:
+        if a == '--mode' and (not args or args[0] != 'files' or len(args) == 1):
+            pmode = argv[i + 1]; i += 2
+            if pmode != 'corrected':
+                sys.exit('ldcmp.py: --mode corrected is the only mode')
+        elif a == '-j' and not args:
             jobs = int(argv[i + 1]); i += 2
         elif a == '--port' and not args:
             port = os.path.abspath(argv[i + 1]); i += 2
@@ -623,13 +684,13 @@ def main(argv):
     if args[0] == 'goldens':
         tmproot = tempfile.mkdtemp(prefix='ldroot')
         root = make_root(tmproot)
-        work = [(g, port, keep, root) for g in golden_sources()]
+        work = [(g, port, keep, root, pmode) for g in golden_sources()]
         fn = _golden_one
     elif args[0] == 'cases':
-        work = [(c, port, keep) for c in cases()]
+        work = [(c, port, keep, pmode) for c in cases()]
         fn = _case_one
     else:
-        work = [(args[1:], port, keep)]
+        work = [(args[1:], port, keep, pmode)]
         fn = _files_one
     counts = {}
     bad = []
@@ -644,7 +705,7 @@ def main(argv):
                         else name
                     if mode:
                         label += ' [%s]' % mode
-                    if kind in ('DIFFERENT', 'BAD-REFUSAL'):
+                    if kind in BAD:
                         bad.append('%s: %s: %s' % (label, kind, detail))
                     elif (kind != 'same' and show) or args[0] == 'files':
                         print('%s: %s%s' % (label, kind, ': ' + detail if detail
@@ -654,9 +715,9 @@ def main(argv):
             shutil.rmtree(tmproot, ignore_errors=True)
     for b in bad[:show or 20]:
         print(b)
-    print('ld port against the original (%s): %d runs, %s'
-          % (args[0], n, ', '.join('%d %s' % (c, k)
-                                   for k, c in sorted(counts.items()))))
+    print('ld port%s against the original (%s): %d runs, %s'
+          % (' in the corrected mode' if pmode else '', args[0], n,
+             ', '.join('%d %s' % (c, k) for k, c in sorted(counts.items()))))
     return 1 if bad else 0
 
 

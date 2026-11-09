@@ -254,7 +254,9 @@ clean:
 # x86sim.py - the original's value without a switch, C's with -F - and two
 # fixed-seed runs of fuzz_c.py --mode corrected, in which every program
 # must compute what C says unless it fails through a bug of the original
-# not corrected yet (CORRECTED_ARGS passes options, e.g. "--fuzz 3000").
+# not corrected yet (CORRECTED_ARGS passes options, e.g. "--fuzz 3000");
+# for ld's corrections, links that end as the original's do without a
+# switch and as a link must with -F.
 # tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
 # x86sim.py does with the three 80186/V30 forms (values, flags, V30
 # clocks), which mutos_as -1 must take.
@@ -355,7 +357,10 @@ check-libcatof: as ld cc
 # every compiled golden linked with a matrix of options and on the
 # hand-written cases (tests/realbin/ldcmp.py), two fixed-seed
 # differential fuzz runs, one with damaged files (tests/realbin/
-# ldfuzz.py), and its extension -r/-d, which the original refuses,
+# ldfuzz.py), the cases and the two fuzz runs again with the port in the
+# corrected mode (--mode corrected: a difference only in how a link ends,
+# and only where a rule of ld was applied), and its extension -r/-d,
+# which the original refuses,
 # by running programs linked through a relocatable object
 # (tests/mutos_ld/check_rflag.py); then the
 # original cc (tests/realbin/
@@ -409,7 +414,8 @@ check-libcatof: as ld cc
 # edfuzz.py); then the original ld through mutos_root/ (check_root.py --realbin); then the
 # triggers of the corrected mode's rules linked against the root's libc.a
 # and run under the emulator, with and without c2 (check_corrected.py
-# --realbin): C's value with -F, the original's without a switch. Separate
+# --realbin): C's value with -F, the original's without a switch - and the
+# triggers of ld's corrections through the emulated original. Separate
 # from "test" because it needs the Python module "unicorn" (pip install
 # unicorn). See tests/realbin/README.md.
 REALBIN_FUZZ_ARGS = -n 200 -s 1
@@ -446,6 +452,9 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/realbin/ldcmp.py cases
 	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS)
 	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS) --mutate 0.5
+	@python3 tests/realbin/ldcmp.py cases --mode corrected
+	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS) --mode corrected
+	@python3 tests/realbin/ldfuzz.py $(REALBIN_LDFUZZ_ARGS) --mutate 0.5 --mode corrected
 	@python3 tests/mutos_ld/check_rflag.py
 	@python3 tests/realbin/cctrace.py goldens
 	@python3 tests/realbin/cctables.py --check-c src/mutos_cc/ccport/ccdata.c
