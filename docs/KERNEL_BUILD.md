@@ -189,6 +189,27 @@ in the repository, and the summary shows what they meet. Without
 `MUTOS_MODE` the kernel is the original's, as in step 6. The plan's step F5
 accounts for each difference.
 
+The kernel's long arithmetic (`l / m`, `l % m`, `l /= m` ...) is `arith.a`'s
+`aldiv` ... `lrem`, which are `libc.a`'s routines with their bugs (L-04, L-08
+of `docs/MUTOS_ORIGINAL_BUGS.md`). The makefile names `arith.a` by its path,
+so the corrected mode does not replace it - `ld`'s rule LIBC-F concerns `-lX`
+only. For a kernel with the corrected long helpers (step F3b), put the
+corrected copy that `make` builds in the repository into the working copy in
+place of the tree's:
+
+```sh
+cp ~/mutos1700_c_cross_compiler/src/libc_fixed/arith.a ~/sys_cross/conf/arith.a
+```
+
+It is made from the owner's `arith.a` (`tests/mutos1700_arith/`): the same
+members in the same order with the same dates, `aldiv.o`, `ldiv.o`, `alrem.o`
+and `lrem.o` corrected. For another tree's `arith.a`:
+`python3 ~/mutos1700_c_cross_compiler/src/libc_fixed/fix_archive.py -o arith.a
+~/sys/conf/arith.a` (it refuses if those members are not the routines it
+corrects). The copy changes the linked kernel `mutos` (the four members
+are longer), not the objects; the original's `arith.a` stays where the
+original kernel is to be built.
+
 ## When it goes wrong
 
 | Message | Cause | Remedy |

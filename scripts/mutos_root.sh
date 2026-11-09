@@ -29,6 +29,12 @@
 #                  in the PATH of its commands; mutos_lorder runs bin/nm); a
 #                  link to a tool not built (yet) dangles, and running it
 #                  fails as on a MUTOS system without the file
+#   lib/fixed/libc.a  the corrected copy of libc.a (since 2026-11-09,
+#                  docs/TOOLCHAIN_PLAN.md, step F3b): src/libc_fixed/libc.a
+#                  copied with its modification time (that of its
+#                  __.SYMDEF) - not there until "make" has built it; ld's
+#                  -lX in the corrected mode looks for lib/fixed/libX.a
+#                  first
 #   usr/lib/       empty: for the user's own libraries (ld -lX looks in
 #                  lib/, then usr/lib/)
 #   usr/include/   the original headers: mutos/mutos_include/usr/include/
@@ -46,14 +52,14 @@
 # nothing but libc.a's time if something reset it.
 #
 # Usage: scripts/mutos_root.sh [ROOT]     (default: <tree>/mutos_root)
-# Needs: sh, base64 (-d), cmp, cp, find, ln, touch (-t, POSIX).
+# Needs: sh, base64 (-d), cmp, cp, find, ln, touch (-t and -r, POSIX).
 
 set -e
 
 top=$(cd "$(dirname "$0")/.." && pwd)
 root=${1:-$top/mutos_root}
 
-mkdir -p "$root/lib" "$root/bin" "$root/usr/lib" "$root/usr/include" "$root/tmp"
+mkdir -p "$root/lib/fixed" "$root/bin" "$root/usr/lib" "$root/usr/include" "$root/tmp"
 root=$(cd "$root" && pwd)
 
 # decode BASE64-FILE TARGET: write TARGET only if its bytes differ
@@ -72,6 +78,17 @@ decode "$top/tests/mutos1700_crt0/crt0.o.base64.txt" "$root/lib/crt0.o"
 decode "$top/tests/mutos1700_libc/libc.a.base64.txt" "$root/lib/libc.a"
 # libc.a's __.SYMDEF time (602282477), as POSIX touch takes it
 TZ=UTC0 touch -t 198901312041.17 "$root/lib/libc.a"
+
+# the corrected copy, as src/libc_fixed/ built it (its time is its
+# __.SYMDEF's, set there)
+fixed=$top/src/libc_fixed/libc.a
+if [ -f "$fixed" ]; then
+    if ! cmp -s "$fixed" "$root/lib/fixed/libc.a"; then
+        cp "$fixed" "$root/lib/fixed/libc.a"
+        echo "mutos_root: $root/lib/fixed/libc.a"
+    fi
+    touch -r "$fixed" "$root/lib/fixed/libc.a"
+fi
 
 # the original headers, file for file; one line for those copied
 inc=$top/mutos/mutos_include/usr/include

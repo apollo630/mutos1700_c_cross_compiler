@@ -510,3 +510,141 @@ bugs are the owner's to choose. `rtcheck.py --archive` takes the members
 an archive has (the rest from the original), `--fixed` drops the models
 of what it corrects - the check of the copy, and of the kernel's
 `arith.a`, which is not in the tree.
+
+## Step F3b: the corrected copy of `libc.a` (2026-11-09)
+
+The owner's choice after F3: the five bugs that compute wrongly in
+ordinary programs (L-01, L-04, L-05, L-08, L-11) and four edge ones
+(L-03, L-10, L-12, L-14); L-02, L-09 and L-13 stay. The copy is the
+root's `lib/fixed/libc.a`, `ld -F` takes it for `-lc`, and the kernel's
+`arith.a` gets a copy from the same sources.
+
+### The reconstruction
+
+The plan asks for a source per member that `mutos_as` assembles to the
+original member byte for byte before anything is corrected - the proof
+that the correction is a change of the original's code and nothing else.
+`ldexp.s` (step 5) was written by hand. For nine members with 1,300
+instructions a draft generator paid off: `src/libc_fixed/objsrc.py`
+decodes the text with capstone, writes each instruction as the original
+assembler reads it (the operand markers decided by the opcode - `83` and
+`80` take `*`, `81` and the accumulator forms `#`; `xchg`'s register
+field first; `b` after a mnemonic whose only byte operand is in memory),
+the relocated fields as symbol and addend, the data as `.byte` runs, and
+places `.globl` and `.comm` lines where the symbol table's order - the
+order of first mention - needs them. Seven of the nine came out exact at
+once; `stacks.o` needed its data in two parts (`fpsp` before the text,
+the two messages after it) and `dmath.o` the local label where a target
+has a global one too (`round` for `dround`'s address).
+
+The jump targets the original reached without a symbol were first
+written `.+N` - exact, but a correction that adds a byte breaks every such
+jump across it. Numeric labels would have been the answer: `mutos_as`
+takes `1:` and `1f` (its manual page says so) - and assembles `jns 1f` to
+a jump onto itself and writes `1:` into the symbol table. The original
+assembler has no numeric labels at all: "syntax error" under the
+emulator. So the targets are `L1`, `L2` ... and the sources are
+assembled with `-C`, which leaves defined local `L` symbols out of the
+symbol table, as `cc -c`'s `as -gC` does: exact again, and safe to edit.
+(The numeric labels are `STATUS.md`'s open item 8.)
+
+Of the other members of `libc.a`, `objsrc.py` drafts 72 of 167 exactly;
+the rest need equates and the like by hand - not needed now.
+
+### The copy, and LIBC-F
+
+`fix_archive.py` replaces members in place with `mutos_ar r` (the order
+kept; the new member gets the old one's date, so that only its size and
+contents change) and has `mutos_ranlib` make `__.SYMDEF` anew; the file
+gets the table's date, so `ld` finds it up to date. It refuses a member
+that is not the original's byte for byte - which makes it the tool for
+the kernel's `arith.a` as well: it corrects the long helpers there if
+they are `libc.a`'s, and stops otherwise. Its own MUTOS root, in a
+temporary directory, gives `mutos_ar` its `tmp/` and `mutos_ranlib` its
+`bin/ar`, so that it runs before the build tree's root exists.
+
+The corrected mode reaches the copy through `ld`: the rule LIBC-F, a
+hook in `getfile()` before the original opens `/lib/libX.a`. It is a rule
+like the corrections - a file, a hook, a row - because the accounting
+needs it: a program linked with `-F` differs from the original's when
+the copy does, and `check_accounting.py` takes a difference of the link
+stage only with an `applied` entry of `ld`. The copy's name is not in
+the original's image, so the messages keep `/lib/libX.a`; the rule logs
+the real one.
+
+### The corrections, one patch each
+
+Smallest first. Each is a change of `fixed/<name>.s` against `orig/`, every
+changed line in a hunk with a `| L-nn` mark (`check_rules.py` now takes
+every mark on a line, so that a header line can name two), a row of the
+copy's register, and the bug's entry turned to "corrected in the copy".
+Each was measured with `rtcheck.py --archive ... --fixed <the corrections
+so far>` - a corrected bug's model dropped, so the original's behaviour
+would have been `UNEXPLAINED` - and, where `rtcheck.py`'s cases are too few
+for the place, by a measurement of its own:
+
+- L-03: the fix idea (the immediate) alone was not enough - the test of
+  the first fraction bit after it made `(int)-32768.5` raise SIGFPE even
+  with the right constant; truncation toward zero wants -32768 for all of
+  -32768.x, so the test went too.
+- L-12: two jumps, unsigned. `rtcheck.py`'s layout group places the stack
+  from 0x7e00 to 0x9000: every placement right.
+- L-05: one displacement. Every product of `dmul` and the stack's
+  multiplications correctly rounded.
+- L-14: `cmp ah,*/39`. Whether the alignment rounds a difference of 57
+  right was the open question: measured for differences 50 to 65, 6,000
+  additions and subtractions each, powers of two among the larger
+  operands - every result correctly rounded (the original: 1,201 wrong at
+  57). With L-14 corrected, `fsubrs`'s model (L-09: `dsub` on the eight
+  bytes after the float) had to use the corrected `dsub` too - a rare
+  junk operand 57 orders below showed it in a full run.
+- L-08: `mov dx,ax` / `mov ax,di` after the stores. `rtcheck.py`'s model
+  of L-04's wrong remainders now leaves the stored value in DX:AX when
+  L-08 is corrected.
+- L-01: `sub ax,ax` before the jump to the store loop; all 65,536 ints
+  convert exactly.
+- L-11: `jl` to a new path for e > 31, `je` past the shift loop for e =
+  31 (a count of 0 would have looped 65,536 times); e = 32 overflows but
+  for a mantissa of exactly 0x80000000 with the sign set (-2\*\*31 to
+  -2\*\*31-0.99...). 20,072 doubles around the limits: every result C's.
+- L-04: not the fix idea (32 steps would need a 64-bit shift register the
+  routine has no registers for) but the routines' own structure used
+  right: the divisions' short path only for a divisor of 0 to 32767
+  (`js hardldiv` instead of the negated sign word), and in the long way,
+  once both operands are positive, a divisor below 2\*\*16 goes back to
+  the two `div`s; from 2\*\*16 the sixteen steps are right - the quotient
+  is below 2\*\*16 - once their compares are unsigned. The remainders the
+  same: their short path (-32768..32767) was right; 32768 to 65535 in
+  magnitude now take two `div`s in `hardlrem`. Three seeds, up to 20,000
+  cases per entry point and set: every result C's.
+- L-10: `fcmp` without `dsub`: every zero +0, signs that differ decide,
+  then the top words and the words below, unsigned, reversed for negative
+  values; AX then set as the difference's top word would be, so that the
+  original's tail (`or ah,ah` / `or al,*/7f` / `lahf`) makes the flags and
+  AH. 120,032 pairs differing in one bit, both signs, zeros of every form:
+  every comparison right.
+
+### The copy on whole programs
+
+`linkcheck.py` links every assemblable golden (the real compiler's
+output) with the original archive and with the copy: 73 of 122 get the
+same image (no corrected member), the other 49 run to the same exit
+status and output - the interface held. The goldens hardly meet the
+corrected bugs, so `triggers/` has one program per correction, compiled
+by the port's `cc` and `cc -F` in the root: the original's wrong value or
+SIGFPE, then C's. Two needed care: L-05's product is wrong only when
+`dmul`'s `[si]` - the memory operand of `fmuld`, the right operand of
+`*` - has a nonzero low mantissa word (`b * a`, not `a * b`); L-12's
+`fpstk` must lie across 0x8000 in both links, which `cc -i` gives (the
+data segment its own; with 0407 the copy's longer text moved it).
+
+### `arith.a`
+
+The owner put his `arith.a` into `tests/mutos1700_arith/` the same day:
+its six long helpers are `libc.a`'s byte for byte, so `fix_archive.py`
+corrects it as it is; `make` builds `src/libc_fixed/arith.a`. Comparing
+the copy's headers with the original's showed that `mutos_ar r` takes
+owner, group and mode from the file it adds - `fix_archive.py` now puts
+the old header's back, and `check_copy.py` checks every header. The
+kernel's makefile names `arith.a` by its path, so the corrected kernel
+takes the copy by hand (`docs/KERNEL_BUILD.md`, step 7), not by a rule.

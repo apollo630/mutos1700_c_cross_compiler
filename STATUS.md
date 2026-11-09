@@ -1228,8 +1228,13 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    **F1 done 2026-11-08**: the four corrections of `c1`. **F2** (2026-11-09, "Step F2"
    below): the corrections of `ld`. **F3** (2026-11-09, "Step F3" below): the runtime
    of `libc.a` measured - `tests/libc_runtime/rtcheck.py`, L-01 to L-05 measured at
-   run time, seven new bugs (L-08 to L-14). Next: F3b, the corrected copy of
-   `libc.a`.
+   run time, seven new bugs (L-08 to L-14). **F3b** (in progress, "Step F3b"
+   below): the corrected copy of `libc.a` - the reconstructed sources, the
+   copy, `ld`'s LIBC-F, the nine corrections, the copy of `arith.a`, checked
+   by `rtcheck.py --copy`, `linkcheck.py` and a trigger program per
+   correction; still to do: the re-enactments of `c1` and `as`
+   (`c1_itod()`, `c1_aldiv()`/`c1_alrem()`, `c1_dtoi()`, `c1_ftol()`,
+   `fltconst.c`'s product) to follow the copy in the corrected mode.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2148,6 +2153,137 @@ of step F3b is made from.
   (9 triggers of `c1`, 13 of `ld`) - and, new at its end, `rtcheck.py` (1,000 cases
   per entry point and set).
 
+### Step F3b: the corrected copy of `libc.a` (in progress, 2026-11-09)
+
+Decided by the project owner on 2026-11-09, after step F3: the copy corrects
+L-01, L-04, L-05, L-08 and L-11 (wrong in ordinary programs, decision 14) and
+four of the edge bugs, L-03, L-10, L-12 and L-14; L-02, L-09 and L-13 stay, as
+documented in `docs/MUTOS_ORIGINAL_BUGS.md`. The copy is the root's
+`lib/fixed/libc.a`, and `ld`'s `-lX` takes `/lib/fixed/libX.a` first in the
+corrected mode; a copy of the kernel's `conf/arith.a` is made from the same
+sources (its long helpers measured by the owner the same day: the same
+results as `libc.a`'s, L-04 and L-08 included).
+
+- **The reconstructions** (`src/libc_fixed/orig/`, its `README.md`): the nine
+  members with a correction - `aldiv.o`, `ldiv.o`, `alrem.o`, `lrem.o`,
+  `convert.o`, `lconvert.o`, `dmath.o`, `stkmath.o`, `stacks.o`, all
+  hand-written assembler - as sources that `mutos_as -C` assembles to the
+  original members byte for byte (header, text, data, both relocation tables,
+  the symbol table): drafted by `src/libc_fixed/objsrc.py` from the disassembly
+  (capstone), spelled as the original assembler reads it, the symbol table's
+  order kept by placing `.globl`/`.comm` lines, jump targets without a symbol
+  labelled `L1`, `L2` ... (`-C` leaves them out), then annotated: a header and
+  a comment per routine, and `| L-nn` at each bug's site. The drafts were
+  exact for all nine at the first attempt but for the symbol order of two
+  (`stacks.o`'s data in two parts, `dmath.o`'s local label for a target with a
+  global one too).
+- **The copy** (`src/libc_fixed/fix_archive.py`, run by `make`): the original
+  archive with the members of `fixed/` assembled and replaced in place
+  (`mutos_ar r`, the order and the old member's date kept), `__.SYMDEF` made
+  anew by `mutos_ranlib`, the file's time that of the table; it refuses to
+  replace a member that is not the original's byte for byte - so it corrects
+  the kernel's `arith.a` too, if its long helpers are `libc.a`'s, and
+  nothing else. With no `fixed/` source yet the copy is the original archive.
+  `scripts/mutos_root.sh` puts it into the root as `lib/fixed/libc.a`.
+- **The checks**: `src/libc_fixed/check_copy.py` (in `make test`) - every
+  reconstruction byte for byte its member; every corrected source keeps its
+  member's interface (the same global symbols, no new external reference);
+  the copy has the original's members in its order, each the original's but
+  the corrected ones and `__.SYMDEF`. `scripts/check_rules.py` - every line of
+  `fixed/` that differs from `orig/` lies in a change marked with a correction
+  of the new register of `docs/RULES.md` ("The corrected copy of `libc.a`"),
+  and every row has its change and its entry in `docs/MUTOS_ORIGINAL_BUGS.md`.
+  `tests/mutos_root/check_root.py` - `lib/fixed/libc.a` is the copy, with its
+  time, and `ld -lc` takes it with `-F` only.
+- **`ld`'s rule LIBC-F** (`src/mutos_ld/ldrules/libc_f.c`, hook in
+  `getfile()`): in the corrected mode `-lX` opens `/lib/fixed/libX.a` under
+  the root if there is one, logged `applied` (each of `ld`'s two passes),
+  else the original's lookup; the messages still name `/lib/libX.a`. It
+  accounts for a linked program that differs in `check_accounting.py`.
+- **The corrections** (`src/libc_fixed/fixed/`, one patch each, the copy's
+  register in `docs/RULES.md`; each checked with `rtcheck.py --archive
+  mutos_root/lib/fixed/libc.a --fixed <the corrections>` - every result
+  right but where a bug not corrected explains it):
+  - L-03 (`convert.o`): `ftoi`/`dtoi` compare with the immediate 0x8000;
+    -32768 to -32768.99... give -32768, the rest from 2\*\*15 SIGFPE (the
+    original also raised SIGFPE for -32768.5 to -32768.99...). `rtcheck.py
+    show` takes `--archive` too.
+  - L-12 (`stacks.o`): `incfpsp` and `decfpsp` compare the stack's ends
+    unsigned (`jae`, `jb`); a floating-point stack across address 0x8000
+    works (`rtcheck.py`'s layout group: every placement from 0x7e00 to
+    0x9000 right).
+  - L-05 (`dmath.o`): `pmuld`'s a0\*b2 partial product from b2's word;
+    every product of `dmul`, `fmul`, `fmuld` and `fmuls` correctly rounded
+    (`atof`'s too, at run time).
+  - L-14 (`dmath.o`): `dadd`/`dsub` let an exponent difference of 57
+    through to the alignment (`cmp ah,*/39`), whose sticky bit rounds it;
+    measured for differences 50 to 65 (6,000 additions and subtractions
+    each, powers of two among the larger operands): every result correctly
+    rounded.
+  - L-08 (`alrem.o`): `alrem`'s long way leaves the remainder in DX:AX as
+    well (`mov dx,ax` / `mov ax,di`); `rtcheck.py` models L-04's wrong
+    remainders with L-08 corrected or not.
+  - L-01 (`convert.o`): `itof`/`itod` clear AX before the store loop;
+    each of the 65,536 ints converts exactly (measured under the emulator).
+  - L-11 (`lconvert.o`): `ftol` converts 2\*\*30 to 2\*\*31 in magnitude
+    without a shift and overflows from 2\*\*31, but for -2\*\*31 (to
+    -2\*\*31-0.99...); 20,072 doubles measured, every result C's.
+  - L-04 (`aldiv.o`, `ldiv.o`, `alrem.o`, `lrem.o`): the divisions' short
+    path only for a divisor of 0 to 32767; every other divisor below
+    2\*\*16 in magnitude (the remainders': from 32768) takes two `div`s
+    once both operands are positive; from 2\*\*16 the sixteen steps,
+    compared unsigned. `rtcheck.py`'s long group, seeds 1 to 3, up to
+    20,000 cases per entry point and set: every result C's.
+  - L-10 (`stkmath.o`): `fcmp` compares without subtracting (signs, then
+    the words from the top, unsigned, reversed for negative values, every
+    zero +0) and sets the flags and AH as before; no comparison raises
+    SIGFPE or calls different values equal (`rtcheck.py`'s cases and
+    120,032 pairs differing in one bit, every comparison right).
+- **The copy checked as a whole** (`make check-runtime`, and in `make
+  check-realbin`): `rtcheck.py --copy` - the copy with the models of the bugs
+  its register names dropped; `-n 20000`, seeds 1 to 4 (3,745,620 calls):
+  every result right but where L-02, L-09 or L-13 (not corrected) explains it,
+  and `-2**31 / -1` (undefined in C). `tests/libc_runtime/linkcheck.py` - the
+  122 linkable goldens of `tests/mutos_cc` linked with the original and with
+  the copy: 73 the same image, the 49 others run under the emulator with the
+  same exit status and output; `triggers/*.c`, nine programs, one per
+  correction, compiled and linked by the port's `cc` and `cc -F` in the MUTOS
+  root: the original's wrong result (or SIGFPE) with `cc`, C's with `cc -F` -
+  the corrected mode's whole path, `ld`'s LIBC-F included.
+- **The kernel's `arith.a`** (`tests/mutos1700_arith/`, added by the project
+  owner the same day): its six long helpers are `libc.a`'s byte for byte;
+  `make` builds the corrected copy `src/libc_fixed/arith.a` from it (the same
+  members, order, dates, owners and modes, `aldiv.o`, `ldiv.o`, `alrem.o`,
+  `lrem.o` replaced; no `__.SYMDEF`, as the original); `check_copy.py`
+  checks it as the `libc.a` copy, `make check-runtime` measures both
+  (`rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt long`:
+  L-04, L-08; `--copy src/libc_fixed/arith.a long`: every result C's).
+  `docs/KERNEL_BUILD.md`, step 7: the copy in the working tree's `conf/`
+  for a kernel with the corrected long helpers - the makefile names
+  `arith.a` by path, which LIBC-F does not reach. `fix_archive.py` now keeps
+  a replaced member's owner, group and mode as well as its date.
+- **Verified** on a fresh clone of `370fc4f` with the thirteen patches: `make clean
+  && make all` without a warning; `make test` exit 0, its output an unchanged
+  clone's with the new checks added (the copy, the root's `lib/fixed/libc.a`,
+  LIBC-F, the copy's register); `make check-docs` clean (after `git add -A`);
+  `make check-runtime` exit 0. **`make check-realbin` whole** on that clone, in
+  a cloud session on two cores: exit 0, every check passed, 76 minutes, the
+  numbers of F3's run (`c1trees.py` 131/132 at depths 2-4, `cppcmp.py` 411/411,
+  `ldcmp.py goldens` 1,572/1,572, in the corrected mode `cases` 4 corrected,
+  `cccmp.py` `run` and `programs` 124/124, `c2cmp.py goldens` 396/396, `asfuzz.py`
+  251 the same, `arcmp.py` 364 of 366, `makecmp.py` 430 of 457 and 312/312, `ed`
+  400 and `em` 380 of 400 the same, `check_root.py --realbin` and
+  `check_corrected.py --realbin` passed - its triggers of `c1` and `ld` now linked
+  with the copy under `-F`); at its end `rtcheck.py` on the original, `--copy`,
+  both on `arith.a`, and `linkcheck.py` as above. Only `fix_archive.py`'s file
+  time (not after now) and its docstring changed after that run; a third
+  clone checked `git apply`, `make all`, `make test` and `make check-docs`.
+- Found on the way: `mutos_as` takes numeric labels (`1:`, referenced `1f`,
+  `1b` - its manual page describes them) and resolves a forward reference
+  wrongly (`jns 1f` jumps to itself) and puts the label into the symbol table
+  as `1:`; the original assembler has no numeric labels ("syntax error",
+  under the emulator). The reconstructions do not use them (open item 8).
+
 ## `mutos_as` opcode coverage
 
 This is the detailed breakdown requested for this document. "Confirmed real" means
@@ -2381,3 +2517,9 @@ far.
    `.03` included), only the `L` labels (open item 6; `-C`, which `mutos_as`
    has since 2026-10-25) kept them from being `libc_recon/` goldens - what is missing
    now is a source for each, written from the disassembly.
+8. `mutos_as` and numeric labels (found 2026-11-09, step F3b): it accepts `1:` with
+   references `1f`/`1b`, as its manual page says, but resolves a forward reference
+   wrongly (`jns 1f` assembles to a jump onto itself) and writes the label into the
+   symbol table as `1:`. The original assembler rejects such a source ("syntax
+   error"). Suggested: refuse numeric labels as the original does (and drop them
+   from the manual page when the manual pages are written).

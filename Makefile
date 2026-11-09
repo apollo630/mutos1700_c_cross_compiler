@@ -73,7 +73,13 @@
 #                   # point stack and its operations), every entry point
 #                   # run under an 8086 emulator against Python's
 #                   # arithmetic, every difference a known bug of the
-#                   # original (needs the Python module "unicorn"; see
+#                   # original - then the same for the corrected copy
+#                   # (src/libc_fixed/), every difference a bug it does
+#                   # not correct; the long helpers of the kernel's
+#                   # arith.a and of its copy too; the goldens linked with both run the
+#                   # same, and a trigger program per correction gives
+#                   # the original's and C's result with cc and cc -F
+#                   # (needs the Python module "unicorn"; see
 #                   # tests/libc_runtime/README.md); RUNTIME_ARGS passes
 #                   # options, e.g. make check-runtime RUNTIME_ARGS="-n 20000"
 #   make check-realbin # the original MUTOS c0 and c1 (mutos/mutos_bin/), run under
@@ -131,9 +137,9 @@ endif
 MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
 SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
-.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root clean test fuzz check-docs check-libcatof check-runtime check-realbin install-hooks
+.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder ed em libc_fixed root clean test fuzz check-docs check-libcatof check-runtime check-realbin install-hooks
 
-all: ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root
+all: ld as cpp cc ar ranlib make nm size strip tsort lorder ed em libc_fixed root
 
 ld:
 	$(SUBMAKE) -C src/mutos_ld
@@ -177,6 +183,12 @@ ed:
 em:
 	$(SUBMAKE) -C src/mutos_em
 
+# The corrected copy of libc.a (docs/TOOLCHAIN_PLAN.md, step F3b): the
+# original archive with the members of src/libc_fixed/fixed/ replaced
+# (src/libc_fixed/README.md); needs mutos_as, mutos_ar and mutos_ranlib.
+libc_fixed: as ar ranlib
+	$(SUBMAKE) -C src/libc_fixed
+
 # mutos_root/: crt0.o and libc.a decoded from tests/ (libc.a with its
 # __.SYMDEF time), the passes and tools as symbolic links into src/ (a
 # link to a tool not built yet dangles), usr/lib/, usr/include/ and tmp/.
@@ -190,6 +202,7 @@ root:
 clean:
 	$(MAKE) -C src/mutos_ld clean
 	$(MAKE) -C src/mutos_as clean
+	$(MAKE) -C src/libc_fixed clean
 	$(MAKE) -C src/mutos_cpp clean
 	$(MAKE) -C src/mutos_cc clean
 	$(MAKE) -C src/mutos_ar clean
@@ -291,6 +304,8 @@ test: all
 	@cd tests/mutos_cpp && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp ./run_goldens.sh
 	@echo "== mutos_cc (c0/c1) goldens =="
 	@cd tests/mutos_cc && MUTOS_CPP=$(CURDIR)/src/mutos_cpp/mutos_cpp MUTOS_C0=$(CURDIR)/src/mutos_cc/mutos_c0 MUTOS_C1=$(CURDIR)/src/mutos_cc/mutos_c1 ./run_goldens.sh
+	@echo "== the corrected copy of libc.a (src/libc_fixed/): the reconstructions, the copy =="
+	@python3 src/libc_fixed/check_copy.py
 	@echo "== the MUTOS root (mutos_root/, src/h/mutos_root.h) =="
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" $(MUTOS_ROOT_DEFAULT)
 	@echo "== mutos_cc (the driver) with the ported passes =="
@@ -441,10 +456,14 @@ REALBIN_EDFUZZ_ARGS = -n 400 -s 1
 # The runtime of libc.a that compiled code calls, measured (step F3 of
 # docs/TOOLCHAIN_PLAN.md, section 7.3; tests/libc_runtime/README.md).
 RUNTIME_ARGS =
-check-runtime: as ld ar
+check-runtime: all
 	@python3 tests/libc_runtime/rtcheck.py $(RUNTIME_ARGS)
+	@python3 tests/libc_runtime/rtcheck.py --copy $(RUNTIME_ARGS)
+	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt $(RUNTIME_ARGS) long
+	@python3 tests/libc_runtime/rtcheck.py --copy src/libc_fixed/arith.a $(RUNTIME_ARGS) long
+	@python3 tests/libc_runtime/linkcheck.py
 
-check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
+check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em libc_fixed root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
 	@python3 tests/realbin/check_real.py goldens
@@ -509,6 +528,10 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py --realbin --fuzz 0
 	@python3 tests/libc_runtime/rtcheck.py
+	@python3 tests/libc_runtime/rtcheck.py --copy
+	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt long
+	@python3 tests/libc_runtime/rtcheck.py --copy src/libc_fixed/arith.a long
+	@python3 tests/libc_runtime/linkcheck.py
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

@@ -28,8 +28,9 @@ to `c1` (a last argument `-1`, whose characters the original ignores), `c2`
 
 ## What a rule is
 
-One correction (named by its bug: C1-03, LD-08, ...) or one V30 rule
-(V30-PUSH, V30-SHIFT, V30-IMUL) is
+One correction (named by its bug: C1-03, LD-08, ...), one V30 rule
+(V30-PUSH, V30-SHIFT, V30-IMUL) or LIBC-F, which makes `ld` take the
+corrected copy of `libc.a` (below), is
 
 - a source file of its own in its tool's rules directory, named after the
   rule (`src/mutos_cc/c1rules/c1_03.c`), with one function
@@ -64,12 +65,66 @@ A rule is in one of two states:
 | LD-06 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
 | LD-08 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
 | LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
+| LIBC-F | ld | `-F` | active | `src/mutos_ld/ldrules/libc_f.c` | `src/mutos_ld/ld.c`, `getfile()`: `-lX`'s `/lib/libX.a` opened | [The corrected copy of `libc.a`](#the-corrected-copy-of-libca) |
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
 `-1` and the rule log of `c1`), `src/mutos_ld/ldrules/` (`ldrules.c`: the
 mode of `ld`); `c0rules/`, `c2rules/` and `src/mutos_as/asrules/` come with
 their first rule. `c0` and `as` read the mode already (`c0lib.c`'s
 `c0_mode`, `assemble.c`'s `as_mode`), `c2` its `-1` (`c2_v30`).
+
+## The corrected copy of `libc.a`
+
+The runtime bugs of `libc.a` are not corrected by a rule in a tool but in a
+copy of the library (decision 14, step F3b): the corrected mode links
+`lib/fixed/libc.a` of the MUTOS root where the original mode links
+`lib/libc.a`, which stays the original archive. The rule LIBC-F of `ld`
+does it: in the corrected mode `-lX` looks for `/lib/fixed/libX.a` before
+the original's `/lib/libX.a` and `/usr/lib/libX.a` (the place decided by
+the project owner on 2026-11-09), and logs `applied` where it takes it -
+which accounts for a linked program that differs; its messages still name
+the library `/lib/libX.a`. The copy is the original with some members
+replaced in place (`src/libc_fixed/`, its `README.md`):
+
+- `src/libc_fixed/orig/<name>.s` is a source of the member `<name>.o`,
+  reconstructed from the real object, that `mutos_as -C` assembles to the
+  original member byte for byte (`src/libc_fixed/check_copy.py`, in `make
+  test`);
+- `src/libc_fixed/fixed/<name>.s` is that source with its corrections,
+  each change marked by a comment that names its correction (`| L-03
+  ...`): every line of `fixed/<name>.s` that differs from `orig/<name>.s`
+  lies in a change with such a mark, and every mark names a row of the
+  register below for that member;
+- the copy (`src/libc_fixed/fix_archive.py`, run by `make`) has every
+  member of the original in its order, each the original's but those of
+  `fixed/` and `__.SYMDEF`; a corrected member keeps its interface - the
+  same global symbols, no new external reference -, so that what the
+  original compiler made, and the original `cc` and `ld` on the hardware,
+  link with it.
+
+Taking a correction out is undoing its marked changes in `fixed/` (and
+deleting the file when nothing is left) and its row.
+`scripts/check_rules.py` checks the marks against the register;
+`tests/libc_runtime/rtcheck.py --copy` (`make check-runtime`) checks what they
+compute - every entry point with the models of the bugs this register names
+dropped -, and `tests/libc_runtime/linkcheck.py` (there too) checks the copy on
+whole programs: the goldens linked with it run as with the original, and a
+trigger program per correction gives C's result with `cc -F`.
+
+| Correction | Member | Source | What it changes | Record |
+|---|---|---|---|---|
+| L-01 | `convert.o` | `src/libc_fixed/fixed/convert.s` | `itof`/`itod`: AX cleared before the store loop, so that bytes 0 to 3 of the double are 0 - every int converts exactly | [L-01](MUTOS_ORIGINAL_BUGS.md) |
+| L-03 | `convert.o` | `src/libc_fixed/fixed/convert.s` | `ftoi`/`dtoi` from 2\*\*15 in magnitude: compares with the immediate 0x8000, not with the word at address 8000; -32768 to -32768.99... give -32768 (the original raised SIGFPE from -32768.5 on), the rest SIGFPE | [L-03](MUTOS_ORIGINAL_BUGS.md) |
+| L-04 | `aldiv.o` | `src/libc_fixed/fixed/aldiv.s` | `aldiv` (`l /= m`): the short path only for a divisor of 0 to 32767; any other divisor below 2\*\*16 in magnitude two `div`s once both operands are positive, from 2\*\*16 the sixteen steps compared unsigned - C's quotient for every divisor | [L-04](MUTOS_ORIGINAL_BUGS.md) |
+| L-04 | `ldiv.o` | `src/libc_fixed/fixed/ldiv.s` | `ldiv` (`l / m`): the short path only for a divisor of 0 to 32767; any other divisor below 2\*\*16 in magnitude two `div`s once both operands are positive, from 2\*\*16 the sixteen steps compared unsigned - C's quotient for every divisor | [L-04](MUTOS_ORIGINAL_BUGS.md) |
+| L-04 | `alrem.o` | `src/libc_fixed/fixed/alrem.s` | `alrem` (`l %= m`): a divisor of 32768 to 65535 in magnitude two `div`s as well, from 2\*\*16 the sixteen steps compared unsigned - C's remainder for every divisor | [L-04](MUTOS_ORIGINAL_BUGS.md) |
+| L-04 | `lrem.o` | `src/libc_fixed/fixed/lrem.s` | `lrem` (`l % m`): a divisor of 32768 to 65535 in magnitude two `div`s as well, from 2\*\*16 the sixteen steps compared unsigned - C's remainder for every divisor | [L-04](MUTOS_ORIGINAL_BUGS.md) |
+| L-05 | `dmath.o` | `src/libc_fixed/fixed/dmath.s` | `pmuld` (`dmul`, and `fmul`, `fmuld`, `fmuls`, `atof` through it): the a0\*b2 partial product from b2's word, `4.(di)`, not b1's - every product correctly rounded | [L-05](MUTOS_ORIGINAL_BUGS.md) |
+| L-08 | `alrem.o` | `src/libc_fixed/fixed/alrem.s` | `alrem` (`l %= m`): the long way leaves the remainder it stores in DX:AX too, where compiled code reads the value | [L-08](MUTOS_ORIGINAL_BUGS.md) |
+| L-10 | `stkmath.o` | `src/libc_fixed/fixed/stkmath.s` | `fcmp` (every comparison of floating values): compares without subtracting - signs, then the words from the top, unsigned, reversed for negative values, every zero +0 - so that no comparison raises SIGFPE and different values never compare equal; the flags and AH as before | [L-10](MUTOS_ORIGINAL_BUGS.md) |
+| L-11 | `lconvert.o` | `src/libc_fixed/fixed/lconvert.s` | `ftol` (`(long)d`, `(unsigned)d`): 2\*\*30 to 2\*\*31 in magnitude converted without a shift, not taken for an overflow; from 2\*\*31 SIGFPE but for -2\*\*31 to -2\*\*31-0.99... | [L-11](MUTOS_ORIGINAL_BUGS.md) |
+| L-12 | `stacks.o` | `src/libc_fixed/fixed/stacks.s` | `incfpsp`, `decfpsp`: the floating-point stack's ends compared unsigned (`jae`, `jb`), so that a stack across address 0x8000 works | [L-12](MUTOS_ORIGINAL_BUGS.md) |
+| L-14 | `dmath.o` | `src/libc_fixed/fixed/dmath.s` | `dadd`, `dsub` (and every addition and subtraction through them): an operand 57 binary orders below the other is aligned and rounded (`cmp ah,*/39`), dropped from 58 | [L-14](MUTOS_ORIGINAL_BUGS.md) |
 
 ## The rule log
 

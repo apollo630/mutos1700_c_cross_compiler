@@ -64,14 +64,19 @@ python3 tests/libc_runtime/rtcheck.py -n 20000 --seed 2 long float
 python3 tests/libc_runtime/rtcheck.py show ldiv 99999 100000
 python3 tests/libc_runtime/rtcheck.py show itof 1001
 python3 tests/libc_runtime/rtcheck.py --archive x.a --fixed L-04,L-05 long float
-make check-runtime                                    # what make check-realbin runs too
+python3 tests/libc_runtime/rtcheck.py --copy          # the corrected copy (step F3b)
+python3 tests/libc_runtime/rtcheck.py show --archive src/libc_fixed/libc.a ftol 1.5e9
+python3 tests/libc_runtime/linkcheck.py               # the copy on whole programs (goldens, triggers/)
+make check-runtime                                    # the original, the copy, linkcheck; make check-realbin runs it too
 ```
 
 Groups: `long`, `float` (the core and the sixteen stack operations), `conv`,
 `stack`, `cmp`, `chkstk`, `layout`. `--fixed` names the bugs an archive given
 with `--archive` has corrected: their models are dropped, so the original's
 behaviour counts as `UNEXPLAINED` (step F3b's check of the corrected copy).
-Requires the Python module `unicorn` and a built tree (`make`).
+`--copy` is `--archive src/libc_fixed/libc.a` with `--fixed` the corrections
+the copy's register in `docs/RULES.md` names ("The corrected copy of
+`libc.a`"). Requires the Python module `unicorn` and a built tree (`make`).
 
 ## Result (2026-11-09)
 
@@ -88,3 +93,39 @@ double's high four bytes - truncates, as C allows), the registers each routine
 preserves, the stack pointer and the direction flag. `ltof(0)` leaves old
 bytes below its zero (L-02), which no routine reads. `fsubrs` (L-09) is wrong
 almost always, but compiled code does not call it.
+
+## The corrected copy (step F3b)
+
+`rtcheck.py --copy` measures the corrected copy of `libc.a`
+(`src/libc_fixed/libc.a`; `src/libc_fixed/README.md`) the same way, with the
+models of the bugs it corrects dropped - the corrections its register in
+`docs/RULES.md` names. `linkcheck.py` checks it on whole programs:
+
+- every assemblable `.s` golden of `tests/mutos_cc` (the real compiler's
+  output), assembled by `mutos_as` and linked as `cc` links it once with the
+  original archive and once with the copy: a program that links no corrected
+  member gets the same image, the others run under the emulator and must give
+  the same exit status and output (the interface: the copy takes the
+  original's place under what the original compiler made);
+- `triggers/*.c`, one small program per correction, compiled and linked by the
+  port's `cc` in the original mode and with `-F` in the MUTOS root (the
+  corrected mode: `lib/fixed/libc.a` through `ld`'s rule LIBC-F): each gives
+  the original's wrong result - or SIGFPE - with `cc` and C's with `cc -F`
+  (`expect: original X, corrected Y` in its comment).
+
+The kernel's `arith.a` (`tests/mutos1700_arith/`) and its corrected copy
+(`src/libc_fixed/arith.a`): `rtcheck.py --archive
+tests/mutos1700_arith/arith.a.base64.txt long` (the original's long helpers:
+L-04 and L-08, as `libc.a`'s) and `rtcheck.py --copy src/libc_fixed/arith.a
+long` (`--copy` takes the corrections of the members the archive has).
+
+`make check-runtime` runs `rtcheck.py`, `rtcheck.py --copy`, both on
+`arith.a`, and `linkcheck.py`; `make check-realbin` too.
+
+Result (2026-11-09): `rtcheck.py --copy -n 20000`, seeds 1 to 4 (3,745,620
+calls): every result right but where a bug the copy does not correct explains
+it - L-02 (`ltof(0)`'s old bytes), L-09 (`fsubrs`) and L-13 (`chkstk`) - and
+`-2**31 / -1`, undefined in C. `linkcheck.py`: 122 golden programs, 73 the same
+image, 49 run, each the same; the nine trigger programs (L-01, L-03, L-04,
+L-05, L-08, L-10, L-11, L-12, L-14) give the original's result with `cc` and
+C's with `cc -F`.

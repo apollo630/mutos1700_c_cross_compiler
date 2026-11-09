@@ -53,20 +53,27 @@ Usage:
       printed per class, default 2), --archive A (take the members the
       archive A has from it - the corrected copy, or an archive of some
       of them such as the kernel's arith.a -, the rest from
-      tests/mutos1700_libc/), --fixed BUG,...
+      tests/mutos1700_libc/; A may be a .base64.txt of tests/, as
+      tests/mutos1700_arith/arith.a.base64.txt), --fixed BUG,...
       (bugs that are corrected in that archive: their models are
       dropped, so the original's behaviour counts as UNEXPLAINED - for
-      step F3b). Exit 1 if anything is UNEXPLAINED.
-  rtcheck.py show ENTRY ARG ...
+      step F3b), --copy [C] (the corrected copy of step F3b,
+      src/libc_fixed/libc.a - or C, such as src/libc_fixed/arith.a -
+      with the corrections its register in docs/RULES.md names for the
+      members it has: --archive and --fixed for it). Exit 1 if anything
+      is UNEXPLAINED.
+  rtcheck.py show [--archive A] ENTRY ARG ...
       One call, its result printed: "show itof 1001", "show ldiv
       245554906 -3131", "show ftol 1.5e9", "show fcmp 1e38 -1e38" (floating
-      arguments are decimal texts, taken as the nearest double).
+      arguments are decimal texts, taken as the nearest double); with
+      --archive, the members A has from A.
 """
 
 import base64
 import io
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -91,6 +98,8 @@ MUTOS_AS = os.path.join(ROOT, 'src', 'mutos_as', 'mutos_as')
 MUTOS_LD = os.path.join(ROOT, 'src', 'mutos_ld', 'mutos_ld')
 MUTOS_AR = os.path.join(ROOT, 'src', 'mutos_ar', 'mutos_ar')
 LIBC = os.path.join(ROOT, 'tests', 'mutos1700_libc')
+COPY = os.path.join(ROOT, 'src', 'libc_fixed', 'libc.a')      # step F3b's copy
+RULES = os.path.join(ROOT, 'docs', 'RULES.md')
 CRT0 = os.path.join(ROOT, 'tests', 'mutos1700_crt0', 'crt0.o.base64.txt')
 
 # The fourteen members, then what they pull in, named explicitly
@@ -289,7 +298,10 @@ class Runtime:
             # arith.a, can be measured too
             have = ()
             if archive:
-                shutil.copy(archive, os.path.join(work, 'given.a'))
+                if archive.endswith('.base64.txt'):     # as tests/ keeps them
+                    unb64(archive, 'given.a')
+                else:
+                    shutil.copy(archive, os.path.join(work, 'given.a'))
                 r = subprocess.run([MUTOS_AR, 't', 'given.a'], cwd=work,
                                    capture_output=True, text=True)
                 if r.returncode:
@@ -640,7 +652,8 @@ def check_long(rt, tally, rng, n, fixed):
                     model = m if m == DIVERR else ((s32(m[0] << 16 | m[1]) if pointer else None), m, ())
                     bug = 'L-04'
                 elif op == 'rem':
-                    m = model_rem(a, b, pointer)
+                    # with L-08 corrected, alrem leaves what it stores in DX:AX
+                    m = model_rem(a, b, pointer and 'L-08' not in fixed)
                     if m != DIVERR:
                         stored, dxax = m
                         wrong_value = v is not None and stored != v
@@ -864,6 +877,8 @@ def check_stackops(rt, tally, rng, n, fixed):
                     x, bug9 = after, 'L-09'
                 m, bug = model_core(core, x, y)
                 if entry == 'fsubrs':
+                    if bug in fixed:        # dsub itself corrected (L-14): right on x, y
+                        m = rounded(value(x) - value(y))
                     bug = bug9
                 model = None if bug in fixed or bug is None else (SIGFPE if m in (OVF, SIGFPE) else (m, ()))
                 tally.add(entry, cset, got, right, model, bug,
@@ -1198,6 +1213,24 @@ def check_layout(rt0, tally, rng, n, fixed, archive):
 GROUPS = ('long', 'float', 'conv', 'stack', 'cmp', 'chkstk', 'layout')
 
 
+def copy_corrections():
+    """The bugs the corrected copy of libc.a corrects, and in which
+    members: {bug: {member name without .o}}, from the register of
+    docs/RULES.md, "The corrected copy of libc.a"."""
+    out, inside = {}, False
+    with open(RULES, encoding='utf-8') as f:
+        for line in f:
+            if re.match(r'\|\s*Correction\s*\|\s*Member\s*\|', line):
+                inside = True
+            elif inside and not line.startswith('|'):
+                break
+            elif inside:
+                m = re.match(r'\|\s*(L-\d\d)\s*\|\s*`?(\w+)\.o`?\s*\|', line)
+                if m:
+                    out.setdefault(m.group(1), set()).add(m.group(2))
+    return out
+
+
 def main(argv):
     n, seed, examples, archive, fixed = 1000, 1, 2, None, set()
     groups = []
@@ -1216,6 +1249,13 @@ def main(argv):
             archive = os.path.abspath(args.pop(0))
         elif a == '--fixed':
             fixed = set(args.pop(0).split(','))
+        elif a == '--copy':
+            archive = COPY
+            if args and args[0].endswith('.a'):     # another copy: src/libc_fixed/arith.a
+                archive = os.path.abspath(args.pop(0))
+            if not os.path.isfile(archive):
+                sys.exit('rtcheck.py: %s is not built - run "make" first' % archive)
+            fixed = None        # the corrections of the members it has: below
         elif a in GROUPS:
             groups.append(a)
         elif a == 'all':
@@ -1226,6 +1266,9 @@ def main(argv):
     groups = groups or list(GROUPS)
     rng = random.Random(seed)
     rt = Runtime(archive)
+    if fixed is None:
+        fixed = {bug for bug, ms in copy_corrections().items()
+                 if ms & set(Runtime.from_archive)}
     tally = Tally(examples)
     for g in GROUPS:
         if g not in groups:
@@ -1246,8 +1289,9 @@ def main(argv):
         elif g == 'layout':
             check_layout(rt, tally, rng, n, fixed, archive)
     tally.report('libc.a runtime%s, seed %d, %d random cases per entry point and set'
-                 % (' (%s from %s)' % (' '.join(Runtime.from_archive), archive) if archive
-                    else '', seed, n))
+                 % (' (%s from %s%s)' % (' '.join(Runtime.from_archive), archive,
+                                        ', corrected: ' + ','.join(sorted(fixed)) if fixed else '')
+                    if archive else '', seed, n))
     if tally.unexplained:
         print('FAIL: %d results no model explains' % tally.unexplained)
         return 1
@@ -1259,7 +1303,10 @@ def show(args):
     if not args:
         print(__doc__)
         return 2
-    rt = Runtime()
+    archive = None
+    if args[0] == '--archive' and len(args) > 2:
+        archive, args = os.path.abspath(args[1]), args[2:]
+    rt = Runtime(archive)
     entry, rest = args[0], args[1:]
     if entry in ('lmul', 'ldiv', 'lrem', 'almul', 'aldiv', 'alrem'):
         a, b = (s32(int(x, 0)) for x in rest)
