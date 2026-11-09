@@ -52,9 +52,14 @@ Guideline 11).
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
 Milestone 2, "Step 5 of the plan"); whether the kernel's `arith.a` gets the
-corrections of the long helpers too; which of step F4's corrections (C1-12 and
-C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and LD-11, found
-with F2, are among the candidates); `make install`; the manual pages.
+corrections of the long helpers too (since F3 measurable on his machine:
+`tests/libc_runtime/rtcheck.py --archive ~/sys/conf/arith.a long`); which of
+F3's edge bugs the corrected copy of `libc.a` takes besides the ones that
+compute wrongly in ordinary programs (L-03, L-09, L-10, L-12, L-13, L-14;
+recommendation in `docs/TOOLCHAIN_PLAN.md`, F3b); which of step F4's corrections
+(C1-12 and C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and
+LD-11, found with F2, are among the candidates); `make install`; the manual
+pages.
 
 ## The owner's setup
 
@@ -71,10 +76,10 @@ with F2, are among the candidates); `make install`; the manual pages.
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
-  There it took 75 minutes on two cores after F1, 63 after F2: run it in the background with
-  a log, and record the result in `STATUS.md`.
+  There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3: run it in the
+  background with a log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F2 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -99,3 +104,9 @@ with F2, are among the candidates); `make install`; the manual pages.
   a link must end and, with `--mode corrected`, against the emulated original.
   Found with it: LD-09, LD-10, LD-11; LD-09 (`-i`/`-n`'s rounding, next to LD-08)
   corrected too, as a third patch (`STATUS.md`, "Step F2").
+- 2026-11-09: step F3 - the runtime of `libc.a` that compiled code calls
+  measured, entry point by entry point, against Python's arithmetic
+  (`tests/libc_runtime/rtcheck.py`, `make check-runtime`): L-01 to L-05 confirmed
+  at run time (`itof` is `itod`; `ldiv`/`lrem` share L-04 - `99999L / 100000` is
+  2), seven new bugs L-08 to L-14; wrong in ordinary programs, so for the copy of
+  F3b: L-01, L-04, L-05, L-08, L-11 (`STATUS.md`, "Step F3").

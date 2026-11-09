@@ -158,11 +158,14 @@ neg32(uint16_t *hi, uint16_t *lo)
  *     divisor 0 to 32767 is divided by exactly, one from 0x18000 to
  *     0x1ffff by its low word alone, and a negative one of one word
  *     (-1 to -32768) goes the long way;
- *   - the long way shifts and subtracts sixteen times, comparing the
- *     high words signed, and clears the quotient's high word: right for
- *     a divisor from 65536 up in magnitude, the low sixteen bits of the
- *     quotient below that (0x7fffffff / -1 is -65535; fuzzing found it,
- *     tests/realbin/c1fuzz.py).
+ *   - the long way shifts and subtracts sixteen times from the
+ *     dividend's high word, comparing the high words signed, and clears
+ *     the quotient's high word: right while the quotient is below 65536
+ *     in magnitude, +-65535 from there (0x7fffffff / -1 is -65535;
+ *     fuzzing found it, tests/realbin/c1fuzz.py), and +-65535 for the
+ *     divisor -2**31, whose high word the signed compare takes for
+ *     negative (docs/MUTOS_ORIGINAL_BUGS.md, L-04; measured on the
+ *     runtime's own routine by tests/libc_runtime/rtcheck.py).
  */
 int32_t
 c1_aldiv(int32_t l, int32_t r)
@@ -339,8 +342,9 @@ c1_dtoi(const unsigned char *d)
 }
 
 /*
- * libc.a's ftol (text 7a18): truncated toward 0; from 2**31 in magnitude
- * it raises SIGFPE - refused.
+ * libc.a's ftol (text 7a18): truncated toward 0; from 2**30 in magnitude
+ * (an exponent of 31 or more: docs/MUTOS_ORIGINAL_BUGS.md, L-11) it
+ * raises SIGFPE - refused.
  */
 int32_t
 c1_ftol(const unsigned char *d)
