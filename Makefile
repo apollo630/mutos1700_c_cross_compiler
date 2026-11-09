@@ -68,6 +68,14 @@
 #                   # an 8086 emulator (needs the
 #                   # Python module "unicorn"; see
 #                   # tests/mutos_as/float_coverage/libcatof.py)
+#   make check-runtime # the runtime of libc.a that compiled code calls (the
+#                   # long helpers, chkstk, the conversions, the floating-
+#                   # point stack and its operations), every entry point
+#                   # run under an 8086 emulator against Python's
+#                   # arithmetic, every difference a known bug of the
+#                   # original (needs the Python module "unicorn"; see
+#                   # tests/libc_runtime/README.md); RUNTIME_ARGS passes
+#                   # options, e.g. make check-runtime RUNTIME_ARGS="-n 20000"
 #   make check-realbin # the original MUTOS c0 and c1 (mutos/mutos_bin/), run under
 #                   # an 8086 emulator, against every tests/mutos_cc
 #                   # golden, tests/realbin/c1_tables.txt against the c1
@@ -100,7 +108,7 @@
 #                   # cases and fuzz runs; mutos_ed and mutos_em (the ports
 #                   # of ed and em) against the originals on hand-written
 #                   # scripts - the kernel makefile's among them - and fuzz
-#                   # runs; the
+#                   # runs; the runtime of libc.a (check-runtime); the
 #                   # original ld through mutos_root/ (needs the Python
 #                   # module "unicorn" and, for cc's stub, a C compiler;
 #                   # see tests/realbin/README.md)
@@ -123,7 +131,7 @@ endif
 MUTOS_ROOT_DEFAULT = $(CURDIR)/mutos_root
 SUBMAKE = $(MAKE) MUTOS_ROOT_DEFAULT='$(MUTOS_ROOT_DEFAULT)'
 
-.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root clean test fuzz check-docs check-libcatof check-realbin install-hooks
+.PHONY: all ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root clean test fuzz check-docs check-libcatof check-runtime check-realbin install-hooks
 
 all: ld as cpp cc ar ranlib make nm size strip tsort lorder ed em root
 
@@ -430,6 +438,12 @@ REALBIN_RANLIBFUZZ_ARGS = -n 150 -s 1
 REALBIN_MAKEFUZZ_ARGS = -n 300 -s 1
 REALBIN_UTILFUZZ_ARGS = -n 300 -s 1
 REALBIN_EDFUZZ_ARGS = -n 400 -s 1
+# The runtime of libc.a that compiled code calls, measured (step F3 of
+# docs/TOOLCHAIN_PLAN.md, section 7.3; tests/libc_runtime/README.md).
+RUNTIME_ARGS =
+check-runtime: as ld ar
+	@python3 tests/libc_runtime/rtcheck.py $(RUNTIME_ARGS)
+
 check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
 	@python3 tests/realbin/c1tables.py --check-c src/mutos_cc/c1port/c1tab.c
@@ -494,6 +508,7 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em root
 	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool em
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py --realbin --fuzz 0
+	@python3 tests/libc_runtime/rtcheck.py
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

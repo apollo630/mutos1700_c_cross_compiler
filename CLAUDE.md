@@ -116,6 +116,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
 * `/tests/mutos1700_libc/`: MUTOS1700 libc.a, including all `*.o.base64.txt` object files and `libc.a.base64.txt`.
+* `/tests/libc_runtime/`: `rtcheck.py` (`make check-runtime`, and in `make check-realbin`;
+  since 2026-11-09, step F3 of `docs/TOOLCHAIN_PLAN.md`): the routines of `libc.a` that
+  compiled code calls - the long helpers, `chkstk`, the conversions, the floating-point
+  stack and its operations - each entry point called under `tests/realbin/mutosemu.py`
+  against Python's arithmetic, every difference a model of a known bug
+  (`docs/MUTOS_ORIGINAL_BUGS.md`, L-01 to L-05, L-08 to L-14); `--archive` for the
+  corrected copy of step F3b. See its `README.md`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds, `cc -O` - the original `c2`'s output - plus hand-written kernel assembler such as `mch.s`), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Rule 3's "Known, deliberate exception") — **concluded 2026-09-28**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated. See `STATUS.md`'s open item 6.

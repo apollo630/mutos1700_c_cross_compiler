@@ -315,6 +315,13 @@ both patterns are present (`aldiv`/`ldiv` end by loading `DX:AX` from the workin
 registers right before their custom epilogue, in addition to having written the
 result back through the pointer).
 
+**Measured 2026-11-09** (`tests/libc_runtime/rtcheck.py`, step F3): `c1` takes the
+value of `l *= m`, `l /= m` and `l %= m` from `DX:AX` (its template ends `call Id`),
+and `almul`, `aldiv`, `lmul`, `ldiv` and `lrem` leave the result there; `alrem` does
+only on its short path (a divisor of one word) - its long way leaves the divisor's
+high word and the result's high word (`docs/MUTOS_ORIGINAL_BUGS.md`, L-08). All six
+keep `BX`, `SI`, `DI` and `BP`. What they compute is not always C's division: L-04.
+
 **This convention is out of scope for how `mutos_cc` calls ordinary user C
 functions** — it only matters for the small, fixed set of built-in helpers the code
 generator itself must emit calls to for `long` multiply/divide/modulo (the 8086 has
@@ -340,9 +347,12 @@ call  chkstk
 `chkstk` (`chkstk.o`, real disassembly) computes `bx = sp - ax`, compares `bx`
 against a local `Stkbot` limit; if the new `sp` would stay above the limit, it
 **pops its own return address into `ax`, sets `sp = bx` (i.e. performs the frame
-allocation itself), then does `jmp ax`** — this is why `call chkstk` behaves exactly
-like an inline `sub sp,framesize` to the code that follows it, just with an added
-guard. If the check fails, `chkstk` attempts to grow the stack via a far call through
+allocation itself), then does `jmp ax`** — this is why `call chkstk` behaves like an
+inline `sub sp,framesize` to the code that follows it, just with an added guard (the
+stack pointer ends two bytes lower, the return address's slot being counted in the
+frame - harmless, the locals are addressed from `bp`). The guard does not look at the
+borrow of `sp - ax`: a frame larger than the stack pointer's offset wraps round the
+segment (`docs/MUTOS_ORIGINAL_BUGS.md`, L-13). If the check fails, `chkstk` attempts to grow the stack via a far call through
 a runtime-initialized function-pointer variable (`Isgadr`, see §2.3), retrying up to
 `PROBESLO` (`256`) bytes at a time; if growth genuinely fails it calls
 `_kill(_getpid(), SIGSEG)` then `__exit` — i.e. a real stack overflow terminates the

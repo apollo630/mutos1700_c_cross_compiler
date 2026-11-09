@@ -1226,7 +1226,10 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    LD-08 (real kernel code meets C1-03), `mutos_as`'s report of `-1`, longs in
    `fuzz_c.py`, the V30 forms and clocks in `x86sim.py`; every output unchanged.
    **F1 done 2026-11-08**: the four corrections of `c1`. **F2** (2026-11-09, "Step F2"
-   below): the corrections of `ld`.
+   below): the corrections of `ld`. **F3** (2026-11-09, "Step F3" below): the runtime
+   of `libc.a` measured - `tests/libc_runtime/rtcheck.py`, L-01 to L-05 measured at
+   run time, seven new bugs (L-08 to L-14). Next: F3b, the corrected copy of
+   `libc.a`.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2043,6 +2046,107 @@ patch of its own; without a switch every link is still the original's.
   same, none different; `edfuzz.py` ed 400/400, em 380 the same; `check_root.py
   --realbin`; `check_corrected.py --realbin` (the nine triggers of `c1`, the 13 of
   `ld`). `ld`'s: as above.
+
+### Step F3: the runtime measured (verified 2026-11-09)
+
+What compiled code calls of `libc.a` without the programmer naming it - the
+fourteen members of the plan - measured entry point by entry point against Python's
+arithmetic. Nothing any tool writes changed; the result is the list the corrected copy
+of step F3b is made from.
+
+- **The checker** `tests/libc_runtime/rtcheck.py` (its `README.md`; `make
+  check-runtime`, and in `make check-realbin`): the members (`aldiv`, `almul`,
+  `alrem`, `ldiv`, `lmul`, `lrem`, `chkstk`, `convert`, `lconvert`, `dmath`, `stacks`,
+  `stkmath`, `singles`, `doubles`, with `fperr`, `cret` and through `fltused` `atof`
+  and `fltpr`) linked with `crt0.o` and a two-instruction `main` by `mutos_ld -i`;
+  `tests/realbin/mutosemu.py` runs `crt0` up to `main`, and each of the 41 entry
+  points is then called as compiled code calls it - arguments in AX, SI/DI or on the
+  stack, the floating-point stack set up, a HLT as return address, the registers it
+  must keep (SI, DI, BP; BX for the long helpers) holding a guard value; `__ovfl` and
+  `__div0` stop the call ("SIGFPE"), an 8086 divide error too. The right result is
+  C's on 32-bit longs and 16-bit ints, and the exact rational result rounded to the
+  nearest 56-bit double (ties to even; 0 below the smallest, SIGFPE above the
+  largest). Each bug of the original has a model that predicts its exact wrong
+  result; a difference no model predicts is `UNEXPLAINED` (exit 1). Every entry
+  point gets "ordinary" cases (floating magnitudes 2\*\*-40 to 2\*\*40, ints, longs
+  and divisors of every length and sign) and "edge" cases (the limits, the smallest
+  and largest doubles, zeros of every byte form, cancellation, powers of two next to
+  operands 55 to 59 binary orders below, full and empty stacks, frames larger than
+  the room below the stack pointer); the `layout` group links the runtime with up to
+  36K of data before `fpstk`. `--archive` takes the members an archive has from it
+  (the corrected copy of F3b, or the kernel's `arith.a`), `--fixed` drops the models
+  of the bugs it corrects; `show` gives one call (the triggers in
+  `docs/MUTOS_ORIGINAL_BUGS.md`).
+- **Measured**: four seeds of 20,000 cases per entry point and set (`-n 20000
+  --seed 1` to `4`), 3,745,620 calls - every result right or what a model predicts.
+- **Wrong for ordinary values** (`docs/MUTOS_ORIGINAL_BUGS.md`; the share of
+  `rtcheck.py`'s ordinary cases):
+  - **L-01** `itof` (int to floating, `d = i`) is `itod`, the same routine:
+    34 % of the ints become a double off in their low bytes (`1001` is
+    1001.0000152590219); a float is right. Until now only `c1`'s folding was known.
+  - **L-04** `ldiv`/`aldiv` 7 % - `ldiv` and `lrem` (`l / m`, `l % m`) are the code
+    of `aldiv` and `alrem`, so `l / m` has the bug too: divisors 98304..131071 divide
+    by their low word (`99999L / 100000` is 2), a negative one-word divisor gives
+    ±65535 once the quotient reaches 65536, -2\*\*31 always; the remainder only for
+    -2\*\*31 (and `-2**31 % 32768`).
+  - **L-08** (new) the value of `l %= m` - `c1` reads DX:AX after `alrem` (`call
+    Id`) - is wrong for every divisor outside -32768..32767 (35 %): the long way
+    stores the remainder but leaves DX the divisor's high word, AX the remainder's.
+  - **L-05** `dmul` 77 %, the products on the stack 76 to 86 % (`fmul`, `fmuld`,
+    `fmuls`); a product is right when `dmul`'s `[si]` operand has a low word of 0,
+    as a float has.
+  - **L-11** (new) `ftol` raises SIGFPE from 2\*\*30 instead of 2\*\*31: `(long)1.5e9`,
+    and `(unsigned)d`, which `c1` compiles through `ftol` (3 %).
+- **Wrong only at the edges**: **L-03** `ftoi` - `(int)-32768.0` raises SIGFPE
+  unless the word at address 8000 is 0x8000 (measured now); **L-10** (new) `fcmp`
+  compares by `dsub`: `1e38 > -1e38` raises SIGFPE, different values below about
+  1e-22 can compare equal; **L-12** (new) `incfpsp`/`decfpsp` compare `fpsp` signed: a
+  program whose `fpstk` lands from 0x7fc0 to 0x8008 (about 32K of data before it)
+  cannot compute in floating point; **L-13** (new) `chkstk` ignores the borrow of `sp
+  - size`: a frame larger than the stack pointer's offset wraps round the segment;
+  **L-14** (new, found by the 20,000-case runs) `dadd`/`dsub` drop an operand 57
+  binary orders below the other - a power of two minus such a value stays the power
+  of two (`2 - 1.5e-17` is 2), 5 of 300,000 ordinary additions and subtractions.
+- **Not called by compiled code**: **L-09** (new) `fsubrs` subtracts the top from the
+  eight bytes after its float operand (`mov di,si` for `mov si,di`); `c1` uses none
+  of the reverse forms. **No value changed**: **L-02** `ltof(0)` leaves old bytes
+  below its zero (measured now), which none of these routines reads.
+- **Right**: `lmul`, `almul`, `ddiv`, the divisions and (but for L-14) additions and
+  subtractions on the stack, `ftest`, `fneg`, `fldd`, `flds`, `fdup`, `fstd`, `fstdp`,
+  `fsts`, `fstsp` (a float store keeps the double's high four bytes - truncates, as C
+  allows), the floating-point stack's ninth push and an empty pop (SIGFPE), every
+  routine's preserved registers, stack pointer and direction flag.
+- Two comments of `src/mutos_cc/c1port/c1lib.c` described the ranges wrongly and are
+  corrected (comments only): `c1_aldiv()`'s long way gives ±65535 once the quotient
+  reaches 65536, not its low sixteen bits; `c1_ftol()` refuses from 2\*\*30, not
+  2\*\*31.
+- **For step F3b** (decision 14: the copy corrects the runtime bugs that compute
+  wrongly in ordinary programs): L-01 (`convert.o`), L-04 and L-08 (`aldiv.o`,
+  `ldiv.o`, `alrem.o`, `lrem.o`), L-05 (`dmath.o`), L-11 (`lconvert.o`). The edge
+  bugs L-03, L-10, L-12, L-13 and L-14, L-09 (not called) and L-02 (no value) are the
+  project owner's to choose (recommendation in `docs/TOOLCHAIN_PLAN.md`, F3b). The
+  re-enactments in `c1` and `as` that would follow the copy in the corrected mode:
+  `c1_itod()` (L-01), `c1_aldiv()`/`c1_alrem()` (L-04), `fltconst.c`'s product
+  (L-05), `c1_ftol()` (L-11), `c1_dtoi()` (L-03). The kernel's `arith.a` is not in
+  the tree; `rtcheck.py --archive ~/sys/conf/arith.a long` shows whether its long
+  helpers are `libc.a`'s.
+- **Verified** on a fresh clone of `db09ec3` with the patch: `make clean && make all`
+  without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its
+  output line for line an unchanged clone's but for a temporary directory's name;
+  `make check-docs` clean; `make check-runtime` exit 0 (every result right or
+  explained); `make check-libcatof` 0 differences. **`make check-realbin` whole** on
+  that clone, in a cloud session on two cores: exit 0, every check passed, 76 minutes,
+  the numbers of F2's run - `c1trees.py` 131/132 at depths 2-4 (1 refused on purpose),
+  `c1fuzz.py` 175 the same, 0 different; `c0cmp.py` 137/137; `cppcmp.py` 411/411;
+  `ldcmp.py goldens` 1,572/1,572, `cases` 94 of 96 (2 refused; in the corrected mode
+  4 corrected), `ldfuzz.py` 294 of 300 plain and damaged; `cccmp.py` cases 175 of 177,
+  `run` and `programs` 124/124, `ccfuzz.py` 985 of 1,000; `c2cmp.py goldens`
+  396/396; `ascmp.py` as its pins; `asfuzz.py` 251 the same; `arcmp.py` 364 of 366;
+  `libc.a` rebuilt the same; `makecmp.py` 430 of 457 and 312/312; `utilcmp.py` 1,118
+  cases, 3,729 runs the same; `edcmp.py` 244 cases, 225 the same; `edfuzz.py` ed
+  400/400, em 380 the same; `check_root.py --realbin`; `check_corrected.py --realbin`
+  (9 triggers of `c1`, 13 of `ld`) - and, new at its end, `rtcheck.py` (1,000 cases
+  per entry point and set).
 
 ## `mutos_as` opcode coverage
 

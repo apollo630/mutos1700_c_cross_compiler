@@ -402,3 +402,111 @@ new bug would take a model of the file the test does not have, so the
 test stays with `check_corrected.py`'s triggers, and the fuzzers check
 the accounting. Each new bug has a case in `ldcmp.py cases` (and `-D -i`,
 which is right), 96 in all, every one the same as the original.
+
+## Step F3: the runtime measured (2026-11-09)
+
+The fourteen members of `libc.a` that compiled code calls without naming
+them, measured against Python's arithmetic - the list the corrected copy
+of step F3b is made from. No tool's output changed.
+
+### Why a checker of its own
+
+`x86sim.py` checks the compiler, not the library: it stands in for the
+runtime with C's semantics (its `aldiv` computes C's quotient), so a bug
+of the runtime cannot show there. `libcatof.py` runs `libc.a`'s own
+`atof` and, for `ops`, `dmul`, `ddiv` and `dadd` on positive operands -
+the arithmetic the assembler's constants need. What compiled code calls
+is more: the long helpers, the conversions, the floating-point stack and
+the sixteen operations on it, the comparisons, `chkstk`.
+
+`tests/libc_runtime/rtcheck.py` links those members with `crt0.o` and a
+`main` of two HLTs (`mutos_ld -i`), lets `mutosemu.py` run `crt0` up to
+`main`, and then calls each entry point as `c1`'s code does: AX holding
+an address or an int, SI and DI for `dmath.o`'s core, a long's words on
+the stack (high word next to the return address), the slots of the
+floating-point stack and `fpsp` written directly. The second HLT is the
+return address. A model per known bug predicts the original's exact
+output; the run fails on any difference no model predicts. That makes
+the report a measurement - every wrong result is counted for the bug that
+explains it - and keeps a second bug in the same routine from hiding
+behind the first: L-14 came out as `UNEXPLAINED` in the additions while
+L-05's model covered every product.
+
+Two things of the emulator needed handling. Unicorn keeps an exception
+pending after the interrupt hook stops a divide error, and the next
+start is a double fault (interrupt 8) - so a call that ends in a divide
+error is followed by a fresh process (the image is kept, `crt0` run
+again). And `ld` places the commons (`fpstk` among them) before the BSS
+of the objects, so the layout group pads with data, in objects of 16K
+(`mutos_ld` refuses one of 32K, LD-07).
+
+### What was expected, and what the measurement says
+
+- L-01: `itof` and `itod` are one routine (`convert.o` text 0000 has both
+  names), so `d = i` has the bug `c1`'s folding was known for: a third of
+  the ordinary ints. A float is right - `fstsp` drops the four bytes.
+- L-04: `ldiv` and `lrem` are `aldiv` and `alrem` on the arguments, so `l
+  / m` and `l % m` have it as well. The precise shape replaces the old
+  description: the long way gives ±65535 once the quotient reaches 65536 -
+  not its low sixteen bits - and fails for -2\*\*31 whatever the dividend
+  (`hardldiv`'s compare is signed); the short path's set 0x18000..0x1ffff
+  divides by the low word, `99999L / 100000` is 2. The remainder is right
+  but for -2\*\*31 and `-2**31 % 32768`. `c1_aldiv()`'s comment said "the low
+  sixteen bits"; corrected.
+- L-05: every product goes through `dmul`; a product is right when the
+  operand `dmul` takes as `[si]` has a low word of 0 - a float. So `f * g`
+  on floats is right, `d * f` (`flds f` / `fmuld d`, `[si]` the double)
+  is not.
+- L-02 and L-03 were code reading; both are measured now. L-02 changes no
+  value: every routine takes an exponent byte of 0 for zero.
+
+### What reading the callers found
+
+The interface of a routine is what its caller reads. `c1`'s template for
+`=*`, `=/`, `=%` on longs ends `call Id` - the result taken from DX:AX.
+`almul` and `aldiv` leave it there; `alrem` does on its short path, but
+its long way returns with DX the divisor's high word and AX the
+remainder's (**L-08**): `i = (l %= m)` is wrong for every divisor outside
+one word, though `l` is right. `lrem` moves its result to DX:AX.
+
+The other new ones came from reading each routine next to its siblings:
+`fsubrs` has `mov di,si` where `fdivrs` has `mov si,di` (**L-09**; `c1`
+uses no reverse form, so compiled code never meets it); `fcmp` compares
+by `dsub` and so inherits its overflow and underflow (**L-10**); `ftol`
+takes a shift count of 0 for an overflow, so 2\*\*30..2\*\*31 raise SIGFPE
+(**L-11**; `c1_ftol()`'s comment said 2\*\*31); `incfpsp`/`decfpsp`
+compare addresses with `jge`/`jl` (**L-12**: the layout group links the
+runtime 16 times, `fpstk` from 0x7e00 to 0x9000, and every placement from
+0x7fc0 to 0x8008 fails); `chkstk` subtracts without looking at the borrow
+(**L-13**). Each was a reading first and a model second; the model had
+to match every case before the bug was entered.
+
+### The one only the long runs found
+
+**L-14** appeared in the first runs of 20,000 cases per entry point: an
+addition of a power of two and an operand of the other sign exactly 57
+binary orders below gave the power of two. `dadd` copies the larger
+operand when the exponent bytes differ by more than 56; with a power of
+two the result lies in the binade below, whose last place is half as
+large, and a difference of 57 still counts there. The edge set has had
+such pairs since (a power of two and an operand 55 to 59 binary orders
+below), and the model makes the copy for a difference above 56.
+
+### What is right
+
+`lmul` and `almul`, `ddiv` and every division on the stack, the additions
+and subtractions but for L-14, the loads and stores, `fneg`, `ftest`, the
+stack's ninth push and empty pop (SIGFPE, as designed), and in every
+routine the registers it must keep, the stack pointer and the direction
+flag. A float store truncates - the double's high four bytes -, which C
+allows.
+
+### For F3b
+
+The members with a bug that computes wrongly in ordinary programs, the
+copy's by decision 14: `convert.o` (L-01), `aldiv.o`, `ldiv.o`, `alrem.o`,
+`lrem.o` (L-04, L-08), `dmath.o` (L-05), `lconvert.o` (L-11). The edge
+bugs are the owner's to choose. `rtcheck.py --archive` takes the members
+an archive has (the rest from the original), `--fixed` drops the models
+of what it corrects - the check of the copy, and of the kernel's
+`arith.a`, which is not in the tree.
