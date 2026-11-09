@@ -509,7 +509,8 @@ copy's by decision 14: `convert.o` (L-01), `aldiv.o`, `ldiv.o`, `alrem.o`,
 bugs are the owner's to choose. `rtcheck.py --archive` takes the members
 an archive has (the rest from the original), `--fixed` drops the models
 of what it corrects - the check of the copy, and of the kernel's
-`arith.a`, which is not in the tree.
+`arith.a`, which was not in the tree yet (the owner added it the same day:
+`tests/mutos1700_arith/`).
 
 ## Step F3b: the corrected copy of `libc.a` (2026-11-09)
 

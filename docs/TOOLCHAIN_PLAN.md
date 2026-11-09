@@ -352,12 +352,16 @@ Details and evidence: `docs/devlog/originals_and_ports.md`.
   long helpers are likely the code of `libc.a`'s) gets the corrections of
   decision 14 too: compare its members with `libc.a`'s after F3. Since F3
   (2026-11-09) `tests/libc_runtime/rtcheck.py --archive ~/sys/conf/arith.a
-  long` measures them where the archive is (it is not in the tree): the
+  long` measures them where the archive is (it was not in the tree then;
+  the owner added it the same day, `tests/mutos1700_arith/`): the
   same report as `libc.a`'s means the same code - L-04 and L-08.
   **Settled 2026-11-09**: the owner's run gave `libc.a`'s report, and he
   decided that a corrected `arith.a` is made from the copy's sources
   (`src/libc_fixed/fix_archive.py`, for the kernel in the corrected mode;
-  the old one stays for the original mode).
+  the old one stays for the original mode). His archive is in the tree
+  since (`tests/mutos1700_arith/`): its six long helpers are `libc.a`'s
+  byte for byte, and `make` builds the corrected copy
+  `src/libc_fixed/arith.a` from it.
 
 ## 7. Corrections and 80186/V30 code (decided 2026-11-08)
 

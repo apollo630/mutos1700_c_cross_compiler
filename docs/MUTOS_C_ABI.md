@@ -23,7 +23,11 @@ C-compiler folklore — every rule has a cited example.
   **hand-written assembly** leaf/syscall stubs (see "What is *not* part of this
   convention" below) — the two are easy to tell apart and must not be confused. This
   is the **primary, load-bearing evidence** for the calling convention documented
-  below; it does not depend on any claim about `mch.s`'s origin (next bullet).
+  below; it does not depend on any claim about `mch.s`'s origin (the `mch.s` bullet below).
+- `tests/mutos1700_arith/` (likewise base64-encoded, since 2026-11-09) — the
+  kernel's `conf/arith.a` and its seven members: `locking.o` and the long helpers
+  `aldiv.o`, `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o`, which are the
+  library's above byte for byte (section 1.8).
 - `tests/mutos_as/kernel_opt/mch.s` — ***correction, found via review*** ***— this
   is *not* compiler output.*** `mch.c` (`tests/mutos_cpp/c/mch.c`), the source this
   `.s` is generated from, opens with the comment `mch.c -- Assemblerteil MUTOS
