@@ -295,3 +295,110 @@ code - bugs of the original, not of the port:
 Neither is hooked; both are listed for step F4. A fuzz run that meets
 them in the corrected mode reports them as WRONG or BAD - `check_corrected.py`
 runs no `--scope` programs, and its two seed-1 runs meet neither.
+
+## Step F2: the corrections of `ld` (2026-11-09)
+
+The two bugs of `ld` the plan names - LD-06 and LD-08 -, each a patch of
+its own, and what checking them brought up.
+
+### LD-06: raise, never lower
+
+`error()` ends with `errlev = n`; the rule returns the higher of the two
+in the corrected mode. The level steers two things: the exit status and
+the `chmod()` that makes the output executable (`delexit()`, through
+`delarg`), and whether `error()` writes `ld:` before its message (only at
+level 0). The second comes along: in the original a warning after an
+error brings the level back to 0, so the next message starts with `ld:`
+again; corrected, it does not - as a message after an error never does.
+That is the only change in the messages, and the bytes of the output are
+the same, so the correction is a matter of how the link ends.
+
+A warning is n 0 and comes only from pass 1 (`load1arg()`, an out-of-date
+table of contents); so do the level-1 errors it can clear - an overflow,
+"No relocation bits". Errors of pass 2, "Undefined:" (`middle()`'s
+`errlev |= 01`) and level 2 (which exits at once) are never cleared.
+
+### LD-08: the original's `add()`
+
+The fix idea was `tsize = add(tsize, 6, "text overflow")`, and that is the
+correction - with the original's own `add()`, which is static in `ld.c`:
+the hook hands it to the rule (`rule_ld_08(tsize, add)`), so the rule
+needs nothing of `ld.c` but the string's address (`S_TEXTOVF`, `ld.h`),
+and no second copy of the check exists. `add()` returns the 16-bit sum
+whether it reports or not, so the output is the original's byte for byte
+- the header says the wrapped size, as after a "text overflow" of pass 1
+- and only the end changes: `ld:text overflow` (no file name: `filname`
+is 0 after pass 1, as for `middle()`'s own "bss overflow"), exit status 1,
+not executable. After an earlier error the message has no `ld:` - the
+level is 1 already.
+
+### LD-09: the rounding, with LD-08
+
+LD-08's correction alone would have left `-i` and `-n` links of 65,468 to
+65,529 bytes of text wrapping without a message (LD-09, found while
+measuring LD-08, below) - the very kind of link the kernel's makefile
+makes, though the kernel is far from the size. The rounding is v7's line,
+a bug of its own, so it is a rule of its own with the same shape: the
+hook is the line of the rounding (`tsize = rule_ld_09(tsize, add)` under
+`if (nflag || iflag)`), the rule adds the 077 with `add()` in the
+corrected mode and masks as the original does. A text that LD-08 has
+reported has wrapped to a small number already and rounds without a
+second message.
+
+### How a link is checked
+
+For `c1` the reference of a correction is C's value. For `ld` it is how a
+link must end: exit status 0 exactly when every message is a warning, the
+output executable exactly then, and an executable as long as its header
+says (16 bytes, text, data, their relocation unless `relflg`, symbols).
+`check_corrected.py` gets triggers of `ld` with that test, pinned ends for
+both modes (the original's measured under the emulator, and compared with
+it again under `--realbin` through `ldcmp.py`'s `compare()`), the output's
+bytes compared across the four runs and the rule log's `met`/`applied`
+lines required exactly where the end changes. Two of LD-06's five
+triggers are links next to the bug that must stay as they are - a warning
+before the error, a warning alone.
+
+The accounting needed only a change of what it allows: until F2 `ld`'s two
+cases had to end the same in every mode; now a corrected run may end
+otherwise with an `applied` entry, and never write other bytes.
+`ldcmp.py` and `ldfuzz.py` got `--mode corrected`, the port in the
+corrected mode against the emulated original: `_judge()`'s verdict stands
+but where the difference is only in the exit status, stdout or the files'
+modes and the port's rule log has an `applied` entry of `ld`
+("corrected"). On the hand-written cases that is LD-06's case and nothing
+else; on 300 + 300 fuzz cases (seed 1), one LD-06 among the plain ones;
+on seeds 2 to 4, 1,500 cases each, plain and damaged, 5 to 8 LD-06 in
+each run (41 of 9,000) and no other difference.
+
+### Three more bugs, from the test of a right link
+
+LD-08's limits, measured before correcting it: 65,528 bytes of text give
+65,534 without `-i`, but 0 with it - `-i` and `-n` round the text to 64
+bytes after the six bytes of "jmp $", with no check either. From 65,468
+bytes (the objects' texts are even) a `-i` link wraps; that is **LD-09**,
+v7's own line. LD-08's correction alone would leave it: a non-`-i` link
+of 65,528 bytes is right, a `-i` link of the same text says 0.
+
+The test of a right link was first part of `--mode corrected` in the
+fuzzers too. On seed 1 it flagged `ld z.a -D 4000`: exit status 0, the
+output 6 bytes shorter than its header says. `-D` takes a size in pass 1
+(`dsize = num`) and pads to an address in pass 2 (`while (dorigin <
+num)`), and without `-i` the data's addresses start after the text - so
+the padding is `tsize` bytes short. With a data symbol after `-D` the two
+passes disagree about its value and pass 2 says "Multiply defined": the
+existing case `-D` of `ldcmp.py` has shown that message since the port,
+taken then for the original's way. That is **LD-10**, v7's own code too.
+On damaged files (`--mutate 0.5`, seed 3) it flagged an object cut right
+after its header: `dseek()` sets a stream's size to 0 when the read gives
+nothing at the position, and the loops then read nothing - no "Premature
+EOF", which only a stream running out midway gets. That is **LD-11**.
+
+The rest it flagged were objects with an odd text size (the generator
+makes them; `mutos_as` never does): `readhdr()` rounds the size up, and
+the rest of the file is read one byte out of step - garbage in, an
+inconsistent output out, as in the original. Telling those apart from a
+new bug would take a model of the file the test does not have, so the
+test stays with `check_corrected.py`'s triggers, and the fuzzers check
+the accounting. Each new bug has a case in `ldcmp.py cases` (and `-D -i`,
+which is right), 96 in all, every one the same as the original.

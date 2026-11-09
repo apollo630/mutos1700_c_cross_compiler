@@ -36,6 +36,12 @@ stripped binary and says what each one does differently from v7;
   byte-shift bits, every kind of symbol), real `libc.a` members, archives
   plain, current and out of date, random options; with `--mutate` damaged
   files for the error paths.
+- The corrected mode (since step F2): `ldcmp.py cases` and `ldfuzz.py` with
+  `--mode corrected` - the port in the corrected mode against the original,
+  a difference only in how a link ends and only where a rule was applied;
+  `tests/rules/check_corrected.py` (in `make test`) - triggers of each
+  correction, the original's end without a switch, a right link's with
+  `-F`; `tests/rules/check_accounting.py` (in `make test`).
 - `tests/mutos_ld/check_rflag.py`: the extension - every program of the
   construct corpus linked through a relocatable object (`-r`, `-r -d`)
   runs under the emulator as the program linked at once does.
@@ -108,10 +114,17 @@ word. `-F` and `-H` (since 2026-11-08, `docs/RULES.md`) choose the
 corrected mode and the original's behaviour wherever they stand
 (`ldrules/ldrules.c` reads them before the original's `main()` reads the
 rest; the last one counts); without them `MUTOS_MODE` does. The original
-says "bad flag" to both. `ldrules/` holds `ld`'s rules: since step F0
-two diagnostic hooks, LD-06 (`error()`) and LD-08 (`middle()`), that report
-in the rule log where the original's wrong path is taken - the link is the
-original's.
+says "bad flag" to both. `ldrules/` holds `ld`'s rules (`docs/RULES.md`):
+since step F0 two hooks, LD-06 (`error()`) and LD-08 (`middle()`), that
+report in the rule log where the original's wrong path is taken. Since step
+F2 (2026-11-09) both are active, and a third, LD-09 (`middle()`). In the
+corrected mode a warning does not clear an earlier error (LD-06) - the link
+ends with exit status 1 and the output is not made executable, its bytes
+the same (a message after that warning has no `ld:`) -, and a text of
+65,530 bytes or more, which the six bytes of "jmp $" wrap, is a `text
+overflow` (LD-08), with the same end; so is a text that `-i`'s or `-n`'s
+rounding to 64 bytes wraps (LD-09, from 65,468 bytes). Without a switch
+every link is the original's.
 
 Paths: what the original has compiled in as an absolute path of the MUTOS
 file system - `/lib/libX.a`, `/usr/lib/libX.a`, `/tmp/ldaXXXXXX` - is

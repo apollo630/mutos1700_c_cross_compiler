@@ -61,8 +61,9 @@ A rule is in one of two states:
 | C1-02 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_02.c` | `src/mutos_cc/c1port/c12.c`, `acommute()`: a product or AND that folds to 0 | [C1-02](MUTOS_ORIGINAL_BUGS.md) |
 | C1-03 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_03.c` | `src/mutos_cc/c1port/c10.c`, `delay()`: before the tree without its postfix `++`/`--` is compiled | [C1-03](MUTOS_ORIGINAL_BUGS.md) |
 | C1-06 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_06.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [C1-06](MUTOS_ORIGINAL_BUGS.md) |
-| LD-06 | ld | `-F` | diagnostic | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
-| LD-08 | ld | `-F` | diagnostic | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
+| LD-06 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
+| LD-08 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
+| LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
 `-1` and the rule log of `c1`), `src/mutos_ld/ldrules/` (`ldrules.c`: the
@@ -79,6 +80,7 @@ the file:
 <tool> <rule> <what> [<key>=<value> ...]
 c1 C1-03 met line=6 out=152-185 op=++
 c1 C1-06 met line=7 out=264-384 stores=6
+ld LD-06 applied from=1 to=0
 ld LD-08 met tsize=65530
 ```
 
@@ -119,6 +121,21 @@ under `-F` (and `-F -1`) their `applied` entries account for what they
 change, `c2`'s output, the objects and the programs following from it.
 `--report` prints which rules the code met.
 
+The corpus's links never meet a rule of `ld`; the checker links cases
+that do, one per rule (those of `tests/realbin/ldcmp.py cases`), without
+a switch, with `-H`, with `-F` before and after the files and with
+`MUTOS_MODE=corrected`: without a switch each meets its rule, `-H` links
+and logs as no switch does, the three corrected runs agree, and they end
+otherwise - the exit status, the messages, the output's mode - only with
+an `applied` entry of `ld`. `ld`'s corrections change how a link ends,
+never the bytes it writes: the output is the same in every mode. Since
+step F2, `tests/realbin/ldcmp.py cases` and `ldfuzz.py` also run with
+`--mode corrected` (in `make check-realbin`): the port in the corrected
+mode against the emulated original, on the hand-written cases and on
+random links - a difference is allowed only in the exit status, the
+messages and the files' modes, and only with an `applied` entry of
+`ld`.
+
 ## What a correction computes
 
 The accounting shows that every change belongs to a rule, not that the
@@ -139,3 +156,17 @@ immediates, which has no hook). With `--realbin` (in `make
 check-realbin`) the triggers are also linked against the MUTOS root's
 `crt0.o` and `libc.a`, with and without `c2` (`cc -o`, `cc -O -o`), and
 run under `tests/realbin/mutosemu.py`.
+
+For `ld` (since step F2) the reference is how a link must end: with
+exit status 0 exactly when every message is a warning, the output made
+executable exactly then, and an executable as long as its header says.
+`check_corrected.py` links triggers of each active correction of `ld` -
+the links the correction changes, and links next to them it must leave
+alone - without a switch, with `-H`, with `-F` and with
+`MUTOS_MODE=corrected`: without a switch and with `-H` each ends as the
+original's link does (pinned: the exit status, whether the output is
+executable, the messages), with `-F` as pinned for the corrected mode
+and as a link must; the output's bytes are the same in all four, and the
+rule log says `met` and `applied` exactly for the links the correction
+changes. With `--realbin` the emulated original `ld` links each trigger
+too and must end as `mutos_ld` does without a switch.

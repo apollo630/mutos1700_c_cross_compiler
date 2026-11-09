@@ -27,9 +27,21 @@ void	ld_mode_init(int argc, char **argv);
 
 /* ---- the rules (docs/RULES.md) --------------------------------------- */
 
-/* LD-06: error() sets errlev to the level of its message - returns it */
+/*
+ * LD-06: error() sets errlev to the level of its message - returns the
+ * new errlev (the corrected mode: never lower than the old one)
+ */
 int16_t	rule_ld_06(int16_t level, int16_t n);
-/* LD-08: middle() adds the six bytes of "jmp $" to the text - returns it */
-uint16_t rule_ld_08(uint16_t size);
+/*
+ * LD-08: middle() adds the six bytes of "jmp $" to the text - returns the
+ * sum (the corrected mode: through add, ld.c's add(), which reports an
+ * overflow)
+ */
+uint16_t rule_ld_08(uint16_t size, int16_t (*add)(int16_t, int16_t, uint16_t));
+/*
+ * LD-09: middle() rounds the text to 64 bytes for -i and -n - returns the
+ * rounded size (the corrected mode: the sum through add, as LD-08's)
+ */
+uint16_t rule_ld_09(uint16_t size, int16_t (*add)(int16_t, int16_t, uint16_t));
 
 #endif /* MUTOS_LDRULES_H */

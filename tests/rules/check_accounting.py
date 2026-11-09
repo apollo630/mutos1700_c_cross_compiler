@@ -27,7 +27,11 @@ The sources: the construct corpus (tests/mutos_cc/00_smoke .. 10_integ),
 the floating-point probes (fltprobe/), the real kernel sources of the
 tree (tests/mutos_cc/11_kernel/, tests/mutos_cpp/c/ with its h/) and
 programs of tests/mutos_cc/fuzz/fuzz_c.py's generator, half of them with
-longs (--fuzz N, --seed).
+longs (--fuzz N, --seed). Then links that meet ld's rules (ld_cases()),
+which the corpus never does: without a switch each meets its rule; with
+-F or MUTOS_MODE=corrected the link may end otherwise (exit status,
+messages, the output's mode) only with an "applied" entry of ld, and its
+output's bytes are the same.
 
 --report prints, from the runs without a switch, which rules the code met
 (the diagnostic hooks of step F0): per rule, how often and where.
@@ -297,10 +301,12 @@ def one(job):
     return unit.name, problems, met
 
 
-# ---- ld: the two cases of its diagnostic hooks ---------------------------
+# ---- ld: the cases of its rules -------------------------------------------
 #
-# The corpus links never reach LD-06 or LD-08; these two do (the cases of
-# tests/realbin/ldcmp.py of those names, built here without the emulator).
+# The corpus links never reach LD-06, LD-08 or LD-09; these cases do (those
+# of tests/realbin/ldcmp.py of those names, built here without the emulator).
+# ld's rules change what a link ends with - its exit status, its messages,
+# whether the output is made executable - never the bytes it writes.
 
 LIBC_SYMDEF_TIME = 602282477      # libc.a's __.SYMDEF time (ldcmp.py)
 
@@ -347,8 +353,41 @@ def mkranlib(members):
     return mkar([('__.SYMDEF', b''.join(entries))], LIBC_SYMDEF_TIME) + mkar(members)[2:]
 
 
+def ld_run(ld, files, libt, argv, mode=None):
+    """ld <argv> in a scratch directory with the files {name: bytes}, the
+    MUTOS root's lib/libt.a libt (out of date) if not None, MUTOS_MODE
+    mode: ((exit status, stdout, stderr, a.out's bytes, a.out's mode),
+    the rule log)."""
+    with tempfile.TemporaryDirectory(prefix='acctld') as tmp:
+        root = os.path.join(tmp, 'root')
+        os.makedirs(os.path.join(root, 'lib'))
+        os.makedirs(os.path.join(root, 'tmp'))
+        if libt is not None:
+            p = os.path.join(root, 'lib', 'libt.a')
+            with open(p, 'wb') as f:
+                f.write(libt)
+            os.utime(p, (LIBC_SYMDEF_TIME + 9, LIBC_SYMDEF_TIME + 9))
+        for n, data in files.items():
+            with open(os.path.join(tmp, n), 'wb') as f:
+                f.write(data)
+        env = {k: v for k, v in os.environ.items() if k != 'MUTOS_MODE'}
+        env['MUTOS_ROOT'] = root
+        env['MUTOS_RULELOG'] = os.path.join(tmp, 'log')
+        if mode:
+            env['MUTOS_MODE'] = mode
+        r = subprocess.run([ld] + argv, cwd=tmp, capture_output=True, env=env)
+        out = os.path.join(tmp, 'a.out')
+        st = os.stat(out).st_mode & 0o777 if os.path.exists(out) else None
+        return ((r.returncode, r.stdout, r.stderr, read(out), st),
+                readlog(os.path.join(tmp, 'log')))
+
+
 def ld_cases(ld):
-    """(problems, met) of the two cases, in each mode."""
+    """(problems, met) of the cases, in each mode: without a switch the
+    case meets its rule; -H is the run without a switch, its log too; -F
+    (first or last), and MUTOS_MODE=corrected, agree with each other and
+    differ from the run without a switch only with an applied entry of ld
+    in their log, and then not in the bytes of the output."""
     w = lambda *v: struct.pack('<%dH' % len(v), *v)
     main_o = mkobj(text=w(0xe8, 0, 0x90c3), syms=[('_main', 0x22, 0), ('_foo', 0x20, 0)])
     foo_o = mkobj(text=w(0x90c3), data=w(1, 2), syms=[('_foo', 0x22, 0)])
@@ -359,46 +398,36 @@ def ld_cases(ld):
          mkranlib([('foo.o', foo_o)])),
         ('LD-08', ['big.o'], {'big.o': mkobj(text=b'\x90' * 65530,
                                              syms=[('_big', 0x22, 0)])}, None),
+        ('LD-09', ['-i', 'big.o'], {'big.o': mkobj(text=b'\x90' * 65528,
+                                                   syms=[('_big', 0x22, 0)])}, None),
     ]
     problems, met = [], []
     for rule, args, files, libt in cases:
         results = []
-        for cname, opts, mode in (('none', [], None), ('-H', ['-H'], None),
-                                  ('-F', ['-F'], None), ('-F last', args[:1] + ['-F'], None),
-                                  ('MUTOS_MODE', [], 'corrected')):
-            with tempfile.TemporaryDirectory(prefix='acctld') as tmp:
-                root = os.path.join(tmp, 'root')
-                os.makedirs(os.path.join(root, 'lib'))
-                os.makedirs(os.path.join(root, 'tmp'))
-                if libt is not None:
-                    p = os.path.join(root, 'lib', 'libt.a')
-                    with open(p, 'wb') as f:
-                        f.write(libt)
-                    os.utime(p, (LIBC_SYMDEF_TIME + 9, LIBC_SYMDEF_TIME + 9))
-                for n, data in files.items():
-                    with open(os.path.join(tmp, n), 'wb') as f:
-                        f.write(data)
-                env = {k: v for k, v in os.environ.items() if k != 'MUTOS_MODE'}
-                env['MUTOS_ROOT'] = root
-                env['MUTOS_RULELOG'] = os.path.join(tmp, 'log')
-                if mode:
-                    env['MUTOS_MODE'] = mode
-                a = (opts + args) if cname != '-F last' else opts + args[1:]
-                r = subprocess.run([ld] + a, cwd=tmp, capture_output=True, env=env)
-                results.append((cname, (r.returncode, r.stdout, r.stderr,
-                                        read(os.path.join(tmp, 'a.out'))),
-                                readlog(os.path.join(tmp, 'log'))))
+        for cname, opts, mode in (('none', args, None), ('-H', ['-H'] + args, None),
+                                  ('-F', ['-F'] + args, None),
+                                  ('-F last', args[:1] + ['-F'] + args[1:], None),
+                                  ('MUTOS_MODE', args, 'corrected')):
+            results.append((cname,) + ld_run(ld, files, libt, opts, mode))
+        tag = 'ld %s' % ' '.join(args)
         base = results[0]
         if not [x for x in base[2] if x[1] == rule and x[2] == 'met']:
-            problems.append('ld %s: the case does not meet %s' % (' '.join(args), rule))
+            problems.append('%s: the case does not meet %s' % (tag, rule))
         else:
             met.append((rule, 'ld case', '-', None))
-        for cname, res, log in results[1:]:
-            if res != base[1]:
-                problems.append('ld %s %s: the output differs with no applied rule'
-                                % (cname, ' '.join(args)))
-            if log != base[2]:
-                problems.append('ld %s %s: logs otherwise' % (cname, ' '.join(args)))
+        if applied(base[2], ('ld',)):
+            problems.append('%s: an applied rule without a switch' % tag)
+        if results[1][1:] != base[1:]:
+            problems.append('%s -H: the link or the log differs' % tag)
+        corr = results[2]
+        for cname, res, log in results[3:]:
+            if (res, log) != corr[1:]:
+                problems.append('%s %s: not what -F does' % (tag, cname))
+        res, log = corr[1:]
+        if res != base[1] and not applied(log, ('ld',)):
+            problems.append('%s -F: the link differs with no applied rule' % tag)
+        if res[3] != base[1][3]:
+            problems.append('%s -F: the output\'s bytes differ' % tag)
     return problems, met
 
 
@@ -454,7 +483,7 @@ def main():
                 ', '.join('%s:%s' % (n, l) for n, l, _ in where[:12]) +
                 (' ...' if len(where) > 12 else '')))
     print('check_accounting: %d sources (%d of fuzz_c.py, seed %d), %d stages x %d '
-          'configurations, and ld\'s two cases: %s'
+          'configurations, and ld\'s cases: %s'
           % (len(units), a.fuzz, a.seed, nstage, 1 if a.base_only else len(CONFIGS),
                                   '%d unaccounted difference(s)' % len(problems)
                                   if problems else 'every difference accounted for'))

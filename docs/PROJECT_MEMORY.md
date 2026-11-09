@@ -53,8 +53,8 @@ Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
 Milestone 2, "Step 5 of the plan"); whether the kernel's `arith.a` gets the
 corrections of the long helpers too; which of step F4's corrections (C1-12 and
-C1-13, found with F0, and C1-14 and C1-15, found with F1, are among the
-candidates); `make install`; the manual pages.
+C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and LD-11, found
+with F2, are among the candidates); `make install`; the manual pages.
 
 ## The owner's setup
 
@@ -71,10 +71,10 @@ candidates); `make install`; the manual pages.
   2026-11-08): the machine for the hardware checks of the 80186/V30 code.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
-  There it took 75 minutes on two cores (after F1): run it in the background with
+  There it took 75 minutes on two cores after F1, 63 after F2: run it in the background with
   a log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 and F1 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F2 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -94,3 +94,8 @@ candidates); `make install`; the manual pages.
   C1-06, C1-02, C1-01) corrected in the corrected mode, four patches; without a
   switch every output is still the original's (`STATUS.md`, "Step F1"). The same
   day, a whole `make check-realbin` on `2a10c55`: exit 0.
+- 2026-11-09: step F2 - the bugs of `ld` that end a link wrongly (LD-06, LD-08)
+  corrected in the corrected mode, a patch each; `ld`'s corrections checked by how
+  a link must end and, with `--mode corrected`, against the emulated original.
+  Found with it: LD-09, LD-10, LD-11; LD-09 (`-i`/`-n`'s rounding, next to LD-08)
+  corrected too, as a third patch (`STATUS.md`, "Step F2").

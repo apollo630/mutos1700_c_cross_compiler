@@ -525,8 +525,10 @@ load1(int16_t libflg, int32_t loc)
  * middle (0bf8). v7's without rflag (no relocation bits are kept for
  * undefined symbols; the commons are always assigned; every undefined
  * symbol is listed), and the text gets 6 more bytes - the three "jmp $"
- * finishout() writes - before it is rounded for -i; -i's (and -n's)
- * rounding to 64 bytes; nflag's 4K page (v7: 8K) is never reached.
+ * finishout() writes - before it is rounded for -i, without add()'s check
+ * (LD-08; the corrected mode checks); -i's (and -n's) rounding to 64
+ * bytes, unchecked too (LD-09, v7's; the corrected mode checks); nflag's
+ * 4K page (v7: 8K) is never reached.
  * EXTENSION: v7's rflag, dflag and arflag where v7 has them.
  */
 static void
@@ -565,9 +567,9 @@ middle(void)
 	/*
 	 * Now set symbols to their final value
 	 */
-	tsize = rule_ld_08(tsize);	/* EXTENSION: LD-08, docs/RULES.md */
-	if (nflag || iflag)
-		tsize = (uint16_t)((tsize + 077) & ~077);
+	tsize = rule_ld_08(tsize, add);	/* EXTENSION: LD-08, docs/RULES.md */
+	if (nflag || iflag)		/* EXTENSION: LD-09, docs/RULES.md */
+		tsize = rule_ld_09(tsize, add);
 	dorigin = tsize;
 	if (nflag)
 		dorigin = (uint16_t)((tsize + 07777) & ~07777);
@@ -1260,7 +1262,7 @@ symreloc(void)
 
 /*
  * error (1e62). v7's; the messages go to stdout (printf). A warning
- * (n 0) sets errlev back to 0.
+ * (n 0) sets errlev back to 0 (LD-06; not in the corrected mode).
  */
 static void
 error(int16_t n, uint16_t s)

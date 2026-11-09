@@ -38,7 +38,7 @@ it stops with a message and exit status 2 (`mutos_ar`, `mutos_ranlib`,
 message's last line ending in "refused") where the original's
 output depends on state that is not modelled.
 
-Last updated: 2026-11-08.
+Last updated: 2026-11-09.
 
 ## Overview
 
@@ -111,9 +111,12 @@ Last updated: 2026-11-08.
 | LD-03 | `ld` | `ldrand()` reads a symbol type through a null pointer (crt0's word 8) | code reading | reproduced |
 | LD-04 | `ld` | an undefined external's word does not complete a byte-shifted word before it: the carry goes one word on | emulator | reproduced (completed under the extension `-r`) |
 | LD-05 | `ld` | "Entry point not in text" leaves the last input's entry word in the header | emulator | reproduced |
-| LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced; hooked (diagnostic) |
+| LD-06 | `ld` | a warning sets `errlev` back to 0: an earlier error no longer counts (exit status 0, executable) | emulator | reproduced; corrected in the corrected mode (`-F`) |
 | LD-07 | `ld` | an object of 32K or more of text or data: its symbol table is looked for 64K too early | emulator, code reading | refused |
-| LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced; hooked (diagnostic) |
+| LD-08 | `ld` | a text of 65,530 bytes or more: the six bytes of "jmp $" wrap the text size | emulator | reproduced; corrected in the corrected mode (`-F`) |
+| LD-09 | `ld` | `-i` or `-n` and a text of 65,468 bytes or more: the rounding to 64 bytes wraps the text size | emulator | reproduced; corrected in the corrected mode (`-F`) |
+| LD-10 | `ld` | `-D` without `-i` pads the data by the text's size too little: a data symbol after it is "Multiply defined", without one the output is short | emulator | reproduced |
+| LD-11 | `ld` | an object that ends where one of its parts begins is read as if that part were empty: no message, the output short | emulator | reproduced |
 | CC-01 | `cc` | a source's name of 50 characters or more runs past `ts[]` into `av[]`, or past its `malloc()` block into the next block's header | emulator | reproduced; refused where a pointer leads past the break |
 | CC-02 | `cc` | `-P` and `-E` fill `ptemp[]` without a check: the 101st overwrites `main()`'s `pv`, `cpp` gets words of the frame as arguments | emulator | reproduced; refused from about 150 `-P` (libc.a's buffers) |
 | CC-03 | `cc` | a `-K` of 9 characters or more runs over the passes' paths (`Can't find `) | emulator | reproduced |
@@ -1434,7 +1437,8 @@ Read in full on 2026-10-22 for its port (`src/mutos_ld/`,
 `tests/realbin/ldmap.txt`); every entry with a trigger was run under the
 emulator - most are cases of `tests/realbin/ldcmp.py cases` -, and the
 port does the same. All but LD-04 and LD-08 (the MUTOS deltas
-`bytrel()` and the six bytes of "jmp $") are v7's own. Not bugs: `-r` and
+`bytrel()` and the six bytes of "jmp $") are v7's own. LD-09 to LD-11
+were found on 2026-11-09, with step F2 of the plan. Not bugs: `-r` and
 `-d` refused ("-r and -d flags not supported", exit status 4) - a limit,
 which `mutos_ld` lifts as an extension -, and `-n` making a 0411 output
 like `-i`.
@@ -1532,11 +1536,17 @@ like `-i`.
 - **Mechanism.** `error()` (text 1ed1) ends with `errlev = n` - also for
   the warning's n = 0.
 - **Evidence.** Emulator (`ldcmp.py cases`: `a warning clears an error`).
-- **This project.** Reproduced.
+- **This project.** Reproduced; corrected in the corrected mode (`-F`,
+  `MUTOS_MODE=corrected`; step F2, 2026-11-09): `errlev` is raised, never
+  lowered - the case above ends with exit status 1 and the output not
+  executable, its bytes the same. A message after such a warning no longer
+  starts with `ld:` (`error()` writes it only while `errlev` is 0), as a
+  message after an error never does.
 - **Fix idea.** Raise `errlev`, never lower it.
-- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_06()` reports a
-  level that goes down (diagnostic); `tests/rules/check_accounting.py`
-  links the case above.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_06()`, at the
+  level set; diagnostic with step F0, active since step F2.
+  `tests/rules/check_accounting.py` links the case above in every mode,
+  `tests/rules/check_corrected.py` five triggers.
 
 ### LD-07 Objects of 32K or more of text or data
 
@@ -1563,11 +1573,96 @@ like `-i`.
 - **Mechanism.** `middle()` (text 0cdd) adds the six bytes of "jmp $"
   that `finishout()` writes to `tsize` without `add()`'s check.
 - **Evidence.** Emulator (`ldcmp.py cases`: `text 65530 (6 bytes wrap)`).
-- **This project.** Reproduced.
+- **This project.** Reproduced; corrected in the corrected mode (`-F`,
+  `MUTOS_MODE=corrected`; step F2, 2026-11-09): the six bytes are added by
+  `add()`, which says `ld:text overflow` at level 1 - the case above ends
+  with exit status 1 and the output not executable, its bytes the same
+  (the header still says the wrapped size, as after an overflow of pass
+  1). With `-i` or `-n` a text of 65,468 to 65,529 bytes wraps in the
+  rounding after it - LD-09, corrected with it.
 - **Fix idea.** `tsize = add(tsize, 6, "text overflow")`.
-- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_08()` reports a
-  sum past 65,535 (diagnostic); `tests/rules/check_accounting.py` links the
-  case above.
+- **Hook** (2026-11-08, [docs/RULES.md](RULES.md)): `rule_ld_08()`, where
+  the six bytes are added; diagnostic with step F0, active since step F2
+  (`middle()` hands it `add()`). `tests/rules/check_accounting.py` links
+  the case above in every mode, `tests/rules/check_corrected.py` five
+  triggers.
+
+### LD-09 `-i` and `-n` round a text of 65,468 bytes or more to 0
+
+- **Symptom.** `ld -i big.o` with 65,528 bytes of text, or `ld -n a.o b.o
+  c.o` with 30,000, 30,000 and 5,468, links without a message (exit status
+  0, the output executable), and the header says text 0: the text was
+  rounded to 65,536. The text and its padding are written all the same.
+  Without `-i` and `-n` the same links are right (65,534 and 65,474).
+- **Mechanism.** `middle()` (text 0cf6..0d01, after LD-08's six bytes at
+  0cdd) rounds `tsize` up to 64 bytes for `-i` and `-n` (`(tsize + 077) &
+  ~077`; `-n` sets `iflag` too) without `add()`'s check; from 65,473
+  (65,467 before the six bytes, 65,468 since the objects' texts are even)
+  the sum passes 65,535. v7's own line (its `nflag` and `iflag`).
+- **Evidence.** Emulator (`ldcmp.py cases`: `text 65528 -i (the rounding
+  wraps)`, `texts of 65468 -n (the rounding wraps)`; found 2026-11-09 while
+  measuring LD-08's limits: 65,466 bytes with `-i` give 65,472).
+- **This project.** Reproduced; corrected in the corrected mode (`-F`,
+  `MUTOS_MODE=corrected`; step F2, 2026-11-09): the 077 of the rounding is
+  added by `add()`, which says `ld:text overflow` at level 1 - the two
+  cases above end with exit status 1 and the output not executable, their
+  bytes the same.
+- **Fix idea.** `tsize = add(tsize, 077, "text overflow") & ~077`.
+- **Hook** (2026-11-09, [docs/RULES.md](RULES.md)): `rule_ld_09()`, where
+  the text is rounded (`middle()` hands it `add()`, as to LD-08's).
+  `tests/rules/check_accounting.py` links `ld -i` with 65,528 bytes in
+  every mode, `tests/rules/check_corrected.py` three triggers.
+
+### LD-10 `-D` without `-i` pads the data by the text's size too little
+
+- **Symptom.** `ld -D 40 foo.o main.o` (`foo.o` with 4 bytes of data and
+  a data symbol `_fdat`) says `_fdat: ld:foo.o: Multiply defined` (exit
+  status 1); `ld main.o foo.o -D 4000` links without a message (exit
+  status 0, the output executable) and the output is 14 bytes - the
+  text's size - shorter than its header says (data 4,000). With `-i` both
+  are right.
+- **Mechanism.** Pass 1 takes `-D`'s number as the size of the data so
+  far (`main()`, text 031e..0344: `dsize = num`); pass 2 (`endload()`,
+  text 0540..0568) pads with zero words while `dorigin < num` - but
+  `dorigin` is the address of the next data byte, which starts at the end
+  of the text without `-i` (`middle()`, text 0d05: `dorigin = tsize`). So
+  pass 2 writes `tsize` bytes fewer than pass 1 counted; the data of the
+  objects after `-D` is written that much early, and their data symbols,
+  defined in pass 1 at the right place, no longer match what pass 2
+  computes ("Multiply defined"). v7's own code; its manual and MUTOS's
+  (`ld(1)`: the number "sets the size of the data segment") mean the
+  size.
+- **Evidence.** Emulator (`ldcmp.py cases`: `-D` - the original's
+  "Multiply defined" -, `-D after the files`, `-D -i`); found 2026-11-09
+  when step F2's test of how a link must end (an executable as long as its
+  header says, `tests/rules/check_corrected.py`) was tried on `ldfuzz.py`'s
+  links (`ld z.a -D 4000`).
+- **This project.** Reproduced.
+- **Fix idea.** Pad while `dorigin` is below the data's origin plus the
+  number (`iflag ? 0 : tsize`, as `middle()` set it).
+
+### LD-11 An object that ends where one of its parts begins
+
+- **Symptom.** `ld foo.o h.o`, `h.o` the 16 bytes of a header that names 2
+  bytes of text, 4 of data and a symbol, links without a message (exit
+  status 0, the output executable); `h.o` adds nothing but its sizes and
+  its file name to the symbols - its 6 bytes of text and data, which the
+  header counts, are missing from the output, and so is its symbol `_h`.
+  Cut anywhere inside a part, the object gives `Premature EOF` (exit
+  status 4; `ldcmp.py cases`: `short object`, `short symbols`).
+- **Mechanism.** `dseek()` (text 188a) reads the block of the position
+  asked for; when the file ends at or before that position the read gives
+  no word for it, and `dseek()` sets the stream's size to 0 (`if
+  ((sp->nibuf = p->nibuf - o) <= 0) sp->size = 0`) - the loops of `load1()`,
+  `load2()` and `load2td()` then read nothing. `get()` says "Premature EOF"
+  only when a stream runs out after it began. v7's own code.
+- **Evidence.** Emulator (`ldcmp.py cases`: `an object of its header
+  only`); found 2026-11-09 by the same test as LD-10, on a damaged
+  object of `ldfuzz.py --mutate 0.5` (seed 3).
+- **This project.** Reproduced.
+- **Fix idea.** Compare the sizes in the header with the file's length
+  (`fstat()`) in `readhdr()`, or let `dseek()` report a part it cannot
+  reach.
 
 ## `cc`
 
