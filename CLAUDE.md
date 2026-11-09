@@ -128,7 +128,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 * `/tests/mutos1700_arith/`: the MUTOS kernel's `conf/arith.a` (`arith.a.base64.txt`, added by the
   project owner 2026-11-09) and its seven members: `locking.o` and the long helpers `aldiv.o`,
   `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o` - `libc.a`'s byte for byte; make builds its
-  corrected copy `src/libc_fixed/arith.a` (step F3b).
+  corrected copy `src/libc_fixed/arith.a` (step F3b). See its `README.md`.
 * `/tests/libc_runtime/`: `rtcheck.py` (`make check-runtime`, and in `make check-realbin`;
   since 2026-11-09, step F3 of `docs/TOOLCHAIN_PLAN.md`): the routines of `libc.a` that
   compiled code calls - the long helpers, `chkstk`, the conversions, the floating-point

@@ -2132,9 +2132,10 @@ of step F3b is made from.
   project owner's to choose (recommendation in `docs/TOOLCHAIN_PLAN.md`, F3b). The
   re-enactments in `c1` and `as` that would follow the copy in the corrected mode:
   `c1_itod()` (L-01), `c1_aldiv()`/`c1_alrem()` (L-04), `fltconst.c`'s product
-  (L-05), `c1_ftol()` (L-11), `c1_dtoi()` (L-03). The kernel's `arith.a` is not in
-  the tree; `rtcheck.py --archive ~/sys/conf/arith.a long` shows whether its long
-  helpers are `libc.a`'s.
+  (L-05), `c1_ftol()` (L-11), `c1_dtoi()` (L-03). The kernel's `arith.a` was not in
+  the tree then; `rtcheck.py --archive ~/sys/conf/arith.a long` shows whether its long
+  helpers are `libc.a`'s. (The owner added it the same day,
+  `tests/mutos1700_arith/`: they are, byte for byte - "Step F3b".)
 - **Verified** on a fresh clone of `db09ec3` with the patch: `make clean && make all`
   without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its
   output line for line an unchanged clone's but for a temporary directory's name;

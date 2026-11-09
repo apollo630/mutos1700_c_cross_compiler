@@ -32,7 +32,9 @@ it was found.
   `aldiv.o`, `almul.o`, `alrem.o`, `ldiv.o`, `lmul.o`, `lrem.o`, without a
   table of contents (`__.SYMDEF`). The kernel's objects call `lmul`, `ldiv`,
   `lrem`, `almul`, `aldiv`, `_locking` (`sysx.o`), `_locked` (`sys2.o`) and
-  `_unlckf` (`fio.o`), which none of them defines.
+  `_unlckf` (`fio.o`), which none of them defines. The owner's `arith.a` is in
+  the repository (`tests/mutos1700_arith/`, since 2026-11-09): its six
+  long-arithmetic members are `libc.a`'s byte for byte.
 - **The repository** under `~/mutos1700_c_cross_compiler`. Its tools have the
   absolute path of its MUTOS root `mutos_root/` compiled in; after moving the
   repository, rebuild it or set `MUTOS_ROOT` to the new `mutos_root/`.
@@ -96,7 +98,12 @@ $M/nm -g ~/sys_cross/conf/arith.a | grep ' T '
 `T` lines are expected for `aldiv`, `almul`, `alrem`, `ldiv`, `lmul`,
 `lrem` and `_locking`, `_locked`, `_unlckf` (with `_deadloc`, `_lockadd`,
 `_lockall`, `_lockfre`). `$M` holds for this terminal only; repeat its line in
-a new one.
+a new one. Whether it is the owner's archive of the repository:
+
+```sh
+base64 -d ~/mutos1700_c_cross_compiler/tests/mutos1700_arith/arith.a.base64.txt |
+    cmp - ~/sys_cross/conf/arith.a && echo "arith.a the same"
+```
 
 ## Step 5: build the kernel
 
