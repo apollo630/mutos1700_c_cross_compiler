@@ -1235,7 +1235,9 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    correction (2026-11-09) -, and `c1` and `as` following the copy in the
    corrected mode: the rules L-01, L-03, L-04, L-05, L-11 of `c1` and L-05
    of `as` (2026-11-11). Open from it: the hardware check of a program
-   linked with the copy by the original `ld`. Next by the plan: V1 to V4.
+   linked with the copy by the original `ld` - its kit is ready,
+   `tests/libc_runtime/hwkit.py` (2026-11-11, "Step F3b" below); the run on
+   the hardware is the owner's. Next by the plan: V1 to V4.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2367,6 +2369,20 @@ what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
   docstrings and documents changed after that run. Without a switch every
   output is the original's (the goldens; the accounting's `-H` and
   no-switch runs).
+- **The check on the hardware** (the plan's last check of F3b: a program
+  linked with the copy by the original `ld`): its kit,
+  `tests/libc_runtime/hwkit.py` (2026-11-11; its `README.md`, "The check
+  on the hardware") - the nine triggers, the copy as `fixlibc.a` and
+  `hwcheck.sh` for the hardware's `sh`: `cc -c`, then `ld -X /lib/crt0.o
+  -o N.H [-i] N.o -lc` and the same with `fixlibc.a` alone for `N.F`, both
+  run, every file compared with the kit's `expect/`. The prediction,
+  verified 2026-11-11 on `be11e09`: the original `cc`'s chain and the
+  original `ld` under the emulator make what `mutos_cc -c` and `mutos_ld`
+  make, `mutos_cc -F` makes the same `N.F`, the original `ld` with the
+  copy's table of contents out of date warns and links the same `N.F`, and
+  every image ends as its trigger says (with `/lib/libc.a` the original's
+  results - 0, 2 or SIGFPE -, with the copy C's). The run on the hardware:
+  not yet made.
 
 ## `mutos_as` opcode coverage
 

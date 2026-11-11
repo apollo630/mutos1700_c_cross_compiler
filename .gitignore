@@ -45,5 +45,9 @@
 # ignoring does not touch a tracked file.
 /tests/mutos_as/*/*.o
 
+# The kit of tests/libc_runtime/hwkit.py, where it is made by default
+/hwkit/
+/hwkit.tar
+
 # Python's byte-code caches (tests/realbin/ imports its own modules)
 __pycache__/

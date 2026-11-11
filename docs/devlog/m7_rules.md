@@ -729,3 +729,35 @@ one unit below `itof(777)`.
 double minus a unit with the original's product, and is 0 with the exact
 one - the exponent byte 256 wraps (L-06, which the copy keeps). The
 largest double's own text is right in both modes.
+
+### The kit for the check on the hardware (2026-11-11)
+
+The plan's last check of F3b is the hardware's: a program linked with the
+copy by the original `ld` before the copy replaces anything - the promise
+of decision 14 that the copy also works with the original `cc` and `ld`.
+`tests/libc_runtime/hwkit.py` makes the kit for it: the nine triggers, the
+copy as `fixlibc.a`, a script for the hardware's `sh` that compiles each
+trigger with `cc -c` and links it twice with the original `ld` - as `cc`
+links (`-lc`), and with `fixlibc.a` alone in its place, so that nothing
+can come from `/lib/libc.a` unnoticed -, runs both and compares every file
+with the kit's `expect/`. Comparing the files, not only the exit statuses,
+makes the run on the hardware check the emulator too: the original `cc`'s
+chain and `ld` under `mutosemu.py` made `expect/`, and the hardware's
+`cc` and `ld` must make the same bytes.
+
+The script is written for v7's Bourne shell: `:` for its comment lines
+(with no character the shell would interpret), `case` instead of `test`,
+no functions, `if cmp -s ...; then :; else` for a negation. It was run on
+the host under `dash`, with `cc` and `ld` the ports and the programs run
+by `mutosemu.py`: every line as predicted, and a changed file in
+`expect/` reported.
+
+One question the kit had to settle first: a copy to the hardware gives
+`fixlibc.a` a file time after its `__.SYMDEF`'s, and the original `ld`
+then warns "out of date" and reads the archive member by member instead
+of through the table. Under the emulator it links the same image either
+way, for all nine triggers - `libc.a`'s order (`lorder`, `tsort`)
+resolves in one pass -, so the script does not run `ranlib`, and the
+warning is expected. `mutos_cc -F` in the root - the corrected mode, the
+copy taken by LIBC-F - makes exactly the image the hardware's `ld` is to
+make with the copy by name.
