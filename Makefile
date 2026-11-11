@@ -65,7 +65,9 @@
 #   make check-libcatof # .float/.double against libc.a's own atof, and
 #                   # mutos_c1's floating-constant and float-initializer
 #                   # text against libc.a's own ecvt and fstsp, run under
-#                   # an 8086 emulator (needs the
+#                   # an 8086 emulator; then the corrected mode's
+#                   # conversion (the rules L-05 of c1 and as) against
+#                   # the atof of the corrected copy of libc.a (needs the
 #                   # Python module "unicorn"; see
 #                   # tests/mutos_as/float_coverage/libcatof.py)
 #   make check-runtime # the runtime of libc.a that compiled code calls (the
@@ -78,7 +80,10 @@
 #                   # not correct; the long helpers of the kernel's
 #                   # arith.a and of its copy too; the goldens linked with both run the
 #                   # same, and a trigger program per correction gives
-#                   # the original's and C's result with cc and cc -F
+#                   # the original's and C's result with cc and cc -F;
+#                   # what c1 folds (long / and %, the conversions) is
+#                   # what the program computes at run time, with cc
+#                   # and with cc -F (tests/libc_runtime/foldcheck.py)
 #                   # (needs the Python module "unicorn"; see
 #                   # tests/libc_runtime/README.md); RUNTIME_ARGS passes
 #                   # options, e.g. make check-runtime RUNTIME_ARGS="-n 20000"
@@ -235,7 +240,10 @@ clean:
 # and -C (the local L symbols left out).
 # float_coverage/fltmodel.py (Python 3, standard library only) re-derives
 # the .float/.double conversion model's unknowns from those goldens and
-# checks src/mutos_as/fltconst.c against its own, independent model.
+# checks src/mutos_as/fltconst.c against its own, independent model - and
+# the corrected mode's conversion (the rule L-05, on the corrected copy of
+# libc.a, whose product is exact) against the same model with that
+# product.
 # tests/mutos_as/float_open/ is deliberately NOT run here: it holds
 # probes mutos_as still refuses - at present only fltsig.s, which the
 # real "as" refuses too (see its README.md).
@@ -296,6 +304,7 @@ test: all
 	@echo "== mutos_as .float/.double conversion model (float_coverage/fltmodel.py) =="
 	@python3 tests/mutos_as/float_coverage/fltmodel.py survivors
 	@python3 tests/mutos_as/float_coverage/fltmodel.py check $(CURDIR)/src/mutos_as/fltconst_test
+	@python3 tests/mutos_as/float_coverage/fltmodel.py check --copy $(CURDIR)/src/mutos_as/fltconst_test
 	@echo "== mutos_as on the real compiler's .s (tests/mutos_cc goldens) =="
 	@MUTOS_AS=$(CURDIR)/src/mutos_as/mutos_as tests/mutos_as/assemble_cc_goldens.sh
 	@echo "== mutos_as switches -1 and -C =="
@@ -341,16 +350,20 @@ check-docs:
 # (Unicorn): every golden constant, fltconst.c's accepted output on
 # seeded texts, the runtime's dmul/ddiv/dadd against fltmodel.py's
 # arithmetic, and mutos_c1's constant texts (fltdec_test, "-f" a float
-# initializer's) against libc.a's ecvt() (of fstsp's float). Separate
+# initializer's) against libc.a's ecvt() (of fstsp's float); then
+# "copy": the corrected mode's conversion (fltconst_test -F, the rules
+# L-05 of c1 and as) against the atof() of the corrected copy of libc.a,
+# the copy's arithmetic, and its ecvt() against the original's. Separate
 # from "test" because it needs the Python module
 # "unicorn" (pip install unicorn); LIBCATOF_N sets the number of texts.
 LIBCATOF_N = 3000
-check-libcatof: as ld cc
+check-libcatof: as ld cc ar libc_fixed
 	@python3 tests/mutos_as/float_coverage/libcatof.py goldens
 	@python3 tests/mutos_as/float_coverage/libcatof.py check $(CURDIR)/src/mutos_as/fltconst_test $(LIBCATOF_N)
 	@python3 tests/mutos_as/float_coverage/libcatof.py ops
 	@python3 tests/mutos_as/float_coverage/libcatof.py ecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
 	@python3 tests/mutos_as/float_coverage/libcatof.py fecvt $(CURDIR)/src/mutos_cc/fltdec_test $(LIBCATOF_N)
+	@python3 tests/mutos_as/float_coverage/libcatof.py copy $(CURDIR)/src/mutos_as/fltconst_test $(LIBCATOF_N)
 
 # The original MUTOS 1700 binaries as an oracle: the real c0 and c1 from
 # mutos/mutos_bin/, run under an 8086 emulator (tests/realbin/mutosemu.py), must
@@ -462,6 +475,7 @@ check-runtime: all
 	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt $(RUNTIME_ARGS) long
 	@python3 tests/libc_runtime/rtcheck.py --copy src/libc_fixed/arith.a $(RUNTIME_ARGS) long
 	@python3 tests/libc_runtime/linkcheck.py
+	@python3 tests/libc_runtime/foldcheck.py
 
 check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em libc_fixed root
 	@python3 tests/realbin/c1tables.py --check tests/realbin/c1_tables.txt
@@ -532,6 +546,7 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em libc
 	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt long
 	@python3 tests/libc_runtime/rtcheck.py --copy src/libc_fixed/arith.a long
 	@python3 tests/libc_runtime/linkcheck.py
+	@python3 tests/libc_runtime/foldcheck.py
 
 # Random-program semantic fuzzing of mutos_c0/mutos_c1 - separate from
 # "test" (whose golden diffs are exact and fast); a fixed default seed

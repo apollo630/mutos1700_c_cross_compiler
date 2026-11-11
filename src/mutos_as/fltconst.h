@@ -138,14 +138,33 @@ typedef enum {
                      * digit, or a text too long */
 } FltStatus;
 
+/* Whose runtime the conversion runs on (docs/RULES.md, L-05): libc.a's,
+ * whose dmul forms the inexact product described above - what the real
+ * assembler and the real c1 compute -, or the corrected copy of libc.a
+ * that the corrected mode links (src/libc_fixed/, step F3b), whose dmul
+ * rounds the exact product to nearest, ties to even. Nothing else of the
+ * conversion differs between them: the copy corrects neither ldexp()'s
+ * wrapped exponent (L-06) nor the overflow of 5**k (L-07), and a zero is
+ * made as above - flexp's mantissa for k >= 1, which the copy's product
+ * builds (5**50 .. 5**54 differ), the digit loop's leftover for k = 0. */
+typedef enum {
+    FLT_LIBC_ORIGINAL = 0,  /* libc.a's dmul (L-05) */
+    FLT_LIBC_FIXED          /* the corrected copy's: the exact product */
+} FltLibc;
+
 /* Size in bytes of one constant of this kind: 4 or 8. */
 size_t flt_size(FpKind kind);
 
 /* Converts the decimal text text[0..len) (no surrounding blanks) into
  * the flt_size(kind) bytes of a MUTOS floating constant, lowest address
  * first, in out[]. Returns FLT_OK on success; on any other status out[]
- * is untouched. */
+ * is untouched. The conversion of libc.a: flt_encode_with(...,
+ * FLT_LIBC_ORIGINAL). */
 FltStatus flt_encode(FpKind kind, const char *text, size_t len, unsigned char *out);
+
+/* flt_encode() on the runtime libc names (FltLibc). */
+FltStatus flt_encode_with(FpKind kind, const char *text, size_t len, unsigned char *out,
+                          FltLibc libc);
 
 /* A short English description of a non-OK status, for diagnostics. */
 const char *flt_status_text(FltStatus st, FpKind kind);

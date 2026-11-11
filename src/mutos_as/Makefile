@@ -48,7 +48,9 @@
 #                    results (addressing modes, expressions).
 #   fltconst_test  - reads "f <text>"/"d <text>" lines and prints what
 #                    .float/.double would store for each (fltconst.c),
-#                    for tests/mutos_as/float_coverage/fltmodel.py.
+#                    for tests/mutos_as/float_coverage/fltmodel.py; with
+#                    -F what the corrected mode stores (docs/RULES.md,
+#                    L-05).
 
 # Instruction coverage was additionally cross-checked against the
 # COMPLETE Assembler_as.pdf Anlage A instruction table (all 5 pages,
@@ -102,7 +104,12 @@ MUTOS_ROOT_DEFAULT ?= $(abspath $(CURDIR)/../../mutos_root)
 CFLAGS  := $(CSTD) $(WARN) $(OPT) -DMUTOS_ROOT_DEFAULT='"$(MUTOS_ROOT_DEFAULT)"'
 LDFLAGS :=
 
-ASM_SRCS      := lexer.c parser.c pass2.c symtab.c encode.c objwrite.c fltconst.c assemble.c
+# as's rules (docs/RULES.md): asrules.c and one file per rule, each
+# reached through one hook in assemble.c - a rule is taken out by deleting
+# its file, so the list is the directory's.
+RULES         := $(sort $(wildcard asrules/*.c))
+ASM_SRCS      := lexer.c parser.c pass2.c symtab.c encode.c objwrite.c fltconst.c assemble.c \
+                 $(RULES)
 ASM_OBJS      := $(ASM_SRCS:.c=.o)
 PARSE_SRCS    := lexer.c parser.c main.c
 PARSE_OBJS    := $(PARSE_SRCS:.c=.o)
@@ -111,7 +118,7 @@ CLASSIFY_OBJS := $(CLASSIFY_SRCS:.c=.o)
 FLTTEST_SRCS  := fltconst.c fltconst_test.c
 FLTTEST_OBJS  := $(FLTTEST_SRCS:.c=.o)
 HDRS          := mutos_as.h pass2.h encode.h symtab.h objwrite.h fltconst.h mutos_aout.h \
-                 ../h/mutos_mode.h
+                 ../h/mutos_mode.h asrules/asrules.h
 
 TARGET    := mutos_as
 PARSE     := parse_dump

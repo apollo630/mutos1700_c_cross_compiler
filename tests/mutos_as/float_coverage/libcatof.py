@@ -70,6 +70,16 @@ Usage:
       runtime), printed as above - against "TOOL -f" (c1_fltdec.c's
       fdec_render_single()) for 2*N texts, and whether fstsp stored
       the double's high four bytes (truncated). Exit 1 on a difference.
+  libcatof.py copy TOOL [N]
+      The corrected mode's conversion (docs/RULES.md, L-05 - the rules of
+      c1 and as): atof() linked with the members of the corrected copy of
+      libc.a (src/libc_fixed/libc.a, step F3b; its dmath.o has pmuld's
+      partial product right) against "TOOL -F" (fltconst_test) on the
+      texts of "check"; the copy's dmul against the correctly rounded
+      product (fltmodel.py's "ne"), its ddiv and dadd against
+      nearest-even; and the copy's ecvt() against the original's on the
+      copy's atof() results - the same digits, so that c1's printing
+      (c1_fltdec.c) needs no rule. Exit 1 on a difference.
 """
 
 import base64
@@ -99,6 +109,8 @@ except ImportError:
 MUTOS_AS = os.path.join(ROOT, 'src', 'mutos_as', 'mutos_as')
 MUTOS_LD = os.path.join(ROOT, 'src', 'mutos_ld', 'mutos_ld')
 LIBC = os.path.join(ROOT, 'tests', 'mutos1700_libc')
+MUTOS_AR = os.path.join(ROOT, 'src', 'mutos_ar', 'mutos_ar')
+COPY = os.path.join(ROOT, 'src', 'libc_fixed', 'libc.a')      # step F3b's copy
 CRT0 = os.path.join(ROOT, 'tests', 'mutos1700_crt0', 'crt0.o.base64.txt')
 
 # Named explicitly: libc.a's __.SYMDEF is stale, so "-u _atof" alone does
@@ -117,15 +129,20 @@ DMUL, DDIV, DADD, ZERO, PMUL_B2 = 0x1ac, 0x1ed, 0x14, 0x1a1, 0x352
 
 
 class Runtime:
-    """The linked image and an emulator to call into it."""
+    """The linked image and an emulator to call into it; copy: the members
+    the corrected copy of libc.a has (dmath.o, stkmath.o, stacks.o,
+    convert.o ...) taken from it."""
 
-    def __init__(self):
-        for tool in (MUTOS_AS, MUTOS_LD):
+    def __init__(self, copy=False):
+        for tool in (MUTOS_AS, MUTOS_LD) + ((MUTOS_AR,) if copy else ()):
             if not os.access(tool, os.X_OK):
                 sys.exit('libcatof.py: %s is not built - run "make" first' % tool)
+        if copy and not os.path.isfile(COPY):
+            sys.exit('libcatof.py: %s is missing - run "make" first' % COPY)
+        self.copy = copy
         work = tempfile.mkdtemp(prefix='libcatof.')
         try:
-            self._link(work)
+            self._link(work, copy)
             with open(os.path.join(work, 'atof.out'), 'rb') as f:
                 self._load(f.read())
         finally:
@@ -143,13 +160,17 @@ class Runtime:
         uc.emu_stop()
 
     @staticmethod
-    def _link(work):
+    def _link(work, copy):
         def unb64(src, dst):
             with open(src, 'rb') as f, open(os.path.join(work, dst), 'wb') as g:
                 g.write(base64.b64decode(f.read()))
         unb64(CRT0, 'crt0.o')
         for m in MEMBERS:
             unb64(os.path.join(LIBC, m + '.o.base64.txt'), m + '.o')
+        if copy:        # the members the copy corrects, from it
+            shutil.copy(COPY, os.path.join(work, 'copy.a'))
+            subprocess.run([MUTOS_AR, 'x', 'copy.a'] + [m + '.o' for m in MEMBERS],
+                           cwd=work, check=True, capture_output=True)
         unb64(os.path.join(LIBC, 'libc.a.base64.txt'), 'libc.a')
         with open(os.path.join(work, 'main.s'), 'w') as f:
             f.write('.globl\t_main\n.text\n_main:\nret\n')     # crt0.o needs one
@@ -179,8 +200,10 @@ class Runtime:
         want = bytes([0x8d, 0x3e]) + struct.pack('<H', self.fac) + bytes.fromhex('2bc0abababab c3'.replace(' ', ''))
         if bytes(self.image[self.zero:self.zero + len(want)]) != want:
             sys.exit('libcatof.py: dmath.o\'s "zero" routine is not where expected')
-        # pmuld's a0*b2 term: mov dx,2[di] (b1's word) where 4[di] was meant
-        if bytes(self.image[dmath + PMUL_B2:dmath + PMUL_B2 + 3]) != bytes.fromhex('8b5502'):
+        # pmuld's a0*b2 term: mov dx,2[di] (b1's word) where 4[di] was
+        # meant - in the copy mov dx,4[di] (L-05)
+        want = bytes.fromhex('8b5504' if self.copy else '8b5502')
+        if bytes(self.image[dmath + PMUL_B2:dmath + PMUL_B2 + 3]) != want:
             sys.exit('libcatof.py: dmath.o\'s pmuld is not the expected code')
         if self.sym.get('ddiv') != dmath + DDIV or self.sym.get('dadd') != dmath + DADD:
             sys.exit('libcatof.py: dmath.o\'s entry points are not where expected')
@@ -362,13 +385,14 @@ def compiler_texts(n, seed):
     return out
 
 
-def cmd_check(tool, n):
+def cmd_check(tool, n, copy=False):
     texts = F.EDGES + F.random_texts(n) + compiler_texts(n, 2)
-    res = subprocess.run([tool], input='\n'.join(texts) + '\n', capture_output=True, text=True)
+    res = subprocess.run([tool] + (['-F'] if copy else []), input='\n'.join(texts) + '\n',
+                         capture_output=True, text=True)
     if res.returncode != 0:
         print('FAIL: %s exited %d: %s' % (tool, res.returncode, res.stderr.strip()))
         return 1
-    rt = Runtime()
+    rt = Runtime(copy)
     counts, bad = {}, 0
     for line, got in zip(texts, res.stdout.splitlines()):
         kind, text = line[0], line[2:]
@@ -394,13 +418,14 @@ def cmd_check(tool, n):
             bad += 1
             if bad <= 10:
                 print('  DIFFERENT %-45s fltconst.c %-24s emulated %s' % (line, got[3:], emu))
-    print('%d texts (%s): %d differ from libc.a\'s atof'
-          % (len(texts), ', '.join('%s %d' % kv for kv in sorted(counts.items())), bad))
+    print('%d texts (%s): %d differ from %s\'s atof'
+          % (len(texts), ', '.join('%s %d' % kv for kv in sorted(counts.items())), bad,
+             'the corrected copy of libc.a (fltconst_test -F)' if copy else 'libc.a'))
     return 1 if bad else 0
 
 
-def cmd_ops(n):
-    rt = Runtime()
+def cmd_ops(n, copy=False):
+    rt = Runtime(copy)
     rng = random.Random(5)
     bad = {'dmul': 0, 'ddiv': 0, 'dadd': 0}
 
@@ -419,7 +444,7 @@ def cmd_ops(n):
         xa, xb = rng.randint(-40, 40), rng.randint(-40, 40)
         A, B = F.image(False, a, xa + 128), F.image(False, b, xb + 128)
         da, db = (a, xa - 56), (b, xb - 56)
-        for name, want in (('dmul', F.mul(da, db, 'libc')),
+        for name, want in (('dmul', F.mul(da, db, 'ne' if copy else 'libc')),
                            ('ddiv', F.div(da, db, 'ne')),
                            ('dadd', None)):
             if name == 'dadd':
@@ -429,9 +454,42 @@ def cmd_ops(n):
                 bad[name] += 1
                 if bad[name] <= 3:
                     print('  %s differs: a=%s b=%s' % (name, A.hex(' '), B.hex(' ')))
-    print('%d operand pairs: dmul vs fltmodel\'s "libc" product %d, ddiv vs nearest-even %d, '
-          'dadd vs nearest-even %d differences' % (n, bad['dmul'], bad['ddiv'], bad['dadd']))
+    print('%d operand pairs%s: dmul vs fltmodel\'s "%s" product %d, ddiv vs nearest-even %d, '
+          'dadd vs nearest-even %d differences'
+          % (n, ' of the corrected copy' if copy else '', 'ne' if copy else 'libc',
+             bad['dmul'], bad['ddiv'], bad['dadd']))
     return 1 if any(bad.values()) else 0
+
+
+def cmd_copy_ecvt(n):
+    """The copy's ecvt() against the original's, on the copy's atof()
+    results of C literals: the digits, decpt and sign the same."""
+    orig, copy = Runtime(), Runtime(True)
+    texts = ['0.1', '.03', '1e30', '4398046511105e4', '1.26765060022822940e+30',
+             '1.5', '1e-30'] + literals(n, 7)
+    bad = compared = 0
+    for text in texts:
+        dbl = copy.atof(text, as_zero=False)
+        if dbl is None or dbl[7] == 0:
+            continue
+        compared += 1
+        a, b = orig.ecvt(dbl, 18), copy.ecvt(dbl, 18)
+        if a != b:
+            bad += 1
+            if bad <= 10:
+                print('  DIFFERENT %-28s original ecvt %r, the copy\'s %r' % (text, a, b))
+    print('%d literals: the copy\'s ecvt() of the copy\'s atof() against the original\'s ecvt(): '
+          '%d compared, %d differ' % (len(texts), compared, bad))
+    return 1 if bad else 0
+
+
+def cmd_copy(tool, n):
+    """atof() on the copy against fltconst_test -F, the copy's arithmetic,
+    the copy's ecvt()."""
+    st = cmd_check(tool, n, copy=True)
+    st |= cmd_ops(max(n, 2000), copy=True)
+    st |= cmd_copy_ecvt(n)
+    return st
 
 
 def literals(n, seed):
@@ -547,6 +605,8 @@ def main(argv):
         return cmd_ecvt(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
     if len(argv) in (3, 4) and argv[1] == 'fecvt':
         return cmd_fecvt(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
+    if len(argv) in (3, 4) and argv[1] == 'copy':
+        return cmd_copy(argv[2], int(argv[3]) if len(argv) == 4 else 3000)
     print(__doc__)
     return 2
 

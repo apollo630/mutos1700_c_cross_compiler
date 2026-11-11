@@ -11,10 +11,15 @@ right. Two parts:
     that meet the bug, compiled by mutos_cc as the original does (no
     switch), with -H, with -F and with MUTOS_MODE=corrected, c1's code
     ("cc -S") executed by tests/mutos_cc/fuzz/x86sim.py: main()'s value
-    must be the original's as pinned here (a wrong value, or the message
-    x86sim.py stops with) without a switch and with -H, and C's with -F;
-    -F and MUTOS_MODE=corrected must give the same code, and so must -H
-    and no switch. With --realbin the programs are also linked ("cc -o"
+    must be the original's as pinned here (a wrong value, the message
+    x86sim.py stops with, or - "cc: ..." - the message with which c1
+    refuses the program, as the port does where the original's result
+    depends on state it does not model) without a switch and with -H,
+    and C's with -F; -F and MUTOS_MODE=corrected must give the same code,
+    and so must -H and no switch. A correction of libc.a's runtime that
+    c1 re-enacts in its folding has a trigger whose constants c1 folds:
+    with -F the value C gives, which is what the corrected copy of libc.a
+    computes at run time. With --realbin the programs are also linked ("cc -o"
     and, through c2, "cc -O -o") against the MUTOS root's crt0.o and
     libc.a and run under tests/realbin/mutosemu.py (which needs the
     Python module unicorn): with -F the exit status must be C's value
@@ -66,11 +71,11 @@ CC = os.path.join(REPO, 'src', 'mutos_cc', 'mutos_cc')
 LD = os.path.join(REPO, 'src', 'mutos_ld', 'mutos_ld')
 MUTOSEMU = os.path.join(REPO, 'tests', 'realbin', 'mutosemu.py')
 
-# (rule, name, source, C's value of main(), the original's: a value, or
-# a piece of the message x86sim.py stops with; for the emulated run of
-# the linked program, the original's exit status - or a pair, without
-# and with c2, where c2's code leaves other stale flags - or None, not
-# pinned)
+# (rule, name, source, C's value of main(), the original's: a value, a
+# piece of the message x86sim.py stops with, or "cc: " and a piece of the
+# message c1 refuses the program with; for the emulated run of the linked
+# program, the original's exit status - or a pair, without and with c2,
+# where c2's code leaves other stale flags - or None, not pinned)
 CASES = [
     ('C1-03', 'x = l++ and x = m-- on file-scope longs, y = a++ on a local',
      '''long l, m;
@@ -280,6 +285,56 @@ main()
 	return r;
 }
 ''', 140, 'on flags the checker does not know', 230),
+    ('L-01', 'd = 1001, double g = 777, f = 4097 (a float): ints c1 folds to doubles',
+     '''double d, g = 777;
+float f;
+main()
+{
+	d = 1001;
+	f = 4097;
+	return (d == 1001.0) + (g == 777.0) * 2 + (f * 2 == 8194.0) * 4;
+}
+''', 7, 4, 4),
+    ('L-03', 'int i = -32768.0, j = -32768.75, k = -32767.5: doubles c1 folds to ints',
+     '''int i = -32768.0, j = -32768.75, k = -32767.5;
+main()
+{
+	return (i == -32767 - 1) + (j == -32767 - 1) * 2 + (k == -32767) * 4;
+}
+''', 7, 'cc: dtoi of a magnitude of 2**15 or more', None),
+    ('L-04', '99999L / 100000, 327680L / -3, 0x7fffffffL / 0177777, (-2147483647L - 1) % 32768 '
+     'folded, in initializers and in statements',
+     '''long a = 99999L / 100000, b = 327680L / -3;
+main()
+{
+	long c, e;
+
+	c = 0x7fffffffL / 0177777;
+	e = (-2147483647L - 1) % 32768;
+	return (a == 0) + (b == -109226L) * 2 + (c == -2147483647L) * 4 + (e == 0) * 8;
+}
+''', 15, 0, 0),
+    ('L-05', 'double d = 4398046511105e4 (an exact double), p = 1.26765060022822940e+30 (2**100): '
+     'texts c1 converts',
+     '''double d = 4398046511105e4, p = 1.26765060022822940e+30;
+main()
+{
+	double t;
+	int i;
+
+	t = 1.0;
+	for (i = 0; i < 100; i++)
+		t = t * 2.0;
+	return (int)(d - 43980465111049000.) + (p == t) * 10000;
+}
+''', 11000, 984, 984 & 0xff),
+    ('L-11', 'long l = 1.5e9, m = -2147483648.5, n = -1.25e9: doubles c1 folds to longs',
+     '''long l = 1.5e9, m = -2147483648.5, n = -1.25e9;
+main()
+{
+	return (l == 1500000000L) + (m == -2147483647L - 1) * 2 + (n == -1250000000L) * 4;
+}
+''', 7, 'cc: ftol overflows (SIGFPE)', None),
 ]
 
 
@@ -308,6 +363,8 @@ def simulate(text):
 
 
 def matches(got, want):
+    if isinstance(want, str) and want.startswith('cc: '):
+        return isinstance(got, str) and got.startswith('cc: ') and want[4:] in got
     if isinstance(want, str):
         return isinstance(got, str) and want in got
     return got == want
@@ -331,13 +388,19 @@ def emulated(cc, d, src, opts):
 def triggers(cc, realbin):
     problems, lines = [], []
     for rule, name, src, want_c, want_orig, want_emu in CASES:
+        # "cc: ...": the original's program is refused with that message
+        refuse = want_orig[4:] if isinstance(want_orig, str) and \
+            want_orig.startswith('cc: ') else None
         with tempfile.TemporaryDirectory(prefix='corr') as d:
             runs = {}
             for tag, opts, mode in (('none', [], None), ('-H', ['-H'], None),
                                     ('-F', ['-F'], None),
                                     ('MUTOS_MODE', [], 'corrected')):
                 st, msgs, text = compile_s(cc, d, src, opts, mode)
-                if st != 0:
+                if st != 0 and refuse is not None and tag in ('none', '-H') \
+                        and refuse in msgs:
+                    text = 'cc: ' + msgs.strip()
+                elif st != 0:
                     problems.append('%s %s (%s): cc -S exit status %d: %s'
                                     % (rule, name, tag, st, msgs.strip()[-200:]))
                     text = None
@@ -350,13 +413,16 @@ def triggers(cc, realbin):
                 problems.append('%s %s: MUTOS_MODE=corrected and -F differ' % (rule, name))
             if runs['-F'] == runs['none']:
                 problems.append('%s %s: -F does not change the code' % (rule, name))
-            got_orig, got_c = simulate(runs['none']), simulate(runs['-F'])
+            got_orig = runs['none'] if runs['none'].startswith('cc: ') else \
+                simulate(runs['none'])
+            got_c = simulate(runs['-F'])
             if not matches(got_orig, want_orig):
                 problems.append('%s %s: without a switch %r, pinned %r'
                                 % (rule, name, got_orig, want_orig))
             if not matches(got_c, want_c):
                 problems.append('%s %s: with -F %r, C says %r' % (rule, name, got_c, want_c))
-            line = '%s %s: original %s, -F %s' % (rule, name, got_orig, got_c)
+            line = '%s %s: original %s, -F %s' % (
+                rule, name, 'refused' if refuse is not None else got_orig, got_c)
             if realbin:
                 for opts in (['-F'], ['-F', '-O']):
                     got = emulated(cc, d, src, opts)

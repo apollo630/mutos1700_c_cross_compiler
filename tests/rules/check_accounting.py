@@ -11,8 +11,11 @@ program, "cc -o" (linked by ld) - and "cc -c" with --full. Against the run
 without a switch:
 
   * a .s of "cc -S" may differ only in lines that lie in the out= range of
-    an "applied" entry of c1 in that run's log; its messages and exit
-    status only when the log has an applied entry of c0 or c1;
+    an "applied" entry of c1 in that run's log (the ranges taken as whole
+    lines, and joined where they meet; where the run without a switch
+    stopped - c1 refused there -, the range of the statement it stopped
+    in runs to the end); its messages and exit status only when the log
+    has an applied entry of c0 or c1;
   * "cc -O -S", the objects and the linked program may differ only where
     the stage before them differed, or where an applied entry of c2, as or
     ld (the stage's own tool) says so - c2's by out= ranges as c1's;
@@ -25,9 +28,12 @@ without a switch:
 
 The sources: the construct corpus (tests/mutos_cc/00_smoke .. 10_integ),
 the floating-point probes (fltprobe/), the real kernel sources of the
-tree (tests/mutos_cc/11_kernel/, tests/mutos_cpp/c/ with its h/) and
+tree (tests/mutos_cc/11_kernel/, tests/mutos_cpp/c/ with its h/),
 programs of tests/mutos_cc/fuzz/fuzz_c.py's generator, half of them with
-longs (--fuzz N, --seed). Then links that meet ld's rules (ld_cases()),
+longs (--fuzz N, --seed), and the triggers of tests/rules/
+check_corrected.py - a program at least for each active correction of
+c1, which the corpus alone does not give. Then links that meet ld's
+rules (ld_cases()),
 which the corpus never does: without a switch each meets its rule; with
 -F or MUTOS_MODE=corrected the link may end otherwise (exit status,
 messages, the output's mode) only with an "applied" entry of ld, and its
@@ -105,6 +111,14 @@ def corpus_units():
         files[rel] = open(c, 'rb').read()
         units.append(Unit('mutos_cpp/' + rel, files, rel, False))
     return units
+
+
+def trigger_units():
+    """The triggers of check_corrected.py (its CASES): programs that meet
+    the active corrections of c1."""
+    import check_corrected
+    return [Unit('trigger/%s.%d.c' % (c[0], i), {'p.c': c[2].encode()}, 'p.c', True)
+            for i, c in enumerate(check_corrected.CASES)]
 
 
 def fuzz_units(n, seed):
@@ -202,6 +216,29 @@ def covered(h, rs):
     return any(a <= s and e <= b for a, b in rs)
 
 
+def lines_of(rs, out, stopped=None):
+    """The applied ranges rs widened to whole lines of out - the hunks are
+    lines, and a statement's first line may begin with a label an
+    operation before it wrote (NLABEL's "_d:", then doinit()'s value) -
+    and merged where they meet, so that a hunk across the ranges of two
+    statements is covered. stopped: the offset where the run without a
+    switch stopped (refused - its output ends there): the range that
+    holds it runs to the end of out, as the original wrote nothing
+    past the statement it stopped in."""
+    w = []
+    for a, b in sorted(rs):
+        a = out.rfind(b'\n', 0, a) + 1
+        nl = out.find(b'\n', max(b - 1, a))
+        b = len(out) if nl < 0 else nl + 1
+        if w and a <= w[-1][1]:
+            w[-1] = (w[-1][0], max(w[-1][1], b))
+        else:
+            w.append((a, b))
+    if stopped is not None:
+        w = [(a, len(out)) if a <= stopped < b else (a, b) for a, b in w]
+    return w
+
+
 def applied(log, tools):
     return [x for x in log if x[2] == 'applied' and x[0] in tools]
 
@@ -287,8 +324,10 @@ def one(job):
                     continue
                 if TOOL[st] in ('c1', 'c2') and b['out'] is not None \
                         and v['out'] is not None:
-                    rs = ranges(v['log'], TOOL[st])
-                    bad = [h for h in hunks(b['out'], v['out']) if not covered(h, rs)]
+                    hs = hunks(b['out'], v['out'])
+                    stopped = hs[0][0] if hs and b['st'] != 0 and v['st'] == 0 else None
+                    rs = lines_of(ranges(v['log'], TOOL[st]), v['out'], stopped)
+                    bad = [h for h in hs if not covered(h, rs)]
                     if bad:
                         problems.append('%s: bytes %d-%d differ outside the applied '
                                         'rules\' ranges' % (tag, bad[0][0], bad[0][1]))
@@ -447,7 +486,7 @@ def main():
                     help='only the runs without a switch, "cc -S" and "cc -o" '
                     '(with --report: the diagnostics of many programs, fast)')
     a = ap.parse_args()
-    units = corpus_units() + fuzz_units(a.fuzz, a.seed)
+    units = corpus_units() + trigger_units() + fuzz_units(a.fuzz, a.seed)
     if a.only:
         units = [u for u in units if a.only in u.name]
     jobs = [(a.cc, u, a.full, a.keep, a.base_only) for u in units]
@@ -482,8 +521,8 @@ def main():
                 if ops else '',
                 ', '.join('%s:%s' % (n, l) for n, l, _ in where[:12]) +
                 (' ...' if len(where) > 12 else '')))
-    print('check_accounting: %d sources (%d of fuzz_c.py, seed %d), %d stages x %d '
-          'configurations, and ld\'s cases: %s'
+    print('check_accounting: %d sources (%d of fuzz_c.py, seed %d, and the triggers of '
+          'check_corrected.py), %d stages x %d configurations, and ld\'s cases: %s'
           % (len(units), a.fuzz, a.seed, nstage, 1 if a.base_only else len(CONFIGS),
                                   '%d unaccounted difference(s)' % len(problems)
                                   if problems else 'every difference accounted for'))

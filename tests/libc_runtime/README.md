@@ -67,7 +67,8 @@ python3 tests/libc_runtime/rtcheck.py --archive x.a --fixed L-04,L-05 long float
 python3 tests/libc_runtime/rtcheck.py --copy          # the corrected copy (step F3b)
 python3 tests/libc_runtime/rtcheck.py show --archive src/libc_fixed/libc.a ftol 1.5e9
 python3 tests/libc_runtime/linkcheck.py               # the copy on whole programs (goldens, triggers/)
-make check-runtime                                    # the original, the copy, linkcheck; make check-realbin runs it too
+python3 tests/libc_runtime/foldcheck.py               # what c1 folds against what the program computes
+make check-runtime                                    # the original, the copy, linkcheck, foldcheck; make check-realbin runs it too
 ```
 
 Groups: `long`, `float` (the core and the sixteen stack operations), `conv`,
@@ -120,7 +121,7 @@ L-04 and L-08, as `libc.a`'s) and `rtcheck.py --copy src/libc_fixed/arith.a
 long` (`--copy` takes the corrections of the members the archive has).
 
 `make check-runtime` runs `rtcheck.py`, `rtcheck.py --copy`, both on
-`arith.a`, and `linkcheck.py`; `make check-realbin` too.
+`arith.a`, `linkcheck.py` and `foldcheck.py`; `make check-realbin` too.
 
 Result (2026-11-09): `rtcheck.py --copy -n 20000`, seeds 1 to 4 (3,745,620
 calls): every result right but where a bug the copy does not correct explains
@@ -129,3 +130,31 @@ it - L-02 (`ltof(0)`'s old bytes), L-09 (`fsubrs`) and L-13 (`chkstk`) - and
 image, 49 run, each the same; the nine trigger programs (L-01, L-03, L-04,
 L-05, L-08, L-10, L-11, L-12, L-14) give the original's result with `cc` and
 C's with `cc -F`.
+
+## What `c1` folds (step F3b, part 2)
+
+`c1` folds constants with re-enactments of these routines
+(`src/mutos_cc/c1port/c1lib.c`): a long constant's `/` and `%` with
+`aldiv`'s and `alrem`'s code, an int constant converted to a floating one
+with `itod`'s, a floating constant converted to an int or a long with
+`dtoi`'s and `ftol`'s - in the original mode the original's, in the
+corrected mode the copy's (the rules L-01, L-03, L-04 and L-11 of `c1`,
+`docs/RULES.md`, "The tools follow the copy"). `foldcheck.py` checks that a
+folded constant is what the program computes at run time: for each kind a
+program whose initializers `c1` folds and whose `main()` computes the same
+from the operands and writes both, compiled and linked by the port's `cc`
+in the MUTOS root without a switch (the original `libc.a`) and with `-F`
+(the copy), run under the emulator, compared value for value - the edges of
+each routine's paths and bugs and random operands (`-n`, `--seed`).
+Constants the original's `c1` refuses (`dtoi` from 2\*\*15, `ftol` from
+2\*\*30) are only in the corrected mode's program; int to double is
+compared in the corrected mode only, because the folded double reaches the
+object as `c1`'s 18-digit text read back by the assembler's `atof()`, which
+in the original mode does not give `itof`'s bytes back (777: one unit
+lower in the last place). The conversion of a constant's text (L-05) is
+`tests/mutos_as/float_coverage/libcatof.py copy`'s.
+
+Result (2026-11-11): 300 values per kind and mode (seed 1), and 2,000 (seed
+2): every folded value the one computed at run time - in the original mode
+the original's wrong quotients included (`99999L / 100000` is 2 both ways),
+in the corrected mode C's.

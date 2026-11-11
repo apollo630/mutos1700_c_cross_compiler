@@ -39,6 +39,11 @@ corrected copy of `libc.a` (below), is
   rule in its comment (`/* EXTENSION: C1-03, docs/RULES.md */`);
 - a row of the register below.
 
+A correction of `libc.a`'s runtime that a tool re-enacts is a rule of
+that tool named after the bug of `libc.a` (L-01 ...; "The tools follow
+the copy" below) - one rule per tool, so that L-05 has a row, a file and a
+hook in `c1` and in `as`.
+
 Taking a rule out is deleting its file, its hook and its row; the
 Makefiles compile every file of a rules directory. `scripts/check_rules.py`
 (in `make test` and `make check-docs`) checks that the three agree and that
@@ -62,6 +67,12 @@ A rule is in one of two states:
 | C1-02 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_02.c` | `src/mutos_cc/c1port/c12.c`, `acommute()`: a product or AND that folds to 0 | [C1-02](MUTOS_ORIGINAL_BUGS.md) |
 | C1-03 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_03.c` | `src/mutos_cc/c1port/c10.c`, `delay()`: before the tree without its postfix `++`/`--` is compiled | [C1-03](MUTOS_ORIGINAL_BUGS.md) |
 | C1-06 | c1 | `-F` | active | `src/mutos_cc/c1rules/c1_06.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [C1-06](MUTOS_ORIGINAL_BUGS.md) |
+| L-01 | c1 | `-F` | active | `src/mutos_cc/c1rules/l_01.c` | `src/mutos_cc/c1port/c1lib.c`, `c1_itod()`: the double of an int constant made (`unoptim()`'s ITOF, `doinit()`) | [L-01](MUTOS_ORIGINAL_BUGS.md) |
+| L-03 | c1 | `-F` | active | `src/mutos_cc/c1rules/l_03.c` | `src/mutos_cc/c1port/c1lib.c`, `c1_dtoi()`: a floating constant from 2\*\*15 to 2\*\*16 in magnitude converted (`doinit()`) | [L-03](MUTOS_ORIGINAL_BUGS.md) |
+| L-04 | c1 | `-F` | active | `src/mutos_cc/c1rules/l_04.c` | `src/mutos_cc/c1port/c12.c`, `lconst()`: a long constant expression folded (`/`, `%`) | [L-04](MUTOS_ORIGINAL_BUGS.md) |
+| L-05 | c1 | `-F` | active | `src/mutos_cc/c1rules/l_05.c` | `src/mutos_cc/c1port/c1lib.c`, `c1_atof()`: a floating constant's text converted (`getree()`) | [L-05](MUTOS_ORIGINAL_BUGS.md) |
+| L-05 | as | `-F` | active | `src/mutos_as/asrules/l_05.c` | `src/mutos_as/assemble.c`, `run_pass()`: the operand of a `.float` or `.double` converted | [L-05](MUTOS_ORIGINAL_BUGS.md) |
+| L-11 | c1 | `-F` | active | `src/mutos_cc/c1rules/l_11.c` | `src/mutos_cc/c1port/c1lib.c`, `c1_ftol()`: a floating constant from 2\*\*30 in magnitude converted (`doinit()`) | [L-11](MUTOS_ORIGINAL_BUGS.md) |
 | LD-06 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
 | LD-08 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
 | LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
@@ -69,9 +80,10 @@ A rule is in one of two states:
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
 `-1` and the rule log of `c1`), `src/mutos_ld/ldrules/` (`ldrules.c`: the
-mode of `ld`); `c0rules/`, `c2rules/` and `src/mutos_as/asrules/` come with
-their first rule. `c0` and `as` read the mode already (`c0lib.c`'s
-`c0_mode`, `assemble.c`'s `as_mode`), `c2` its `-1` (`c2_v30`).
+mode of `ld`), `src/mutos_as/asrules/` (since step F3b; `asrules.c`: the
+mode of `as`, which `assemble.c` sets); `c0rules/` and `c2rules/` come with
+their first rule. `c0` reads the mode already (`c0lib.c`'s `c0_mode`),
+`c2` its `-1` (`c2_v30`).
 
 ## The corrected copy of `libc.a`
 
@@ -126,6 +138,48 @@ trigger program per correction gives C's result with `cc -F`.
 | L-12 | `stacks.o` | `src/libc_fixed/fixed/stacks.s` | `incfpsp`, `decfpsp`: the floating-point stack's ends compared unsigned (`jae`, `jb`), so that a stack across address 0x8000 works | [L-12](MUTOS_ORIGINAL_BUGS.md) |
 | L-14 | `dmath.o` | `src/libc_fixed/fixed/dmath.s` | `dadd`, `dsub` (and every addition and subtraction through them): an operand 57 binary orders below the other is aligned and rounded (`cmp ah,*/39`), dropped from 58 | [L-14](MUTOS_ORIGINAL_BUGS.md) |
 
+### The tools follow the copy
+
+`c1` folds constants with re-enactments of `libc.a`'s routines - its
+library, where they leave their results in the output (`c1lib.c`) -, and
+`c1` and `as` convert a floating constant's text with `libc.a`'s `atof()`
+on `libc.a`'s floating-point runtime (`src/mutos_as/fltconst.c`). In the
+corrected mode they re-enact the copy instead (decided by the project
+owner on 2026-11-11), so that a folded constant is what the program
+computes at run time with the copy: one rule per corrected bug and tool,
+named after the bug, logged `applied` (in the original mode `met`) only
+where the copy's result differs from the original's.
+
+| Rule | Tool | Where | The corrected mode |
+|---|---|---|---|
+| L-01 | `c1` | `c1_itod()`: an int constant made a floating one | the exact double - a float constant now where the original made a double one |
+| L-03 | `c1` | `c1_dtoi()`: an int initialized with a floating constant from 2\*\*15 in magnitude | -32768 for -32768 to -32768.99... (the original refuses: it compares with a word of `c1`'s data segment); every other value refused, as SIGFPE |
+| L-04 | `c1` | `lconst()`: a long constant `/` or `%` | C's quotient and remainder; `-2**31 / -1` is -2\*\*31, as in the copy |
+| L-05 | `c1`, `as` | the text of a floating constant converted | the exact product rounded: some doubles change in their last bits, a few float constants become exact |
+| L-11 | `c1` | `c1_ftol()`: a long initialized with a floating constant from 2\*\*30 in magnitude | 2\*\*30 to 2\*\*31 in magnitude, and -2\*\*31 to -2\*\*31-0.99..., folded (the original refuses: SIGFPE); every other value refused |
+
+What the copy does not correct stays as the original computes it in both
+modes: `ldexp()`'s wrapped exponent (L-06) and the overflow of 5\*\*k
+(L-07) in a constant's conversion, and how a zero constant gets its bytes
+(`fltconst.h`: 5\*\*k's mantissa for a decimal exponent k - built by the
+copy's product, so the zeros of k = 50 to 54 change -, the digit loop's
+leftover for k = 0). The
+other corrections of the copy concern no folding: `c1` calls no `alrem`
+for its value (L-08), compares no constants with `fcmp` (L-10), and has no
+floating-point stack (L-12); `atof()` adds two positive values only
+(L-14). `c1`'s printing of a constant (`ecvt()`) is the same on the copy's
+runtime (`tests/mutos_as/float_coverage/libcatof.py copy`).
+
+Checked: `tests/libc_runtime/foldcheck.py` (`make check-runtime`) compiles
+programs whose initializers `c1` folds - long `/` and `%`, int to double,
+double to int and to long - and that compute the same from their operands
+at run time: with `cc` against the original `libc.a` and with `cc -F`
+against the copy, every folded value is the computed one;
+`tests/mutos_as/float_coverage/libcatof.py copy` (`make check-libcatof`)
+runs the copy's own `atof()` under the emulator against the corrected
+conversion, and `fltmodel.py check --copy` (`make test`) an independent
+model of it.
+
 ## The rule log
 
 With `MUTOS_RULELOG=<file>` every hook a tool passes appends one line to
@@ -140,12 +194,16 @@ ld LD-08 met tsize=65530
 ```
 
 `met`: the original's path was taken; `applied`: the rule changed the
-output. `line=` is the source line, as the tool's messages give it.
-`out=` (`c1`) are the bytes of the output file - offsets, the end
-exclusive - that `c1` wrote for the intermediate-code operation the rule was
-met in: a whole statement, so that every byte a rule changes lies in its
-range. `c1` notes an entry when the hook is passed and writes it when the
-operation is done (`c1rules.c`), after asking the rule, if it gave a check,
+output. `line=` is the source line, as the tool's messages give it (`as`:
+the line of its own source). `out=` (`c1`) are the bytes of the output
+file - offsets, the end exclusive - that `c1` wrote for the
+intermediate-code operations the rule was met in: those that read an
+expression tree's leaves and operators and the one that compiles it, a
+whole statement, so that every byte a rule changes lies in its range - a
+floating constant is converted (L-05) when its leaf is read, and written
+when the statement is compiled. `c1` notes an entry when the hook is
+passed and writes it when the statement is done (`c1rules.c`), with the
+statement's line, after asking the rule, if it gave a check,
 whether the entry counts: a rule that must see the code it concerns (C1-06
 counts the bytes of two stores) gets it back from the output file then, and
 one that must see what compiling the statement did to a tree node (C1-03:
@@ -162,7 +220,13 @@ original does and once each with `-H`, `-F`, `-1` and `-F -1`, with the rule
 log on, and requires:
 
 - a byte of `c1`'s `.s` that differs lies in the `out=` range of an
-  `applied` entry of `c1` from that run;
+  `applied` entry of `c1` from that run - the lines of the range, as the
+  differences are lines (a statement's first line may start with the
+  label an operation before it wrote: `_d:` before an initializer's
+  value), and ranges that meet joined; where `c1` refuses a program
+  without a switch that `-F` compiles (L-03, L-11: the original's
+  constant depends on state the port does not model), the range of the
+  statement it refused runs to the end of the file;
 - `c2`'s output, an object or a linked program may differ only where the
   stage before it differed (and was accounted for), or where an `applied`
   entry of that tool says so; the messages and the exit status likewise;
@@ -174,7 +238,9 @@ With no active rule (step F0) that is: every output is the original's in
 every configuration. Since step F1 the corrections of `c1` are active;
 under `-F` (and `-F -1`) their `applied` entries account for what they
 change, `c2`'s output, the objects and the programs following from it.
-`--report` prints which rules the code met.
+`--report` prints which rules the code met. The sources include the
+triggers of `tests/rules/check_corrected.py` (below), a program at least
+for each active correction of `c1`, which the corpus alone does not give.
 
 The corpus's links never meet a rule of `ld`; the checker links cases
 that do, one per rule (those of `tests/realbin/ldcmp.py cases`), without
@@ -200,9 +266,13 @@ reference (`docs/TOOLCHAIN_PLAN.md`, section 7.2):
 that meet each active correction ("triggers") with `cc -S` as the
 original does, with `-H`, with `-F` and with `MUTOS_MODE=corrected`, and
 runs `c1`'s code under `tests/mutos_cc/fuzz/x86sim.py`: `main()`'s value
-must be the original's as pinned there (a wrong value, or the message
-`x86sim.py` stops with) without a switch and with `-H`, and C's with `-F`;
-every active correction of `c1` must have a trigger. Then it runs
+must be the original's as pinned there (a wrong value, the message
+`x86sim.py` stops with, or the message with which `c1` refuses the
+program - L-03's and L-11's constants, whose value the port does not know
+in the original mode) without a switch and with `-H`, and C's with `-F`;
+every active correction of `c1` must have a trigger - those that follow
+the copy of `libc.a` (L-01 ... L-11) one whose constants `c1` folds, C's
+value with `-F` being what the copy computes. Then it runs
 `fuzz_c.py --mode corrected` on two fixed seeds (one with longs): every
 program must compute what C says unless it fails through a bug of the
 original that the corrected mode does not correct yet - the rule log's

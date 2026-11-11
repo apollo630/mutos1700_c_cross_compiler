@@ -81,6 +81,12 @@ segment where a program is out of stack either way); L-06 and L-07 (`ldexp`,
 | L-14 | `dmath.o` | `dmath.s` | `cmp ah,*/39` for `*/38` |
 
 The register in `docs/RULES.md` says what each one changes; the entries of
-`docs/MUTOS_ORIGINAL_BUGS.md` what was measured. Every corrected member keeps
+`docs/MUTOS_ORIGINAL_BUGS.md` what was measured. Where `c1` and `as` re-enact
+these routines in their own work - `c1` folding a long `/` or `%` or a
+conversion, `c1` and `as` converting a constant's text with `atof()` - they
+compute as the copy in the corrected mode (the rules L-01, L-03, L-04, L-05,
+L-11 of `c1` and L-05 of `as`; `docs/RULES.md`, "The tools follow the copy"),
+so that a folded constant is what the program computes with the copy at run
+time (`tests/libc_runtime/foldcheck.py`). Every corrected member keeps
 its interface; its size changes where instructions were added (the members
 are linked by name, nothing depends on an offset inside them).

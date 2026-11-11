@@ -7,7 +7,9 @@
  * '%'; printf's "%.17e" (through src/mutos_cc/c1_fltdec.c's ecvt()) and
  * its "%c" of 0. Where a routine's result is not what C would compute,
  * the comment says so; where it depends on state the port does not
- * model, the port refuses (c1trap()).
+ * model, the port refuses (c1trap()). The corrected mode folds as the
+ * corrected copy of libc.a computes (docs/RULES.md, L-01, L-03, L-04,
+ * L-05, L-11: the rules in ../c1rules/, hooked here and in lconst()).
  */
 #define _POSIX_C_SOURCE 200809L	/* fileno(), ftruncate() */
 
@@ -22,7 +24,8 @@
 
 /*
  * atof(text) into a floating constant's fvalue - what getree()'s FCON
- * case does. Where libc.a's atof() raises SIGFPE (an operation of its
+ * case does (in the corrected mode on the corrected copy's runtime: the
+ * rule L-05). Where libc.a's atof() raises SIGFPE (an operation of its
  * arithmetic overflows - fltconst.h's FLT_RANGE), this calls the
  * original's handler, fpeintr(), which reports the overflow and
  * longjmp()s back into getree(). The handler is installed once and not
@@ -41,7 +44,7 @@ c1_atof(struct tnode *p, const char *text)
 {
 	static int fpecount;
 
-	switch (flt_encode(FP_DOUBLE, text, strlen(text), p->fvalue)) {
+	switch (rule_l_05(text, p->fvalue)) {	/* EXTENSION: L-05, docs/RULES.md */
 	case FLT_OK:
 		return;
 	case FLT_RANGE:
@@ -91,8 +94,9 @@ dblint(uint32_t mag, int neg, unsigned char *d)
  * seven bits and the exponent, byte 5 BL - and then the store loop
  * ("zextend") writes AX, which still holds BL in its high byte, into the
  * two words below: bytes 0 to 3 are 0, BL, 0, BL, not 0 (an itod bug
- * the port keeps: an int with more than eight significant bits becomes
- * a double, not a float, constant). 0 is eight 0 bytes.
+ * the port keeps - L-01: an int with more than eight significant bits
+ * becomes a double, not a float, constant; the corrected mode makes the
+ * exact double, the rule L-01). 0 is eight 0 bytes.
  */
 void
 c1_itod(int v, unsigned char *d)
@@ -118,6 +122,7 @@ c1_itod(int v, unsigned char *d)
 	d[2] = 0;
 	d[1] = (unsigned char)bx;
 	d[0] = 0;
+	rule_l_01(v, d);	/* EXTENSION: L-01, docs/RULES.md */
 }
 
 /*
@@ -151,7 +156,8 @@ neg32(uint16_t *hi, uint16_t *lo)
 /*
  * libc.a's aldiv (text 7cb4), "l /= r" for a long - what lconst() folds
  * a long constant '/' with - re-enacted on its 16-bit words, because it
- * is not C's division:
+ * is not C's division (the corrected copy's is - the rule L-04, hooked in
+ * lconst(), folds with that in the corrected mode):
  *   - its short path (two "div"s by one word) is taken when the
  *     divisor's high word is what it takes for the sign extension of the
  *     low word - but with the 0xffff of a negative one negated to 1: a
@@ -317,7 +323,9 @@ c1_pfloat(const unsigned char *d)
 /*
  * libc.a's dtoi (text 79c9): truncated toward 0. From 2**16 in magnitude
  * it raises SIGFPE; at 2**15 it compares with the word at address 8000
- * (a bug: an immediate was meant) - both refused.
+ * (a bug, L-03: an immediate was meant) - both refused. The corrected
+ * mode folds -32768 to -32768.99... to -32768, as the corrected copy's
+ * dtoi does (the rule L-03).
  */
 int
 c1_dtoi(const unsigned char *d)
@@ -332,9 +340,8 @@ c1_dtoi(const unsigned char *d)
 		return 0;
 	if (e > 16)
 		c1trap("dtoi overflows (SIGFPE)");
-	if (e == 16)
-		c1trap("dtoi of a magnitude of 2**15 or more (the original "
-		    "compares with the word at address 8000)");
+	if (e == 16)	/* the original compares with the word at 8000 */
+		return rule_l_03(d);	/* EXTENSION: L-03, docs/RULES.md */
 	v = ((0200 | (d[6] & 0177)) << 8 | d[5]) >> (16 - e);
 	if (d[6] & 0200)
 		v = -v;
@@ -344,7 +351,9 @@ c1_dtoi(const unsigned char *d)
 /*
  * libc.a's ftol (text 7a18): truncated toward 0; from 2**30 in magnitude
  * (an exponent of 31 or more: docs/MUTOS_ORIGINAL_BUGS.md, L-11) it
- * raises SIGFPE - refused.
+ * raises SIGFPE - refused. The corrected mode folds 2**30 to 2**31 in
+ * magnitude, and -2**31, as the corrected copy's ftol does (the rule
+ * L-11).
  */
 int32_t
 c1_ftol(const unsigned char *d)
@@ -357,8 +366,8 @@ c1_ftol(const unsigned char *d)
 	e -= 0200;
 	if (e <= 0)
 		return 0;
-	if (e >= 31)
-		c1trap("ftol overflows (SIGFPE)");
+	if (e >= 31)	/* from 2**30: the original's ftol overflows */
+		return rule_l_11(d);	/* EXTENSION: L-11, docs/RULES.md */
 	m = (uint32_t)(0200 | (d[6] & 0177)) << 24 | (uint32_t)d[5] << 16
 	    | (uint32_t)d[4] << 8 | d[3];
 	m >>= 32 - e;

@@ -17,7 +17,9 @@ file, its hook and its row. This script checks that the three agree:
      hook -, in the file the row names, on a line that names the rule
      ("C1-03" in its comment), or right below one that does;
   3. every rule file in a rules directory and every rule_...( call in the
-     sources has its row;
+     sources has its row (of that tool: a rule named after a bug of
+     libc.a, which more than one tool re-enacts - L-05 in c1 and in as -
+     has a row, a file and a hook in each);
   4. a correction's bug has its entry in docs/MUTOS_ORIGINAL_BUGS.md
      ("### C1-03 ..."), and that entry names docs/RULES.md; a V30 rule is
      named in docs/TOOLCHAIN_PLAN.md, section 7.4; LIBC-F, which links the
@@ -126,20 +128,16 @@ def rule_files():
 
 
 def hooks():
-    """{function: [(path, line number, the line before and the line)]} of
-    the rule_...( calls in the ported sources (the rules directories left
-    out)."""
+    """{(tool, function): [(path, line number, the line before and the
+    line)]} of the rule_...( calls in each tool's ported sources (the rules
+    directories left out)."""
     out = {}
-    seen = set()
     for tool, (pdir, _) in TOOLS.items():
         for p in sources(pdir):
-            if p in seen:
-                continue
-            seen.add(p)
             prev = ''
             for n, line in enumerate(read(p).splitlines(), 1):
                 for m in re.finditer(r'\b(rule_[a-z0-9_]+)\s*\(', line):
-                    out.setdefault(m.group(1), []).append((p, n, prev + '\n' + line))
+                    out.setdefault((tool, m.group(1)), []).append((p, n, prev + '\n' + line))
                 prev = line
     return out
 
@@ -157,9 +155,9 @@ def main():
         if not re.fullmatch(r'[A-Z0-9]+-[A-Z0-9]+', rule):
             issue('docs/RULES.md: a rule named %r' % rule)
             continue
-        if rule in named:
-            issue('docs/RULES.md: %s is listed twice' % rule)
-        named.add(rule)
+        if (rule, tool) in named:
+            issue('docs/RULES.md: %s of %s is listed twice' % (rule, tool))
+        named.add((rule, tool))
         if tool not in TOOLS:
             issue('%s: tool %r is none of %s' % (rule, tool, ', '.join(TOOLS)))
             continue
@@ -180,7 +178,7 @@ def main():
                 issue('%s: %s does not define %s()' % (rule, want, fn))
             if '"%s"' % rule not in text:
                 issue('%s: %s does not log under "%s"' % (rule, want, rule))
-        sites = calls.get(fn, [])
+        sites = calls.get((tool, fn), [])
         if len(sites) != 1:
             issue('%s: %s() is called %d times in the ported sources, the hook must be '
                   'one call' % (rule, fn, len(sites)))
@@ -216,11 +214,11 @@ def main():
     for p in sorted(files):
         if p not in listed_files:
             issue('%s: a rule file without a row in docs/RULES.md' % p)
-    listed_fns = {'rule_' + slug(r['Rule']) for r in rows if r.get('Rule')}
-    for fn, sites in sorted(calls.items()):
-        if fn not in listed_fns:
+    listed_fns = {(r.get('Tool'), 'rule_' + slug(r['Rule'])) for r in rows if r.get('Rule')}
+    for (tool, fn), sites in sorted(calls.items()):
+        if (tool, fn) not in listed_fns:
             for p, n, _ in sites:
-                issue('%s:%d: %s() is not in docs/RULES.md' % (p, n, fn))
+                issue('%s:%d: %s() is not in docs/RULES.md for %s' % (p, n, fn, tool))
     ncopy = check_copy(bugs)
     if ISSUES:
         for m in ISSUES:

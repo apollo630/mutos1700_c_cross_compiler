@@ -1020,6 +1020,7 @@ lconst(int op, struct tnode *lp, struct tnode *rp)
 	default:
 		return 0;
 	}
+	l = rule_l_04(op, lp, r, l);	/* EXTENSION: L-04, docs/RULES.md */
 	if (lp->op == LCON) {
 		setlvalue(lp, l);
 		return lp;

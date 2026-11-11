@@ -101,6 +101,7 @@ ccport/cclib.o: ../h/mutos_root.h ../h/mutos_mode.h
 $(C0_OBJS): c0port/c0.h
 c0port/c00.o: ../h/mutos_mode.h
 $(C1_PORT:.c=.o) $(C1_RULES:.c=.o): c1port/c1.h c1rules/c1rules.h ../h/mutos_mode.h
+c1rules/l_05.o: ../mutos_as/fltconst.h
 $(C2_OBJS): c2port/c2.h
 c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
 c1_fltdec.o: c1_fltdec.c c1_fltdec.h ../mutos_as/fltconst.h

@@ -30,11 +30,12 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   path under the MUTOS root, `$MUTOS_ROOT` or the compiled-in default - for every tool),
   and since 2026-11-08 `mutos_mode.h` (the corrected mode - `-F`, `-H`, `MUTOS_MODE` -
   and the rule log, `MUTOS_RULELOG`, of `docs/RULES.md`).
-* The rules directories (since 2026-11-08, `docs/RULES.md`): `/src/mutos_cc/c1rules/`
-  and `/src/mutos_ld/ldrules/` - one file per rule of the corrected mode or of `-1`,
-  each reached through one hook line in the ported code (`c1port/`, `ld.c`), and a file
-  of what the rules share (`c1rules.c`: the mode, `-1`, the rule log with its output
-  ranges; `ldrules.c`: the mode). Taking a rule out is deleting its file, its hook and
+* The rules directories (since 2026-11-08, `docs/RULES.md`): `/src/mutos_cc/c1rules/`,
+  `/src/mutos_ld/ldrules/` and (since 2026-11-11) `/src/mutos_as/asrules/` - one file
+  per rule of the corrected mode or of `-1`, each reached through one hook line in the
+  ported code (`c1port/`, `ld.c`, `assemble.c`), and a file of what the rules share
+  (`c1rules.c`: the mode, `-1`, the rule log with its output ranges; `ldrules.c`,
+  `asrules.c`: the mode). Taking a rule out is deleting its file, its hook and
   its row in `docs/RULES.md`; `scripts/check_rules.py` checks that they agree.
 * `/src/mutos_ld/`: Source code for the Mutos Linker - since 2026-10-22 a port of the
   original MUTOS 1700 `ld` read from its binary (v7's `ld.c` with the MUTOS deltas),
@@ -138,7 +139,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `--archive`/`--fixed`) for the corrected copy of step F3b; `linkcheck.py` the copy on
   whole programs - the goldens linked with both archives run the same, and
   `triggers/*.c` (one program per correction) give the original's result with `cc` and
-  C's with `cc -F`. See its `README.md`.
+  C's with `cc -F`; `foldcheck.py` (since 2026-11-11) what `c1` folds against what the
+  program computes at run time, with `cc` and `cc -F`. See its `README.md`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds, `cc -O` - the original `c2`'s output - plus hand-written kernel assembler such as `mch.s`), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Rule 3's "Known, deliberate exception") — **concluded 2026-09-28**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated. See `STATUS.md`'s open item 6.
