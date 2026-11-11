@@ -140,7 +140,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   whole programs - the goldens linked with both archives run the same, and
   `triggers/*.c` (one program per correction) give the original's result with `cc` and
   C's with `cc -F`; `foldcheck.py` (since 2026-11-11) what `c1` folds against what the
-  program computes at run time, with `cc` and `cc -F`. See its `README.md`.
+  program computes at run time, with `cc` and `cc -F`; `hwkit.py` (since 2026-11-11) the
+  kit for the check on the hardware - the triggers compiled by the original `cc`, linked
+  by the original `ld` with the copy, every file predicted by the emulated originals. See
+  its `README.md`.
 * `/tests/mutos_as/kernel_nonopt/`: Golden Master test cases for the assembler (non-optimized builds), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), written for the real-hardware `-L` experiment described below — see that entry for the outcome.
 * `/tests/mutos_as/kernel_opt/`: Golden Master test cases for the assembler (optimized builds, `cc -O` - the original `c2`'s output - plus hand-written kernel assembler such as `mch.s`), including `*.golden_base64.txt`. Also has `Makefile.mutos` (`noL`/`L` targets), same purpose.
 * `/tests/mutos_as/README.md` + `/tests/mutos_as/Makefile`: the real-hardware "-L" experiment (see `kernel_opt`/`kernel_nonopt` above and Rule 3's "Known, deliberate exception") — **concluded 2026-09-28**: the real `as` does not implement `-L` at all (`Unknown option L ignored`), so no `.oL` goldens were generated. See `STATUS.md`'s open item 6.

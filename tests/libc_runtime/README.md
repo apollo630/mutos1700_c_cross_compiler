@@ -68,6 +68,7 @@ python3 tests/libc_runtime/rtcheck.py --copy          # the corrected copy (step
 python3 tests/libc_runtime/rtcheck.py show --archive src/libc_fixed/libc.a ftol 1.5e9
 python3 tests/libc_runtime/linkcheck.py               # the copy on whole programs (goldens, triggers/)
 python3 tests/libc_runtime/foldcheck.py               # what c1 folds against what the program computes
+python3 tests/libc_runtime/hwkit.py --out hwkit       # the kit for the check on the hardware (step F3b)
 make check-runtime                                    # the original, the copy, linkcheck, foldcheck; make check-realbin runs it too
 ```
 
@@ -158,3 +159,44 @@ Result (2026-11-11): 300 values per kind and mode (seed 1), and 2,000 (seed
 2): every folded value the one computed at run time - in the original mode
 the original's wrong quotients included (`99999L / 100000` is 2 both ways),
 in the corrected mode C's.
+
+## The check on the hardware (step F3b)
+
+The plan's last check of the copy (`docs/TOOLCHAIN_PLAN.md`, F3b): a
+program linked with the copy by the original `ld` on the MUTOS 1700
+hardware, before the copy replaces anything. `hwkit.py` makes the kit
+for it - a directory (`--out`, default `hwkit`) to copy to the hardware,
+and with `--tar FILE` a tar file of it:
+
+- the trigger programs `triggers/*.c` and the copy, `fixlibc.a`;
+- `hwcheck.sh`, for the hardware's `sh` (v7's Bourne shell, nothing
+  later): each program compiled by the hardware's `cc -c`, linked by its
+  `ld` once as `cc` links it (`ld -X /lib/crt0.o -o N.H [-i] N.o -lc`,
+  the original `/lib/libc.a`) and once with the copy alone in the place
+  of `-lc` (`N.F`), both run; the exit statuses go into a file `status`,
+  and every `N.o`, `N.H` and `N.F` is compared with `cmp` against the
+  kit's `expect/`. Nothing outside the kit's directory is changed;
+- `expect/`: `N.o`, `N.H`, `N.F` and `status`, and a `README`.
+
+`expect/` is the prediction, made by the originals under the emulator:
+the original `cc`'s whole chain (`tests/realbin/cctrace.py`'s `--run`)
+for `N.o`, the original `ld` for `N.H` and `N.F`, then both images run.
+`hwkit.py` writes the kit only if the cross toolchain agrees -
+`mutos_cc -c` gives the same `N.o`, `mutos_ld` the same images,
+`mutos_cc -F` (the corrected mode, `ld`'s rule LIBC-F) the same `N.F` -,
+if the original `ld` links the same `N.F` with the copy's table of
+contents out of date (after a copy to the hardware it usually is: `ld`
+warns `fixlibc.a(__.SYMDEF): out of date` and reads the archive member
+by member), and if each image ends as its trigger's `expect:` line
+says. The emulator is an 8086; the owner's machine has a NEC V30, which
+computes as the 8086 where the two could differ here (shifts by `CL`
+unmasked, `idiv`'s quotient -32768 a divide error - `docs/devlog/m2_as.md`,
+"CPU reference").
+
+Prediction (2026-11-11): all of it holds for the nine triggers - with
+`/lib/libc.a` the original's results (exit status 0 or 2, or SIGFPE,
+which the v7 shell reports as 136), with the copy C's (1, and 0 for
+`l04_ldiv`). `l03_ftoi.H` reads the word at address 8000 of its data
+segment (L-03): SIGFPE unless that word happens to be 8000 hex. The run
+on the hardware is the owner's; its result goes here and into
+`STATUS.md`.
