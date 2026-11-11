@@ -29,7 +29,10 @@ directly, on random programs:
   a file-scope common block (`.comm _counter,2`), zero-initialized - and
   initialized bytes (a char array's `_text:.byte /74,...`, a string
   literal's `L4:.byte ...`, an element addressed `_text(bx)` or
-  `#_text(bx)`). It reports `main()`'s return value and every local's
+  `#_text(bx)`) and, since 2026-11-11, initialized words (an int's
+  `_i:/8000`, a long's `_l:	.word	/5968,/2f00` - what `doinit()` writes,
+  for the triggers of the constants `c1` folds,
+  `tests/rules/check_corrected.py`). It reports `main()`'s return value and every local's
   final value (found through `c1`'s own `| _name=-N.` frame comments).
   The flags a branch reads (ZF, SF, OF, CF) are modelled as the 8086
   sets them - by `cmp`/`sub`, `add`, `adc`/`sbb`, `inc`/`dec` (CF kept),

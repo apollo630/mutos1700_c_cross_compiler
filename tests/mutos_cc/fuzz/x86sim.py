@@ -8,14 +8,15 @@ the "chkstk" large-frame helper built in), "movb"/"cbw"/"cmpb"/"orb"
 byte operations, variables at a fixed address (a local static's "L4:.blkb
 2.", a file-scope "static" one's "_hidden:.blkb 2.", a common block's
 ".comm _counter,2" - each zero-initialized, referenced as "L4",
-"_counter" or, for its address, "#_counter") and initialized bytes (a
+"_counter" or, for its address, "#_counter"), initialized bytes (a
 char array's "_text:.byte /74,..." or a string literal's "L4:.byte ...",
-its elements addressed "_text(bx)" or "#_text(bx)") - and reports the
-final state: main()'s return value (AX at main's "jmp cret") and every
-local variable's word(s), located through c1's own "| _name=-N." frame
-comments. Floating-point code runs against a model of libc.a's software
-floating-point runtime (the calls mutos_c1 emits - "flds"/"fldd",
-"fstsp"/"fstdp", "fsts"/"fstd", "fadds"..."fdivd", stkmath.o's
+its elements addressed "_text(bx)" or "#_text(bx)") and initialized
+words (an int's "_i:/8000", a long's "_l:\t.word\t/5968,/2f00") - and
+reports the final state: main()'s return value (AX at main's "jmp
+cret") and every local variable's word(s), located through c1's own "|
+_name=-N." frame comments. Floating-point code runs against a model of
+libc.a's software floating-point runtime (the calls mutos_c1 emits -
+"flds"/"fldd", "fstsp"/"fstdp", "fsts"/"fstd", "fadds"..."fdivd", stkmath.o's
 "fadd"..."fdiv", "fneg", "fdup" and "fcmp" (read by "sahf" and a signed
 branch), "itof", "ftoi", "ftol", "ltof" - on a stack of host floats, see
 FP_RUNTIME; popping an empty stack is an error, as the real compiler's
@@ -393,6 +394,13 @@ class Sim:
         if m:                       # initialized bytes
             self._put_bytes(names, [int(v[1:], 16)
                                     for v in m.group(1).split(",")])
+            return
+        m = re.match(r"^(?:\t\.word\t)?(/[0-9a-f]+(?:,/[0-9a-f]+)*)$", line)
+        if m:                       # initialized words: an int's or an
+            # unsigned's initializer ("_i:/8000"), a long's ("_l:\t.word\t
+            # /5968,/2f00", the high word first) - doinit()'s
+            words = [int(v[1:], 16) for v in m.group(1).split(",")]
+            self._put_bytes(names, [b for w in words for b in (w & 0xFF, w >> 8)])
             return
         m = re.match(r"^\t\.(float|double)[ \t](\S+)$", line)
         if m:                       # a floating constant ("L10000:\t.float

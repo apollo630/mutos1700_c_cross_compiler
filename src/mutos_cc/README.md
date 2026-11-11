@@ -524,10 +524,11 @@ rules themselves come from step F1 on.
   No rule uses `-1` yet: the output is the same with and without it.
 - `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the
   rule log: an entry noted at the hook, written with the bytes of output
-  of the statement at the next operation, `c1_rule_mark()` in `getree()`,
-  after a check the rule may give, which sees those bytes or a pointer the
-  rule named) and one file per rule, reached through one hook line in
-  `c1port/`. The four hooks of F0 report where the original's wrong path
+  of the statement once it is compiled, `c1_rule_mark()` in `getree()` -
+  the operations that read a tree's leaves count with the one that
+  compiles it -, after a check the rule may give, which sees those bytes
+  or a pointer the rule named) and one file per rule, reached through one
+  hook line in `c1port/`. The four hooks of F0 report where the original's wrong path
   is taken: C1-01 and C1-06 (`cexpr()`, the template of a row once
   matched), C1-02 (`acommute()`) and C1-03 (`delay()`). Since step F1
   all four correct it in the corrected mode: C1-03 (the increment of a
@@ -535,6 +536,13 @@ rules themselves come from step F1 on.
   `jz .+8`), C1-02 (the operands with a side effect stay, as a comma
   expression before the 0) and C1-01 (`or r,r` after `~`, `!` and a shift
   by a variable count); without a switch the code is the original's.
+  Since step F3b five more follow the corrected copy of `libc.a` where
+  `c1` re-enacts its routines (`c1lib.c`; `docs/RULES.md`, "The tools
+  follow the copy"): L-01 (`c1_itod()`: the exact double), L-03
+  (`c1_dtoi()`: -32768.x folded), L-04 (`lconst()`: C's long quotient and
+  remainder), L-05 (`c1_atof()`: the exact product in `atof()`) and L-11
+  (`c1_ftol()`: from 2\*\*30 folded) - in the corrected mode `c1` folds
+  what the program computes with the copy at run time.
 
 On the assembler side, `mutos_as` accepts every `%.17e` constant
 `mutos_c1` writes from `e-37` up (`e-38` when the real `atof` drops the

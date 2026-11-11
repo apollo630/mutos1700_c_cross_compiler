@@ -40,7 +40,7 @@ output depends on state that is not modelled; "linked unchanged" (a
 routine of `libc.a` that no tool of the project re-enacts) that every
 program linked with `libc.a` gets the original routine, bug and all.
 
-Last updated: 2026-11-09.
+Last updated: 2026-11-11.
 
 ## Overview
 
@@ -649,7 +649,15 @@ integers of every length). L-08 to L-14 were found with it.
   Corrected in the copy of `libc.a` that the corrected mode links (step
   F3b; `docs/RULES.md`, "The corrected copy of `libc.a`"): `sub ax,ax`
   before the store loop (`src/libc_fixed/fixed/convert.s`) - each of the
-  65,536 ints converts exactly.
+  65,536 ints converts exactly. In the corrected mode `mutos_c1` folds as
+  the copy converts (its rule L-01, `src/mutos_cc/c1rules/l_01.c`;
+  `docs/RULES.md`, "The tools follow the copy"): `double d = 1001;` is
+  `.double 1.00100000000000000e+03`, `d = 1001;` a `.float` constant.
+  (In the original mode the folded constant is not itof's either: `c1`
+  writes it as an 18-digit text, and the assembler reads 777's back one
+  unit lower in the last place than `itof(777)` - measured by
+  `tests/libc_runtime/foldcheck.py`, which compares that kind in the
+  corrected mode only.)
 - **Fix idea.** Clear AX before the store loop.
 
 ### L-02 `ltof(0)` leaves the slot's old bytes
@@ -691,7 +699,10 @@ integers of every length). L-08 to L-14 were found with it.
   followed it left out, so that -32768 to -32768.99... truncate to
   -32768 and every other value from 2\*\*15 raises SIGFPE
   (`src/libc_fixed/fixed/convert.s`). The original mode links the
-  original.
+  original. In the corrected mode `mutos_c1` folds as the copy
+  converts (its rule L-03, `src/mutos_cc/c1rules/l_03.c`): `int i =
+  -32768.0;` is -32768; it refuses every other value from 2\*\*15, as
+  the copy raises SIGFPE.
 - **Fix idea.** The immediate operand (`cmp bx,#0x8000`, the same
   length) - and without the fraction bit's test, which made
   `(int)-32768.5` raise SIGFPE even then.
@@ -753,6 +764,11 @@ integers of every length). L-08 to L-14 were found with it.
   positive; from 2\*\*16 the sixteen steps, whose quotient is then below
   2\*\*16, compared unsigned. `rtcheck.py`'s long group (seeds 1 to 3, up
   to 20,000 cases per entry point and set): every result of the copy C's.
+  In the corrected mode `mutos_c1` folds a long constant `/` and `%` as
+  the copy computes (its rule L-04, `src/mutos_cc/c1rules/l_04.c`,
+  hooked in `lconst()`): C's quotient and remainder, `-2**31 / -1`
+  -2\*\*31 as in the copy (`tests/libc_runtime/foldcheck.py`: the folded
+  values those the program computes at run time, in both modes).
 - **Fix idea.** Compare the high word with the sign extension itself
   (not negated), and do 32 steps on the long way with unsigned compares.
   (The copy keeps the sixteen steps for divisors from 2\*\*16 and takes
@@ -784,7 +800,14 @@ integers of every length). L-08 to L-14 were found with it.
   corrected mode links (step F3b; `docs/RULES.md`, "The corrected copy
   of `libc.a`"): `mov dx,4.(di)` (`src/libc_fixed/fixed/dmath.s`) -
   `rtcheck.py`'s products of `dmul`, `fmul`, `fmuld` and `fmuls` all
-  correctly rounded.
+  correctly rounded. In the corrected mode `mutos_c1` and `mutos_as`
+  convert a constant's text as the copy's `atof()` does (their rules
+  L-05, `src/mutos_cc/c1rules/l_05.c`, `src/mutos_as/asrules/l_05.c`;
+  `fltconst.c`'s `FLT_LIBC_FIXED`, the exact product rounded to nearest,
+  ties even): `.float 1.26765060022822940e+30` is `00 00 00 e5`, 2\*\*100.
+  749 of the 8,357 texts of `libcatof.py check` change; the copy's own
+  `atof()` under the emulator gives the bytes of every one compared
+  (`libcatof.py copy`).
 - **Fix idea.** `mov dx,4[di]`.
 
 ### L-06 `ldexp` wraps the exponent
@@ -797,7 +820,14 @@ integers of every length). L-08 to L-14 were found with it.
 - **Evidence.** Golden `tests/mutos_as/float_coverage/fltovf.o.golden`
   (real hardware); `ldexp.o` reconstructed in
   `tests/mutos_as/libc_recon/ldexp.s`.
-- **This project.** `mutos_as` reproduces the wrapped bytes.
+- **This project.** `mutos_as` reproduces the wrapped bytes. Not
+  corrected in the copy of `libc.a` (not part of the runtime compiled code
+  calls), so the corrected mode keeps it - and meets it where the
+  original's inexact product (L-05) stayed in range: `.double
+  1.70141183460469232e+38`, the text of 2\*\*127, was one unit below the
+  largest double, and is 0 (exponent byte 256 wrapped) once the product is
+  exact; the largest double's own text, `1.70141183460469229e+38`, is
+  right in both modes.
 - **Fix idea.** Range-check the sum against 1..255 and report.
 
 ### L-07 `atof` cannot convert small constants
@@ -903,7 +933,11 @@ integers of every length). L-08 to L-14 were found with it.
   count of 0, an overflow from e = 32 but for -2\*\*31 to
   -2\*\*31-0.99... (`src/libc_fixed/fixed/lconvert.s`) - measured on
   20,072 doubles (exponents 1 to 40, and around 2\*\*29, 2\*\*30,
-  2\*\*31 and 2\*\*32 of both signs), every result C's.
+  2\*\*31 and 2\*\*32 of both signs), every result C's. In the
+  corrected mode `mutos_c1` folds as the copy converts (its rule L-11,
+  `src/mutos_cc/c1rules/l_11.c`): `long l = 1.5e9;` is 1500000000,
+  `long m = -2147483648.5;` -2\*\*31; it refuses every other value from
+  2\*\*31, as the copy raises SIGFPE.
 - **Fix idea.** Skip the shift for a count of 0; overflow from e = 32,
   but for -2\*\*31.
 

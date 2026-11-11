@@ -289,8 +289,12 @@ reports which combinations reproduce all of them — today 2 of 80 (the
 fails if that set differs from the one `fltconst.c` uses, or if a golden
 holds a constant the model does not cover. `fltmodel.py check
 <fltconst_test>` compares `fltconst.c` (via `src/mutos_as/fltconst_test`)
-with the model on fixed edge cases and seeded random texts. Both run in
-`make test`. A new golden dropped in here narrows the set automatically;
+with the model on fixed edge cases and seeded random texts; `fltmodel.py
+check --copy <fltconst_test>` does the same for the corrected mode's
+conversion (`fltconst_test -F`: the runtime of the corrected copy of
+`libc.a`, whose `dmul` rounds the exact product - the rules L-05 of `c1` and
+`as`, `docs/RULES.md`) against the model with that product (`FIXED`). All
+three run in `make test`. A new golden dropped in here narrows the set automatically;
 `survivors` then says so, and `fltconst.c`'s `MODES_MUL`/`MODES_ADD`/
 `MODES_DIV` (and `fltmodel.py`'s `EXPECTED`) get updated to match.
 
@@ -319,6 +323,7 @@ python3 libcatof.py check ../../../src/mutos_as/fltconst_test 3000
 python3 libcatof.py ops 2000                           # dmul/ddiv/dadd vs fltmodel.py
 python3 libcatof.py ecvt ../../../src/mutos_cc/fltdec_test 3000
 python3 libcatof.py fecvt ../../../src/mutos_cc/fltdec_test 3000
+python3 libcatof.py copy ../../../src/mutos_as/fltconst_test 3000   # the corrected mode
 ```
 
 `ecvt` checks the compiler side: the real `c1` writes a floating constant
@@ -356,3 +361,15 @@ differ), and so does one that refuses the wrapped results instead of
 writing them (57 `RANGE` texts without `SIGFPE`). The linked
 image is checked before use: `dmath.o`'s `zero` routine, its entry
 points and `pmuld`'s misplaced load must be where the tool expects them.
+
+`copy` checks the corrected mode's conversion (step F3b; the rules L-05 of
+`c1` and `as`, `docs/RULES.md`, "The tools follow the copy"): the image
+linked with the members the corrected copy of `libc.a` has
+(`src/libc_fixed/libc.a` - its `dmath.o` loads `pmuld`'s partial product
+from the right word, `4[di]`), then `check`'s texts through `fltconst_test
+-F` against that `atof()`, the copy's `dmul` against the correctly rounded
+product (and `ddiv`, `dadd` against nearest-even), and the copy's `ecvt()`
+against the original's on the copy's `atof()` results. 2026-11-11: 7,588
+texts compared, none differs (749 of them change from the original's
+bytes); 3,000 operand pairs, no difference; 5,731 values, the same digits -
+so `c1`'s printing of a constant needs no rule.

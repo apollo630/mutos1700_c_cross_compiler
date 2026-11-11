@@ -649,3 +649,83 @@ owner, group and mode from the file it adds - `fix_archive.py` now puts
 the old header's back, and `check_copy.py` checks every header. The
 kernel's makefile names `arith.a` by its path, so the corrected kernel
 takes the copy by hand (`docs/KERNEL_BUILD.md`, step 7), not by a rule.
+
+### Part 2: `c1` and `as` follow the copy (2026-11-11)
+
+`c1` folds with re-enactments of `libc.a`'s routines, and `c1` and `as`
+convert a constant's text with a re-enactment of its `atof()`. With the
+copy linked in the corrected mode, a folded constant would still be the
+original's - `long q = 99999L / 100000;` 2, while `l / m` gives 0 at run
+time. The owner chose, from Claude's proposal: a rule of the tool per
+corrected bug, named after the bug of `libc.a` (`c1`: L-01, L-03, L-04,
+L-05, L-11; `as`: L-05), `applied` only where the result differs from the
+original's; what the copy does not correct (L-06, L-07, the bytes of a
+zero) stays. The other corrections of the copy reach no folding: no
+`alrem` value (L-08), no `fcmp` (L-10), no floating-point stack (L-12),
+and `atof()` adds positive values only (L-14).
+
+The rule names are no longer unique - L-05 is a rule of `c1` and one of
+`as` - so `check_rules.py` keys a row, a file and a hook by tool and name;
+each tool still has one hook per rule. Where a rule replaces a refusal
+(L-03, L-11), the hook takes the place of the `c1trap()` and the rule
+traps in the original mode, as LD-08's rule does the original's addition:
+taking it out means putting the trap back. L-04's hook sits after
+`lconst()`'s switch, where both the quotient and the remainder pass; the
+dividend is read again from the left operand, which the switch leaves
+alone. L-01's re-enactment of the copy is `dblint()` for 16 bits: the
+exact double, bytes 0 to 4 zero - which `fconchk()` then makes a float
+constant. L-11 needs the copy's two cases exactly: e = 31 without a
+shift, and e = 32 only for a mantissa of 0x80000000 with the sign set.
+
+`fltconst.c` got `flt_encode_with()` and an argument for the runtime: on
+the copy's, `dmul` rounds the exact product (`RM_NEAR_EVEN` in place of
+`RM_LIBC_MUL`). Nothing else of the conversion changes - and with the
+zero rule (a zero is `flexp`'s mantissa for k >= 1) the zeros of k = 50
+to 54 change with `flexp` itself, as they must on the copy. The rule of
+`as` is the first of `as`: `asrules/` with `asrules.c` (the mode, moved
+out of `assemble.c`) and the hook where `.float`/`.double` operands are
+converted; it logs in Pass 2 only.
+
+**The rule log.** `c1` reads a floating constant - and converts it - in
+the operation that reads the leaf, before the statement is compiled; its
+entry, written at the next mark, would have had the leaf's empty range
+and the previous statement's line. `c1_rule_mark()` now takes whether a
+tree is being built on `getree()`'s stack: while one is, the operations
+count as one, so an entry waits for the statement, with its line.
+
+**The accounting.** No source of the accounting met any of the new rules
+(the corpus's constants are too simple), so `check_accounting.py` now
+compiles the triggers of `check_corrected.py` too. That found three
+things in the checker itself: the hunks are lines, and an initializer's
+line starts with the label an earlier operation wrote (`_d:`), so a range
+must count as whole lines; C1-02's triggers have a hunk across two
+statements' adjacent ranges - not covered by either alone, an unaccounted
+difference since F1 that no accounted source had shown -, so ranges that
+meet are joined; and where the original refuses (L-03, L-11) its output
+stops, so the range of the statement it stopped in runs to the end.
+
+**What it computes.** The triggers (`check_corrected.py`) pin values
+under `x86sim.py`, which now reads an int's and a long's initializer, and
+take the original's refusal as a pinned outcome ("cc: ..."). For L-05
+`x86sim.py`'s host doubles hide most differences - 2\*\*100 one unit off
+in the 56-bit format is 2\*\*100 in 53 bits -, so the trigger uses an
+exact double whose original product is 16 units low (4398046511105e4,
+43,980,465,111,050,000 - 984 instead of 1000 above 43,980,465,111,049,000)
+and keeps 2\*\*100 for the emulated run. Two checks against the copy
+itself: `libcatof.py copy` links `atof()` with the copy's members and
+compares it with `fltconst_test -F` on every text of `check` (7,588
+compared, none differs), the copy's `dmul` with the exact product, and
+the copy's `ecvt()` with the original's (the same - `c1`'s printing needs
+no rule); `tests/libc_runtime/foldcheck.py` compiles programs whose
+initializers `c1` folds and that compute the same at run time, with `cc`
+and with `cc -F`: every folded value is the computed one, the original's
+bugs included in the original mode. One kind only in the corrected mode:
+an int-to-double constant goes through `c1`'s 18-digit text and the
+assembler's `atof()`, and the original's 777.0000119209289... comes back
+one unit below `itof(777)`.
+
+**2\*\*127.** `fltmodel.py`'s edge texts showed one more consequence:
+`.double 1.70141183460469232e+38`, the text of 2\*\*127, was the largest
+double minus a unit with the original's product, and is 0 with the exact
+one - the exponent byte 256 wraps (L-06, which the copy keeps). The
+largest double's own text is right in both modes.

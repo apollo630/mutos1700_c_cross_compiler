@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-09.
+Last updated: 2026-11-11.
 
 ---
 
@@ -1228,13 +1228,14 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    **F1 done 2026-11-08**: the four corrections of `c1`. **F2** (2026-11-09, "Step F2"
    below): the corrections of `ld`. **F3** (2026-11-09, "Step F3" below): the runtime
    of `libc.a` measured - `tests/libc_runtime/rtcheck.py`, L-01 to L-05 measured at
-   run time, seven new bugs (L-08 to L-14). **F3b** (in progress, "Step F3b"
+   run time, seven new bugs (L-08 to L-14). **F3b done 2026-11-11** ("Step F3b"
    below): the corrected copy of `libc.a` - the reconstructed sources, the
    copy, `ld`'s LIBC-F, the nine corrections, the copy of `arith.a`, checked
    by `rtcheck.py --copy`, `linkcheck.py` and a trigger program per
-   correction; still to do: the re-enactments of `c1` and `as`
-   (`c1_itod()`, `c1_aldiv()`/`c1_alrem()`, `c1_dtoi()`, `c1_ftol()`,
-   `fltconst.c`'s product) to follow the copy in the corrected mode.
+   correction (2026-11-09) -, and `c1` and `as` following the copy in the
+   corrected mode: the rules L-01, L-03, L-04, L-05, L-11 of `c1` and L-05
+   of `as` (2026-11-11). Open from it: the hardware check of a program
+   linked with the copy by the original `ld`. Next by the plan: V1 to V4.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2132,7 +2133,8 @@ of step F3b is made from.
   project owner's to choose (recommendation in `docs/TOOLCHAIN_PLAN.md`, F3b). The
   re-enactments in `c1` and `as` that would follow the copy in the corrected mode:
   `c1_itod()` (L-01), `c1_aldiv()`/`c1_alrem()` (L-04), `fltconst.c`'s product
-  (L-05), `c1_ftol()` (L-11), `c1_dtoi()` (L-03). The kernel's `arith.a` was not in
+  (L-05), `c1_ftol()` (L-11), `c1_dtoi()` (L-03) - done with F3b, 2026-11-11, as
+  rules of `c1` and `as`. The kernel's `arith.a` was not in
   the tree then; `rtcheck.py --archive ~/sys/conf/arith.a long` shows whether its long
   helpers are `libc.a`'s. (The owner added it the same day,
   `tests/mutos1700_arith/`: they are, byte for byte - "Step F3b".)
@@ -2154,7 +2156,7 @@ of step F3b is made from.
   (9 triggers of `c1`, 13 of `ld`) - and, new at its end, `rtcheck.py` (1,000 cases
   per entry point and set).
 
-### Step F3b: the corrected copy of `libc.a` (in progress, 2026-11-09)
+### Step F3b: the corrected copy of `libc.a` (verified 2026-11-09 and 2026-11-11)
 
 Decided by the project owner on 2026-11-09, after step F3: the copy corrects
 L-01, L-04, L-05, L-08 and L-11 (wrong in ordinary programs, decision 14) and
@@ -2284,6 +2286,87 @@ results as `libc.a`'s, L-04 and L-08 included).
   wrongly (`jns 1f` jumps to itself) and puts the label into the symbol table
   as `1:`; the original assembler has no numeric labels ("syntax error",
   under the emulator). The reconstructions do not use them (open item 8).
+
+**Part 2, 2026-11-11: `c1` and `as` follow the copy.** Decided by the project
+owner that day, from Claude's proposal: each corrected bug that a tool
+re-enacts is a rule of that tool, named after the bug of `libc.a` - `c1`:
+L-01, L-03, L-04, L-05, L-11; `as`: L-05 -, logged `applied` (`met` in the
+original mode) only where the copy's result differs from the original's;
+what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
+`docs/RULES.md`, "The tools follow the copy".
+
+- **The rules** (one patch each): L-01 (`c1rules/l_01.c`, hook at the end of
+  `c1_itod()`): the exact double - `d = 1001;` a `.float` constant,
+  `double d = 1001;` `.double 1.00100000000000000e+03`. L-04 (`l_04.c`, hook
+  after `lconst()`'s fold): C's quotient and remainder, `-2**31 / -1` -2\*\*31
+  as the copy gives it - `99999L / 100000` is 0. L-03 (`l_03.c`, in
+  `c1_dtoi()` for 2\*\*15 to 2\*\*16): `int i = -32768.0;` (to -32768.99...)
+  is -32768, which the original mode refuses (its result depends on a word of
+  `c1`'s data); every other value refused as SIGFPE. L-11 (`l_11.c`, in
+  `c1_ftol()` from 2\*\*30): `long l = 1.5e9;` and -2\*\*31 folded, which the
+  original mode refuses (SIGFPE); every other value refused. L-05
+  (`c1rules/l_05.c` in `c1_atof()`, `src/mutos_as/asrules/l_05.c` in
+  `assemble.c`, the first rule of `as` - `asrules/` now holds `as_mode`):
+  `fltconst.c`'s new `flt_encode_with(..., FLT_LIBC_FIXED)`, the exact
+  product rounded to nearest, ties even - `.float 1.26765060022822940e+30`
+  is 2\*\*100, `00 00 00 e5`; 749 of `libcatof.py check`'s 8,357 texts change.
+  `fltconst_test -F` converts that way.
+- **What changed besides**: `c1`'s rule log keeps an entry met while an
+  expression's leaf is read (a constant's conversion) until the statement
+  that writes it is compiled, with its line (`c1_rule_mark(building)`);
+  `scripts/check_rules.py` takes a rule's name per tool; the accounting
+  (`check_accounting.py`) compiles the triggers of `check_corrected.py` too
+  - and with them found that its ranges must be whole lines (an
+  initializer's line starts with the label an operation before wrote) and
+  joined where they meet (C1-02's triggers have hunks across two
+  statements: an unaccounted difference since F1, in no source of the
+  accounting until now), and that a statement the original refuses runs to
+  the end of the file; `x86sim.py` reads an int's and a long's initializer
+  (`_i:/8000`, `.word /5968,/2f00`); `check_corrected.py` takes a trigger
+  the original's `c1` refuses ("cc: ...").
+- **The checks**: `check_corrected.py` - five new triggers (L-01, L-03, L-04,
+  L-05, L-11): the original's values or refusals without a switch, C's with
+  `-F`, under `x86sim.py` and, with `--realbin`, linked (the copy with `-F`)
+  and run under the emulator with and without `c2`. `fltmodel.py check
+  --copy` (in `make test`): `fltconst_test -F` against the independent model
+  with the exact product, 2,107 texts (20,107 measured): no difference.
+  `libcatof.py copy` (in `make check-libcatof`): `atof()` linked with the
+  copy's members under the emulator against `fltconst_test -F`, 7,588 texts
+  compared, none differs; the copy's `dmul` against the correctly rounded
+  product, 3,000 pairs; the copy's `ecvt()` the original's on 5,731 values -
+  `c1`'s printing needs no rule. `tests/libc_runtime/foldcheck.py` (in `make
+  check-runtime`): programs whose initializers `c1` folds - long `/` and `%`,
+  int to double, double to int, double to long - and that compute the same
+  at run time, with `cc` (the original `libc.a`) and `cc -F` (the copy):
+  every folded value the computed one (300 per kind, also 2,000 with seed
+  2); int to double in the corrected mode only - in the original mode the
+  folded double goes through `c1`'s 18-digit text and the assembler's
+  `atof()`, which gives 777's back one unit below `itof(777)`.
+- Found with it: the text of 2\*\*127, `.double 1.70141183460469232e+38`,
+  was one unit below the largest double with the original's product and is
+  0 with the exact one - L-06's wrapped exponent, which the copy keeps
+  (`docs/MUTOS_ORIGINAL_BUGS.md`, L-06).
+- **Verified** 2026-11-11: each of the eight patches (with those before it)
+  on a clone of `d6facb6` - `make clean && make all` without a warning, `make
+  test` exit 0 (its output an unchanged clone's with the new checks' lines),
+  `make check-docs` clean, `check_corrected.py --realbin` passed, from patch
+  19 on `foldcheck.py` too. The whole series: `make check-runtime` and `make
+  check-libcatof` exit 0, `check_accounting.py --fuzz 400 --seed 3 --full`
+  every difference accounted for. **`make check-realbin` whole** on a fresh
+  clone with the series, in a cloud session on two cores: exit 0, every
+  check passed, 68 minutes (with another job beside it), the numbers of
+  F3b's first run (`c1trees.py` 131/132 at depths 2-4, `cppcmp.py` 411/411,
+  `ldcmp.py goldens` 1,572/1,572, in the corrected mode `cases` 4
+  corrected, `cccmp.py` `run` and `programs` 124/124, `c2cmp.py goldens`
+  396/396, `asfuzz.py` 251 the same, `arcmp.py` 364 of 366, `makecmp.py`
+  430 of 457 and 312/312, `ed` 400 and `em` 380 of 400 the same,
+  `check_root.py --realbin` passed), `check_corrected.py --realbin` with its
+  14 triggers of `c1` - the five new ones linked with the copy under `-F` -
+  and 13 of `ld`, and at its end `rtcheck.py` (the original, `--copy`, both
+  on `arith.a`), `linkcheck.py` and `foldcheck.py`. Only comments,
+  docstrings and documents changed after that run. Without a switch every
+  output is the original's (the goldens; the accounting's `-H` and
+  no-switch runs).
 
 ## `mutos_as` opcode coverage
 

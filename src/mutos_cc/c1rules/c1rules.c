@@ -12,7 +12,8 @@ int	c1_mode = MUTOS_MODE_DEFAULT;
 int	c1_v30;
 const char *c1_outname;
 
-#define	NPENDING	32
+/* entries wait for the end of their statement, all of its leaves read */
+#define	NPENDING	256
 
 static struct pending {
 	const char	*rule;
@@ -80,7 +81,7 @@ outtext(long end, size_t *n)
 }
 
 void
-c1_rule_mark(void)
+c1_rule_mark(int building)
 {
 	long end;
 	char *text = NULL;
@@ -92,6 +93,13 @@ c1_rule_mark(void)
 		logon = mutos_rulelog_on();
 	if (!logon)
 		return;
+	if (building) {
+		/* noted while a leaf was read: the statement's line, which
+		 * the operation that compiles it reads, is not known yet */
+		for (i = 0; i < npending; i++)
+			pending[i].line = -1;
+		return;
+	}
 	end = ftell(stdout);
 	for (i = 0; i < npending; i++) {
 		struct pending *e = &pending[i];
@@ -108,7 +116,7 @@ c1_rule_mark(void)
 		}
 		mutos_rulelog("c1", e->rule, e->applied ? "applied" : "met",
 		    "%s%s%sline=%d out=%ld-%ld%s%s%s%s", src ? "src=" : "",
-		    src ? src : "", src ? " " : "", e->line, opstart, end,
+		    src ? src : "", src ? " " : "", e->line >= 0 ? e->line : line, opstart, end,
 		    e->keys[0] ? " " : "", e->keys, keys[0] ? " " : "", keys);
 	}
 	free(text);

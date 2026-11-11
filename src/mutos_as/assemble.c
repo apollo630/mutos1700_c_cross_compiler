@@ -35,10 +35,10 @@
 #include "objwrite.h"
 #include "fltconst.h"
 #include "../h/mutos_mode.h"
-
-/* The mode (docs/TOOLCHAIN_PLAN.md, decision 13; src/h/mutos_mode.h):
- * -F, -H or MUTOS_MODE. mutos_as has no correction yet (docs/RULES.md). */
-int as_mode = MUTOS_MODE_DEFAULT;
+/* The mode (docs/TOOLCHAIN_PLAN.md, decision 13; src/h/mutos_mode.h) -
+ * -F, -H or MUTOS_MODE - and the rules of the corrected mode
+ * (docs/RULES.md): asrules/. */
+#include "asrules/asrules.h"
 
 typedef enum { SEG_TEXT, SEG_DATA, SEG_BSS } Segment;
 
@@ -657,7 +657,9 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                                 as->errors++;
                             }
                         } else {
-                            FltStatus fs = flt_encode(kind, start, (size_t)(end - start), bytes);
+                            /* EXTENSION: L-05, docs/RULES.md (libc.a's atof()) */
+                            FltStatus fs = rule_l_05(kind, start, (size_t)(end - start), bytes,
+                                                     pass2, s.line);
                             if (fs != FLT_OK) {
                                 if (!pass2) {
                                     fprintf(stderr, "error: bad %.*s operand '%.*s' at line %d: %s\n",

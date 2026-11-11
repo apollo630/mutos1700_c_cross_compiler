@@ -192,7 +192,11 @@ mode. Since step F1 the corrected mode corrects C1-03, C1-06, C1-02 and C1-01
 original's, and `cmp` says so; `kcmp.py` (step 6) names the objects that
 differ. The summary lists each rule met (the original's path) or applied
 (corrected), with the source and line; the kernel's other sources are not
-in the repository, and the summary shows what they meet. Without
+in the repository, and the summary shows what they meet. Since step F3b
+`c1` and `as` also fold and convert constants as the corrected copy of
+`libc.a` computes (the rules L-01, L-03, L-04, L-05, L-11 of `c1`, L-05 of
+`as`): none of the kernel's sources in the repository meets them; the
+summary lists them, as `as` entries too, where another source does. Without
 `MUTOS_MODE` the kernel is the original's, as in step 6. The plan's step F5
 accounts for each difference.
 

@@ -51,6 +51,7 @@ Guideline 11).
 | 2026-11-09 | The corrected copy of `libc.a` (step F3b) takes, besides the bugs that compute wrongly in ordinary programs (L-01, L-04, L-05, L-08, L-11), the edge bugs L-12, L-10, L-03 and L-14; L-13, L-09 and L-02 are left out, and documented as such. | `docs/TOOLCHAIN_PLAN.md`, F3b; `docs/MUTOS_ORIGINAL_BUGS.md` |
 | 2026-11-09 | The copy is the MUTOS root's `lib/fixed/libc.a`; in the corrected mode `ld`'s `-lX` looks for `/lib/fixed/libX.a` first (chosen from Claude's proposals). | `docs/RULES.md`, "The corrected copy of `libc.a`" (LIBC-F) |
 | 2026-11-09 | The kernel's `conf/arith.a` - its long helpers measured by him with `rtcheck.py --archive`: the same results as `libc.a`'s - gets a corrected copy from the same sources, for the kernel in the corrected mode; the old one stays for the original mode. | `docs/TOOLCHAIN_PLAN.md`, section 6; `src/libc_fixed/README.md` |
+| 2026-11-11 | F3b, part 2 (confirmed from Claude's proposal): `c1` and `as` follow the copy in the corrected mode - a rule of the tool per corrected bug it re-enacts, named after the bug of `libc.a` (`c1`: L-01, L-03, L-04, L-05, L-11; `as`: L-05), logged `applied` only where the result differs from the original's; what the copy does not correct (L-06, L-07, the bytes of a zero) stays. So in the corrected mode some constants become a float instead of a double, some doubles change in their last bits, and `(int)-32768.0` and `(long)1.5e9` are folded instead of refused. | `docs/RULES.md`, "The tools follow the copy" |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -78,8 +79,8 @@ pages.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
   There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3 and
-  after F3b's copy: run it in the background with a log, and record the result
-  in `STATUS.md`.
+  after F3b's copy, 68 after F3b's part 2: run it in the background with a
+  log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
   the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
@@ -116,6 +117,10 @@ pages.
   reconstructed byte for byte (`src/libc_fixed/orig/`), the nine corrections
   (L-01, L-03, L-04, L-05, L-08, L-10, L-11, L-12, L-14) a patch each, `ld`'s
   LIBC-F, the copy of `arith.a`; checked by `rtcheck.py --copy`, `linkcheck.py`
-  and a trigger program per correction (`STATUS.md`, "Step F3b"). Still to do in
-  F3b: the re-enactments of `c1` and `as` to follow the copy in the corrected
-  mode.
+  and a trigger program per correction (`STATUS.md`, "Step F3b").
+- 2026-11-11: step F3b done - `c1` and `as` follow the copy in the corrected
+  mode (the rules L-01, L-03, L-04, L-05, L-11 of `c1`, L-05 of `as`), checked
+  by `tests/libc_runtime/foldcheck.py` (what `c1` folds is what the program
+  computes at run time), `libcatof.py copy` (the copy's own `atof()`) and a
+  trigger each (`STATUS.md`, "Step F3b"). Open from F3b: the hardware check of
+  a program linked with the copy by the original `ld`.

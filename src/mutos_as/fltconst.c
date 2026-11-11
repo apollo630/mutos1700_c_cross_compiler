@@ -393,6 +393,17 @@ static const RoundMode MODES_MUL[] = { RM_LIBC_MUL };
 static const RoundMode MODES_ADD[] = { RM_NEAR_EVEN };
 static const RoundMode MODES_DIV[] = { RM_NEAR_EVEN, RM_NEAR_AWAY };
 
+/* The corrected copy of libc.a (FLT_LIBC_FIXED, docs/RULES.md, L-05):
+ * its pmuld takes the a0*b2 partial product from b2's word, so dmul
+ * rounds the exact product to nearest, ties to even, as dadd and ddiv
+ * round theirs (tests/libc_runtime/rtcheck.py --copy: every product of
+ * the copy correctly rounded; tests/mutos_as/float_coverage/libcatof.py
+ * copy: the copy's own atof() against this conversion). Its dadd is
+ * corrected too (L-14), where an operand 57 binary orders below the
+ * other was dropped - which the additions of atof(), of two positive
+ * values, never meet. Keep in sync with fltmodel.py's FIXED. */
+static const RoundMode MODES_MUL_FIXED[] = { RM_NEAR_EVEN };
+
 #define NELEM(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 /* ------------------------------------------------------------------ */
@@ -415,6 +426,14 @@ size_t flt_size(FpKind kind)
 
 FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
 {
+    return flt_encode_with(kind, s, len, out, FLT_LIBC_ORIGINAL);
+}
+
+FltStatus flt_encode_with(FpKind kind, const char *s, size_t len, unsigned char *out,
+                          FltLibc libc)
+{
+    const RoundMode *modes_mul = libc == FLT_LIBC_FIXED ? MODES_MUL_FIXED : MODES_MUL;
+    int nmul = libc == FLT_LIBC_FIXED ? NELEM(MODES_MUL_FIXED) : NELEM(MODES_MUL);
     FltText t;
     size_t i = 0;
     char exp_letter = 'e';   /* atof's exponent letter: the bare form's */
@@ -481,10 +500,10 @@ FltStatus flt_encode(FpKind kind, const char *s, size_t len, unsigned char *out)
     size_t from = 8 - size;
     unsigned char first[8], cur[8];
     bool have = false;
-    for (int a = 0; a < NELEM(MODES_MUL); a++) {
+    for (int a = 0; a < nmul; a++) {
         for (int b = 0; b < NELEM(MODES_ADD); b++) {
             for (int c = 0; c < NELEM(MODES_DIV); c++) {
-                ConvResult r = convert(&t, MODES_MUL[a], MODES_ADD[b], MODES_DIV[c], cur);
+                ConvResult r = convert(&t, modes_mul[a], MODES_ADD[b], MODES_DIV[c], cur);
                 if (r == CV_RANGE)
                     return FLT_RANGE;
                 if (r == CV_UNKNOWN)

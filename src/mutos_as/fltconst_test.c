@@ -10,7 +10,11 @@
  *     OK xx xx xx xx [xx xx xx xx]   - the bytes, lowest address first
  *     SYNTAX | ROUNDING | RANGE | UNKNOWN
  *
- * Exit status 0; 1 on a malformed input line.
+ * With the argument -F, the conversion on the corrected copy of libc.a
+ * (flt_encode_with(..., FLT_LIBC_FIXED): docs/RULES.md, L-05), as
+ * mutos_as and mutos_c1 convert in the corrected mode.
+ *
+ * Exit status 0; 1 on a malformed input line or argument.
  */
 
 #include <stdio.h>
@@ -18,10 +22,18 @@
 
 #include "fltconst.h"
 
-int main(void)
+int main(int argc, char **argv)
 {
     static char line[1 << 16];
     static const char *names[] = { "OK", "SYNTAX", "ROUNDING", "RANGE", "UNKNOWN" };
+    FltLibc libc = FLT_LIBC_ORIGINAL;
+
+    if (argc == 2 && strcmp(argv[1], "-F") == 0) {
+        libc = FLT_LIBC_FIXED;
+    } else if (argc != 1) {
+        fprintf(stderr, "usage: fltconst_test [-F] <lines\n");
+        return 1;
+    }
 
     while (fgets(line, sizeof line, stdin)) {
         size_t n = strlen(line);
@@ -33,7 +45,7 @@ int main(void)
         }
         FpKind kind = (line[0] == 'd') ? FP_DOUBLE : FP_FLOAT;
         unsigned char out[8];
-        FltStatus st = flt_encode(kind, line + 2, n - 2, out);
+        FltStatus st = flt_encode_with(kind, line + 2, n - 2, out, libc);
         if (st == FLT_OK) {
             fputs("OK", stdout);
             for (size_t i = 0; i < flt_size(kind); i++)

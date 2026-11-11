@@ -54,6 +54,11 @@ Usage:
       Runs fixed edge cases plus N seeded random texts (default 2000)
       through TOOL (src/mutos_as/fltconst_test) and through the model
       restricted to EXPECTED; exit 1 on any difference.
+  fltmodel.py check --copy TOOL [N]
+      The same for the conversion of the corrected mode ("TOOL -F"): on
+      the runtime of the corrected copy of libc.a (src/libc_fixed/,
+      docs/RULES.md, L-05), whose dmul rounds the exact product - the
+      model restricted to FIXED.
 """
 
 import itertools
@@ -72,6 +77,9 @@ BIG = 1 << 56
 
 # Must match fltconst.c's MODES_MUL (M), MODES_ADD (A) and MODES_DIV (D).
 EXPECTED = set(itertools.product(('libc',), ('ne',), ('ne', 'na')))
+# The corrected copy of libc.a (fltconst.c's MODES_MUL_FIXED): pmuld
+# corrected, the exact product rounded to nearest, ties even.
+FIXED = set(itertools.product(('ne',), ('ne',), ('ne', 'na')))
 
 # What the digit loop leaves in fac when every digit is 0, exponent byte
 # cleared (fltmode.o.golden Z0, fltmul.o.golden K1, K2).
@@ -380,16 +388,18 @@ def random_texts(n, seed=1):
     return out
 
 
-def cmd_check(tool, n):
+def cmd_check(tool, n, copy=False):
     texts = EDGES + random_texts(n)
-    res = subprocess.run([tool], input='\n'.join(texts) + '\n', capture_output=True, text=True)
+    res = subprocess.run([tool] + (['-F'] if copy else []), input='\n'.join(texts) + '\n',
+                         capture_output=True, text=True)
     if res.returncode != 0:
         print('FAIL: %s exited %d: %s' % (tool, res.returncode, res.stderr.strip()))
         return 1
     got = res.stdout.splitlines()
     bad = 0
+    combos = sorted(FIXED if copy else EXPECTED)
     for line, g in zip(texts, got):
-        want = classify(line[0], line[2:], sorted(EXPECTED))
+        want = classify(line[0], line[2:], combos)
         if g != want:
             bad += 1
             if bad <= 10:
@@ -397,8 +407,9 @@ def cmd_check(tool, n):
     if len(got) != len(texts):
         print('FAIL: %d lines in, %d out' % (len(texts), len(got)))
         return 1
-    print('%d texts (%d edge cases, %d random): %d differences between fltconst.c and the model'
-          % (len(texts), len(EDGES), n, bad))
+    print('%d texts (%d edge cases, %d random): %d differences between fltconst.c and the model%s'
+          % (len(texts), len(EDGES), n, bad,
+             ' - the corrected copy of libc.a\'s runtime (fltconst_test -F)' if copy else ''))
     return 1 if bad else 0
 
 
@@ -406,6 +417,8 @@ def main(argv):
     if len(argv) >= 2 and argv[1] == 'survivors':
         dirs = argv[2:] or [os.path.dirname(os.path.abspath(__file__))]
         return cmd_survivors(dirs)
+    if len(argv) in (4, 5) and argv[1] == 'check' and argv[2] == '--copy':
+        return cmd_check(argv[3], int(argv[4]) if len(argv) == 5 else 2000, copy=True)
     if len(argv) in (3, 4) and argv[1] == 'check':
         return cmd_check(argv[2], int(argv[3]) if len(argv) == 4 else 2000)
     print(__doc__)
