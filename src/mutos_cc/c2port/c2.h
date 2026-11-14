@@ -394,9 +394,10 @@ void	c2_init(int argc, char **argv, uint16_t *mutos_argv);
  * argument "-1", which cc gives with its -1 - 80186/V30 code. main.c takes
  * it off the command line before the image is made, so the original's
  * main() sees what the original would have been given without it. c2 has
- * no correction (decision 13): no mode.
+ * no correction (decision 13): no mode. What -1 changes is a rule each
+ * (c2rules/, docs/RULES.md).
  */
-extern	int	c2_v30;
+#include "../c2rules/c2rules.h"
 NORETURN void	c2_exit(int16_t status);
 int16_t	c2_sbrk(int16_t n);
 int16_t	c_getc(void);			/* getc(stdin) */

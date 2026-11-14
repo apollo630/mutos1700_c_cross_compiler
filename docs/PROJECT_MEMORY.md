@@ -79,10 +79,10 @@ pages.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
   There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3 and
-  after F3b's copy, 68 after F3b's part 2: run it in the background with a
+  after F3b's copy, 68 after F3b's part 2, 86 after V1: run it in the background with a
   log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -125,4 +125,9 @@ pages.
   trigger each (`STATUS.md`, "Step F3b"). The hardware check of F3b - a program
   linked with the copy by the original `ld`, the kit of
   `tests/libc_runtime/hwkit.py` - passed on the A7100 (NEC V30) 2026-11-14, every
-  status and file as predicted: F3b is closed. Next by the plan: V1 to V4.
+  status and file as predicted: F3b is closed.
+- 2026-11-14: step V1 - V30-PUSH, the first rule of `-1`: `c2` pushes a
+  constant (`src/mutos_cc/c2rules/`); `c2`'s rule log accounts by function;
+  `x86sim.py` runs `c2`'s output; `tests/rules/check_v30.py` - the same
+  values with `-1` as without (`STATUS.md`, "Step V1"). Next by the plan:
+  V2 (V30-SHIFT, in `c1`), V3 (V30-IMUL), V4 (the hardware).

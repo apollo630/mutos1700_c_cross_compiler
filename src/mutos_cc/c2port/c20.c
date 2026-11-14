@@ -310,9 +310,11 @@ output(void)
 
 	t = FIRST;
 	while ((t = FORW(t)) != 0) {
+		c2_rule_node(t);	/* EXTENSION: the rule log (c2rules.c) */
 		switch (OP(t)) {
 
 		case END:
+			c2_rule_node(0);
 			return;
 
 		case LABEL:
@@ -360,6 +362,7 @@ output(void)
 			continue;
 		}
 	}
+	c2_rule_node(0);
 }
 
 /*

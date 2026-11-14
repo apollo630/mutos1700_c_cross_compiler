@@ -672,10 +672,17 @@ def build(wd, tag, c0, c1, env, ret, g):
                        capture_output=True, text=True, env=tenv)
     if p.returncode:
         return "bad", f"output does not assemble: {p.stderr.strip()[-300:]}", text
+    return (*judge(text, env, ret, g), text)
+
+
+def judge(text, env, ret, g, v30=False):
+    """Whether the assembly `text` - c1's or c2's - computes what the
+    program must: ('ok'|'wrong'|'bad', detail). With v30, the 80186/V30
+    forms of -1 run too (tests/rules/check_v30.py)."""
     try:
-        r = x86sim.run(text, watch="m")
+        r = x86sim.run(text, watch="m", v30=v30)
     except x86sim.SimError as e:
-        return "bad", f"x86sim cannot execute the output: {e}", text
+        return "bad", f"x86sim cannot execute the output: {e}"
     diffs = []
     marks = [v for v, _ in r.snapshots]
     want = [e["m"] for e in g.snaps]
@@ -691,8 +698,8 @@ def build(wd, tag, c0, c1, env, ret, g):
         diffs.append(f"return value {r.ret}, expected {ret}")
     diffs += state_diffs(r, env, g)
     if diffs:
-        return "wrong", "; ".join(diffs[:6]), text
-    return "ok", "", text
+        return "wrong", "; ".join(diffs[:6])
+    return "ok", ""
 
 
 def state_diffs(r, env, g):

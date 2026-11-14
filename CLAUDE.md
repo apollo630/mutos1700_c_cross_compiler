@@ -31,11 +31,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   and since 2026-11-08 `mutos_mode.h` (the corrected mode - `-F`, `-H`, `MUTOS_MODE` -
   and the rule log, `MUTOS_RULELOG`, of `docs/RULES.md`).
 * The rules directories (since 2026-11-08, `docs/RULES.md`): `/src/mutos_cc/c1rules/`,
-  `/src/mutos_ld/ldrules/` and (since 2026-11-11) `/src/mutos_as/asrules/` - one file
+  `/src/mutos_ld/ldrules/`, (since 2026-11-11) `/src/mutos_as/asrules/` and (since
+  2026-11-14, step V1) `/src/mutos_cc/c2rules/` - one file
   per rule of the corrected mode or of `-1`, each reached through one hook line in the
-  ported code (`c1port/`, `ld.c`, `assemble.c`), and a file of what the rules share
+  ported code (`c1port/`, `ld.c`, `assemble.c`, `c2port/`), and a file of what the rules share
   (`c1rules.c`: the mode, `-1`, the rule log with its output ranges; `ldrules.c`,
-  `asrules.c`: the mode). Taking a rule out is deleting its file, its hook and
+  `asrules.c`: the mode; `c2rules.c`: the rule log of `c2`, by node and by
+  function). Taking a rule out is deleting its file, its hook and
   its row in `docs/RULES.md`; `scripts/check_rules.py` checks that they agree.
 * `/src/mutos_ld/`: Source code for the Mutos Linker - since 2026-10-22 a port of the
   original MUTOS 1700 `ld` read from its binary (v7's `ld.c` with the MUTOS deltas),
@@ -256,6 +258,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `ld`'s corrections: links that end as the original's do without a switch (with
   `--realbin` checked against the emulated original `ld`) and as a right link must with
   `-F` - and `tests/realbin/ldcmp.py`/`ldfuzz.py` take `--mode corrected`.
+  `check_v30.py` (in `make test`, since step V1): each active V30 rule's triggers and
+  generated programs of calls and of `fuzz_c.py`, `c2`'s code under `x86sim.py` - the
+  same values with `-1` as without (`docs/RULES.md`, "What `-1` computes"); with
+  `--realbin` the triggers linked and run under `mutosemu.py`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of

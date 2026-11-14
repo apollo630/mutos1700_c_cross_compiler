@@ -22,6 +22,7 @@
 
 uint8_t	c2m[65536];
 uint8_t	c2a[65536];
+long	c2_outpos;
 
 /* the argument strings: crt0 finds them at the top of the data segment */
 #define	F_ARGTOP	0xfff0
@@ -566,6 +567,8 @@ c_putc(int16_t c, uint16_t iop)
 {
 	uint16_t p;
 
+	if (iop == STDOUT)
+		c2_outpos++;	/* EXTENSION: the rule log's out= (c2rules.h) */
 	S_CNT(iop, CNT(iop) - 1);
 	if (CNT(iop) < 0) {
 		flsbuf(c, iop);

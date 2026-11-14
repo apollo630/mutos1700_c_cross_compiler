@@ -1237,7 +1237,11 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    of `as` (2026-11-11). Its last check, the hardware's - a program
    linked with the copy by the original `ld`, the kit of
    `tests/libc_runtime/hwkit.py` -, **passed on the A7100 (NEC V30) 2026-11-14**
-   ("Step F3b" below): F3b is closed. Next by the plan: V1 to V4.
+   ("Step F3b" below): F3b is closed. **V1 done 2026-11-14** ("Step V1" below):
+   V30-PUSH, the first rule of `-1` - `c2` pushes a constant (`push *n.`, `push #...`)
+   where the original loads a register to push it; `c2`'s rules directory and rule
+   log (by function), `x86sim.py` runs `c2`'s output, `tests/rules/check_v30.py`
+   (the same values with `-1` as without). Next by the plan: V2 (V30-SHIFT, in `c1`).
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1332,9 +1336,10 @@ to mov", "ors -> tests", "long branches to short") and no "sob's added". The nod
 two more bytes, the registers read and written (`regmask()`).
 
 **80186/V30 code generation** in `mutos_c1` and `mutos_c2` was decided on 2026-11-08
-(`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; no rule yet - step F0 made
+(`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; step F0 made
 `-1` reach `c1` and `c2`, with their output unchanged, and `x86sim.py` run the three
-forms: "The corrected mode and `-1`" below): behind `-1`, the
+forms; the first rule, V30-PUSH in `c2`, since 2026-11-14: "The corrected mode and
+`-1`" below, "Step V1"): behind `-1`, the
 name `mutos_as` has for the 80186/V30 instructions (section 4), three rules - a
 constant pushed (`c2`), a shift by a constant count and a multiplication by a constant
 (`c1`) -, and every assembly with `-1` reports the 80186/V30 instructions it produced
@@ -2401,6 +2406,62 @@ what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
   of `ld`: `fixlibc.a` evidently arrived with its file time kept, and `ld` read
   it through its table of contents - the member-by-member reading of an
   archive out of date is so measured under the emulator only.
+
+### Step V1: V30-PUSH, a constant pushed (verified 2026-11-14)
+
+The first of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
+`docs/RULES.md`, "The V30 rules"). Under `-1`, `c2` writes `push *n.` or `push
+#...` for `mov r,`constant / `push r`; without `-1` every output is as before.
+
+- **The rule** (`src/mutos_cc/c2rules/v30_push.c`, hooked in `pushopt()`,
+  `c2port/c21.c`): the original makes `mov r,x` / `push r` into `push x` when `r`
+  is not read before it is written again, but leaves a pair with a constant `x`
+  before it looks. The port now notes the constant, lets the original's own loop
+  see whether `r` is read again - which changes nothing - and asks the rule only
+  where the push would be made: under `-1` it is made. `*n.` only for `n` from
+  -128 to 127 (`mutos_as` encodes `push *n.` as 6A ib, sign-extended; `c1` writes
+  no other `*n.`), `#...` as 68 iw, an address with its relocation.
+- **`c2`'s rules directory** (`src/mutos_cc/c2rules/`): `c2rules.c`, the rule log
+  of `c2` - an entry waits for `output()` to write its node (`out=` the node's
+  line; `c2_outpos` counts the bytes `putc()` gives the standard output) -, and
+  one more entry per rule and function, `out=` the whole function, `chunk=1`.
+  That is what the accounting found necessary: `c2`'s passes run again after the
+  rule, and with one node where there were two they may shorten a branch, move
+  another block or turn a branch around (in 5 of 600 generated programs of
+  calls). Within a function a rule was applied in, `c2`'s output may differ
+  anywhere; outside it nowhere.
+- **`x86sim.py` runs `c2`'s output** (new): its branch names (`br`, `j`, `je` ..
+  `jae`), two registers in an address (`(bx)(si)`), `c2`'s spelling of the frame
+  comments, and the address of an element (`#4.+_ga`). Of 1,500 `fuzz_c.py`
+  programs, `c2`'s code computes what `c1`'s does in all but three, which meet
+  C1-01 (the stale flags after `~` differ once `c2` has moved the code).
+- **`tests/rules/check_v30.py`** (new, in `make test`; with `--realbin` in `make
+  check-realbin`): seven triggers of V30-PUSH - C's value with and without `-1`,
+  the pinned number of pushes, as many `applied` entries and `as`'s report; the
+  cases where the rule must not apply (one constant for two arguments, a long
+  constant with `cwd`); the `-1` code refused as 8086 code by `x86sim.py` and by
+  `mutos_as` without `-1` -, and generated programs: 300 of calls (functions
+  called with constants of every kind, in conditions, loops and both arms of an
+  `if`) and 300 of `fuzz_c.py`, the same values with `-1` as without. Run once
+  with `--calls 1500 --fuzz 1500 --seed 2`: no difference; `-1` made 88,847 pushes
+  of a constant there, the text 10.0% smaller (1,311,954 to 1,181,336 bytes), the
+  V30 clocks 2.7% fewer.
+- **The accounting** (`check_accounting.py`) takes the triggers of
+  `check_v30.py` and 40 of its programs of calls (`--calls N`); run once with
+  `--fuzz 200 --calls 600 --seed 5 --full`: every difference accounted for.
+- **The gain on kernel code**: the five kernel sources of
+  `tests/mutos_as/kernel_nonopt/` (`amx`, `bus`, `intr`, `lp_AC`, `sys1`) through
+  `c2 -1` and `as -1`: 176 pushes of a constant (114 of a byte), the text 12,296
+  to 12,016 bytes (2.3%); the 18 kernel C sources of the tree with `cc -O -c -1`:
+  321 pushes, 25,520 to 25,010 bytes (2.0%). The whole kernel is for step V4, on
+  the owner's machine.
+- **Checked**: `make test`; `make check-docs`; `make check-realbin` on this
+  change: exit status 0, 86 minutes on two cores (`c2cmp.py` and `c2fuzz.py` among it: without `-1` the port
+  is the original still).
+
+Not yet: V30-SHIFT and V30-IMUL (`c1`, steps V2 and V3); the hardware (V4).
+`mutos_as` encodes `push *n.` for an `n` outside -128 to 127 as 6A with the low
+byte, without a message; `c2` never writes one (the rule leaves such a pair).
 
 ## `mutos_as` opcode coverage
 

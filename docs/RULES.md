@@ -76,14 +76,46 @@ A rule is in one of two states:
 | LD-06 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_06.c` | `src/mutos_ld/ld.c`, `error()`: the error level set | [LD-06](MUTOS_ORIGINAL_BUGS.md) |
 | LD-08 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
 | LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
+| V30-PUSH | c2 | `-1` | active | `src/mutos_cc/c2rules/v30_push.c` | `src/mutos_cc/c2port/c21.c`, `pushopt()`: the pair `mov r,`constant / `push r`, once `r` is seen not to be read again | [Section 7.4, step V1](TOOLCHAIN_PLAN.md) |
 | LIBC-F | ld | `-F` | active | `src/mutos_ld/ldrules/libc_f.c` | `src/mutos_ld/ld.c`, `getfile()`: `-lX`'s `/lib/libX.a` opened | [The corrected copy of `libc.a`](#the-corrected-copy-of-libca) |
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
 `-1` and the rule log of `c1`), `src/mutos_ld/ldrules/` (`ldrules.c`: the
 mode of `ld`), `src/mutos_as/asrules/` (since step F3b; `asrules.c`: the
-mode of `as`, which `assemble.c` sets); `c0rules/` and `c2rules/` come with
-their first rule. `c0` reads the mode already (`c0lib.c`'s `c0_mode`),
-`c2` its `-1` (`c2_v30`).
+mode of `as`, which `assemble.c` sets), `src/mutos_cc/c2rules/` (since
+step V1; `c2rules.c`: the rule log of `c2`, which has `-1` - `c2_v30` -
+and no mode); `c0rules/` comes with its first rule. `c0` reads the mode
+already (`c0lib.c`'s `c0_mode`).
+
+## The V30 rules
+
+Under `-1`, `c1` and `c2` write 80186/V30 instructions where a rule of the
+closed list of three says so (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
+decision 15). Without `-1` a V30 rule changes nothing; its hook logs `met`
+where `-1` would apply it.
+
+- **V30-PUSH** (`c2`, step V1, since 2026-11-14): `mov r,`constant / `push
+  r` becomes `push` constant. The original's `pushopt()` makes `mov r,x` /
+  `push r` into `push x` already when `r` is not read before it is written
+  again and is no register variable, but not for a constant `x` (`*n.` or
+  `#...` without a register in parentheses), which the 8086 cannot push.
+  The rule drops that one condition: the test that `r` is not read again
+  is the original's own. A constant `*n.` is pushed only for `n` from -128
+  to 127 (6A ib, sign-extended; `c1` writes no other), `#...` as a word (68
+  iw; an address with its relocation). Neither form changes a flag.
+  `mutos_as` takes both only with `-1`, and reports them (`as: -1: ...
+  push n`).
+
+What a rule of `c2` changes is not only its node: `c2` improves a
+function as a whole, and its passes run again after the rule. With one
+node where there were two, a branch over it can become short, and the
+passes that join common code and move blocks may decide otherwise
+(measured for V30-PUSH: in 5 of 600 generated programs of calls another
+block was moved and its branch turned around). So `c2` logs, besides an
+entry for each node a rule changed (`out=` the node's line, `x=` the
+constant), one entry `applied` for the function - `out=` all of its
+output, `chunk=1`: within a function a rule was applied in, `c2`'s output
+may differ anywhere, outside it nowhere.
 
 ## The corrected copy of `libc.a`
 
@@ -240,7 +272,11 @@ under `-F` (and `-F -1`) their `applied` entries account for what they
 change, `c2`'s output, the objects and the programs following from it.
 `--report` prints which rules the code met. The sources include the
 triggers of `tests/rules/check_corrected.py` (below), a program at least
-for each active correction of `c1`, which the corpus alone does not give.
+for each active correction of `c1`, which the corpus alone does not give,
+and, since step V1, the triggers of `tests/rules/check_v30.py` and 40 of
+its generated programs of calls (`--calls N`), which meet the V30 rules:
+under `-1` (and `-F -1`) `c2`'s output differs only inside the functions
+a V30 rule was applied in, and the objects and programs follow from it.
 
 The corpus's links never meet a rule of `ld`; the checker links cases
 that do, one per rule (those of `tests/realbin/ldcmp.py cases`), without
@@ -295,3 +331,35 @@ and as a link must; the output's bytes are the same in all four, and the
 rule log says `met` and `applied` exactly for the links the correction
 changes. With `--realbin` the emulated original `ld` links each trigger
 too and must end as `mutos_ld` does without a switch.
+
+## What `-1` computes
+
+For a V30 rule the reference is the same program compiled without `-1`:
+the V30 computes as the 8086 does, so both must give the same values
+(`docs/TOOLCHAIN_PLAN.md`, section 7.2). `tests/rules/check_v30.py` (in
+`make test`) checks it under `tests/mutos_cc/fuzz/x86sim.py`, which since
+step V1 also runs `c2`'s output (its branch names, two registers in an
+address):
+
+- triggers, small programs for each active V30 rule: `main()`'s value is
+  C's, pinned, with and without `-1`; with `-1` the code has the pinned
+  number of 80186/V30 instructions, the rule log as many `applied` entries
+  and `as`'s report that number; without `-1` none, and as many `met`;
+  the `-1` code is no 8086 code (`x86sim.py` without `v30` stops on it,
+  `mutos_as` without `-1` refuses it). Among them the cases where the rule
+  must not apply: one constant for two arguments (`push di` twice: the
+  register is read again), a long constant (`mov ax` / `cwd` / two
+  pushes);
+- generated programs of calls (300; `--calls N`, `--seed`) - functions
+  called with constants of every kind (a byte, a word, an address, 0),
+  variables and calls as arguments, in conditions, loops and both arms of
+  an `if` - and programs of `fuzz_c.py` (300; `--fuzz N`): `main()`'s value
+  and every file-scope variable, for `fuzz_c.py`'s programs its own
+  judgement of every variable at every statement, are the same with `-1`
+  as without;
+- with `--realbin` (in `make check-realbin`) the triggers are linked with
+  and without `-1` and run under `tests/realbin/mutosemu.py`: the exit
+  status is C's value either way.
+
+It prints what `-1` gained in the generated programs (bytes of text, V30
+clocks). Every active V30 rule must have a trigger there that it changes.

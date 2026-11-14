@@ -22,7 +22,10 @@ directly, on random programs:
   byte for byte. `--oracle none` runs the semantic check alone (no
   `unicorn` needed).
 - `x86sim.py` is the executor: an interpreter for the subset of 8086
-  code `mutos_c1` emits - `main()` plus calls of other functions in the
+  code `mutos_c1` emits and, since 2026-11-14, of what `mutos_c2` makes of
+  it ("cc -O -S": `c2`'s branch names `br`, `j`, `je` .. `jae`, two
+  registers in an address, `c2`'s spelling of the frame comments; used by
+  `tests/rules/check_v30.py`) - `main()` plus calls of other functions in the
   same file (with the shared `cret` epilogue and the `chkstk` large-frame
   helper built in), `movb`/`cbw`/`cmpb`/`orb` byte operations, variables
   at a fixed address - a local or file-scope `static`'s `.blkb` block and

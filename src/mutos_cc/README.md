@@ -521,7 +521,18 @@ rules themselves come from step F1 on.
   `mutos_c1 temp1 temp2 output.s [options] [-1]`: an argument `-1` sets
   `c1_v30`. `mutos_c2 [-1] [+] [-] [input [output]]`: a first argument `-1`
   sets `c2_v30` and is taken off before the original's `main()` runs.
-  No rule uses `-1` yet: the output is the same with and without it.
+  Since step V1 (2026-11-14) one rule uses `-1`, V30-PUSH of `c2`; `c1`'s
+  output is the same with and without it.
+- `c2`'s rules are in `c2rules/`: `c2rules.c` (the rule log: an entry
+  noted at the hook for a node, written when `output()` writes that
+  node, `c2_rule_node()` there, and an entry for the whole function of
+  each rule applied in it - `c2`'s passes run again after a rule) and one
+  file per rule, reached through one hook line in `c2port/`. V30-PUSH
+  (`v30_push.c`, hooked in `pushopt()`): under `-1`, `mov r,`constant /
+  `push r` becomes `push` constant where the original's own test finds
+  `r` not read again; the port notes the constant and leaves the pair
+  after that test instead of before it, which changes nothing without
+  `-1`.
 - `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the
   rule log: an entry noted at the hook, written with the bytes of output
   of the statement once it is compiled, `c1_rule_mark()` in `getree()` -

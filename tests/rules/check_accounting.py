@@ -30,9 +30,11 @@ The sources: the construct corpus (tests/mutos_cc/00_smoke .. 10_integ),
 the floating-point probes (fltprobe/), the real kernel sources of the
 tree (tests/mutos_cc/11_kernel/, tests/mutos_cpp/c/ with its h/),
 programs of tests/mutos_cc/fuzz/fuzz_c.py's generator, half of them with
-longs (--fuzz N, --seed), and the triggers of tests/rules/
+longs (--fuzz N, --seed), the triggers of tests/rules/
 check_corrected.py - a program at least for each active correction of
-c1, which the corpus alone does not give. Then links that meet ld's
+c1, which the corpus alone does not give - and those of tests/rules/
+check_v30.py with its generated programs of calls (--calls N), which
+meet the V30 rules and the branches around them. Then links that meet ld's
 rules (ld_cases()),
 which the corpus never does: without a switch each meets its rule; with
 -F or MUTOS_MODE=corrected the link may end otherwise (exit status,
@@ -43,7 +45,7 @@ output's bytes are the same.
 (the diagnostic hooks of step F0): per rule, how often and where.
 
 Usage:
-    check_accounting.py [--cc PATH] [--fuzz N] [--seed S] [-j JOBS]
+    check_accounting.py [--cc PATH] [--fuzz N] [--calls N] [--seed S] [-j JOBS]
                         [--full] [--report] [--keep DIR]
 
 Exit status 1 on an unaccounted difference. Python 3, standard library.
@@ -119,6 +121,18 @@ def trigger_units():
     import check_corrected
     return [Unit('trigger/%s.%d.c' % (c[0], i), {'p.c': c[2].encode()}, 'p.c', True)
             for i, c in enumerate(check_corrected.CASES)]
+
+
+def v30_units(n, seed):
+    """The triggers of check_v30.py (its CASES) and n of its programs of
+    calls: code that meets the V30 rules, and the branches around them."""
+    import check_v30
+    units = [Unit('v30/%s.%d.c' % (c[0], i), {'p.c': c[2].encode()}, 'p.c', True)
+             for i, c in enumerate(check_v30.CASES)]
+    for i in range(n):
+        src = check_v30.Calls(random.Random('accounting calls %d %d' % (seed, i))).program()
+        units.append(Unit('calls/s%d.%d.c' % (seed, i), {'p.c': src.encode()}, 'p.c', True))
+    return units
 
 
 def fuzz_units(n, seed):
@@ -474,6 +488,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--cc', default=CC)
     ap.add_argument('--fuzz', type=int, default=40, help='fuzz_c.py programs (40)')
+    ap.add_argument('--calls', type=int, default=40,
+                    help='check_v30.py\'s programs of calls (40)')
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('-j', type=int, default=os.cpu_count() or 2)
     ap.add_argument('--full', action='store_true', help='also "cc -c"')
@@ -486,7 +502,8 @@ def main():
                     help='only the runs without a switch, "cc -S" and "cc -o" '
                     '(with --report: the diagnostics of many programs, fast)')
     a = ap.parse_args()
-    units = corpus_units() + trigger_units() + fuzz_units(a.fuzz, a.seed)
+    units = corpus_units() + trigger_units() + v30_units(a.calls, a.seed) + \
+        fuzz_units(a.fuzz, a.seed)
     if a.only:
         units = [u for u in units if a.only in u.name]
     jobs = [(a.cc, u, a.full, a.keep, a.base_only) for u in units]
@@ -521,9 +538,10 @@ def main():
                 if ops else '',
                 ', '.join('%s:%s' % (n, l) for n, l, _ in where[:12]) +
                 (' ...' if len(where) > 12 else '')))
-    print('check_accounting: %d sources (%d of fuzz_c.py, seed %d, and the triggers of '
-          'check_corrected.py), %d stages x %d configurations, and ld\'s cases: %s'
-          % (len(units), a.fuzz, a.seed, nstage, 1 if a.base_only else len(CONFIGS),
+    print('check_accounting: %d sources (%d of fuzz_c.py and %d of check_v30.py\'s programs '
+          'of calls, seed %d, and the triggers of check_corrected.py and check_v30.py), '
+          '%d stages x %d configurations, and ld\'s cases: %s'
+          % (len(units), a.fuzz, a.calls, a.seed, nstage, 1 if a.base_only else len(CONFIGS),
                                   '%d unaccounted difference(s)' % len(problems)
                                   if problems else 'every difference accounted for'))
     return 1 if problems else 0

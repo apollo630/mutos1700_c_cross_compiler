@@ -1182,12 +1182,18 @@ natural(uint16_t ap)
  * "push x" ... "pop r" becomes "mov r,x" ("pop/push converted to mov")
  * when nothing between reads or writes r, pushes, pops, branches or is
  * a label.
+ *
+ * EXTENSION (V30-PUSH): the original leaves a pair with a constant x
+ * before it looks whether r is read again; the port notes the constant
+ * (konst) and leaves the pair after that loop, which changes nothing -
+ * so that the rule is asked only where the push would be made.
  */
 void
 pushopt(void)
 {
 	uint16_t p, s;
 	int16_t r;
+	int konst;
 
 	p = regmask();
 	while (p != FIRST) {
@@ -1205,10 +1211,11 @@ pushopt(void)
 		dualop(s);
 		if (isreg(REG(RT2)) != r)
 			goto next;
+		konst = 0;
 		if (isreg(REG(RT1)) < 0) {
 			if (c_index(REG(RT1), '*') || c_index(REG(RT1), '#')) {
 				if (c_index(REG(RT1), '(') == 0)
-					goto next;
+					konst = 1;	/* the original: goto next */
 			}
 		}
 		for (s = FORW(p); s != 0; s = FORW(s)) {
@@ -1219,6 +1226,9 @@ pushopt(void)
 			if (SET(s) & USE(p))
 				break;
 		}
+		/* EXTENSION: V30-PUSH, docs/RULES.md - a constant only under -1 */
+		if (konst && !rule_v30_push(p))
+			goto next;
 		S_USE(p, USE(BACK(p)));
 		S_CODE(p, copy1(REG(RT1)));
 		S_FORW(BACK(BACK(p)), p);

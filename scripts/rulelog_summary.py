@@ -8,7 +8,9 @@ they pass (src/h/mutos_mode.h):
 
 This prints, per rule and kind ("met": the original's path taken,
 "applied": the rule changed the output), how often and where - the
-source and line for c1, the rule's own keys for the others. To see which
+source and line for c1, the source for c2 (which knows no line; its
+entries with chunk=1, a function's range for the accounting, are left
+out), the rule's own keys for the others. To see which
 of the hooked bugs a whole build meets - the MUTOS kernel's, for one:
 
     rm -f /tmp/rules.log
@@ -38,8 +40,12 @@ def main():
                 continue
             tool, rule, what = parts[:3]
             keys = dict(p.split('=', 1) for p in parts[3:] if '=' in p)
-            if 'src' in keys or 'line' in keys:
-                where = '%s:%s' % (keys.get('src', '?'), keys.get('line', '?'))
+            if keys.get('chunk') == '1':
+                continue        # c2's entry for the function: the accounting's
+            if 'line' in keys:
+                where = '%s:%s' % (keys.get('src', '?'), keys['line'])
+            elif 'src' in keys:
+                where = keys['src']     # c2 knows no line
             else:
                 where = ' '.join(p for p in parts[3:]) or '-'
             extra = ' '.join('%s=%s' % (k, v) for k, v in keys.items()
@@ -50,7 +56,7 @@ def main():
         print('no entries')
         return 0
     for (rule, tool, what), places in sorted(rules.items()):
-        files = sorted({p.split(':')[0] for p in places})
+        files = sorted({p.split(':')[0].split(' (')[0] for p in places})
         print('%-8s %-3s %-7s %5d time(s), %d source(s)' % (rule, tool, what,
                                                            len(places), len(files)))
         shown = places if every else places[:20]

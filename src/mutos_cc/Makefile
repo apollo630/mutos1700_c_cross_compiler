@@ -56,8 +56,11 @@ C0_SRCS = c0port/c00.c c0port/c01.c c0port/c02.c c0port/c03.c \
 C0_OBJS = $(C0_SRCS:.c=.o)
 C0_TARGET = mutos_c0
 
-C2_SRCS = c2port/main.c c2port/c20.c c2port/c21.c c2port/c2lib.c \
+C2_PORT = c2port/main.c c2port/c20.c c2port/c21.c c2port/c2lib.c \
           c2port/c2data.c
+# c2's rules (docs/RULES.md): c2rules.c and one file per rule, as c1's.
+C2_RULES = $(sort $(wildcard c2rules/*.c))
+C2_SRCS = $(C2_PORT) $(C2_RULES)
 C2_OBJS = $(C2_SRCS:.c=.o)
 C2_TARGET = mutos_c2
 
@@ -102,7 +105,7 @@ $(C0_OBJS): c0port/c0.h
 c0port/c00.o: ../h/mutos_mode.h
 $(C1_PORT:.c=.o) $(C1_RULES:.c=.o): c1port/c1.h c1rules/c1rules.h ../h/mutos_mode.h
 c1rules/l_05.o: ../mutos_as/fltconst.h
-$(C2_OBJS): c2port/c2.h
+$(C2_OBJS): c2port/c2.h c2rules/c2rules.h ../h/mutos_mode.h
 c1port/c1lib.o: ../mutos_as/fltconst.h c1_fltdec.h
 c1_fltdec.o: c1_fltdec.c c1_fltdec.h ../mutos_as/fltconst.h
 fltdec_test.o: fltdec_test.c c1_fltdec.h

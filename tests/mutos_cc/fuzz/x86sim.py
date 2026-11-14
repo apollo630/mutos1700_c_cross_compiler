@@ -37,6 +37,13 @@ is "(bx)" and "+2(bx)"), and
 branch on a flag the 8086 leaves undefined, ...) stops it with exit
 status 2 and a message, never with a guess.
 
+c2's output ("cc -O -S") runs too (since 2026-11-14, for
+tests/rules/check_v30.py): c2's names of the branches ("br" and "j" for
+"jmp", "je" .. "jae" for "beq" .. "bhis" - C2_NAMES), an address with two
+registers ("(bx)(si)", "*2.(bx)(di)": indexopt()), the frame comments as
+c2 writes them ("|<tab>_a=-12.") and the address of an element as an
+operand ("#4.+_ga").
+
 Validated against real hardware-compiled output: every tests/mutos_cc
 .s.golden it can execute (56 of the 62 - the rest call libc, or use a
 jump table or a function's address) returns the value its C source
@@ -102,6 +109,10 @@ FLAG_WRITERS = {"add", "sub", "adc", "sbb", "and", "or", "xor", "inc",
                 "rcl", "rcr", "test"}
 BRANCHES = {"blt", "ble", "bgt", "bge", "beq", "bne", "blos", "bhi", "blo",
             "bhis"}
+# c2's output ("cc -O"): what shortbr() makes of c1's branches
+C2_NAMES = {"br": "jmp", "j": "jmp", "je": "beq", "jne": "bne", "jl": "blt",
+            "jle": "ble", "jg": "bgt", "jge": "bge", "jb": "blo",
+            "jbe": "blos", "ja": "bhi", "jae": "bhis"}
 # which flags (z, s, o, c) each branch reads, and its condition
 BRANCH_READS = {"blt": "so", "ble": "zso", "bgt": "zso", "bge": "so",
                 "beq": "z", "bne": "z", "blos": "zc", "bhi": "zc",
@@ -351,7 +362,8 @@ class Sim:
             self._parse_line(raw)
 
     def _note_local(self, comment):
-        m = re.match(r"\| _(\w+)=(-?\d+)\.$", comment)
+        # c1 writes "| _a=-12.", c2 that line as "|\t_a=-12."
+        m = re.match(r"\|[ \t]_(\w+)=(-?\d+)\.$", comment)
         if m:
             self.locals[m.group(1)] = int(m.group(2))
 
@@ -429,6 +441,9 @@ class Sim:
         ops = rest.split(",") if rest else []
         if mnem == "pop cx":        # c1's literal-space quirk
             mnem, ops = "pop", ["cx"]
+        # c2's names: its branches ("br" and, short, "j"; "je" ... "jae",
+        # the short conditional ones) are c1's with another length
+        mnem = C2_NAMES.get(mnem, mnem)
         self.prog.append((mnem, ops))
 
     # -- operands -------------------------------------------------------
@@ -437,7 +452,8 @@ class Sim:
         address "#_x") or "m"."""
         if op in self.regs or op == "cl":
             return "r"
-        if IMM_RE.match(op) or (op.startswith("#") and op[1:] in self.data):
+        if IMM_RE.match(op) or (op.startswith("#") and "(" not in op and
+                                op[1:].rpartition("+")[2] in self.data):
             return "i8" if op.startswith("*") else "i"
         return "m"
 
@@ -484,8 +500,12 @@ class Sim:
         # long through a pointer: c1's "#+2(IJ)"), and an array element with
         # a symbol for its displacement: "_text(bx)", "#_text(bx)" (the
         # marker a load through v7's "#1" template writes)
-        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+)|\+(\d+)\.?)?\((\w+)\)$", op)
-        if not m or m.group(4) not in self.regs:
+        # and, in c2's output (indexopt()), with a second register:
+        # "(bx)(si)", "*2.(bx)(di)"
+        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+)|\+(\d+)\.?)?\((\w+)\)"
+                     r"(?:\((\w+)\))?$", op)
+        if not m or m.group(4) not in self.regs or \
+                (m.group(5) and m.group(5) not in self.regs):
             return None
         if m.group(2):
             if m.group(2) not in self.data:
@@ -495,7 +515,8 @@ class Sim:
             disp = int(m.group(3))
         else:
             disp = int(m.group(1)) if m.group(1) else 0
-        return (self.regs[m.group(4)] + disp) & M16
+        index = self.regs[m.group(5)] if m.group(5) else 0
+        return (self.regs[m.group(4)] + index + disp) & M16
 
     def get(self, op):
         if op in self.regs:
@@ -510,6 +531,10 @@ class Sim:
             return int(m.group(1), 16) & M16
         if op.startswith("#") and op[1:] in self.data:
             return self.data[op[1:]]    # "#_counter": its address
+        m = re.match(r"^#(\d+)\.\+(_\w+|L\d+)$", op)
+        if m and m.group(2) in self.data:
+            # the address of an element or member: "#4.+_ga"
+            return (self.data[m.group(2)] + int(m.group(1))) & M16
         a = self._ea(op)
         if a is not None:
             return self._rd(a)
@@ -980,7 +1005,8 @@ def run(text, watch=None, v30=False):
     """Executes mutos_c1 output `text`; returns a Result. With `watch`
     (a local's name), every store to that local also records a snapshot
     of the whole frame - fuzz_c.py's per-statement markers. With v30, the
-    80186/V30 forms of -1 run too."""
+    80186/V30 forms of -1 run too. `text` may be c2's output ("cc -O
+    -S")."""
     return Sim(text, watch, v30).run()
 
 

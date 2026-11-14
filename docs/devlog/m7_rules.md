@@ -779,3 +779,50 @@ the V30 computing them alike.
 `ld` printed no "out of date" warning - the archive evidently kept its file
 time on the way - so the member-by-member reading stays measured under the
 emulator only; the image is the same either way there. F3b is closed.
+
+## Step V1: V30-PUSH, the first rule of `-1` (2026-11-14)
+
+`c2`'s `pushopt()` already makes `mov r,x` / `push r` into `push x`; only a
+constant `x` is left out, since the 8086 cannot push one. The plan had the
+rule as "one condition dropped under `-1`". What it took beyond that:
+
+- **Where the hook stands.** The original tests for the constant before it
+  looks whether `r` is read again. A hook at that test would be passed for
+  pairs the loop then rejects, so the log could not say `applied` (or
+  `met`) truthfully. The port notes the constant (`konst`) and leaves the
+  pair after the loop; the loop reads only, so without `-1` nothing
+  changes (`c2cmp.py`, `c2fuzz.py` against the emulated original).
+- **`*n.` is a byte for `push`, a word for `mov`.** `mutos_as` takes `mov
+  ax,*200.` as B8 C8 00 and `push *200.` as 6A C8, which pushes -56. `c1`
+  writes `*n.` only from -128 to 127 (no other in the kernel's and the
+  corpus's code), but the rule does not rely on it: it pushes `*n.` only
+  for a plain number in that range and leaves any other pair.
+- **The rule log of `c2`.** `c2` knows no source line, and writes a
+  function only when all passes are done. An entry is noted for the node
+  and written when `output()` writes it, with the node's bytes (`c2_outpos`
+  counts what `putc()` gives the standard output).
+- **A rule of `c2` reaches beyond its node.** The first accounting run with
+  generated programs of calls failed in 5 of 600: a block of three nodes
+  (`push *7.` / `push *0.` / `call _hr`) had been moved behind another call
+  and its branch turned around (`jl L30` became `jge L20004`), which `c2`
+  does not do for the five nodes without `-1`. A first attempt logged the
+  short branches over a changed node; that does not cover moved code. `c2`
+  improves a function as a whole, so the honest range is the function:
+  one entry `applied` with `chunk=1` per rule and function. The semantic
+  check is what shows such code right.
+- **No executor for `c2`'s code.** `fuzz_c.py` and `x86sim.py` ran `c1`'s
+  output only, and `fuzz_c.py`'s programs call nothing, so they hardly meet
+  the rule (76 of 1,500 change). `x86sim.py` learned `c2`'s branch names,
+  two registers in an address, `#4.+_ga` and `c2`'s frame comments;
+  `check_v30.py` generates programs of calls. Three of 1,500 `fuzz_c.py`
+  programs compute otherwise through `c2` than through `c1` alone - all
+  three C1-01 (a branch on the flags a `not` leaves), no bug of `c2`.
+- **`sub di,di` / `push di`.** `simplify()` makes `mov r,*0.` into `sub
+  r,r`, which sets the flags; with `-1` the pair is `push *0.` before
+  `simplify()` runs, and no flag changes.
+
+Measured: 1,500 programs of calls and 1,500 of `fuzz_c.py` (seed 2) the
+same values with `-1`; in the programs of calls 88,847 pushes, the text
+10.0% smaller, 2.7% fewer V30 clocks. On the kernel sources in the tree:
+176 pushes in five files of `kernel_nonopt` (text 12,296 to 12,016 bytes),
+321 in the 18 C sources (25,520 to 25,010).
