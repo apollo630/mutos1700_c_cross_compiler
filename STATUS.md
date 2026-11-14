@@ -2460,8 +2460,15 @@ The first of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
   is the original still).
 
 Not yet: V30-SHIFT and V30-IMUL (`c1`, steps V2 and V3); the hardware (V4).
-`mutos_as` encodes `push *n.` for an `n` outside -128 to 127 as 6A with the low
-byte, without a message; `c2` never writes one (the rule leaves such a pair).
+`mutos_as` encoded `push *n.` for an `n` outside -128 to 127 as 6A with the low
+byte, without a message (`push *200.` pushes -56); `c2` never writes one (the
+rule leaves such a pair). By the owner's decision of 2026-11-14 `mutos_as -1`
+now refuses it ("push of a byte constant (*n) outside -128 to 127: it is pushed
+sign-extended; write #n for the word"; `encode.c`, in pass 2, where the value is
+known; `tests/mutos_as/check_switches.sh`). `push_imm_test.s` lost its `push */80`
+(15 pushes; object and report recorded anew). `imul r,x,*n.` (6B ib) still takes
+the low byte of any `n` (`tests/mutos_as/v30_speculative/README.md`, finding 1):
+to be decided before step V3, whose rule writes that form.
 
 ## `mutos_as` opcode coverage
 

@@ -77,8 +77,10 @@ encoding is unambiguous.
    refuses to do this: it always promotes an out-of-range immediate to the
    safe `0x69` word form instead of silently corrupting the value. This
    isn't a bug in either tool - it's a genuine design choice unique to this
-   codebase's "the marker always wins" convention, matching how `push
-   *imm8` already behaves the same way. It's worth deciding, consciously,
+   codebase's "the marker always wins" convention. (`push *imm8` behaved
+   the same way until 2026-11-14: by the owner's decision `mutos_as` now
+   refuses `push *n` for an `n` outside -128 to 127, with a message that
+   names `#n`; `imul` is as described here still.) It's worth deciding, consciously,
    whether that is really what you want here before this goes in front of
    any real MUTOS toolchain comparison, since it's exactly the kind of
    place a real vendor assembler's behavior (once you have a sample) could

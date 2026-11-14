@@ -131,3 +131,6 @@ pages.
   `x86sim.py` runs `c2`'s output; `tests/rules/check_v30.py` - the same
   values with `-1` as without (`STATUS.md`, "Step V1"). Next by the plan:
   V2 (V30-SHIFT, in `c1`), V3 (V30-IMUL), V4 (the hardware).
+- 2026-11-14, the owner's decision: `mutos_as -1` refuses `push *n` for an
+  `n` outside -128 to 127 (6A ib is pushed sign-extended), with a message.
+  The same question for `imul r,x,*n` is open, to be decided before V3.

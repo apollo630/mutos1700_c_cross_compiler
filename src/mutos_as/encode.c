@@ -55,6 +55,12 @@ static bool g_opt_186 = false;
 
 void encode_set_186(bool on) { g_opt_186 = on; }
 
+/* Why encode_instruction() refused the statement, where it has more to
+ * say than "unsupported instruction": set where it returns false, taken
+ * (and cleared) by the caller for its message. */
+static const char *g_reason = NULL;
+const char *encode_take_reason(void) { const char *r = g_reason; g_reason = NULL; return r; }
+
 /* The mnemonics that exist only with -1. The operand forms of mnemonics
  * the 8086 has (push of an immediate, imul with two or three operands,
  * a shift or rotate count other than 1 or CL) are checked where they are
@@ -1456,6 +1462,16 @@ static bool encode_pushpop(CodeBuf *out, bool is_push, const ParsedOperand *op,
         /* 80186: only with -1 (the original `as` refuses it) */
         long v = resolve_expr(op->expr, cur_addr, st, resolve);
         if (op->size == SZ_BYTE) {
+            /* 6A ib pushes the byte sign-extended: "push *200." would
+             * push -56 (and hex 80 after the "*", -128). "mov r,*n." keeps any n,
+             * as a word; here there is no such form, so a value the
+             * byte cannot give is refused (decided 2026-11-14) - in
+             * pass 2, where the value is known. */
+            if (resolve && (v < -128 || v > 127)) {
+                g_reason = "push of a byte constant (*n) outside -128 to 127: "
+                           "it is pushed sign-extended; write #n for the word";
+                return false;
+            }
             codebuf_put(out, 0x6A);
             codebuf_put(out, (unsigned char)(v & 0xFF));
         } else {

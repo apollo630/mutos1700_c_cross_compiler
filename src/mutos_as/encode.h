@@ -111,6 +111,9 @@ bool encode_is_known_mnemonic(const Token *mnemonic);
  * are what they are to the original - an identifier it does not know
  * starts an expression (a word referring to an undefined external of
  * that name), the operand forms are errors. */
+/* Why the last encode_instruction() that returned false refused, or NULL
+ * when it has no more to say than that; cleared by the call. */
+const char *encode_take_reason(void);
 void encode_set_186(bool on);
 
 /* The report of -1 (docs/TOOLCHAIN_PLAN.md, decision 16): the driver

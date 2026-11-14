@@ -65,6 +65,24 @@ while read -r sum name; do
     fi
 done < v30_with_1.md5
 
+# push of a byte constant: 6A ib is pushed sign-extended, so a "*n" outside
+# -128 to 127 is refused (with a message that says so), its ends are taken.
+for v in '*200.' '*128.' '*-129.' '*/80'; do
+    printf '.text\n\tpush\t%s\n' "$v" > "$tmp/p.s"
+    if "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1 || \
+       ! grep -q 'outside -128 to 127' "$tmp/log"; then
+        echo "FAIL  push $v: not refused as a byte out of range: $(head -n 1 "$tmp/log")"
+        bad=$((bad + 1))
+    fi
+done
+for v in '*127.' '*-128.' '#200.'; do
+    printf '.text\n\tpush\t%s\n' "$v" > "$tmp/p.s"
+    if ! "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1; then
+        echo "FAIL  push $v: refused: $(head -n 1 "$tmp/log")"
+        bad=$((bad + 1))
+    fi
+done
+
 # -C: the symbol table's size is in the header (a_syms, bytes 8 and 9).
 printf '.globl _f\n.text\n_f:\tjmp\tL1\nL1:\tret\n.data\nLd:\t.word\t1\n_d:\t.word\t2\n' > "$tmp/c.s"
 syms() { od -An -tu2 -j8 -N2 "$1" | tr -d ' '; }
@@ -78,7 +96,7 @@ if [ "$(syms "$tmp/c0.o")" != 48 ] || [ "$(syms "$tmp/c1.o")" != 24 ] || \
 fi
 
 if [ "$bad" -eq 0 ]; then
-    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it); -C leaves out the local L symbols"
+    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it), and refuses push of a byte constant outside -128 to 127; -C leaves out the local L symbols"
     exit 0
 fi
 echo "switches: $bad failures"

@@ -826,3 +826,11 @@ same values with `-1`; in the programs of calls 88,847 pushes, the text
 10.0% smaller, 2.7% fewer V30 clocks. On the kernel sources in the tree:
 176 pushes in five files of `kernel_nonopt` (text 12,296 to 12,016 bytes),
 321 in the 18 C sources (25,520 to 25,010).
+
+Afterwards, the owner's decision of the same day: `mutos_as -1` refuses
+`push *n` for an `n` outside -128 to 127 instead of encoding its low byte
+(`encode.c`; the message names `#n`). The check is made in pass 2, where
+the value is known; the length is two bytes either way. `push_imm_test.s`
+had a `push */80` "same bit pattern as *-128." - the very case: it would
+push FF80 - which is gone from it. `imul r,x,*n` has the same behaviour
+and is left for a decision before step V3.

@@ -38,7 +38,9 @@ _pushimmtest:
 					| the assembler must emit is just FF
 	push	*-128.			| smallest (most negative) signed byte
 	push	*/7F			| same as *127. via hex literal
-	push	*/80			| same bit pattern as *-128. via hex
+	| (no "push */80": 128 is no value the sign-extended byte gives;
+	| mutos_as refuses a "*n" outside -128 to 127 since 2026-11-14 -
+	| tests/mutos_as/check_switches.sh)
 
 	| ---- push #imm16 (0x68 iw, full word) ----
 	push	#0.

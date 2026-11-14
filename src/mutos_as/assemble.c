@@ -802,7 +802,10 @@ static void run_pass(AsmState *as, const char *src, size_t len, const char *file
                      * with zero operands were silently swallowed by the
                      * fallback above instead of reaching this branch -
                      * see the comment on the gate above). */
-                    if (s.noperands == 0 && encode_is_known_mnemonic(&s.mnemonic_or_name))
+                    const char *why = encode_take_reason();
+                    if (why != NULL)
+                        fprintf(stderr, "error: %s, at line %d\n", why, s.line);
+                    else if (s.noperands == 0 && encode_is_known_mnemonic(&s.mnemonic_or_name))
                         fprintf(stderr,
                                 "error: mnemonic '%.*s' is recognized but not supported with 0 operands at line %d\n",
                                 (int)s.mnemonic_or_name.len, s.mnemonic_or_name.text, s.line);
