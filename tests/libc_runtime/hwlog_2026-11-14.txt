@@ -1,0 +1,15 @@
+l01_itof: with libc.a 0, with fixlibc.a 1
+hwcheck.sh: 45 Floating exception - core dumped
+l03_ftoi: with libc.a 136, with fixlibc.a 1
+l04_ldiv: with libc.a 2, with fixlibc.a 0
+l05_dmul: with libc.a 0, with fixlibc.a 1
+l08_alrem: with libc.a 0, with fixlibc.a 1
+hwcheck.sh: 101 Floating exception - core dumped
+l10_fcmp: with libc.a 136, with fixlibc.a 1
+hwcheck.sh: 115 Floating exception - core dumped
+l11_ftol: with libc.a 136, with fixlibc.a 1
+hwcheck.sh: 129 Floating exception - core dumped
+l12_fpstk: with libc.a 136, with fixlibc.a 1
+l14_dsub: with libc.a 0, with fixlibc.a 1
+statuses: as expected
+files: every .o, .H and .F as expected

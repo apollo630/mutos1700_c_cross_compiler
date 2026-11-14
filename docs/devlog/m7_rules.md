@@ -761,3 +761,21 @@ resolves in one pass -, so the script does not run `ranlib`, and the
 warning is expected. `mutos_cc -F` in the root - the corrected mode, the
 copy taken by LIBC-F - makes exactly the image the hardware's `ld` is to
 make with the copy by name.
+
+### The check on the hardware: passed (2026-11-14)
+
+The owner ran the kit on the A7100 - with the NEC V30, the machine's
+8086 being no longer available - under MUTOS 1700 (`sh hwcheck.sh >log
+2>&1`; the log is `tests/libc_runtime/hwlog_2026-11-14.txt`). Every line
+is the predicted one: the nine status pairs, 136 and "Floating exception
+- core dumped" for the four programs SIGFPE kills with `/lib/libc.a`
+(the number the shell prints before the message is the process id - 45,
+101, 115, 129, fourteen processes a trigger), `statuses: as expected`,
+and `files: every .o, .H and .F as expected`. The last line is the
+strong one: the hardware's `cc -c` and `ld` made the 27 files the
+emulated originals made, so the copy links with the original `ld` as
+decision 14 promised, and the emulator - an 8086 - is confirmed on these programs,
+the V30 computing them alike.
+`ld` printed no "out of date" warning - the archive evidently kept its file
+time on the way - so the member-by-member reading stays measured under the
+emulator only; the image is the same either way there. F3b is closed.

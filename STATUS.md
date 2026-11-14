@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-11.
+Last updated: 2026-11-14.
 
 ---
 
@@ -1234,10 +1234,10 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    by `rtcheck.py --copy`, `linkcheck.py` and a trigger program per
    correction (2026-11-09) -, and `c1` and `as` following the copy in the
    corrected mode: the rules L-01, L-03, L-04, L-05, L-11 of `c1` and L-05
-   of `as` (2026-11-11). Open from it: the hardware check of a program
-   linked with the copy by the original `ld` - its kit is ready,
-   `tests/libc_runtime/hwkit.py` (2026-11-11, "Step F3b" below); the run on
-   the hardware is the owner's. Next by the plan: V1 to V4.
+   of `as` (2026-11-11). Its last check, the hardware's - a program
+   linked with the copy by the original `ld`, the kit of
+   `tests/libc_runtime/hwkit.py` -, **passed on the A7100 (NEC V30) 2026-11-14**
+   ("Step F3b" below): F3b is closed. Next by the plan: V1 to V4.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2381,8 +2381,26 @@ what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
   make, `mutos_cc -F` makes the same `N.F`, the original `ld` with the
   copy's table of contents out of date warns and links the same `N.F`, and
   every image ends as its trigger says (with `/lib/libc.a` the original's
-  results - 0, 2 or SIGFPE -, with the copy C's). The run on the hardware:
-  not yet made.
+  results - 0, 2 or SIGFPE -, with the copy C's). **The run on the
+  hardware (the owner's A7100 with the NEC V30 under MUTOS 1700,
+  2026-11-14): passed, all of it as predicted** - the log is `tests/libc_runtime/hwlog_2026-11-14.txt`.
+  The nine status lines are the predicted ones (with `/lib/libc.a` 0, 136,
+  2, 0, 0, 136, 136, 136, 0; with the copy 1, and 0 for `l04_ldiv`), the
+  shell's status for a program killed by SIGFPE is 136 and its message
+  "Floating exception - core dumped" (four times, for `l03_ftoi`,
+  `l10_fcmp`, `l11_ftol`, `l12_fpstk` with `/lib/libc.a`; none with the
+  copy), and the script's two last lines are `statuses: as expected` and
+  `files: every .o, .H and .F as expected`: each of the 27 files the
+  hardware's `cc` and `ld` made is the emulated originals' byte for byte.
+  So the copy links with the original `ld` and corrects the nine bugs on
+  the hardware (decision 14), and the emulator's `cc -c` and `ld` are
+  confirmed on these nine programs. The machine's CPU is the V30 (its 8086
+  is no longer available, the owner 2026-11-14), the emulator's an 8086:
+  the V30 computes these programs as the 8086 does, the four divide
+  errors included. The log has no "out of date" warning
+  of `ld`: `fixlibc.a` evidently arrived with its file time kept, and `ld` read
+  it through its table of contents - the member-by-member reading of an
+  archive out of date is so measured under the emulator only.
 
 ## `mutos_as` opcode coverage
 
