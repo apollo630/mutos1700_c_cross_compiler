@@ -197,6 +197,17 @@ Prediction (2026-11-11): all of it holds for the nine triggers - with
 `/lib/libc.a` the original's results (exit status 0 or 2, or SIGFPE,
 which the v7 shell reports as 136), with the copy C's (1, and 0 for
 `l04_ldiv`). `l03_ftoi.H` reads the word at address 8000 of its data
-segment (L-03): SIGFPE unless that word happens to be 8000 hex. The run
-on the hardware is the owner's; its result goes here and into
-`STATUS.md`.
+segment (L-03): SIGFPE unless that word happens to be 8000 hex.
+
+Result (the owner's A7100 with the NEC V30 - its 8086 is no longer
+available - under MUTOS 1700, 2026-11-14, `sh hwcheck.sh >log 2>&1`; the log is `hwlog_2026-11-14.txt`): **as predicted, all of
+it.** The nine status lines are the predicted ones, the hardware's `sh`
+gives 136 for the four programs SIGFPE kills (`l03_ftoi`, `l10_fcmp`,
+`l11_ftol`, `l12_fpstk` with `/lib/libc.a`) and prints "Floating
+exception - core dumped" for each (the number before it is the process
+id), and the log ends `statuses: as expected` and `files: every .o, .H
+and .F as expected` - all 27 files are the emulated originals' byte for
+byte. `ld` did not warn "out of date": `fixlibc.a` had evidently kept its
+file time, so the hardware's `ld` read it through its table of contents; the
+reading member by member is measured under the emulator only. The V30
+so computes the nine programs as the emulator's 8086 does.

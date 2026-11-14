@@ -71,8 +71,8 @@ pages.
   lines).
 - The real MUTOS 1700 hardware (A7100) for golden runs: the goldens in `tests/`
   come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
-  8086 has been replaced by a NEC V30, and an IDE interface added (said
-  2026-11-08): the machine for the hardware checks of the 80186/V30 code.
+  8086 has been replaced by a NEC V30 (the 8086 is no longer available on
+  it, said 2026-11-14), and an IDE interface added (said 2026-11-08): the machine for the hardware checks of the 80186/V30 code.
 - The kernel's `conf/arith.a` is in the repository since 2026-11-09
   (`tests/mutos1700_arith/`, added by the owner): `locking.o` and the six long
   helpers, which are `libc.a`'s byte for byte.
@@ -122,5 +122,7 @@ pages.
   mode (the rules L-01, L-03, L-04, L-05, L-11 of `c1`, L-05 of `as`), checked
   by `tests/libc_runtime/foldcheck.py` (what `c1` folds is what the program
   computes at run time), `libcatof.py copy` (the copy's own `atof()`) and a
-  trigger each (`STATUS.md`, "Step F3b"). Open from F3b: the hardware check of
-  a program linked with the copy by the original `ld`.
+  trigger each (`STATUS.md`, "Step F3b"). The hardware check of F3b - a program
+  linked with the copy by the original `ld`, the kit of
+  `tests/libc_runtime/hwkit.py` - passed on the A7100 (NEC V30) 2026-11-14, every
+  status and file as predicted: F3b is closed. Next by the plan: V1 to V4.
