@@ -162,7 +162,24 @@ if [ "$(od -An -tx1 -j16 -N2 "$tmp/j.o" | tr -d ' \n')" != "747f" ] || \
     bad=$((bad + 1))
 fi
 
-# -C: the symbol table's size is in the header (a_syms, bytes 8 and 9).
+# A short jump to a symbol the file does not define - undefined, .comm, or
+# either plus a number - is refused too, as by the original ("Short jump to
+# external not allowed"); a label of the file and a local label are taken.
+for c in 'je _ext' 'j _ext' 'loop _ext' 'jcxz _ext' 'je _ext+2' 'je c'; do
+    set -- $c
+    printf '.text\n\t%s\t%s\n\tnop\n.comm c,2\n' "$1" "$2" > "$tmp/j.s"
+    if "$MUTOS_AS" "$tmp/j.s" -o "$tmp/j.o" >"$tmp/log" 2>&1 || \
+       ! grep -q 'short jump to an external symbol' "$tmp/log"; then
+        echo "FAIL  $c: not refused: $(head -n 1 "$tmp/log")"
+        bad=$((bad + 1))
+    fi
+done
+printf '.text\nL1:\tnop\n\tje\tL1\n\tje\t1f\n1:\tje\t1b\n\tje\tL2+1\n\tnop\nL2:\tnop\n' > "$tmp/j.s"
+if ! "$MUTOS_AS" "$tmp/j.s" -o "$tmp/j.o" >"$tmp/log" 2>&1; then
+    echo "FAIL  short jumps to labels of the file: refused: $(head -n 1 "$tmp/log")"
+    bad=$((bad + 1))
+fi
+
 printf '.globl _f\n.text\n_f:\tjmp\tL1\nL1:\tret\n.data\nLd:\t.word\t1\n_d:\t.word\t2\n' > "$tmp/c.s"
 syms() { od -An -tu2 -j8 -N2 "$1" | tr -d ' '; }
 "$MUTOS_AS" "$tmp/c.s" -o "$tmp/c0.o" >/dev/null 2>&1

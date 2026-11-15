@@ -53,6 +53,8 @@ Guideline 11).
 | 2026-11-09 | The kernel's `conf/arith.a` - its long helpers measured by him with `rtcheck.py --archive`: the same results as `libc.a`'s - gets a corrected copy from the same sources, for the kernel in the corrected mode; the old one stays for the original mode. | `docs/TOOLCHAIN_PLAN.md`, section 6; `src/libc_fixed/README.md` |
 | 2026-11-11 | F3b, part 2 (confirmed from Claude's proposal): `c1` and `as` follow the copy in the corrected mode - a rule of the tool per corrected bug it re-enacts, named after the bug of `libc.a` (`c1`: L-01, L-03, L-04, L-05, L-11; `as`: L-05), logged `applied` only where the result differs from the original's; what the copy does not correct (L-06, L-07, the bytes of a zero) stays. So in the corrected mode some constants become a float instead of a double, some doubles change in their last bits, and `(int)-32768.0` and `(long)1.5e9` are folded instead of refused. | `docs/RULES.md`, "The tools follow the copy" |
 | 2026-11-15 | `mutos_as` refuses a short jump that does not reach its target (127 bytes ahead, 128 back), as the original `as` does; it wrote the low byte of the distance. | `STATUS.md`, Milestone 2 ("A short jump that does not reach"); `docs/devlog/m7_rules.md` |
+| 2026-11-15 | `mutos_as` refuses a short jump to an external symbol (undefined, `.comm`, or either plus a number), as the original `as` does. | `STATUS.md`, Milestone 2 ("A short jump that does not reach") |
+| 2026-11-15 | V30-SHIFT keeps to registers: a shift in memory by a constant is not written as `sal x,*n.` (measured: no gain in the kernel). | `STATUS.md`, "Step V3" ("A shift in memory stays as it is") |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -149,7 +151,9 @@ pages.
   the form's length in `toofar()` (`c2rules/v30_imul.c`). The three rules
   of `-1` are done; the kernel sources in the tree are 3.7% smaller with
   `-1`. Next by the plan: V4 (the hardware).
-- 2026-11-15, the owner's decision: V30-SHIFT takes a shift in memory too
-  (`g <<= 3` as `sal _g,*3.`); `c2` counts the form's fifth byte
-  (`c2rules/v30_shift.c`). No gain in the kernel; done for completeness of
-  the rule.
+- 2026-11-15, two more decisions of the owner after V3: `mutos_as`
+  refuses a short jump to a symbol the file does not define, as the
+  original does ("Short jump to external not allowed") - done; and
+  V30-SHIFT is not extended to shifts in memory (built and measured: no
+  gain in the kernel, 8 places at most in the Version 7 tools) - the
+  optional patch, committed with V3 in `fa7afb8`, is taken out again.

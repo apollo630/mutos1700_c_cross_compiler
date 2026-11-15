@@ -128,24 +128,6 @@ main()
 ''' % ''.join('\t\tx = x * %d + y;\n\t\ty = y * %d + x;\n' % (301 + i, 401 + i)
               for i in range(5))
 
-# The same for V30-SHIFT: 26 shifts of file-scope ints by a constant, 5
-# bytes each with -1 ("sal _g,*n." has a word of address), 130 in all;
-# toofar() takes a shift for 4.
-LONGIFS = '''int g, h;
-f(n)
-{
-	g = 1;
-	h = 16384;
-	if (n) {
-%s	}
-	return g + h;
-}
-main()
-{
-	return f(0) + f(1);
-}
-''' % ('\t\tg <<= 3;\n\t\th >>= 3;\n' * 13)
-
 # (rule, name, source, C's value of main(), the 80186/V30 instructions of
 # the rule's kind with -1)
 CASES = [
@@ -274,7 +256,7 @@ main()
 	return r + q + x;
 }
 ''', 7597, 4),
-    ('V30-SHIFT', 'a shift in memory: a file-scope int, a local, through a pointer',
+    ('V30-SHIFT', 'a shift in memory is left: a file-scope int, a local, through a pointer',
      '''int g, v, *p;
 main()
 {
@@ -289,9 +271,7 @@ main()
 	*p <<= 6;
 	return g + l + v;
 }
-''', 152, 3),
-    ('V30-SHIFT', 'a branch over 26 shifts in memory: 5 bytes each, which c2 must count',
-     LONGIFS, 16385, 26),
+''', 152, 0),
     ('V30-SHIFT', 'branches on the flags of a shift by a constant',
      '''main()
 {
@@ -580,15 +560,8 @@ def lengths(cc):
     since it does not reach. So the hook is needed, and a length counted
     too small ends in a message, not in wrong code."""
     problems = []
-    for what, src in (('products', LONGIF), ('shifts in memory', LONGIFS)):
-        problems += length(cc, what, src)
-    return problems
-
-
-def length(cc, what, src):
-    problems = []
     with tempfile.TemporaryDirectory(prefix='v30') as d:
-        st, m, s1, _ = compile_s(cc, d, src, ['-1'])
+        st, m, s1, _ = compile_s(cc, d, LONGIF, ['-1'])
         if st:
             return ['lengths: cc -S -1 exit status %d: %s' % (st, m.strip()[-200:])]
         with open(os.path.join(d, 'c1.s'), 'w') as f:
@@ -608,13 +581,13 @@ def length(cc, what, src):
             if want == 'refused' and not (short and r.returncode != 0
                                           and 'short jump out of range' in msgs):
                 problems.append('lengths: c2 without -1 on c1\'s -1 code: the branch over '
-                                'the ' + what + ' is %s and mutos_as ends with status %d (%s) - '
+                                'the products is %s and mutos_as ends with status %d (%s) - '
                                 'expected a short one, refused'
                                 % ('short' if short else 'long', r.returncode,
                                    msgs.strip()[-80:]))
             if want == 'assembled' and (short or r.returncode != 0):
                 problems.append('lengths: c2 -1 on c1\'s -1 code: the branch over the '
-                                '' + what + ' is %s and mutos_as ends with status %d (%s) - '
+                                'products is %s and mutos_as ends with status %d (%s) - '
                                 'expected a long one, assembled'
                                 % ('short' if short else 'long', r.returncode,
                                    msgs.strip()[-80:]))

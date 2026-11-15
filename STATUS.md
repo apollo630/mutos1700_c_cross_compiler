@@ -570,7 +570,7 @@ switch of the plan, section 4.
   byte register are done.)
 - *Leniency.* `mutos_as` does not make the checks that give the original
   `Byte instruction cannot use R`, `Relocatable values not allowed for bytes`,
-  `Illegal relocatable expression`, `Short jump to external not allowed`,
+  `Illegal relocatable expression`,
   `Invalid index register`, `Value out of range`, `Illegal redeclaration of symbol`
   (and `Illegal jump out of segment`, `Illegal intersegment jump` for a short jump
   to a data label or a number), and takes a missing last linefeed, CR LF and the shift count `1` unmarked; it refuses a byte
@@ -585,9 +585,16 @@ switch of the plan, section 4.
   jump to somewhere else, without a message. Now: "short jump out of range", in
   pass 2 (`encode_short_jump()`, `encode.c`), status 1, no object, with or without
   `-1`. It is the net under `c2`'s branch lengths (`toofar()`): a branch `c2` makes
-  short on a length it counted too small no longer becomes wrong code. A short
-  jump to an external symbol is left as it was (the original: "Short jump to
-  external not allowed"). `tests/mutos_as/check_switches.sh` has the ends of the
+  short on a length it counted too small no longer becomes wrong code. A short jump to a symbol
+  the file does not define - undefined, with `-g` or without, `.globl`'d, a `.comm`
+  symbol, or one of them plus a number - is refused as well (the owner's second
+  decision of that day; the original: "Short jump to external not allowed", status
+  2; `mutos_as` wrote a distance from address 0, a byte having no relocation): "short
+  jump to an external symbol", 10 more cases in `ascmp.py cases`, the same class as
+  the original in each. A short jump to a data or bss label or to a number is left
+  (the original refuses these too). Checked on this second change: `make test`,
+  `make check-docs`, and of `make check-realbin` the parts of the assembler
+  (`ascmp.py goldens` and `cases`, `asfuzz.py`) and `check_v30.py --realbin`. `tests/mutos_as/check_switches.sh` has the ends of the
   range for the four kinds.
 
 **The last run of the fuzzer** (the final binary; the seed in brackets):
@@ -2617,23 +2624,16 @@ ax,#n` for `mov cx,*n.` / `imul cx`; without `-1` every output is as before.
   short jumps, `c2cmp.py` and `c2fuzz.py` among it: without `-1` `c2` is the original
   still).
 
-After step V3, V30-SHIFT also takes a shift in memory (2026-11-15; the owner's
-decision): `g <<= 3`, a local, `*p >>= 4`, `a[i] <<= 5` as `sal _g,*3.` and so on
-(`c1rules/v30_shift.c`: the rows with `A1` or `#1(R*)` for the destination, seven
-rows in all now). The reason it was left with step V2 is gone: the rule has a half
-in `c2` (`src/mutos_cc/c2rules/v30_shift.c`, hooked in `toofar()`), which under
-`-1` adds the byte the form with a word of address has more than the 4 `c2`
-counts for any shift (`c2_displen()`, shared with V30-IMUL's half, in
-`c2rules.c`). `check_v30.py`: the trigger of the shifts in memory has 3 of them
-now, a new one a branch over 26 shifts of file-scope ints (130 bytes; `lengths()`:
-long with `c2 -1`, short and refused by `mutos_as` with `c2` counting as the
-original). Run once with `--shifts 1500 --products 300 --fuzz 1500 --seed 2`: no
-difference; in the programs of shifts 92,014 instead of 85,229 instructions, the
-text 10.2% smaller instead of 9.5%. The kernel sources gain nothing (24,574 bytes
-as before: they shift no memory by a constant from 3 on); the 28 Version 7 tool
-sources in `v7/` that compile have 8 shifts in memory by CL beside 34 of a
-register. `make test` on this change; of `make check-realbin` only the parts that
-concern it (`check_v30.py --realbin`, `c2cmp.py`, `c2fuzz.py`).
+**A shift in memory stays as it is** (the owner's decision of 2026-11-15, after
+step V3): V30-SHIFT keeps to registers. The change was built and measured - the
+rule without its condition, and a half in `c2` counting the fifth byte of `sal
+_g,*n.` in `toofar()` - and passed (1,500 programs of shifts, 1,500 of
+`fuzz_c.py`, no difference), but it gains nothing in the kernel (no such shift in
+it; 24,574 bytes either way) and 8 places at most in the 28 Version 7 tool sources
+of `v7/` that compile, 2 bytes and 4 clocks each, against a second half of the
+rule to keep and to prove on the hardware. It was in the tree for one commit
+(`fa7afb8`, with step V3) and is taken out again; `stepV3_03_shift_mem_optional.patch`
+of that day has it.
 
 Not yet: the hardware (V4) - probes of each form, a program per rule, the kernel
 built with `-1`.

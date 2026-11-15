@@ -504,9 +504,7 @@ toofar(uint16_t p)
 		case SAR:
 		case SHR:
 			dualop(q);
-			rs = onelen(REG(RT1));
-			len += rs;
-			len += (int16_t)rule_v30_shift(q, rs);	/* EXTENSION: V30-SHIFT, docs/RULES.md (-1) */
+			len += onelen(REG(RT1));
 			break;
 
 		case JBR:

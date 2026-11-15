@@ -41,6 +41,26 @@
  */
 #include "../c2port/c2.h"
 
+/* the bytes of a displacement in the operand at s, up to the comma or the end */
+static int
+displen(uint16_t s)
+{
+	uint16_t t;
+	int paren = 0;
+
+	if (isreg(s) >= 0)
+		return 0;
+	for (t = s; rb(t) != 0 && rb(t) != ','; t++)
+		if (rb(t) == '(')
+			paren = 1;
+	if (!paren)
+		return 2;			/* an address */
+	if (rb(s) == '(')			/* "(bp)" has a byte of 0 */
+		return rb((uint16_t)(s + 1)) == 'b' && rb((uint16_t)(s + 2)) == 'p'
+		    && rb((uint16_t)(s + 3)) == ')' ? 1 : 0;
+	return rb(s) == '*' ? 1 : 2;
+}
+
 /*
  * q: an IMUL node, regs[RT1] its operands (toofar()'s singop()); base is
  * what the original has counted for it. Returns the bytes to add.
@@ -61,10 +81,10 @@ rule_v30_imul(uint16_t q, int base)
 		;
 	len = 2;				/* the opcode and the mod r/m byte */
 	if (rb(b) == ',') {			/* r,x,constant */
-		len += c2_displen(a);
+		len += displen(a);
 		a = (uint16_t)(b + 1);
 	} else					/* r,constant */
-		len += c2_displen(s);
+		len += displen(s);
 	len += rb(a) == '*' ? 1 : 2;
 	c2_rule("V30-IMUL", c2_v30, q, "len=%d", c2_v30 ? len : base);
 	if (!c2_v30 || len <= base)

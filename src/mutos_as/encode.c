@@ -1926,22 +1926,39 @@ static const RealJcc *real_jcc_lookup(const Token *mnem)
  * ".+n", "Value out of range"); until then mutos_as wrote the low byte of
  * the distance - a jump to somewhere else, without a message. It is the
  * check that catches a branch c2 has made short on a wrong length
- * (toofar(), docs/RULES.md, "The V30 rules"). A target that is not
- * defined in this file is left as before (the original refuses that one
- * with "Short jump to external not allowed"). */
+ * (toofar(), docs/RULES.md, "The V30 rules").
+ *
+ * A target with a symbol that is not defined in this file - undefined
+ * (with -g or without, .globl'd or not), a .comm symbol, or either plus a
+ * number - is refused as well (decided 2026-11-15, later the same day):
+ * a byte has no relocation, so that mutos_as wrote a distance from
+ * address 0. The original: "Short jump to external not allowed",
+ * status 2 (measured). */
+static bool expr_has_external(const ExprNode *e, SymTab *st)
+{
+    if (!e) return false;
+    if (e->op == EX_SYM) {
+        Symbol *s = symtab_find(st, e->sym, e->sym_len);
+        return !s || !s->defined || s->type == SYM_BSS;
+    }
+    return expr_has_external(e->lhs, st) || expr_has_external(e->rhs, st);
+}
+
 static bool encode_short_jump(CodeBuf *out, unsigned char opcode, const ParsedOperand *target,
                               long cur_addr, SymTab *st, bool resolve)
 {
     if (target->mode != ADDR_DIRECT || !target->expr) return false;
     long tgt = expr_target_addr(target->expr, cur_addr, st, resolve);
     long rel = resolve ? (tgt - (cur_addr + 2)) : 0;
+    if (resolve && expr_has_external(target->expr, st)) {
+        g_reason = "short jump to an external symbol: a byte cannot be relocated "
+                   "(the original as refuses it too)";
+        return false;
+    }
     if (resolve && (rel < -128 || rel > 127)) {
-        int symidx;
-        if (!expr_is_unresolved_sym(target->expr, st, &symidx)) {
-            g_reason = "short jump out of range: the target is more than 127 bytes "
-                       "ahead or 128 back (the original as refuses it too)";
-            return false;
-        }
+        g_reason = "short jump out of range: the target is more than 127 bytes "
+                   "ahead or 128 back (the original as refuses it too)";
+        return false;
     }
     codebuf_put(out, opcode);
     codebuf_put(out, (unsigned char)(rel & 0xFF));

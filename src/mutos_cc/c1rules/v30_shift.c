@@ -16,15 +16,17 @@
  * it modulo 32 - and CX not loaded. c1 keeps no account of what a
  * register holds, so nothing it writes later reads the n from CX.
  *
- * Under -1, for a count that is a constant from 3 to 15, the row is used
- * without its "mov" and with the count, A2, for "cl": a shift of a
- * register (the row's R, or its A1 when that is a register variable)
- * and, since 2026-11-15, a shift in memory (=<<, =>>: the row's A1, or
- * #1(R*) behind a pointer).
+ * Under -1, for a count that is a constant from 3 to 15 and a shift of a
+ * register (the row's R, or its A1 when that is a register variable), the
+ * row is used without its "mov" and with the count, A2, for "cl".
  *
- * With a word of address the form is 5 bytes ("sal _x,*n."), one more
- * than the 8086's longest shift, which is what c2 takes any shift for
- * when it measures a branch; c2rules/v30_shift.c counts that byte.
+ * A shift in memory is left as it is: c2 measures a branch from the
+ * instructions' text and takes any shift for 4 bytes (toofar(), c2port/
+ * c21.c: the length of the count's text, "cl", "*1" or "*n."). The
+ * 8086's shift is 4 bytes at most; "sal r,*n." is 3, but "sal _x,*n.",
+ * with a word of address, is 5 - one more than c2 counts, so that a
+ * branch c2 makes short might not reach. (No shift in memory by a
+ * constant from 3 on is in the kernel's code.)
  *
  * The rule log: "applied" for each row used so under -1, "met" without
  * -1 where -1 would; n= is the count.
@@ -41,16 +43,14 @@ static const char load[] = "movD\343x,B\n";
 /* the shift's line after it: I, B1 and a tab, then R ("IA") or A1 ("A") */
 static const char shreg[] = "MC\311A,cl\n";
 static const char shadr[] = "MC\301,cl\n";
-/* or #1(R*): the destination behind a pointer */
-static const char shind[] = "MC\243(IB),cl\n";
 
 /*
  * The rows' templates without the load and with "B" (A2) for "cl", made
  * once each and kept (a row's template must stay valid while it is
- * printed: cexpr() is recursive). The code tables have seven such rows:
- * one of a value, six of an assignment.
+ * printed: cexpr() is recursive). The code tables have four such rows:
+ * one of a value, three of an assignment.
  */
-#define	NROWS	12
+#define	NROWS	8
 
 static struct {
 	const char	*orig;
@@ -89,20 +89,20 @@ char *
 rule_v30_shift(struct tnode *tree, char *tabstring)
 {
 	const char *at, *sh;
-	struct tnode *p2;
+	struct tnode *p1, *p2;
 
 	if ((at = strstr(tabstring, load)) == NULL)
 		return tabstring;
 	sh = at + sizeof(load) - 1;
+	p1 = tree->tr1;
 	p2 = tree->tr2;
 	if (p2 == 0 || p2->op != CON || p2->value < 3 || p2->value > 15)
 		return tabstring;
 	if (strncmp(sh, shreg, sizeof(shreg) - 1) == 0)
 		sh += sizeof(shreg) - 4;
-	else if (strncmp(sh, shadr, sizeof(shadr) - 1) == 0)
+	else if (strncmp(sh, shadr, sizeof(shadr) - 1) == 0
+	      && p1->op == NAME && p1->class == REG)
 		sh += sizeof(shadr) - 4;
-	else if (strncmp(sh, shind, sizeof(shind) - 1) == 0)
-		sh += sizeof(shind) - 4;
 	else
 		return tabstring;
 	c1_rule("V30-SHIFT", c1_v30, NULL, NULL, "n=%d", p2->value);

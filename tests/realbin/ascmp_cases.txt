@@ -114,18 +114,26 @@ short jump: j 127 ahead [-o y.o x.s]: obj-same mode
 short jump: j 128 ahead [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: j 128 back [-o y.o x.s]: obj-same mode
 short jump: j 129 back [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: j to an undefined symbol [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: jcxz 127 ahead [-o y.o x.s]: obj-same mode
 short jump: jcxz 128 ahead [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: jcxz 128 back [-o y.o x.s]: obj-same mode
 short jump: jcxz 129 back [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: jcxz to an undefined symbol [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: je 127 ahead [-o y.o x.s]: obj-same mode
 short jump: je 128 ahead [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: je 128 back [-o y.o x.s]: obj-same mode
 short jump: je 129 back [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: je to an external symbol (.comm) [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: je to an external symbol (.globl) [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: je to an external symbol (symbol plus a number) [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: je to an external symbol (undefined, -g) [-g -o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: je to an undefined symbol [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: loop 127 ahead [-o y.o x.s]: obj-same mode
 short jump: loop 128 ahead [-o y.o x.s]: both-reject files,status,stderr,stdout
 short jump: loop 128 back [-o y.o x.s]: obj-same mode
 short jump: loop 129 back [-o y.o x.s]: both-reject files,status,stderr,stdout
+short jump: loop to an undefined symbol [-o y.o x.s]: both-reject files,status,stderr,stdout
 statement and comment of 128 characters [-o y.o x.s]: OBJ-DIFF bytes
 stdin []: PORT-ACCEPTS files,status,stderr
 stdin and -o [-o y.o]: obj-same mode,stderr

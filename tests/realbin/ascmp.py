@@ -426,6 +426,20 @@ def cases():
             case('short jump: %s %s' % (op.decode(), name), ['-o', 'y.o', 'x.s'],
                  {'x.s': b'.text\n' + body})
     case('short jump: j .+200', ['-o', 'y.o', 'x.s'], {'x.s': b'.text\n\tj\t.+200.\n\tnop\n'})
+    # a short jump to a symbol the file does not define (2026-11-15): the
+    # original refuses it, "Short jump to external not allowed" - undefined
+    # with -g or without, .globl'd, a .comm symbol, a symbol plus a number;
+    # mutos_as refuses it since then (it wrote a distance from address 0)
+    for op in (b'je', b'j', b'loop', b'jcxz'):
+        case('short jump: %s to an undefined symbol' % op.decode(), ['-o', 'y.o', 'x.s'],
+             {'x.s': b'.text\n\t' + op + b'\t_ext\n\tnop\n'})
+    for name, opts, src in (
+            ('undefined, -g', ['-g'], b'.text\n\tje\t_ext\n\tnop\n'),
+            ('.globl', [], b'.globl _ext\n.text\n\tje\t_ext\n\tnop\n'),
+            ('.comm', [], b'.text\n\tje\tc\n\tnop\n.comm c,2\n'),
+            ('symbol plus a number', [], b'.text\n\tje\t_ext+2\n\tnop\n')):
+        case('short jump: je to an external symbol (%s)' % name, opts + ['-o', 'y.o', 'x.s'],
+             {'x.s': src})
     # found by asfuzz.py (2026-10-25) and fixed in mutos_as: kept here
     for name, body in (
             ('shift of a global, cl', b'\tsarb 2.+_gs,cl\n\tshl _gs,cl\n\trorb _gs,*1\n'),

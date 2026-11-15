@@ -908,11 +908,12 @@ The owner's decision of 2026-11-15, on the proposal of step V2.
   They share `encode_short_jump()` now, which refuses in pass 2 - pass 1
   has no addresses - through `g_reason`, as the refusals of `push *n.` and
   `imul` do: "short jump out of range", status 1, no object.
-- **Left**: a short jump to a symbol that is not defined in the file
-  (the original: "Short jump to external not allowed"; `mutos_as` writes a
-  byte and no relocation), to a data label ("Illegal jump out of segment")
-  or to a number ("Illegal intersegment jump"). Neither `c1` nor `c2`
-  writes one; they stay on the list of checks `mutos_as` does not make
+- **Left** at first: a short jump to a symbol that is not defined in the
+  file (the original: "Short jump to external not allowed"; `mutos_as`
+  wrote a byte and no relocation) - refused since later the same day,
+  see below -, to a data label ("Illegal jump out of segment") or to a
+  number ("Illegal intersegment jump"). Neither `c1` nor `c2` writes one;
+  the last two stay on the list of checks `mutos_as` does not make
   (`STATUS.md`, Milestone 2, "Leniency").
 - **Why it matters for `-1`**: `c2`'s `shortbr()` trusts `toofar()`, which
   counts bytes from the instructions' text and knows the 8086's forms
@@ -990,21 +991,24 @@ must learn the form's length".
   by a constant, 34 shifts of a register by CL and 8 in memory - none of
   the 8 with a word of address.
 
-## V30-SHIFT in memory (2026-11-15)
+## After V3: the external target, and no shift in memory (2026-11-15)
 
-Left out with step V2 because `c2` counts 4 bytes for any shift; taken
-after step V3, by the owner's decision, with the hook V3 brought.
+Two decisions of the owner on what step V3 left open.
 
-- `c1rules/v30_shift.c` lost its condition (`A1` a register variable)
-  and gained the destination `#1(R*)` (`MC\243(IB),cl`): seven rows have
-  the load of a constant count - one of a value, three each of `=<<` and
-  `=>>` (the value wanted, not wanted; `A1` or behind a pointer).
-- `c2rules/v30_shift.c`: 2 bytes, the destination's displacement and the
-  count; only the form with a word of displacement (`_g`, `_a(di)`) passes
-  the 4 the original counts. `c2_displen()` moved from `v30_imul.c` to
-  `c2rules.c`.
-- A char in memory is `salb _c,*4.` (C0 /4 ib); `x86sim.py` has no `salb`,
-  the generator shifts no char in place.
-- What it brings: nothing in the kernel; in the Version 7 tools 8 places
-  at most; 2 bytes and the 4 clocks of `mov cx,*n.` each.
+- **A short jump to an external symbol is refused.** Measured first: the
+  original says "Short jump to external not allowed" (status 2) for an
+  undefined symbol with `-g` and without, for one that is `.globl`'d,
+  for a `.comm` symbol and for `_ext+2`; a label in `.bss` is "Illegal
+  jump out of segment" (not touched). `encode_short_jump()` asks
+  `expr_has_external()`, which walks the expression for a symbol that is
+  not found, not defined or a `.comm` one, before it looks at the
+  distance - with address 0 for the symbol the distance was in range or
+  not by where the jump stood. Ten cases more in `ascmp.py cases`, all
+  `both-reject`.
+- **No shift in memory under `-1`.** The optional patch (the rule in `c1`
+  without its condition, `c2rules/v30_shift.c` in `toofar()`) had gone
+  into the tree with the commit of step V3; it is reversed, so that
+  V30-SHIFT, its trigger "a shift in memory is left" and `c2`'s hook are
+  those of steps V2 and V3 again. The numbers that decided it: none in
+  the kernel, 8 of 42 shifts by CL in the Version 7 tools.
 
