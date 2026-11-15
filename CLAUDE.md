@@ -123,7 +123,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `/tests/mutos_as/kernel_opt/` or with another build (`docs/KERNEL_BUILD.md`, step 6);
   since 2026-11-08 `check_rules.py` (`make test`, `make check-docs`: the rules against
   `docs/RULES.md`) and `rulelog_summary.py` (a rule log summed up by rule - which hooked
-  bugs a build, the kernel's for one, meets).
+  bugs a build, the kernel's for one, meets); since 2026-11-15 `v30report.py`, which sums
+  the lines `as: -1: ...` of a build's log (the kernel with `-1`, `docs/KERNEL_BUILD.md`,
+  step 8).
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
@@ -262,6 +264,11 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   generated programs of calls, of shifts (since step V2), of products (since step V3) and of `fuzz_c.py`, `c1`'s and `c2`'s code under `x86sim.py` - the
   same values with `-1` as without (`docs/RULES.md`, "What `-1` computes"); with
   `--realbin` the triggers linked and run under `mutosemu.py`.
+  `v30kit.py` (since 2026-11-15, step V4): the kit for the check of the 80186/V30 code
+  on the hardware - a probe of every form the rules write, a program per rule as 8086
+  code and as V30 code, timing programs, `v30check.sh`, every line predicted in Python
+  and printed so under `mutosemu.py`; `--check` (in `make check-realbin`) is the
+  prediction alone.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of

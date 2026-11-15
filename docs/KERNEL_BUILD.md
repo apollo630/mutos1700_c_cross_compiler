@@ -221,6 +221,49 @@ corrects). The copy changes the linked kernel `mutos` (the four members
 are longer), not the objects; the original's `arith.a` stays where the
 original kernel is to be built.
 
+## Step 8 (since 2026-11-15): the kernel with `-1`, for the V30
+
+Step V4 of `docs/TOOLCHAIN_PLAN.md`: the kernel with the 80186/V30 code of
+`-1` (`docs/RULES.md`, "The V30 rules"). **Such a kernel runs on the NEC V30
+(or an 80186) only** - boot it from a test disk and keep the original kernel
+bootable. Run the kit of `tests/rules/v30kit.py` on the machine first
+(`STATUS.md`, "Step V4"): it shows each form the kernel will execute.
+
+The makefile stays as it is; `CFLAGS` is given on the command line, which
+takes precedence over the makefile's `CFLAGS = -c -O -K1024`. In a fresh copy
+(step 3; below `~/sys_v30`):
+
+```sh
+cd ~/sys_v30/conf
+$M/make CFLAGS="-c -O -K1024 -1" 2>&1 | tee ../build.log; echo "Exit: ${PIPESTATUS[0]}"
+python3 ~/mutos1700_c_cross_compiler/scripts/v30report.py ../build.log
+python3 ~/mutos1700_c_cross_compiler/scripts/kcmp.py -t ~/sys_v30/conf ~/sys_cross/conf
+```
+
+- Each of the 58 `cc` commands with `$(CFLAGS)` now has `-1` and is followed
+  by a line of `as`: `as: -1: 49 80186/V30 instructions: push 36, shift 5,
+  imul 8`. `c.c`, `symtab.c` and `mch` are compiled without `CFLAGS` and stay
+  8086 code (their objects are the original's).
+- `v30report.py` sums those lines: `58 assemblies with -1 (of 62 cc commands
+  in the log)` and the instructions by kind; `--files` lists each source. The
+  original's `c2` output of the kernel has 478 loads of a constant before a
+  push, 208 shifts by CL of a constant from 3 to 15 and 215 products by a
+  constant - about what to expect, the pushes fewer (a register read again is
+  not replaced). The seven sources of the tree tried on 2026-11-15 give 443
+  (push 217, shift 33, imul 193; `amx.c` alone 263).
+- `size mutos` at the end shows a smaller text than step 5's 50,496 bytes (by
+  the plan's estimate up to 3.4%); data and bss are the same.
+- `kcmp.py -t` against the build of step 5 names the objects that differ -
+  those with 80186/V30 instructions, by their text sizes - and the kernel.
+- With `MUTOS_RULELOG=/tmp/rules.log` before `$M/make`,
+  `scripts/rulelog_summary.py /tmp/rules.log` lists where each V30 rule was
+  applied (source and line for `c1`'s V30-SHIFT and V30-IMUL).
+
+What to bring back: the two lines of `v30report.py`, the `size` line, and
+whether the kernel boots and works from the test disk. `-1` and the corrected
+mode are independent; the kernel in the corrected mode is step 7 and the
+plan's step F5.
+
 ## When it goes wrong
 
 | Message | Cause | Remedy |

@@ -414,3 +414,14 @@ address):
 
 It prints what `-1` gained in the generated programs (bytes of text, V30
 clocks). Every active V30 rule must have a trigger there that it changes.
+
+On the hardware (step V4; `tests/rules/v30kit.py`, since 2026-11-15) the
+reference is neither the simulator nor the emulator: the kit's `probe.v`
+runs every form the rules write - each push, each shift of each register
+by each count, each `imul` - with edge values and prints result, defined
+flags and what else changed, against the forms' definitions; a program
+per rule prints its values as 8086 code and as V30 code, against the
+source's arithmetic computed in Python. Every 80186/V30 instruction of
+the kit's programs and of the kernel sources of the tree must be a probed
+form, so a rule that came to write another form would fail the kit
+(`v30kit.py --check`, in `make check-realbin`) until it is probed.

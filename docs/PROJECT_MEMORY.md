@@ -85,7 +85,7 @@ pages.
   after F3b's copy, 68 after F3b's part 2, 86 after V1, 63 after V2, 92 after V3 (the cores shared): run it in the background with a
   log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 to V3 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 to V4 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -157,3 +157,11 @@ pages.
   V30-SHIFT is not extended to shifts in memory (built and measured: no
   gain in the kernel, 8 places at most in the Version 7 tools) - the
   optional patch, committed with V3 in `fa7afb8`, is taken out again.
+- 2026-11-15, step V4 (the hardware), the kit: `tests/rules/v30kit.py`
+  makes `v30kit/` - `probe.v` (every 80186/V30 form the rules write, with
+  edge values), a program per rule as 8086 code and as V30 code, timing
+  programs, `v30check.sh` -, every line predicted in Python and printed
+  so under the emulator; the kernel with `-1` is `docs/KERNEL_BUILD.md`,
+  step 8 (`make CFLAGS="-c -O -K1024 -1"`, `scripts/v30report.py`). The
+  run on the A7100, the kernel's build and boot and the measured times
+  are the owner's; V4 is open until they are back.

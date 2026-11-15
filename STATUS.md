@@ -1270,7 +1270,12 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    V30-IMUL - `c1` multiplies by a constant with `imul ax,*n.` / `imul ax,#n` where
    the original loads CX, and `c2` counts that form's length when it makes a branch
    short; before it, `mutos_as` was made to refuse a short jump that does not reach
-   (Milestone 2). The three rules of `-1` are done. Next by the plan: V4 (the hardware).
+   (Milestone 2). The three rules of `-1` are done. **V4, the kit, 2026-11-15** ("Step V4"
+   below): `tests/rules/v30kit.py` makes the kit for the check on the hardware - a probe of
+   every 80186/V30 form the rules write, a program per rule as 8086 code and as V30 code, a
+   timing program per rule, every line they print predicted -, and `docs/KERNEL_BUILD.md`,
+   step 8, has the kernel with `-1`. The run on the A7100 and the kernel are the owner's;
+   until they are back, V4 is open.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2635,8 +2640,81 @@ rule to keep and to prove on the hardware. It was in the tree for one commit
 (`fa7afb8`, with step V3) and is taken out again; `stepV3_03_shift_mem_optional.patch`
 of that day has it.
 
-Not yet: the hardware (V4) - probes of each form, a program per rule, the kernel
-built with `-1`.
+### Step V4: the 80186/V30 code on the hardware - the kit (verified 2026-11-15; the run is open)
+
+The plan's last step of stage V (`docs/TOOLCHAIN_PLAN.md`, section 7.4): probes of
+each form with edge values, a program per rule that prints its values, the kernel
+built with `-1`, the gain measured. The hardware has no tool that takes `-1` - the
+original `as` has none of the 80186 instructions -, so everything is built by the
+cross toolchain and the kit carries linked programs. The kit and its prediction are
+done; the run on the owner's A7100 (NEC V30) and the kernel are not.
+
+- **The kit** (`tests/rules/v30kit.py [--out DIR] [--tar FILE]`, by default `v30kit/`,
+  ignored by git): `probe.v`; the programs `pushO`, `shift`, `shiftO`, `imul`, `imulO`,
+  each as `N.8` (8086 code, `cc`) and `N.v` (V30 code, `cc -1`; the `O` ones with `-O`
+  - V30-PUSH is `c2`'s rule, the other two are `c1`'s and go both ways); the timing
+  programs `bpush`, `bshift`, `bimul` (`.8` and `.v`); `v30check.sh` for the
+  hardware's `sh` (`sh v30check.sh >log 2>&1`), which runs them all and compares what
+  they print with `expect/`; `README` with the tables; `src/`, the sources, for
+  reading. Two builds give the same kit byte for byte.
+- **The probes** (`probe.v`): 287 routines, one for each form the rules write,
+  assembled by `mutos_as -1` - 23 pushes (`push *n.` from -128 to 127, `push #n`,
+  `push #`address), 234 shifts (`sal`, `sar`, `shr` of each of AX, BX, CX, DX, SI, DI
+  by each count from 3 to 15), 30 products (`imul ax,*n.`, `imul ax,#n`). The driver
+  (C, 8086 code) calls each with 19 edge values (a push once) and with the six
+  arithmetic flags all clear and all set beforehand, and prints the result, the flags
+  the NEC manual defines for the form (push: all six, unchanged; a shift: CY, P, Z, S;
+  `imul`: CY, V) and how many of the other registers changed (none: CX not loaded, DX
+  not written; for a push the stack pointer's step) - 10,078 lines. Beside each
+  routine its twin, the 8086 sequence the rule replaces (`mov cx,*n.` / `sal r,cl`
+  ...): the driver counts on the standard error in how many of the 8,596 pairs of
+  calls the result or any of the six flags differs, the undefined ones included -
+  none under the emulator; what the V30 does with the flags a form leaves undefined
+  is for the record (`c1`'s code reads none of them but through C1-15).
+- **A program per rule**: `pushO` - twelve functions of calls with constants of every
+  kind (bytes, words, characters, addresses, strings), variables and calls as
+  arguments, in conditions and loops: 900 pushes of a constant, 190 lines; `shift` -
+  every count from 1 to 15 of an int, an unsigned, a char and register variables, as
+  values, in place, as conditions and under an index, for 25 values: 221 shifts by a
+  constant, 3,375 lines; `imul` - 27 constants (bytes, words, negative ones, the ends
+  of the byte) times an int, an unsigned, a char, a register variable, in place (a
+  register, a file-scope int, through a pointer, an element), tested, compared, and
+  under the index of arrays of structures: 316 products, 4,750 lines.
+- **The timing programs**: a loop of the rule's instructions each, which prints a sum
+  (compared) and the seconds `time()` measured (to the log). `x86sim.py` counts the V30
+  clocks of one turn with and without `-1`; the number of turns is set so that the 8086
+  code takes 40 seconds by its clocks at 4.9152 MHz. Predicted gain: `bpush` 4.2%,
+  `bshift` 12.5%, `bimul` 27.5% (27-31 instead of 38-42 seconds).
+- **The prediction.** What a program must print is computed in Python - for the
+  probes from the forms' definitions, for the programs from the sources' arithmetic
+  on 16 bits -, not by the compiler under test; and every program, as 8086 code and
+  as V30 code, prints exactly that under `tests/realbin/mutosemu.py`. Checked besides:
+  `mutos_as` without `-1` refuses each module of the probes; each `N.v` has its rule's
+  instructions and each `N.8` none; every 80186/V30 instruction in the kit's programs
+  and in the 13 kernel sources of the tree (`cc -O -S -1`: 321 pushes, 59 shifts, 210
+  products) is one of the probed forms. A disagreement writes no kit.
+  `v30kit.py --check` is the prediction alone (in `make check-realbin`).
+- **`v30check.sh` tried on the host**: under `dash`, with the emulator standing in
+  for each program - `probe.tw: as expected`, every exit status 0, `values: every
+  output as expected`; with a changed line in `expect/probe.out` and in
+  `expect/imulO.out` it reports `probe.out`, `imulO.o8` and `imulO.ov` as `DIFFERENT`.
+- **Found on the way**: the probes as one module are 36,900 bytes of text, which the
+  original `ld` cannot link (LD-07; `mutos_ld` refuses it) - they are five modules,
+  each with its part of the driver's table, which the link order makes one. And
+  `-32768` as an argument is a long (two words pushed): the generated calls have no
+  such constant.
+- **The kernel with `-1`** (`docs/KERNEL_BUILD.md`, step 8): `make CFLAGS="-c -O
+  -K1024 -1"` with the unchanged makefile, `scripts/v30report.py` (new) sums the
+  reports of `as` in the build's log. Tried here on seven of the kernel sources of
+  the tree through the kernel's makefile (`v24`, `amx`, `v30ide`, `prim`, `pipe`,
+  `nami`, `fio`): without `-1` the seven objects are `kernel_opt/`'s (`kcmp.py`:
+  `same`), with it 443 80186/V30 instructions (push 217, shift 33, imul 193), `amx.o`
+  7,644 to 7,256 bytes of text.
+- **Checked**: `make test`; `make check-docs`; `v30kit.py --check`. No tool's source
+  changed, so the whole `make check-realbin` was not run again (its new line is that
+  check).
+- **Open, the owner's**: the kit's run on the A7100 (the log back), the kernel built
+  with `-1` and booted from a test disk, the seconds of the timing programs.
 
 ## `mutos_as` opcode coverage
 

@@ -1012,3 +1012,71 @@ Two decisions of the owner on what step V3 left open.
   those of steps V2 and V3 again. The numbers that decided it: none in
   the kernel, 8 of 42 shifts by CL in the Version 7 tools.
 
+
+## Step V4: the kit for the hardware (2026-11-15)
+
+What the hardware can and cannot check, and how the kit is made
+(`tests/rules/v30kit.py`; `STATUS.md`, "Step V4").
+
+- **Everything is built on the host.** The A7100 has the original `cc`,
+  `as` and `ld`; none knows `-1`, and the original `as` has no 80186
+  instruction. So, unlike step F3b's kit (sources, compiled there), this
+  one carries linked programs. What makes them trustworthy there: `crt0.o`
+  and `libc.a` are the hardware's byte for byte, and `mutos_ld`'s images
+  were the hardware's in F3b's run.
+- **The reference is not the toolchain.** The plan asks for values
+  "compared on the host, not by the compiler under test". The programs are
+  generated together with what they print: `v30kit.py` writes each C
+  statement and computes its value in Python beside it (16 bits, an
+  arithmetic `>>` for ints, a logical one for unsigneds, a char
+  sign-extended) - no simulator in between. The 8086 code and the V30 code
+  of each program then print that text under `mutosemu.py` - three
+  agreeing, two of them independent of `c1` and `c2`. For the probes the
+  model is each form's definition (the last bit out for CY, the product
+  not fitting in 16 bits for CY and V).
+- **Which flags.** A line of the probe has only the flags the NEC manual
+  defines for the form, so that it can be compared; `x86sim.py` uses the
+  same sets. The others are not lost: each routine has a twin, the 8086
+  sequence the rule replaces, and the driver counts where all six flags of
+  the two differ. Unicorn gives both forms the same flags throughout. On
+  the V30 a difference in an undefined flag would not be a fault of a
+  rule, but it would matter for one thing: C1-15 (`(x << 3) < 0` branches
+  on V after a shift by more than 1) - a program with that bug of the
+  original could then behave otherwise with `-1` than without.
+- **The flags before the form.** A routine sets the six arithmetic flags
+  as its second argument says and keeps every other bit of the flag word
+  as `pushf` gave it (`and ax,#/f72a`): the interrupt flag stays set, and
+  the V30's mode flag, bit 15, is not touched.
+- **LD-07 met.** The probes as one module are 36,900 bytes of text;
+  `cc -o` ended with `mutos_ld`'s refusal ("an lseek() to a negative
+  offset"), which is the original's LD-07: an object of 32K or more of
+  text. They are five modules now (the pushes, one per shift, the
+  products). The driver's table of routines is not a sixth with hundreds
+  of global labels: each module's data is its part of the table, three
+  words a probe, and `ld` puts the data of the objects one after another
+  in the order of the command line - `_ptab` in the first, a 0 at the end
+  of the last.
+- **`-32768` is a long.** The first run of the push program differed from
+  its model in three lines, all with `(-32768)` as an argument: 32768 does
+  not fit an int, so the constant is a long and two words are pushed - C's
+  rule, and what `c1` does. The generated calls have no such constant (the
+  values table of the other programs keeps -32768: an initializer of an
+  int is its low word).
+- **The timing programs.** `time()` in the program, not a `time` command
+  of the shell (whether MUTOS has one is not known here): a second's
+  resolution, so the runs are 40 seconds by their clocks. The clocks of a
+  turn come from `x86sim.py` on `work()` alone (`work(2)` less
+  `work(1)`); `main()` with `time()` and `printf()` is not simulated. The
+  sum does not depend on the number of turns (each turn starts at 0), so
+  it stays the same when `--seconds` changes.
+- **The script.** `v30check.sh` keeps to what F3b's `hwcheck.sh` used on
+  the machine's `sh` (`:` comments, `case`, `if cmp -s`, no functions),
+  plus `2>file` and a nested `for`. It was run on the host under `dash`
+  with a shell script in the place of each program that runs the real one
+  under `mutosemu.py`.
+- **The kernel.** `CFLAGS` on `mutos_make`'s command line replaces the
+  makefile's, so the kernel's makefile stays unchanged with `-1` too;
+  tried with seven of the tree's kernel sources laid out as the kernel
+  tree (their headers beside them, as the corpus has them). `as` reports
+  once per `cc` command; `scripts/v30report.py` sums the lines and takes
+  the source's name from the `+ cc` line `set -x` prints before each.

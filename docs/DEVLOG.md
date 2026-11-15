@@ -164,6 +164,10 @@ The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corr
 - Step F3b: the corrected copy of `libc.a` (2026-11-09; part 2, `c1` and `as` follow the copy, 2026-11-11; the kit for the check on the hardware, 2026-11-11; the check passed on the A7100 with the V30, 2026-11-14)
 - Step V1: V30-PUSH, the first rule of `-1` (2026-11-14)
 - Step V2: V30-SHIFT, and the length of a shift in `mutos_as` (2026-11-14)
+- A short jump that does not reach: refused by `mutos_as` (2026-11-15)
+- Step V3: V30-IMUL, and the length `c2` counts (2026-11-15)
+- After V3: the external target, and no shift in memory (2026-11-15)
+- Step V4: the kit for the hardware (2026-11-15)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 
