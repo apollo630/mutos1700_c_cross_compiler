@@ -641,6 +641,7 @@ cexpr(struct tnode *atree, struct table *table, int areg)
 	string = rule_c1_06(string);	/* EXTENSION: C1-06, docs/RULES.md */
 	string = rule_c1_01(tree, table, string);	/* EXTENSION: C1-01, docs/RULES.md */
 	string = rule_v30_shift(tree, string);	/* EXTENSION: V30-SHIFT, docs/RULES.md */
+	string = rule_v30_imul(tree, string);	/* EXTENSION: V30-IMUL, docs/RULES.md */
 	p1 = tree->tr1;
 	if (p1->op == FCON && p1->value > 0) {
 		printf(".data\nL%d:\t.double ", p1->value);

@@ -571,14 +571,24 @@ switch of the plan, section 4.
 - *Leniency.* `mutos_as` does not make the checks that give the original
   `Byte instruction cannot use R`, `Relocatable values not allowed for bytes`,
   `Illegal relocatable expression`, `Short jump to external not allowed`,
-  `Invalid index register`, `Value out of range`, `Illegal redeclaration of symbol`,
-  `Short jump out of range` (measured 2026-11-14 with step V2: a `je` over 200
-  bytes ends the original with that message and status 2, `mutos_as` writes the
-  displacement's low byte - the one of these that makes wrong code silently, and
-  the check that would catch a branch `c2` made short wrongly; to be decided),
-  and takes a missing last linefeed, CR LF and the shift count `1` unmarked; it refuses a byte
+  `Invalid index register`, `Value out of range`, `Illegal redeclaration of symbol`
+  (and `Illegal jump out of segment`, `Illegal intersegment jump` for a short jump
+  to a data label or a number), and takes a missing last linefeed, CR LF and the shift count `1` unmarked; it refuses a byte
   with the high bit set (`0200` and up) in code and a NUL, which the original takes
   (AS-14).
+- *A short jump that does not reach* is refused since 2026-11-15 (the owner's
+  decision of that day): the conditional jumps, `j`, the loops and `jcxz` reach 127
+  bytes ahead and 128 back; beyond that the original ends with status 2 - "Short
+  jump out of range" ahead, "Value out of range" back and for `.+n` (measured:
+  `ascmp.py cases`, "short jump", 17 cases at the ends of the range, the same class
+  as the original in each) - and `mutos_as` wrote the low byte of the distance, a
+  jump to somewhere else, without a message. Now: "short jump out of range", in
+  pass 2 (`encode_short_jump()`, `encode.c`), status 1, no object, with or without
+  `-1`. It is the net under `c2`'s branch lengths (`toofar()`): a branch `c2` makes
+  short on a length it counted too small no longer becomes wrong code. A short
+  jump to an external symbol is left as it was (the original: "Short jump to
+  external not allowed"). `tests/mutos_as/check_switches.sh` has the ends of the
+  range for the four kinds.
 
 **The last run of the fuzzer** (the final binary; the seed in brackets):
 
@@ -1249,7 +1259,11 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    V30-SHIFT - `c1` shifts a register by a constant from 3 to 15 (`sal r,*n.`) where
    the original loads CX; a shift in memory is left, since `c2` would count it a
    byte short; on the way `mutos_as`'s length of that form in pass 1 corrected
-   (the labels after it were a byte low). Next by the plan: V3 (V30-IMUL, in `c1`).
+   (the labels after it were a byte low). **V3 done 2026-11-15** ("Step V3" below):
+   V30-IMUL - `c1` multiplies by a constant with `imul ax,*n.` / `imul ax,#n` where
+   the original loads CX, and `c2` counts that form's length when it makes a branch
+   short; before it, `mutos_as` was made to refuse a short jump that does not reach
+   (Milestone 2). The three rules of `-1` are done. Next by the plan: V4 (the hardware).
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2506,8 +2520,8 @@ The second of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
   But `sal _g,*n.`, with a word of address, is 5 bytes. Tried by hand: 27 of
   them in an `if` are 135 bytes, `c2` counts 108 and makes the branch over them
   short, and `mutos_as` writes a displacement that does not reach (the original
-  `as` would refuse it, "Short jump out of range"; `mutos_as` has no such check -
-  "Leniency" in Milestone 2 above). So the rule
+  `as` would refuse it, "Short jump out of range"; `mutos_as` had no such check then -
+  it has since 2026-11-15, Milestone 2 above). So the rule
   keeps to registers; the `c2` output of the kernel's 62 sources has no shift in
   memory by `cl` at all (215 shifts by `cl`, all of a register, 208 of them
   after `mov cx,*n.` with n from 3 to 15).
@@ -2546,8 +2560,83 @@ The second of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
   change: exit status 0, 63 minutes on two cores (the 13 triggers of both rules
   linked and run under `mutosemu.py` among it).
 
-Not yet: V30-IMUL (`c1`, step V3 - `c2` must learn the form's length first, and
-the rule must keep `*n.` to -128 to 127, below); the hardware (V4).
+### Step V3: V30-IMUL, a product by a constant (verified 2026-11-15)
+
+The third and last of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
+`docs/RULES.md`, "The V30 rules"). Under `-1`, `c1` writes `imul ax,*n.` or `imul
+ax,#n` for `mov cx,*n.` / `imul cx`; without `-1` every output is as before.
+
+- **The rule in `c1`** (`src/mutos_cc/c1rules/v30_imul.c`, hooked in `cexpr()`,
+  `c1port/c10.c`, after V30-SHIFT): the rows of `*` and `=*` for a right operand
+  that is a constant or a register variable are `mov ax,`left / `movB2 cx,A2` / `I
+  cx` (and, for `=*`, the store). For a constant the row is used without the load
+  and with `ax,A2` for `cx` - five templates, rewritten when matched, `c1tab.c`
+  untouched. `c1` writes a constant from -128 to 127 as `*n.` (6B /r ib, 3 bytes)
+  and any other as `#n` (69 /r iw, 4 bytes), which is the range `mutos_as` keeps
+  the byte form to. The low word of the product in AX is the same; CX is not
+  loaded and DX not written - `c1` reads neither after a product (a long product is
+  `lmul`'s) -, and it tests a product with `or ax,ax`, not by the flags. Left as
+  they are: a product by a variable or a register variable, a power of two (a
+  shift), a long, and a byte instruction (`imulb`).
+- **The rule's half in `c2`** (`src/mutos_cc/c2rules/v30_imul.c`, hooked in
+  `toofar()`, `c2port/c21.c`): `c2` takes `imul ax,*30.` for the 8086's `imul` of
+  one operand, `ax` - right for what it reads and changes (AX read and written; DX
+  taken as written, which it is not: less known than true) -, but as 2 bytes when
+  it measures a branch. Under `-1` the hook adds the constant's bytes (and, for
+  the form with three operands, which `c1` does not write, the middle operand's
+  displacement). Without `-1` `c2` counts as the original. Shown by
+  `check_v30.py`'s `lengths()`: a branch over ten products by a word (130 bytes)
+  stays long with `-1`; `c2` without `-1` on the same code of `c1` makes it short
+  (it counts 110), and `mutos_as` refuses that branch - the check of 2026-11-15
+  under every length `c2` counts.
+- **`tests/rules/check_v30.py`**: six triggers of V30-IMUL, each compiled without
+  `-O` and with it - a byte, a word, a negative constant, an unsigned and a char;
+  the ends of the byte (-128 and 127 `*n.`, -129 and 129 `#n`, 128 a shift);
+  products in place (a register variable, a file-scope int, through a pointer, an
+  element); the products left; a product tested, compared and under the index of
+  an array of structures; the branch over ten products. New generated programs of
+  products (`--products N`, 300 in `make test`): constants of every kind and
+  variables as factors, ints, unsigneds, a char, register variables, `=*` in
+  memory, conditions, structures under an index, `if`s and loops around them.
+  The report of `as` is compared as a whole now (a trigger of one rule may meet
+  another). `x86sim.py` takes a member of an element as an address
+  (`28.+_a(bx)`). Run once with `--calls 300 --shifts 1500 --products 1500 --fuzz
+  1500 --seed 2`: no difference; in the programs of products `-1` made 125,655
+  80186/V30 instructions, the text 8.4% smaller (2,350,758 to 2,153,028 bytes),
+  the V30 clocks 12.5% fewer.
+- **The accounting** (`check_accounting.py`) takes the new triggers and as many
+  programs of products as of calls and of shifts (`--calls N`); run once with
+  `--fuzz 200 --calls 300 --seed 5 --full`: every difference accounted for.
+- **The gain on kernel code**: the 13 kernel C sources of the tree with `cc -O -c
+  -1`: 210 products by a constant besides the 321 pushes and 59 shifts, the text
+  25,520 bytes without `-1`, 24,888 with the first two rules, 24,574 now (3.7%).
+  `09_amx.c` alone has 162 of the products (7,644 to 7,256 bytes).
+- **Checked**: `make test`; `make check-docs`; `make check-realbin` on this
+  change: exit status 0, 92 minutes on two cores that other runs shared (the 19 triggers
+  of the three rules linked and run under `mutosemu.py`, `ascmp.py`'s 17 new cases of
+  short jumps, `c2cmp.py` and `c2fuzz.py` among it: without `-1` `c2` is the original
+  still).
+
+After step V3, V30-SHIFT also takes a shift in memory (2026-11-15; the owner's
+decision): `g <<= 3`, a local, `*p >>= 4`, `a[i] <<= 5` as `sal _g,*3.` and so on
+(`c1rules/v30_shift.c`: the rows with `A1` or `#1(R*)` for the destination, seven
+rows in all now). The reason it was left with step V2 is gone: the rule has a half
+in `c2` (`src/mutos_cc/c2rules/v30_shift.c`, hooked in `toofar()`), which under
+`-1` adds the byte the form with a word of address has more than the 4 `c2`
+counts for any shift (`c2_displen()`, shared with V30-IMUL's half, in
+`c2rules.c`). `check_v30.py`: the trigger of the shifts in memory has 3 of them
+now, a new one a branch over 26 shifts of file-scope ints (130 bytes; `lengths()`:
+long with `c2 -1`, short and refused by `mutos_as` with `c2` counting as the
+original). Run once with `--shifts 1500 --products 300 --fuzz 1500 --seed 2`: no
+difference; in the programs of shifts 92,014 instead of 85,229 instructions, the
+text 10.2% smaller instead of 9.5%. The kernel sources gain nothing (24,574 bytes
+as before: they shift no memory by a constant from 3 on); the 28 Version 7 tool
+sources in `v7/` that compile have 8 shifts in memory by CL beside 34 of a
+register. `make test` on this change; of `make check-realbin` only the parts that
+concern it (`check_v30.py --realbin`, `c2cmp.py`, `c2fuzz.py`).
+
+Not yet: the hardware (V4) - probes of each form, a program per rule, the kernel
+built with `-1`.
 
 ## `mutos_as` opcode coverage
 

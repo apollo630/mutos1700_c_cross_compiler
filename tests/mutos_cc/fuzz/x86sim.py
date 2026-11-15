@@ -502,21 +502,23 @@ class Sim:
         # marker a load through v7's "#1" template writes)
         # and, in c2's output (indexopt()), with a second register:
         # "(bx)(si)", "*2.(bx)(di)"
-        m = re.match(r"^(?:[*#](-?\d+)\.|#?(_\w+|L\d+)|\+(\d+)\.?)?\((\w+)\)"
-                     r"(?:\((\w+)\))?$", op)
-        if not m or m.group(4) not in self.regs or \
-                (m.group(5) and m.group(5) not in self.regs):
+        # and a member of an element of an array of structures, a number
+        # added to the symbol: "28.+_a(bx)"
+        m = re.match(r"^(?:[*#](?P<n>-?\d+)\.|#?(?:(?P<off>\d+)\.\+)?(?P<sym>_\w+|L\d+)"
+                     r"|\+(?P<plus>\d+)\.?)?\((?P<base>\w+)\)(?:\((?P<index>\w+)\))?$", op)
+        if not m or m.group("base") not in self.regs or \
+                (m.group("index") and m.group("index") not in self.regs):
             return None
-        if m.group(2):
-            if m.group(2) not in self.data:
+        if m.group("sym"):
+            if m.group("sym") not in self.data:
                 return None
-            disp = self.data[m.group(2)]
-        elif m.group(3):
-            disp = int(m.group(3))
+            disp = self.data[m.group("sym")] + int(m.group("off") or 0)
+        elif m.group("plus"):
+            disp = int(m.group("plus"))
         else:
-            disp = int(m.group(1)) if m.group(1) else 0
-        index = self.regs[m.group(5)] if m.group(5) else 0
-        return (self.regs[m.group(4)] + index + disp) & M16
+            disp = int(m.group("n")) if m.group("n") else 0
+        index = self.regs[m.group("index")] if m.group("index") else 0
+        return (self.regs[m.group("base")] + index + disp) & M16
 
     def get(self, op):
         if op in self.regs:

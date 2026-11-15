@@ -891,3 +891,120 @@ Measured: 1,500 programs of shifts, 300 of calls and 1,500 of `fuzz_c.py`
 of the programs of shifts 9.0% smaller, 4.5% fewer V30 clocks. The 13
 kernel C sources in the tree: 59 shifts, 25,010 to 24,888 bytes (the
 "18" of step V1's note was a miscount; the bytes are the same set's).
+
+## A short jump that does not reach: refused by `mutos_as` (2026-11-15)
+
+The owner's decision of 2026-11-15, on the proposal of step V2.
+
+- **What the original does** (under the emulator, `ascmp.py files`): `je`,
+  `j`, `loop` and `jcxz` to a label 127 bytes ahead or 128 back are
+  assembled; one byte further the original ends with status 2 -
+  "Short jump out of range" for the label ahead, "Value out of range" for
+  the label behind and for `j .+200.` (two places in the binary: a forward
+  reference is patched when its label comes, a known target goes through
+  the check of a byte value). It leaves its output file behind.
+- **`mutos_as`** wrote `(unsigned char)rel` in three places
+  (`encode_real_jcc()`, `encode_loop()`, the `j` in `encode_instruction()`).
+  They share `encode_short_jump()` now, which refuses in pass 2 - pass 1
+  has no addresses - through `g_reason`, as the refusals of `push *n.` and
+  `imul` do: "short jump out of range", status 1, no object.
+- **Left**: a short jump to a symbol that is not defined in the file
+  (the original: "Short jump to external not allowed"; `mutos_as` writes a
+  byte and no relocation), to a data label ("Illegal jump out of segment")
+  or to a number ("Illegal intersegment jump"). Neither `c1` nor `c2`
+  writes one; they stay on the list of checks `mutos_as` does not make
+  (`STATUS.md`, Milestone 2, "Leniency").
+- **Why it matters for `-1`**: `c2`'s `shortbr()` trusts `toofar()`, which
+  counts bytes from the instructions' text and knows the 8086's forms
+  only. Whatever a V30 rule gets wrong there now ends in a message, not
+  in a jump into the middle of other code.
+- `tests/realbin/ascmp.py cases` has 17 new cases ("short jump: ...");
+  `ascmp_cases.txt` pins nine as `both-reject` and eight as `obj-same`.
+
+## Step V3: V30-IMUL, and the length `c2` counts (2026-11-15)
+
+The plan had it as "`imul ax,*n.` for `mov cx,*n.` / `imul cx`; first `c2`
+must learn the form's length".
+
+- **The rows.** Five templates of `c1`'s tables load CX before a
+  multiplication: three of `*` (`movD\343x,B\nML\343x\n`: the left operand
+  addressable, behind a pointer, or computed) and two of `=*`
+  (`mov\343x,B\nM\343x\n`, then the store). The same load stands before
+  `idiv cx` in the rows of `/` and `%` (with `T`, the sign extension, in
+  front), so the rule looks at the tree's op - `TIMES` (42) or `ASTIMES`
+  (72) - before it looks at the template. The class of the right operand
+  in these rows (`r` in `c1_tables.txt`) takes a register variable and a
+  constant alike (`mov cx,di` / `imul cx`); the rule asks the tree for a
+  `CON`. The rewritten row is the original's without the load line and
+  with `\341x,B` (a tab, `ax,`, A2) for `\343x`.
+- **`*n.` and `#n` are `c1`'s own.** `A2` of a constant prints `*n.` from
+  -128 to 127 and `#n` otherwise; `mutos_as` makes 6B ib of the first and
+  69 iw of the second (and refuses a `*n.` outside the range since step
+  V1). 142, the size of a structure in the kernel, is a word: 4 bytes.
+- **A char.** `c * 3` loads the char, `cbw`, and uses the int row (the
+  `mov ax,ax` of the original between them stays). The suffix `L` of the
+  three `*` templates writes `imulb` when the left operand's type is
+  char; the rule leaves such a row. `c *= 5` has no row at all ("No code
+  table for op: =*", in the list of the originals' bugs).
+- **What the product leaves.** The 8086's `imul cx` writes DX:AX, the
+  form AX only; `x86sim.py` already had it so (step F0). `c1` takes the
+  int product from AX; it tests it with `or ax,ax` (`if (x * 3)`), so the
+  undefined S and Z of either form are never read.
+- **`c2` and the form.** `singop()` gives `ax,*30.` as the one operand;
+  `isreg()` reads `ax`. `rmove()` clears what it knows of AX, DX and the
+  flags; `regmask()` has the node read AX and write AX and DX;
+  `pinned()` keeps AX and DX from being renamed there; `repladdr()`
+  finds no register holding `ax,*30.`. That DX is taken as written is
+  safe: no code reads DX after a product for an earlier value, since the
+  8086's product destroys it. What is lost: `c2` no longer finds 30 in CX
+  for an `add ax,*30.` after the product.
+- **The length.** `toofar()`: `onelen("ax,*30.")` is 2. With the word
+  constant the form is 4. The statements `x = x * 301 + y;` are 13 bytes
+  each with `-1` and counted as 11; ten of them in an `if` are 130 against
+  110 - `c2` wrote `je`, and `mutos_as`, with its new check, refused it.
+  (With the byte constant and a store through AX the count happens to
+  hold: `c2` takes `mov ax,_g` for 4 bytes, one more than it has.) The
+  hook is in the case of `neg`, `imul`, `idiv`, `not`, `div`, for `imul`
+  only; `c2rules/v30_imul.c` counts opcode, mod r/m, a displacement and
+  the constant, and returns what is missing from the original's count.
+  It logs through `c2_rule()`, which keeps one entry for a node however
+  often `shortbr()` measures.
+- **The first trigger did not do it.** `x = (((x * 301 + 1) * 301 + 1)
+  ...` in `if (n)` with `n = 0`: `c1` multiplies the constants out (six
+  products left of thirty), and `c2` drops the `if` whose condition it
+  knows. The trigger now alternates two variables and takes the
+  condition from an argument.
+- **`check_v30.py`.** The report of `as` named one kind; a V30-PUSH
+  trigger with a product among its arguments now reports `push 4, imul 1`,
+  so the report is built from the instructions counted in the `.s`.
+  The check that a rule of `c2` leaves `c1`'s code alone allows what a
+  rule of `c1` logged. Entries of the rule log are counted for the rule's
+  own tool (V30-IMUL has `c2`'s besides).
+- **`x86sim.py`** had no `28.+_a(bx)` (a member of an element of an array
+  of structures) as an address; every program of products stored through
+  one. Added to `_ea()`.
+- **Numbers.** `--calls 300 --shifts 1500 --products 1500 --fuzz 1500
+  --seed 2`: no difference. The 13 kernel C sources in the tree: 210
+  products, 24,888 to 24,574 bytes (162 of them in `09_amx.c`). The
+  Version 7 sources of the tools in `v7/` (28 that compile): 39 products
+  by a constant, 34 shifts of a register by CL and 8 in memory - none of
+  the 8 with a word of address.
+
+## V30-SHIFT in memory (2026-11-15)
+
+Left out with step V2 because `c2` counts 4 bytes for any shift; taken
+after step V3, by the owner's decision, with the hook V3 brought.
+
+- `c1rules/v30_shift.c` lost its condition (`A1` a register variable)
+  and gained the destination `#1(R*)` (`MC\243(IB),cl`): seven rows have
+  the load of a constant count - one of a value, three each of `=<<` and
+  `=>>` (the value wanted, not wanted; `A1` or behind a pointer).
+- `c2rules/v30_shift.c`: 2 bytes, the destination's displacement and the
+  count; only the form with a word of displacement (`_g`, `_a(di)`) passes
+  the 4 the original counts. `c2_displen()` moved from `v30_imul.c` to
+  `c2rules.c`.
+- A char in memory is `salb _c,*4.` (C0 /4 ib); `x86sim.py` has no `salb`,
+  the generator shifts no char in place.
+- What it brings: nothing in the kernel; in the Version 7 tools 8 places
+  at most; 2 bytes and the 4 clocks of `mov cx,*n.` each.
+

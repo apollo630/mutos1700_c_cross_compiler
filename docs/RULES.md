@@ -78,6 +78,9 @@ A rule is in one of two states:
 | LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
 | V30-PUSH | c2 | `-1` | active | `src/mutos_cc/c2rules/v30_push.c` | `src/mutos_cc/c2port/c21.c`, `pushopt()`: the pair `mov r,`constant / `push r`, once `r` is seen not to be read again | [Section 7.4, step V1](TOOLCHAIN_PLAN.md) |
 | V30-SHIFT | c1 | `-1` | active | `src/mutos_cc/c1rules/v30_shift.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [Section 7.4, step V2](TOOLCHAIN_PLAN.md) |
+| V30-SHIFT | c2 | `-1` | active | `src/mutos_cc/c2rules/v30_shift.c` | `src/mutos_cc/c2port/c21.c`, `toofar()`: the length of a shift between a branch and its label | [Section 7.4, step V2](TOOLCHAIN_PLAN.md) |
+| V30-IMUL | c1 | `-1` | active | `src/mutos_cc/c1rules/v30_imul.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [Section 7.4, step V3](TOOLCHAIN_PLAN.md) |
+| V30-IMUL | c2 | `-1` | active | `src/mutos_cc/c2rules/v30_imul.c` | `src/mutos_cc/c2port/c21.c`, `toofar()`: the length of an `imul` between a branch and its label | [Section 7.4, step V3](TOOLCHAIN_PLAN.md) |
 | LIBC-F | ld | `-F` | active | `src/mutos_ld/ldrules/libc_f.c` | `src/mutos_ld/ld.c`, `getfile()`: `-lX`'s `/lib/libX.a` opened | [The corrected copy of `libc.a`](#the-corrected-copy-of-libca) |
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
@@ -107,7 +110,7 @@ where `-1` would apply it.
   `mutos_as` takes both only with `-1`, and reports them (`as: -1: ...
   push n`).
 
-- **V30-SHIFT** (`c1`, step V2, since 2026-11-14): `mov cx,*n.` / `sal
+- **V30-SHIFT** (`c1`, with a half in `c2`; step V2, since 2026-11-14): `mov cx,*n.` / `sal
   r,cl` becomes `sal r,*n.` (and `sar`, `shr`). The rows of `c1`'s code
   tables for a shift by an addressable count load it into CX and shift by
   CL; for a count that is a constant from 3 to 15 (0 is folded, 1 has a
@@ -116,12 +119,37 @@ where `-1` would apply it.
   the rule uses the row without the load and with the count for `cl`
   (C1 /r ib). The result and the flags are those of the shift by CL with
   that count; CX is not loaded, and `c1` keeps no account of a register's
-  contents. A shift in memory (`g <<= 3`) is left as it is: `c2` takes
-  any shift for 4 bytes when it measures a branch, and `sal _g,*3.` has
-  5 - a branch `c2` makes short might not reach (tried: it does not). The
+  contents. Since 2026-11-15 a shift in memory (`g <<= 3`, `*p >>= 4`)
+  is written so too. `c2` takes any shift for 4 bytes when it measures a
+  branch, and `sal _g,*3.`, with a word of address, has 5; the rule's
+  half in `c2` adds that byte in `toofar()` under `-1` (`met` without
+  `-1`; `len=` the length counted). The
   code tables are generated from the binary and stay untouched; the row
   is rewritten when it is matched, as C1-06 does. `mutos_as` takes the
   form only with `-1`, and reports it (`as: -1: ... shift n`).
+
+- **V30-IMUL** (`c1`, with a half in `c2`; step V3, since 2026-11-15): `mov
+  cx,*n.` / `imul cx` becomes `imul ax,*n.` (6B /r ib) or `imul ax,#n` (69
+  /r iw). The rows of `c1`'s code tables for `*` and `=*` with a right
+  operand that is a constant (or a register variable) load it into CX and
+  multiply AX by CX; for a constant the rule uses the row without the load
+  and with `ax` and the constant for `cx`. `c1` writes `*n.` for a
+  constant from -128 to 127 and `#n` for any other, so the byte form keeps
+  to the range `mutos_as` takes. AX gets the low word of the same product;
+  CX is not loaded and DX not written, and `c1` reads neither after a
+  product, nor its flags. A product by a variable, by a power of two (a
+  shift), of longs (`lmul`) or with a byte instruction is left.
+  In `c2` the form is an `imul` with the one operand `ax`, which is right
+  for what it reads and changes - but 2 bytes long when `toofar()` measures
+  a branch, where it has 3 or 4. The rule's half in `c2` adds the
+  constant's bytes there under `-1` (`met` without `-1`, where `c2` counts
+  as the original; `len=` the length counted). `mutos_as` takes the form
+  only with `-1`, and reports it (`as: -1: ... imul n`).
+
+Under every length `c2` counts lies a check of `mutos_as` (since
+2026-11-15): a short jump that does not reach its target is refused, as
+the original `as` refuses it - a length counted too small ends a
+compilation with a message, not with a jump to somewhere else.
 
 What a rule of `c2` changes is not only its node: `c2` improves a
 function as a whole, and its passes run again after the rule. With one
@@ -291,9 +319,9 @@ change, `c2`'s output, the objects and the programs following from it.
 triggers of `tests/rules/check_corrected.py` (below), a program at least
 for each active correction of `c1`, which the corpus alone does not give,
 and, since step V1, the triggers of `tests/rules/check_v30.py` and 40
-each of its generated programs of calls and of shifts (`--calls N`), which
+each of its generated programs of calls, of shifts and of products (`--calls N`), which
 meet the V30 rules: under `-1` (and `-F -1`) `c1`'s output differs only in
-the statements V30-SHIFT was applied in, `c2`'s only where `c1`'s did or
+the statements V30-SHIFT or V30-IMUL was applied in, `c2`'s only where `c1`'s did or
 inside the functions a V30 rule of `c2` was applied in, and the objects
 and programs follow from it.
 
@@ -372,10 +400,18 @@ address):
 - generated programs of calls (300; `--calls N`, `--seed`) - functions
   called with constants of every kind (a byte, a word, an address, 0),
   variables and calls as arguments, in conditions, loops and both arms of
-  an `if` - and programs of `fuzz_c.py` (300; `--fuzz N`): `main()`'s value
+  an `if` -, of shifts (300; `--shifts N`; since step V2), of products
+  (300; `--products N`; since step V3 - constants of every kind and
+  variables as factors, `=*`, conditions, structures under an index) and
+  programs of `fuzz_c.py` (300; `--fuzz N`): `main()`'s value
   and every file-scope variable, for `fuzz_c.py`'s programs its own
   judgement of every variable at every statement, are the same with `-1`
   as without;
+- the lengths `c2` counts (`lengths()`, since step V3): `c1`'s `-1` code
+  of a branch over ten products by a word (and of one over 26 shifts in
+  memory) goes through `c2 -1`, which
+  keeps the branch long, and through `c2` without `-1`, which makes it
+  short - and `mutos_as` refuses it;
 - with `--realbin` (in `make check-realbin`) the triggers are linked with
   and without `-1` and run under `tests/realbin/mutosemu.py`: the exit
   status is C's value either way.

@@ -102,3 +102,27 @@ c2_rule_node(uint16_t node)
 	}
 	npending = 0;		/* its nodes are gone */
 }
+
+/*
+ * c2_displen - the bytes of a displacement in the operand at s, which ends
+ * at a comma or at the end: none for a register and for "(r)", one for
+ * "*n.(r)" and for "(bp)", two for anything else (an address, "#n(r)").
+ */
+int
+c2_displen(uint16_t s)
+{
+	uint16_t t;
+	int paren = 0;
+
+	if (isreg(s) >= 0)
+		return 0;
+	for (t = s; rb(t) != 0 && rb(t) != ','; t++)
+		if (rb(t) == '(')
+			paren = 1;
+	if (!paren)
+		return 2;			/* an address */
+	if (rb(s) == '(')			/* "(bp)" has a byte of 0 */
+		return rb((uint16_t)(s + 1)) == 'b' && rb((uint16_t)(s + 2)) == 'p'
+		    && rb((uint16_t)(s + 3)) == ')' ? 1 : 0;
+	return rb(s) == '*' ? 1 : 2;
+}

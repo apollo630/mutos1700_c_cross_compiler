@@ -39,11 +39,22 @@ the 8086 does, so both must give the same values. Three parts:
     array indices, which is what V30-SHIFT meets. Each is compiled with
     "-S" and with "-O -S", with and without -1, and compared as the
     programs of calls are.
+  * Programs of products (--products N): generated here - products by
+    constants of every kind (a byte, a word, negative ones, powers of
+    two) and by variables, of ints, unsigneds, chars and register
+    variables, as values, in place (=*), as conditions and under the
+    index of an array of structures, with branches over them, which is
+    what V30-IMUL meets. Compiled and compared as the programs of shifts.
   * Programs of tests/mutos_cc/fuzz/fuzz_c.py (--fuzz N): expressions,
     arrays, longs - the same comparison, on fuzz_c.py's own judgement of
     the two codes (every variable at every statement against C's
     semantics): with -1 it must be what it is without. Compiled with
     "-O -S"; every other one with "-S" as well.
+
+Besides (lengths()): c2 counts the bytes of the 80186/V30 forms when it
+makes a branch short - a branch over ten products by a word stays long
+with -1, and c2 without -1 on the same code makes it short, which
+mutos_as refuses, as it does not reach.
 
 It reports what -1 gained in the generated programs: the bytes of text
 (from the objects of "cc -O -c") and the V30 clocks x86sim.py counted.
@@ -51,8 +62,8 @@ It reports what -1 gained in the generated programs: the bytes of text
 Every V30 rule that is active in docs/RULES.md must have a trigger here.
 
 Usage:
-    check_v30.py [--cc PATH] [--calls N] [--shifts N] [--fuzz N] [--seed S]
-                 [--realbin] [--keep DIR] [-v]
+    check_v30.py [--cc PATH] [--calls N] [--shifts N] [--products N] [--fuzz N]
+                 [--seed S] [--realbin] [--keep DIR] [-v]
 
 Exit status 1 if anything differs. Python 3; --realbin needs unicorn.
 """
@@ -76,6 +87,7 @@ import fuzz_c  # noqa: E402
 
 CC = os.path.join(REPO, 'src', 'mutos_cc', 'mutos_cc')
 AS = os.path.join(REPO, 'src', 'mutos_as', 'mutos_as')
+C2 = os.path.join(REPO, 'src', 'mutos_cc', 'mutos_c2')
 MUTOSEMU = os.path.join(REPO, 'tests', 'realbin', 'mutosemu.py')
 
 # the instructions of a rule's kind in a .s, and the word mutos_as's
@@ -85,11 +97,54 @@ KIND = {
     # c1 writes the shift by 1 as "*1", without the dot
     'V30-SHIFT': (re.compile(r'^(?:(?:L\d+|_\w+):)*(?:sal|sar|shr)b?\t[^,\n]+,\*\d+\.$',
                              re.M), 'shift'),
+    'V30-IMUL': (re.compile(r'^(?:(?:L\d+|_\w+):)*imul\t[^,\n]+,[*#][^(\n]*$', re.M),
+                 'imul'),
 }
 # the options a rule's triggers are compiled with: c2's rules need -O, c1's
 # are tried without it (c1's code) and with it (what c2 makes of it)
-OPTS = {'V30-PUSH': [['-O']], 'V30-SHIFT': [[], ['-O']]}
-TOOL = {'V30-PUSH': 'c2', 'V30-SHIFT': 'c1'}
+OPTS = {'V30-PUSH': [['-O']], 'V30-SHIFT': [[], ['-O']], 'V30-IMUL': [[], ['-O']]}
+# the tool whose rule it is, and whose entries of the rule log are counted
+# (V30-IMUL has a second half in c2, the length toofar() counts: its
+# entries are c2's)
+TOOL = {'V30-PUSH': 'c2', 'V30-SHIFT': 'c1', 'V30-IMUL': 'c1'}
+
+# A branch over ten statements with a product by a word each: 130 bytes of
+# code with -1 ("imul ax,#n" is 4 bytes), which toofar() of c2 takes for
+# 110 unless V30-IMUL's half in c2 counts the constants - see lengths().
+LONGIF = '''f(n)
+{
+	int x, y;
+
+	x = 1;
+	y = 2;
+	if (n) {
+%s	}
+	return x + y;
+}
+main()
+{
+	return f(0) + f(1);
+}
+''' % ''.join('\t\tx = x * %d + y;\n\t\ty = y * %d + x;\n' % (301 + i, 401 + i)
+              for i in range(5))
+
+# The same for V30-SHIFT: 26 shifts of file-scope ints by a constant, 5
+# bytes each with -1 ("sal _g,*n." has a word of address), 130 in all;
+# toofar() takes a shift for 4.
+LONGIFS = '''int g, h;
+f(n)
+{
+	g = 1;
+	h = 16384;
+	if (n) {
+%s	}
+	return g + h;
+}
+main()
+{
+	return f(0) + f(1);
+}
+''' % ('\t\tg <<= 3;\n\t\th >>= 3;\n' * 13)
 
 # (rule, name, source, C's value of main(), the 80186/V30 instructions of
 # the rule's kind with -1)
@@ -219,7 +274,7 @@ main()
 	return r + q + x;
 }
 ''', 7597, 4),
-    ('V30-SHIFT', 'a shift in memory is left: a file-scope int, a local, through a pointer',
+    ('V30-SHIFT', 'a shift in memory: a file-scope int, a local, through a pointer',
      '''int g, v, *p;
 main()
 {
@@ -234,7 +289,9 @@ main()
 	*p <<= 6;
 	return g + l + v;
 }
-''', 152, 0),
+''', 152, 3),
+    ('V30-SHIFT', 'a branch over 26 shifts in memory: 5 bytes each, which c2 must count',
+     LONGIFS, 16385, 26),
     ('V30-SHIFT', 'branches on the flags of a shift by a constant',
      '''main()
 {
@@ -266,6 +323,94 @@ main()
 	return t[16] + (c >> 3) + (c << 3);
 }
 ''', 819, 3),
+    ('V30-IMUL', 'a byte, a word and a negative constant, an unsigned and a char',
+     '''int g;
+unsigned u;
+char c;
+main()
+{
+	int x;
+
+	x = 7;
+	g = 11;
+	u = 9000;
+	c = 5;
+	return x * 30 + g * 300 + x * -5 + u * 7 + c * 3;
+}
+''', 954, 5),
+    ('V30-IMUL', 'the ends of the byte: -128 and 127 are "*n.", -129 and 129 "#n."; 128 is a shift',
+     '''int a, b, c, d, e;
+main()
+{
+	a = 3;
+	b = -2;
+	c = 5;
+	d = 1;
+	e = 4;
+	return a * 127 + b * -128 + c * -129 + d * 129 + e * 128;
+}
+''', 633, 4),
+    ('V30-IMUL', 'products in place (=*): a register variable, a file-scope int, through a pointer',
+     '''int g, v, *p, t[4];
+main()
+{
+	register int r;
+	int i;
+
+	r = 3;
+	g = 4;
+	v = 5;
+	p = &v;
+	i = 2;
+	t[2] = 6;
+	r *= 6;
+	g *= 18;
+	*p *= 7;
+	t[i] *= 300;
+	return r + g + v + t[2];
+}
+''', 1925, 4),
+    ('V30-IMUL', 'left: a product by a variable, by a register variable, of a long, by 16',
+     '''long l;
+main()
+{
+	register int r;
+	int x, y;
+
+	r = 3;
+	x = 5;
+	y = 7;
+	l = 1000;
+	l = l * 70;
+	return x * y + x * r + (int)(l / 100) + x * 16;
+}
+''', 830, 0),
+    ('V30-IMUL', 'a product tested and compared, and the size of a structure under an index',
+     '''struct s {
+	char n[28];
+	int v;
+} a[4], *p;
+main()
+{
+	int i, n;
+
+	i = 3;
+	n = 0;
+	p = &a[i];
+	p->v = 40;
+	if (i * 3)
+		n += 1;
+	if (i * 10 > 29)
+		n += 2;
+	if (!(n * 300))
+		n += 4;
+	while (i * 5 > 5)
+		i--;
+	return n + a[3].v + i * 1000;
+}
+''', 1043, 6),
+    ('V30-IMUL', 'a branch over ten products by a word: 4 bytes each, which c2 must count',
+     LONGIF, 18392, 10),
 ]
 
 
@@ -328,9 +473,24 @@ def emulated(cc, d, opts):
     return r.returncode
 
 
-def entries(log, rule, what):
-    return [ln for ln in log if ln.split()[:3] == ['c2', rule, what]
-            or ln.split()[:3] == ['c1', rule, what]]
+def entries(log, rule, what, tool=None):
+    return [ln for ln in log if ln.split()[:3] == [tool or TOOL[rule], rule, what]]
+
+
+def kinds_of(text):
+    """{mutos_as's word: the instructions of that kind in the .s}."""
+    return {word: len(kind.findall(text)) for kind, word in KIND.values()}
+
+
+def report(text):
+    """The line mutos_as -1 reports for the .s."""
+    n = kinds_of(text)
+    total = sum(n.values())
+    if not total:
+        return 'as: -1: no 80186/V30 instructions'
+    return 'as: -1: %d 80186/V30 instruction%s: %s' % (
+        total, '' if total == 1 else 's',
+        ', '.join('%s %d' % (w, n[w]) for w in ('push', 'shift', 'imul') if n[w]))
 
 
 def triggers(cc, realbin):
@@ -375,9 +535,14 @@ def trigger(cc, realbin, rule, name, src, want, count, opts):
         if len(entries(log0, rule, 'met')) != count:
             problems.append('%s: the rule log has %d met entries without -1, -1 '
                             'applies %d' % (tag, len(entries(log0, rule, 'met')), count))
-        if TOOL[rule] == 'c2' and \
-                compile_s(cc, d, src, ['-1'])[2] != compile_s(cc, d, src, [])[2]:
-            problems.append('%s: -1 changes c1\'s code' % tag)
+        if TOOL[rule] == 'c2':
+            # a rule of c2 leaves c1's code alone: what -1 changes there is
+            # a rule's of c1 (a product or a shift in the trigger)
+            c1s = compile_s(cc, d, src, ['-1'], log=True)
+            if c1s[2] != compile_s(cc, d, src, [])[2] and \
+                    not [ln for ln in c1s[3] if ln.split()[:1] == ['c1']
+                         and ln.split()[2:3] == ['applied']]:
+                problems.append('%s: -1 changes c1\'s code' % tag)
         if count:
             if not isinstance(simulate(s1, False), str):
                 problems.append('%s: x86sim.py runs the -1 code as 8086 code' % tag)
@@ -388,11 +553,10 @@ def trigger(cc, realbin, rule, name, src, want, count, opts):
                 problems.append('%s: mutos_as takes the -1 code without -1' % tag)
         size0, _ = textsize(cc, d, opts)
         size1, msgs = textsize(cc, d, opts + ['-1'])
-        rep = 'as: -1: %d 80186/V30 instructions: %s %d' % (count, word, count) \
-            if count != 1 else 'as: -1: 1 80186/V30 instruction: %s 1' % word
-        if not count:
-            rep = 'as: -1: no 80186/V30 instructions'
-        if rep not in msgs:
+        # the report counts every kind (a trigger of one rule may meet
+        # another: a product among the arguments of a call)
+        rep = report(s1)
+        if kinds_of(s1)[word] != count or rep not in msgs:
             problems.append('%s: cc -c -1 reports %r, not %r' % (tag, msgs.strip(), rep))
         line = '%s: %d either way, %d instruction(s), text %s -> %s bytes' % (
             tag, want, count, size0, size1)
@@ -405,6 +569,56 @@ def trigger(cc, realbin, rule, name, src, want, count, opts):
             line += '; linked and emulated'
         lines.append(line)
     return problems, lines
+
+
+def lengths(cc):
+    """What c2 counts for the 80186/V30 forms when it makes a branch short
+    (toofar(); V30-IMUL's half in c2): c1's -1 code of LONGIF through c2
+    with -1 keeps the branch over the products long and assembles;
+    through c2 without -1 - which counts as the original, 2 bytes for
+    "imul ax,#n" - the branch becomes short, and mutos_as refuses it,
+    since it does not reach. So the hook is needed, and a length counted
+    too small ends in a message, not in wrong code."""
+    problems = []
+    for what, src in (('products', LONGIF), ('shifts in memory', LONGIFS)):
+        problems += length(cc, what, src)
+    return problems
+
+
+def length(cc, what, src):
+    problems = []
+    with tempfile.TemporaryDirectory(prefix='v30') as d:
+        st, m, s1, _ = compile_s(cc, d, src, ['-1'])
+        if st:
+            return ['lengths: cc -S -1 exit status %d: %s' % (st, m.strip()[-200:])]
+        with open(os.path.join(d, 'c1.s'), 'w') as f:
+            f.write(s1)
+        for opt, want in (([], 'refused'), (['-1'], 'assembled')):
+            out = 'c2%s.s' % ''.join(opt)
+            r = subprocess.run([C2] + opt + ['c1.s', out], cwd=d, capture_output=True,
+                               env=env())
+            if r.returncode != 0:
+                problems.append('lengths: c2 %s exit status %d' % (' '.join(opt), r.returncode))
+                continue
+            text = open(os.path.join(d, out)).read()
+            short = bool(re.search(r'^je\tL\d+$', text, re.M))
+            r = subprocess.run([AS, '-1', '-o', 'x.o', out], cwd=d, capture_output=True,
+                               env=env())
+            msgs = (r.stdout + r.stderr).decode('latin-1')
+            if want == 'refused' and not (short and r.returncode != 0
+                                          and 'short jump out of range' in msgs):
+                problems.append('lengths: c2 without -1 on c1\'s -1 code: the branch over '
+                                'the ' + what + ' is %s and mutos_as ends with status %d (%s) - '
+                                'expected a short one, refused'
+                                % ('short' if short else 'long', r.returncode,
+                                   msgs.strip()[-80:]))
+            if want == 'assembled' and (short or r.returncode != 0):
+                problems.append('lengths: c2 -1 on c1\'s -1 code: the branch over the '
+                                '' + what + ' is %s and mutos_as ends with status %d (%s) - '
+                                'expected a long one, assembled'
+                                % ('short' if short else 'long', r.returncode,
+                                   msgs.strip()[-80:]))
+    return problems
 
 
 # ---- programs of calls ------------------------------------------------------
@@ -585,7 +799,107 @@ class Shifts:
                 + body + '\treturn x + y + r + q + %s;\n}\n' % self.expr(1))
 
 
-def generated(cc, ncalls, nshifts, nfuzz, seed, keep):
+# ---- programs of products ---------------------------------------------------
+
+MCONSTS = [3, 3, 5, 6, 7, 10, 10, 12, 18, 30, 30, 68, 100, 127, 129, 142, 255, 300, 1000,
+           -1, -3, -5, -127, -128, -129, -300, 2, 4, 16, 128, 256]
+MVARS = ['g0', 'g1', 'x', 'y', 'r', 'u0', 'q', 'ga[1]', 'ga[5]', 'st[2].v']
+MLVALS = ['g0', 'g1', 'x', 'y', 'r', 'u0', 'q', 'ga[2]', 'ga[6]']
+
+
+class Products:
+    """Products by constants of every kind (a byte, a word, negative,
+    powers of two - which are shifts) and by variables, of ints,
+    unsigneds, a char and register variables (r, q), as values, in place
+    (=*, in memory too), as conditions and under the index of an array of
+    structures - what V30-IMUL meets -, with branches around them. No
+    product of two constants (c1 folds it)."""
+
+    def __init__(self, rnd):
+        self.rnd = rnd
+
+    def factor(self):
+        r = self.rnd
+        if r.random() < 0.15:
+            return r.choice(['x', 'y', 'g1', 'r'])
+        return str(r.choice(MCONSTS) if r.random() < 0.8 else r.randint(-400, 400))
+
+    def atom(self):
+        r = self.rnd
+        k = r.random()
+        if k < 0.6:
+            return r.choice(MVARS)
+        if k < 0.7:
+            return 'c0'
+        if k < 0.82:
+            return 'st[(%s) & 3].v' % r.choice(['x', 'y', 'g0', 'r * 3', 'q'])
+        return str(r.choice([1, -1, 3, 8, 100, 255, -256, 4095, 32767]))
+
+    def expr(self, depth=0):
+        r = self.rnd
+        k = r.random()
+        if depth > 3 or k < 0.2:
+            return self.atom()
+        if k < 0.65:
+            e = self.expr(depth + 1)
+            if e.lstrip('-').isdigit():
+                e = r.choice(MVARS)
+            f = self.factor()
+            return '(%s * %s)' % ((e, f) if r.random() < 0.8 else (f, e))
+        if k < 0.72:
+            return '(%s << %d)' % (r.choice(MVARS), r.choice([1, 3, 5]))
+        return '(%s %s %s)' % (self.expr(depth + 1), r.choice(['+', '-', '&', '|', '^']),
+                               self.expr(depth + 1))
+
+    def cond(self):
+        r = self.rnd
+        k = r.random()
+        e = '(%s * %s)' % (r.choice(MVARS), self.factor())
+        if k < 0.3:
+            return e
+        if k < 0.45:
+            return '!' + e
+        return '%s %s %s' % (e, r.choice(['==', '!=', '<', '>', '<=', '>=']), self.atom())
+
+    def stmt(self, ind, depth=0):
+        r = self.rnd
+        k = r.random()
+        t = '\t' * ind
+        if k < 0.4 or depth > 1:
+            return '%s%s = %s;\n' % (t, r.choice(MLVALS), self.expr())
+        if k < 0.6:
+            return '%s%s *= %s;\n' % (t, r.choice(MLVALS), self.factor())
+        if k < 0.66:
+            return '%sst[(%s) & 3].v = %s;\n' % (t, r.choice(['x', 'g0', 'r']), self.expr(1))
+        if k < 0.85:
+            return '%sif (%s)\n%s%selse\n%s' % (
+                t, self.cond(), self.stmt(ind + 1, depth + 1), t,
+                self.stmt(ind + 1, depth + 1))
+        body = ''.join(self.stmt(ind + 1, depth + 1) for _ in range(r.randint(1, 8)))
+        if r.random() < 0.5:
+            return '%sif (%s) {\n%s%s}\n' % (t, self.cond(), body, t)
+        return '%sfor (i%d = 0; i%d < %d; i%d++) {\n%s%s}\n' % (
+            t, depth, depth, r.randint(1, 3), depth, body, t)
+
+    def program(self):
+        r = self.rnd
+        body = ''.join(self.stmt(1) for _ in range(r.randint(4, 16)))
+        return ('int g0, g1, ga[8];\nunsigned u0;\nchar c0;\n'
+                'struct s {\n\tchar n[%d];\n\tint v;\n} st[4];\nmain()\n{\n'
+                '\tregister int r;\n\tregister unsigned q;\n\tint x, y, i0, i1;\n\n'
+                '\tg0 = %d;\n\tg1 = %d;\n\tu0 = %d;\n\tc0 = %d;\n\tx = %d;\n\ty = %d;\n'
+                '\tr = %d;\n\tq = %d;\n\tfor (i0 = 0; i0 < 8; i0++)\n'
+                '\t\tga[i0] = i0 * %d - %d;\n\tfor (i0 = 0; i0 < 4; i0++)\n'
+                '\t\tst[i0].v = i0 * %d + %d;\n' % (
+                    r.choice([4, 10, 28, 66, 140, 298]),
+                    r.randint(-2000, 2000), r.randint(-30000, 30000), r.randint(0, 65535),
+                    r.randint(-128, 127), r.randint(-100, 100), r.randint(-30000, 30000),
+                    r.randint(-2000, 2000), r.randint(0, 65535), r.randint(1, 4000),
+                    r.randint(0, 9000), r.randint(1, 900), r.randint(-50, 50))
+                + body + '\treturn x + y + r + q + %s;\n}\n' % self.expr(1))
+
+
+def generated(cc, ncalls, nshifts, nmuls, nfuzz, seed, keep):
     problems = []
     t = {'fuzz': 0, 'fchanged': 0, 'refused': 0}
     kinds = [k for k, _ in KIND.values()]
@@ -653,6 +967,7 @@ def generated(cc, ncalls, nshifts, nfuzz, seed, keep):
     with tempfile.TemporaryDirectory(prefix='v30') as d:
         t['calls'] = programs(d, 'calls', ncalls, Calls, [['-O']])
         t['shifts'] = programs(d, 'shifts', nshifts, Shifts, [[], ['-O']])
+        t['products'] = programs(d, 'products', nmuls, Products, [[], ['-O']])
         for i in range(nfuzz):
             rnd = random.Random('v30 fuzz %d %d' % (seed, i))
             src, fenv, ret, g = fuzz_c.generate(rnd, rnd.random() < 0.8, rnd.random() < 0.3,
@@ -692,7 +1007,8 @@ def active_v30():
             cells = [c.strip().strip('`') for c in line.strip().strip('|').split('|')]
             if len(cells) >= 4 and cells[0].startswith('V30-') and cells[2] == '-1' \
                     and cells[3] == 'active':
-                out.append(cells[0])
+                if cells[0] not in out:     # V30-IMUL: a row for c1 and one for c2
+                    out.append(cells[0])
     return out
 
 
@@ -703,6 +1019,8 @@ def main():
                     help='generated programs of calls (300)')
     ap.add_argument('--shifts', type=int, default=300, metavar='N',
                     help='generated programs of shifts (300)')
+    ap.add_argument('--products', type=int, default=300, metavar='N',
+                    help='generated programs of products (300)')
     ap.add_argument('--fuzz', type=int, default=300, metavar='N',
                     help='programs of fuzz_c.py (300)')
     ap.add_argument('--seed', type=int, default=1)
@@ -713,6 +1031,7 @@ def main():
     a = ap.parse_args()
 
     problems, lines = triggers(a.cc, a.realbin)
+    problems += lengths(a.cc)
     rules = active_v30()
     for rule in rules:
         if not any(c[0] == rule and c[4] for c in CASES):
@@ -722,7 +1041,7 @@ def main():
         if rule not in rules:
             problems.append('%s has a trigger here but is no active V30 rule in '
                             'docs/RULES.md' % rule)
-    p, t = generated(a.cc, a.calls, a.shifts, a.fuzz, a.seed, a.keep)
+    p, t = generated(a.cc, a.calls, a.shifts, a.products, a.fuzz, a.seed, a.keep)
     problems += p
     if a.verbose or problems:
         for ln in lines:
@@ -733,7 +1052,7 @@ def main():
         print('check_v30: %d problem(s)' % len(problems))
         return 1
     gain = ''
-    for what in ('calls', 'shifts'):
+    for what in ('calls', 'shifts', 'products'):
         c = t[what]
         if c['b0']:
             gain += '; in the %d compilations of programs of %s -1 changed: %d 80186/V30 ' \
@@ -742,12 +1061,14 @@ def main():
                                   100.0 * (c['b0'] - c['b1']) / c['b0'], c['c0'], c['c1'],
                                   100.0 * (c['c0'] - c['c1']) / max(c['c0'], 1))
     print('check_v30: %d trigger(s) of %d V30 rule(s) (%s): C\'s value with and without '
-          '-1%s; %d programs of calls and %d of shifts (seed %d; %d and %d compilations '
+          '-1%s; c2 counts the forms\' lengths; %d programs of calls, %d of shifts and '
+          '%d of products (seed %d; %d, %d and %d compilations '
           'not run by x86sim.py) and %d of fuzz_c.py (%d compilations changed by -1; %d '
           'refused): the same values with -1%s'
           % (len(CASES), len(rules), ', '.join(rules) or 'none',
              ', linked and emulated too' if a.realbin else '', t['calls']['n'],
-             t['shifts']['n'], a.seed, t['calls']['unrun'], t['shifts']['unrun'],
+             t['shifts']['n'], t['products']['n'], a.seed, t['calls']['unrun'],
+             t['shifts']['unrun'], t['products']['unrun'],
              t['fuzz'], t['fchanged'], t['refused'], gain))
     return 0
 

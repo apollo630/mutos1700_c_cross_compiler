@@ -54,9 +54,24 @@ void	c2_rule(const char *rule, int applied, uint16_t node,
  */
 void	c2_rule_node(uint16_t node);
 
+/* the bytes of a displacement in the operand at s (up to a comma or the end) */
+int	c2_displen(uint16_t s);
+
 /* ---- the rules ------------------------------------------------------ */
 
 /* V30-PUSH (v30_push.c): "push" of a constant; 1 if pushopt() makes it */
 int	rule_v30_push(uint16_t p);
+
+/*
+ * V30-IMUL (v30_imul.c): the bytes toofar() must add to what it counted
+ * (base) for the "imul" node q when that is an "imul" by a constant
+ */
+int	rule_v30_imul(uint16_t q, int base);
+
+/*
+ * V30-SHIFT (v30_shift.c): the bytes toofar() must add to what it counted
+ * (base) for the shift node q when that is a shift by a constant
+ */
+int	rule_v30_shift(uint16_t q, int base);
 
 #endif /* MUTOS_C2RULES_H */

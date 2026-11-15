@@ -414,6 +414,18 @@ def cases():
                        ('shl mem imm', b'\tshl (bx),*3.\n')):
         case('186: ' + name, ['-o', 'y.o', 'x.s'],
              {'x.s': b'.text\n_f:\n' + line + b'\tret\n'})
+    # a short jump that does not reach (2026-11-15): the original refuses it
+    # with status 2 - forward "Short jump out of range", backward and for
+    # ".+n" "Value out of range" -, mutos_as refuses it since then (it wrote
+    # the low byte of the distance); the ends of the range are taken
+    for op in (b'je', b'j', b'loop', b'jcxz'):
+        for name, n, ahead in (('127 ahead', 127, True), ('128 ahead', 128, True),
+                               ('128 back', 126, False), ('129 back', 127, False)):
+            body = (b'\t' + op + b'\tL1\n' + b'\tnop\n' * n + b'L1:\tnop\n' if ahead
+                    else b'L1:\n' + b'\tnop\n' * n + b'\t' + op + b'\tL1\n\tnop\n')
+            case('short jump: %s %s' % (op.decode(), name), ['-o', 'y.o', 'x.s'],
+                 {'x.s': b'.text\n' + body})
+    case('short jump: j .+200', ['-o', 'y.o', 'x.s'], {'x.s': b'.text\n\tj\t.+200.\n\tnop\n'})
     # found by asfuzz.py (2026-10-25) and fixed in mutos_as: kept here
     for name, body in (
             ('shift of a global, cl', b'\tsarb 2.+_gs,cl\n\tshl _gs,cl\n\trorb _gs,*1\n'),

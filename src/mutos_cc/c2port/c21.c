@@ -504,7 +504,9 @@ toofar(uint16_t p)
 		case SAR:
 		case SHR:
 			dualop(q);
-			len += onelen(REG(RT1));
+			rs = onelen(REG(RT1));
+			len += rs;
+			len += (int16_t)rule_v30_shift(q, rs);	/* EXTENSION: V30-SHIFT, docs/RULES.md (-1) */
 			break;
 
 		case JBR:
@@ -546,7 +548,10 @@ toofar(uint16_t p)
 		case NOT:
 		case DIV:
 			singop(q);
-			len += onelen(REG(RT1));
+			rs = onelen(REG(RT1));
+			len += rs;
+			if (OP(q) == IMUL)	/* EXTENSION: V30-IMUL, docs/RULES.md (-1) */
+				len += (int16_t)rule_v30_imul(q, rs);
 			break;
 
 		case POP:

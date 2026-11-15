@@ -259,7 +259,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `--realbin` checked against the emulated original `ld`) and as a right link must with
   `-F` - and `tests/realbin/ldcmp.py`/`ldfuzz.py` take `--mode corrected`.
   `check_v30.py` (in `make test`, since step V1): each active V30 rule's triggers and
-  generated programs of calls, of shifts (since step V2) and of `fuzz_c.py`, `c1`'s and `c2`'s code under `x86sim.py` - the
+  generated programs of calls, of shifts (since step V2), of products (since step V3) and of `fuzz_c.py`, `c1`'s and `c2`'s code under `x86sim.py` - the
   same values with `-1` as without (`docs/RULES.md`, "What `-1` computes"); with
   `--realbin` the triggers linked and run under `mutosemu.py`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its

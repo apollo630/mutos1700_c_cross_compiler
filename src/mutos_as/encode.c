@@ -1918,15 +1918,39 @@ static const RealJcc *real_jcc_lookup(const Token *mnem)
             return &REAL_JCC[i];
     return NULL;
 }
+/* A short jump - opcode and rel8: the conditional jumps, "j", the loops
+ * and jcxz. A target the byte does not reach is refused, in pass 2, where
+ * the addresses are known (decided 2026-11-15). The original as refuses
+ * it too, with status 2 (measured under the emulator: forward, from 128
+ * bytes on, "Short jump out of range"; backward, below -128, and for
+ * ".+n", "Value out of range"); until then mutos_as wrote the low byte of
+ * the distance - a jump to somewhere else, without a message. It is the
+ * check that catches a branch c2 has made short on a wrong length
+ * (toofar(), docs/RULES.md, "The V30 rules"). A target that is not
+ * defined in this file is left as before (the original refuses that one
+ * with "Short jump to external not allowed"). */
+static bool encode_short_jump(CodeBuf *out, unsigned char opcode, const ParsedOperand *target,
+                              long cur_addr, SymTab *st, bool resolve)
+{
+    if (target->mode != ADDR_DIRECT || !target->expr) return false;
+    long tgt = expr_target_addr(target->expr, cur_addr, st, resolve);
+    long rel = resolve ? (tgt - (cur_addr + 2)) : 0;
+    if (resolve && (rel < -128 || rel > 127)) {
+        int symidx;
+        if (!expr_is_unresolved_sym(target->expr, st, &symidx)) {
+            g_reason = "short jump out of range: the target is more than 127 bytes "
+                       "ahead or 128 back (the original as refuses it too)";
+            return false;
+        }
+    }
+    codebuf_put(out, opcode);
+    codebuf_put(out, (unsigned char)(rel & 0xFF));
+    return true;
+}
 static bool encode_real_jcc(CodeBuf *out, unsigned char opcode, const ParsedOperand *target,
                              long cur_addr, SymTab *st, bool resolve)
 {
-    if (target->mode != ADDR_DIRECT || !target->expr) return false;
-    codebuf_put(out, opcode);
-    long tgt = expr_target_addr(target->expr, cur_addr, st, resolve);
-    long rel = resolve ? (tgt - (cur_addr + 2)) : 0;
-    codebuf_put(out, (unsigned char)(rel & 0xFF));
-    return true;
+    return encode_short_jump(out, opcode, target, cur_addr, st, resolve);
 }
 
 /* LOOP family + JCXZ - confirmed real target syntax includes the bare
@@ -1947,12 +1971,7 @@ static const LoopOp *loop_op_lookup(const Token *mnem)
 static bool encode_loop(CodeBuf *out, unsigned char opcode, const ParsedOperand *target,
                          long cur_addr, SymTab *st, bool resolve)
 {
-    if (target->mode != ADDR_DIRECT || !target->expr) return false;
-    codebuf_put(out, opcode);
-    long tgt = expr_target_addr(target->expr, cur_addr, st, resolve);
-    long rel = resolve ? (tgt - (cur_addr + 2)) : 0;
-    codebuf_put(out, (unsigned char)(rel & 0xFF));
-    return true;
+    return encode_short_jump(out, opcode, target, cur_addr, st, resolve);
 }
 
 typedef struct { const char *name; unsigned char negated_jcc; } PseudoBranch;
@@ -2121,12 +2140,7 @@ bool encode_instruction(CodeBuf *out, const Token *mnemonic,
      * rel16 form "jmp" always uses - confirmed via multiple real
      * samples, including the classic "j ." self-loop (disp=-2). */
     if (mnemonic->len == 1 && mnemonic->text[0] == 'j' && nops == 1) {
-        if (ops[0].mode != ADDR_DIRECT || !ops[0].expr) return false;
-        codebuf_put(out, 0xEB);
-        long tgt = expr_target_addr(ops[0].expr, cur_addr, st, resolve);
-        long rel = resolve ? (tgt - (cur_addr + 2)) : 0;
-        codebuf_put(out, (unsigned char)(rel & 0xFF));
-        return true;
+        return encode_short_jump(out, 0xEB, &ops[0], cur_addr, st, resolve);
     }
 
     if (mnemonic->len == 4 && strncmp(mnemonic->text, "call", 4) == 0 && nops == 1)

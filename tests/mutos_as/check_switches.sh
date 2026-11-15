@@ -28,6 +28,9 @@
 # make check-realbin (ascmp_goldens.txt); here, on the host only, a small
 # source: 4 symbols without -C (48 bytes), 2 with it (24 bytes).
 #
+# Besides the switches (since 2026-11-15): a short jump that does not reach
+# its target is refused, as by the original.
+#
 # Usage: MUTOS_AS=../../src/mutos_as/mutos_as ./check_switches.sh
 # Exit status 0 if everything holds.
 
@@ -124,6 +127,41 @@ if ! "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1; then
     bad=$((bad + 1))
 fi
 
+# A short jump (the conditional jumps, j, the loops, jcxz) reaches 127 bytes
+# ahead and 128 back; one that does not reach is refused, as the original
+# as refuses it (measured, tests/realbin/ascmp.py cases, "short jump"), with
+# or without -1. Before 2026-11-15 the low byte of the distance was written.
+nops() { i=0; while [ "$i" -lt "$1" ]; do printf '\tnop\n'; i=$((i + 1)); done; }
+for op in je j loop jcxz; do
+    for c in "ahead 127 ok" "ahead 128 refused" "back 126 ok" "back 127 refused"; do
+        set -- $c
+        if [ "$1" = ahead ]; then
+            { printf '.text\n\t%s\tL1\n' "$op"; nops "$2"; printf 'L1:\tnop\n'; } > "$tmp/j.s"
+        else
+            { printf '.text\nL1:\n'; nops "$2"; printf '\t%s\tL1\n\tnop\n' "$op"; } > "$tmp/j.s"
+        fi
+        "$MUTOS_AS" "$tmp/j.s" -o "$tmp/j.o" >"$tmp/log" 2>&1
+        st=$?
+        if [ "$3" = ok ] && [ "$st" -ne 0 ]; then
+            echo "FAIL  $op over $2 bytes $1: refused: $(head -n 1 "$tmp/log")"
+            bad=$((bad + 1))
+        elif [ "$3" = refused ] && { [ "$st" -eq 0 ] || ! grep -q 'short jump out of range' "$tmp/log"; }; then
+            echo "FAIL  $op over $2 bytes $1: not refused: $(head -n 1 "$tmp/log")"
+            bad=$((bad + 1))
+        fi
+    done
+done
+# the displacement at the two ends: 7F ahead, 80 back
+{ printf '.text\n\tje\tL1\n'; nops 127; printf 'L1:\tnop\n'; } > "$tmp/j.s"
+"$MUTOS_AS" "$tmp/j.s" -o "$tmp/j.o" >/dev/null 2>&1
+{ printf '.text\nL1:\n'; nops 126; printf '\tje\tL1\n'; } > "$tmp/k.s"
+"$MUTOS_AS" "$tmp/k.s" -o "$tmp/k.o" >/dev/null 2>&1
+if [ "$(od -An -tx1 -j16 -N2 "$tmp/j.o" | tr -d ' \n')" != "747f" ] || \
+   [ "$(od -An -tx1 -j142 -N2 "$tmp/k.o" | tr -d ' \n')" != "7480" ]; then
+    echo "FAIL  short jump at the ends of its range: $(od -An -tx1 -j16 -N2 "$tmp/j.o") $(od -An -tx1 -j142 -N2 "$tmp/k.o")"
+    bad=$((bad + 1))
+fi
+
 # -C: the symbol table's size is in the header (a_syms, bytes 8 and 9).
 printf '.globl _f\n.text\n_f:\tjmp\tL1\nL1:\tret\n.data\nLd:\t.word\t1\n_d:\t.word\t2\n' > "$tmp/c.s"
 syms() { od -An -tu2 -j8 -N2 "$1" | tr -d ' '; }
@@ -137,7 +175,7 @@ if [ "$(syms "$tmp/c0.o")" != 48 ] || [ "$(syms "$tmp/c1.o")" != 24 ] || \
 fi
 
 if [ "$bad" -eq 0 ]; then
-    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it), and refuses push of and imul by a byte constant outside -128 to 127, and puts the labels after a shift by a constant where the code is; -C leaves out the local L symbols"
+    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it), and refuses push of and imul by a byte constant outside -128 to 127, and puts the labels after a shift by a constant where the code is; a short jump that does not reach is refused; -C leaves out the local L symbols"
     exit 0
 fi
 echo "switches: $bad failures"

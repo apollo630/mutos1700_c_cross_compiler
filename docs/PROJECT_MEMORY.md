@@ -52,6 +52,7 @@ Guideline 11).
 | 2026-11-09 | The copy is the MUTOS root's `lib/fixed/libc.a`; in the corrected mode `ld`'s `-lX` looks for `/lib/fixed/libX.a` first (chosen from Claude's proposals). | `docs/RULES.md`, "The corrected copy of `libc.a`" (LIBC-F) |
 | 2026-11-09 | The kernel's `conf/arith.a` - its long helpers measured by him with `rtcheck.py --archive`: the same results as `libc.a`'s - gets a corrected copy from the same sources, for the kernel in the corrected mode; the old one stays for the original mode. | `docs/TOOLCHAIN_PLAN.md`, section 6; `src/libc_fixed/README.md` |
 | 2026-11-11 | F3b, part 2 (confirmed from Claude's proposal): `c1` and `as` follow the copy in the corrected mode - a rule of the tool per corrected bug it re-enacts, named after the bug of `libc.a` (`c1`: L-01, L-03, L-04, L-05, L-11; `as`: L-05), logged `applied` only where the result differs from the original's; what the copy does not correct (L-06, L-07, the bytes of a zero) stays. So in the corrected mode some constants become a float instead of a double, some doubles change in their last bits, and `(int)-32768.0` and `(long)1.5e9` are folded instead of refused. | `docs/RULES.md`, "The tools follow the copy" |
+| 2026-11-15 | `mutos_as` refuses a short jump that does not reach its target (127 bytes ahead, 128 back), as the original `as` does; it wrote the low byte of the distance. | `STATUS.md`, Milestone 2 ("A short jump that does not reach"); `docs/devlog/m7_rules.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -79,10 +80,10 @@ pages.
 - The owner's local computer (a Core 2 Duo from 2009) is too slow for `make
   check-realbin`; he has it run in the cloud session instead (asked 2026-11-08).
   There it took 75 minutes on two cores after F1, 63 after F2, 76 after F3 and
-  after F3b's copy, 68 after F3b's part 2, 86 after V1: run it in the background with a
+  after F3b's copy, 68 after F3b's part 2, 86 after V1, 63 after V2, 92 after V3 (the cores shared): run it in the background with a
   log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 to V3 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -139,9 +140,16 @@ pages.
   from 3 to 15 as `sal r,*n.`; a shift in memory is left (`c2` counts any
   shift as 4 bytes, the form with a word of address has 5). `mutos_as`
   had the form's length wrong in pass 1 (labels a byte low) - corrected.
-  Open for the owner: whether shifts in memory should get the form too
-  (it needs a hook in `c2`'s `toofar()`, which V3 needs for `imul`
-  anyway); whether `mutos_as` should refuse a short branch that does not
-  reach, as the original does ("Short jump out of range", status 2;
-  `mutos_as` writes the low byte) - Claude's recommendation: yes, before
-  V3. Next by the plan: V3 (V30-IMUL), V4 (the hardware).
+  Next by the plan: V3 (V30-IMUL), V4 (the hardware).
+- 2026-11-15, the owner's decision: `mutos_as` refuses a short jump that
+  does not reach, as the original does ("Short jump out of range", status
+  2; `mutos_as` wrote the low byte) - done the same day, before V3.
+- 2026-11-15, step V3 (V30-IMUL): `c1` writes `imul ax,*n.` / `imul
+  ax,#n` for a product by a constant (`c1rules/v30_imul.c`); `c2` counts
+  the form's length in `toofar()` (`c2rules/v30_imul.c`). The three rules
+  of `-1` are done; the kernel sources in the tree are 3.7% smaller with
+  `-1`. Next by the plan: V4 (the hardware).
+- 2026-11-15, the owner's decision: V30-SHIFT takes a shift in memory too
+  (`g <<= 3` as `sal _g,*3.`); `c2` counts the form's fifth byte
+  (`c2rules/v30_shift.c`). No gain in the kernel; done for completeness of
+  the rule.
