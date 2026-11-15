@@ -521,8 +521,10 @@ rules themselves come from step F1 on.
   `mutos_c1 temp1 temp2 output.s [options] [-1]`: an argument `-1` sets
   `c1_v30`. `mutos_c2 [-1] [+] [-] [input [output]]`: a first argument `-1`
   sets `c2_v30` and is taken off before the original's `main()` runs.
-  Since step V1 (2026-11-14) one rule uses `-1`, V30-PUSH of `c2`; `c1`'s
-  output is the same with and without it.
+  Since step V1 (2026-11-14) V30-PUSH of `c2` uses `-1`, since step V2
+  (the same day) V30-SHIFT of `c1` (`c1rules/v30_shift.c`, hooked in
+  `cexpr()`): a shift of a register by a constant from 3 to 15 is written
+  `sal r,*n.` instead of `mov cx,*n.` / `sal r,cl`.
 - `c2`'s rules are in `c2rules/`: `c2rules.c` (the rule log: an entry
   noted at the hook for a node, written when `output()` writes that
   node, `c2_rule_node()` there, and an entry for the whole function of

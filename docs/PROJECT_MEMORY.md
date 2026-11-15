@@ -133,4 +133,15 @@ pages.
   V2 (V30-SHIFT, in `c1`), V3 (V30-IMUL), V4 (the hardware).
 - 2026-11-14, the owner's decision: `mutos_as -1` refuses `push *n` for an
   `n` outside -128 to 127 (6A ib is pushed sign-extended), with a message.
-  The same question for `imul r,x,*n` is open, to be decided before V3.
+  The same day, the same decision for `imul r,x,*n` (6B ib): refused
+  outside -128 to 127.
+- 2026-11-14, step V2 (V30-SHIFT, `c1`): a register shifted by a constant
+  from 3 to 15 as `sal r,*n.`; a shift in memory is left (`c2` counts any
+  shift as 4 bytes, the form with a word of address has 5). `mutos_as`
+  had the form's length wrong in pass 1 (labels a byte low) - corrected.
+  Open for the owner: whether shifts in memory should get the form too
+  (it needs a hook in `c2`'s `toofar()`, which V3 needs for `imul`
+  anyway); whether `mutos_as` should refuse a short branch that does not
+  reach, as the original does ("Short jump out of range", status 2;
+  `mutos_as` writes the low byte) - Claude's recommendation: yes, before
+  V3. Next by the plan: V3 (V30-IMUL), V4 (the hardware).

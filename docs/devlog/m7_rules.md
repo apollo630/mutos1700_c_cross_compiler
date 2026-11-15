@@ -832,5 +832,62 @@ Afterwards, the owner's decision of the same day: `mutos_as -1` refuses
 (`encode.c`; the message names `#n`). The check is made in pass 2, where
 the value is known; the length is two bytes either way. `push_imm_test.s`
 had a `push */80` "same bit pattern as *-128." - the very case: it would
-push FF80 - which is gone from it. `imul r,x,*n` has the same behaviour
-and is left for a decision before step V3.
+push FF80 - which is gone from it. `imul r,x,*n` had the same behaviour
+(`imul cx,ax,*200.` multiplied by -56) and, by the owner's decision of the
+same day, is refused in the same way (`encode_imul_imm()`); the `*200.`
+case of `imul_imm_test.s`, written to record the truncation, is now
+`*-128.`, and `check_switches.sh` has the refusals. Step V3's rule writes
+this form and so must leave a multiplier outside the range to the word
+form or to the original code.
+
+## Step V2: V30-SHIFT, and the length of a shift in `mutos_as` (2026-11-14)
+
+The plan had it as "a row of `c1`'s code tables, used only under `-1`; `c2`
+counts the form as 4 bytes (it is 3)". Three things were otherwise:
+
+- **No new row.** `c1tab.c` is generated from the binary (`c1tables.py
+  --c`, checked by `make check-realbin`), so the rule does what C1-06 does:
+  `cexpr()` hands it the matched row's template, and it returns the row
+  without `movD\343x,B\n` and with `B` for `cl` - four rows have the
+  load (one of a value, three of `=<<`/`=>>`), each rewritten once.
+- **`c2` counts 4, and the form can be 5.** `toofar()` adds
+  `onelen(regs[RT1])` for a shift - the count's text, "cl", "*1" or "*n.",
+  which is no register and has no parenthesis: always 4. With a word of
+  address the 8086's shift is 4 bytes and the constant form 5. Made by
+  hand from `c1`'s output (27 times `sal _g,*7.` in an `if`): `c2` writes
+  `je` over 135 bytes - and `mutos_as` assembles it: the original `as` ends
+  with "Short jump out of range" (status 2, measured under the emulator),
+  `mutos_as` has no such check and writes the low byte. That check is the
+  net under every length `c2` counts, and is proposed to the owner. So the
+  rule is for registers; whether a destination
+  is one is seen from the row (`R`) or the tree (`A1` a `NAME` of class
+  `REG`). The kernel loses nothing by it. The alternative - a hook in
+  `toofar()`, a second rule file in `c2` - is what step V3 needs anyway
+  for `imul`, and can take the shifts in memory then if they are wanted.
+- **`mutos_as` put the labels wrong.** The triggers ran right under
+  `x86sim.py`, which executes the text; the hand-made `je` above had the
+  displacement 0x6C where 0x87 would not have fitted - 27 times 4. Pass 1
+  sizes with `resolve` false, where `resolve_expr()` gives 0 for
+  everything, and `encode_group2()` assumed a count of 1 then ("every real
+  corpus sample is count==1 or cl anyway"). So the symbol values came out
+  a byte low per shift, and pass 2 computed branches from them. The
+  recorded objects of `v30_speculative/` have no label behind a shift, and
+  NASM and objdump agree with bytes that are right one by one. Corrected
+  before the rule (`const_value()`, which the one-byte `int 3` already
+  uses in pass 1). A lesson for V3: a form whose length depends on a
+  value needs a test with a label after it.
+
+Also met: `x86sim.py` has no `salb` and no `2.+_t(di)` as a destination
+(two triggers written around it); a constant shifted by a constant makes
+`c1` say "C error: const" for some (the generator shifts no constant);
+with `-1` `c2` may pick other registers, so a program `x86sim.py` cannot
+run without `-1` (`subb dh,dh`) may run with it - counted, not compared.
+While the large runs were in the background a `make test` beside them
+failed on temporary files left in the root's `tmp/`: the checks share the
+root and are to be run one after another.
+
+Measured: 1,500 programs of shifts, 300 of calls and 1,500 of `fuzz_c.py`
+(seed 2) the same values with `-1`; 79,098 shifts by a constant, the text
+of the programs of shifts 9.0% smaller, 4.5% fewer V30 clocks. The 13
+kernel C sources in the tree: 59 shifts, 25,010 to 24,888 bytes (the
+"18" of step V1's note was a miscount; the bytes are the same set's).

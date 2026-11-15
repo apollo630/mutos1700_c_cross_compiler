@@ -1,6 +1,6 @@
 56e5a2860bd3a584b60e33eaf9d82f7c  bound_test.o
 e844aafd50d0a271b46910a98fdec958  enter_leave_test.o
-93f36168dd85e2f1bef2f96499a9bc47  imul_imm_test.o
+40239f7f9565a4ddca212b60e39f798d  imul_imm_test.o
 5a0b6659a52f26042ad7fdaadb7cc9c2  insb_outsb_test.o
 64edde4f27650397c5333092fdf2ac25  push_imm_test.o
 796f2e89be8a2a6981e8ccac5585e446  pusha_popa_test.o

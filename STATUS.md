@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-14.
+Last updated: 2026-11-15.
 
 ---
 
@@ -572,6 +572,10 @@ switch of the plan, section 4.
   `Byte instruction cannot use R`, `Relocatable values not allowed for bytes`,
   `Illegal relocatable expression`, `Short jump to external not allowed`,
   `Invalid index register`, `Value out of range`, `Illegal redeclaration of symbol`,
+  `Short jump out of range` (measured 2026-11-14 with step V2: a `je` over 200
+  bytes ends the original with that message and status 2, `mutos_as` writes the
+  displacement's low byte - the one of these that makes wrong code silently, and
+  the check that would catch a branch `c2` made short wrongly; to be decided),
   and takes a missing last linefeed, CR LF and the shift count `1` unmarked; it refuses a byte
   with the high bit set (`0200` and up) in code and a NUL, which the original takes
   (AS-14).
@@ -1241,7 +1245,11 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    V30-PUSH, the first rule of `-1` - `c2` pushes a constant (`push *n.`, `push #...`)
    where the original loads a register to push it; `c2`'s rules directory and rule
    log (by function), `x86sim.py` runs `c2`'s output, `tests/rules/check_v30.py`
-   (the same values with `-1` as without). Next by the plan: V2 (V30-SHIFT, in `c1`).
+   (the same values with `-1` as without). **V2 done 2026-11-14** ("Step V2" below):
+   V30-SHIFT - `c1` shifts a register by a constant from 3 to 15 (`sal r,*n.`) where
+   the original loads CX; a shift in memory is left, since `c2` would count it a
+   byte short; on the way `mutos_as`'s length of that form in pass 1 corrected
+   (the labels after it were a byte low). Next by the plan: V3 (V30-IMUL, in `c1`).
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1338,8 +1346,8 @@ two more bytes, the registers read and written (`regmask()`).
 **80186/V30 code generation** in `mutos_c1` and `mutos_c2` was decided on 2026-11-08
 (`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; step F0 made
 `-1` reach `c1` and `c2`, with their output unchanged, and `x86sim.py` run the three
-forms; the first rule, V30-PUSH in `c2`, since 2026-11-14: "The corrected mode and
-`-1`" below, "Step V1"): behind `-1`, the
+forms; the first rule, V30-PUSH in `c2`, and the second, V30-SHIFT in `c1`, since
+2026-11-14: "The corrected mode and `-1`" below, "Step V1" and "Step V2"): behind `-1`, the
 name `mutos_as` has for the 80186/V30 instructions (section 4), three rules - a
 constant pushed (`c2`), a shift by a constant count and a multiplication by a constant
 (`c1`) -, and every assembly with `-1` reports the 80186/V30 instructions it produced
@@ -2452,23 +2460,94 @@ The first of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
 - **The gain on kernel code**: the five kernel sources of
   `tests/mutos_as/kernel_nonopt/` (`amx`, `bus`, `intr`, `lp_AC`, `sys1`) through
   `c2 -1` and `as -1`: 176 pushes of a constant (114 of a byte), the text 12,296
-  to 12,016 bytes (2.3%); the 18 kernel C sources of the tree with `cc -O -c -1`:
-  321 pushes, 25,520 to 25,010 bytes (2.0%). The whole kernel is for step V4, on
+  to 12,016 bytes (2.3%); the kernel C sources of the tree with `cc -O -c -1`:
+  321 pushes, 25,520 to 25,010 bytes (2.0%) - 13 sources, as counted again with
+  step V2. The whole kernel is for step V4, on
   the owner's machine.
 - **Checked**: `make test`; `make check-docs`; `make check-realbin` on this
   change: exit status 0, 86 minutes on two cores (`c2cmp.py` and `c2fuzz.py` among it: without `-1` the port
   is the original still).
 
-Not yet: V30-SHIFT and V30-IMUL (`c1`, steps V2 and V3); the hardware (V4).
-`mutos_as` encoded `push *n.` for an `n` outside -128 to 127 as 6A with the low
+After step V1: `mutos_as` encoded `push *n.` for an `n` outside -128 to 127 as 6A with the low
 byte, without a message (`push *200.` pushes -56); `c2` never writes one (the
 rule leaves such a pair). By the owner's decision of 2026-11-14 `mutos_as -1`
 now refuses it ("push of a byte constant (*n) outside -128 to 127: it is pushed
 sign-extended; write #n for the word"; `encode.c`, in pass 2, where the value is
 known; `tests/mutos_as/check_switches.sh`). `push_imm_test.s` lost its `push */80`
-(15 pushes; object and report recorded anew). `imul r,x,*n.` (6B ib) still takes
-the low byte of any `n` (`tests/mutos_as/v30_speculative/README.md`, finding 1):
-to be decided before step V3, whose rule writes that form.
+(15 pushes; object and report recorded anew). `imul r,x,*n.` (6B ib) took the
+low byte of any `n` in the same way (`imul cx,ax,*200.` multiplied by -56;
+`tests/mutos_as/v30_speculative/README.md`, finding 1). By the owner's decision
+of the same day `mutos_as -1` refuses that too ("imul by a byte constant (*n)
+outside -128 to 127: it is multiplied sign-extended; write #n for the word";
+`encode_imul_imm()`, in pass 2; `check_switches.sh`). In `imul_imm_test.s` the
+`imul cx,ax,*200.` became `imul cx,ax,*-128.` (19 `imul` still; object recorded
+anew). Step V3's rule, which writes that form, has to keep to the range.
+
+### Step V2: V30-SHIFT, a register shifted by a constant (verified 2026-11-14)
+
+The second of the three V30 rules (`docs/TOOLCHAIN_PLAN.md`, section 7.4;
+`docs/RULES.md`, "The V30 rules"). Under `-1`, `c1` writes `sal r,*n.` (`sar`,
+`shr`) for `mov cx,*n.` / `sal r,cl`; without `-1` every output is as before.
+
+- **The rule** (`src/mutos_cc/c1rules/v30_shift.c`, hooked in `cexpr()`,
+  `c1port/c10.c`, where C1-06 and C1-01 are): the rows of a shift by an
+  addressable count are `movB2 cx,A2` / `IB1 R,cl` (the value) and, for `=<<` and
+  `=>>`, the same with `A1` or `#1(R*)` for the destination. For a count that is
+  a constant from 3 to 15 - 0 is folded, 1 has its own row, 2 becomes two shifts
+  by 1 - and a shift of a register (the row's `R`, or its `A1` when that is a
+  register variable) the row is used without the load and with `A2` for `cl`.
+  `c1tab.c` is generated from the binary and stays as it is: the row is
+  rewritten when it is matched, once, and kept. The shift by a constant gives
+  the result and the flags of the shift by CL with that count (`c1` branches on
+  them: `if (a << 4)`); CX is not loaded, which `c1` never relies on.
+- **A shift in memory is left** (`g <<= 3`, `*p >>= 4`, a local): `c2`'s
+  `toofar()` takes any shift for 4 bytes, the length of the count's text - right
+  for the 8086, whose shift is 4 bytes at most, and safe for `sal r,*n.` (3).
+  But `sal _g,*n.`, with a word of address, is 5 bytes. Tried by hand: 27 of
+  them in an `if` are 135 bytes, `c2` counts 108 and makes the branch over them
+  short, and `mutos_as` writes a displacement that does not reach (the original
+  `as` would refuse it, "Short jump out of range"; `mutos_as` has no such check -
+  "Leniency" in Milestone 2 above). So the rule
+  keeps to registers; the `c2` output of the kernel's 62 sources has no shift in
+  memory by `cl` at all (215 shifts by `cl`, all of a register, 208 of them
+  after `mov cx,*n.` with n from 3 to 15).
+- **`mutos_as`: the length of a shift by a constant** (found here, corrected
+  first, a patch of its own). `encode_group2()` took every count for 1 in pass
+  1, which does not evaluate expressions: `sal ax,*3.` counted as 2 bytes and
+  was written as 3, so every label after one was a byte low and a branch to it
+  landed a byte before its target. Nothing had assembled the form with a label
+  behind it. A count made of numbers is now evaluated in pass 1 (`const_value()`);
+  a count with a symbol in it is taken for 1 there and refused in pass 2 if it
+  is not ("shift by a count that is not a number and not 1: its length is not
+  known in pass 1; write the number") - the corpus has none.
+  `tests/mutos_as/check_switches.sh` compares the bytes of a branch back over
+  `sal ax,*3.` and over `sal _g,*7.`.
+- **`tests/rules/check_v30.py`**: six triggers of V30-SHIFT, each compiled without
+  `-O` (`c1`'s code) and with it - the three shifts; the ends of the range (3 and
+  15 shifted by a constant, 2 and 16 not); register variables shifted in place
+  and the value of one; shifts in memory, left; branches on a shift's flags; a
+  char widened and a product by 8 under an index - with C's value, the pinned
+  number of shifts, the rule log's entries and `as`'s report, and with
+  `--realbin` linked and run under `mutosemu.py`. New generated programs of
+  shifts (`--shifts N`, 300 in `make test`): counts from 0 to 17 and variable
+  ones, ints, unsigneds, a char, register variables, values, assignments,
+  conditions and indices, compiled with and without `-O`. `fuzz_c.py`'s programs
+  are compiled without `-O` too (every other one). Run once with `--calls 300
+  --shifts 1500 --fuzz 1500 --seed 2`: no difference; in the programs of shifts
+  `-1` made 79,098 shifts by a constant, the text 9.0% smaller (1,823,550 to
+  1,659,802 bytes), the V30 clocks 4.5% fewer.
+- **The accounting** (`check_accounting.py`) takes the new triggers and as many
+  programs of shifts as of calls (`--calls N`); run once with `--fuzz 200 --calls
+  300 --seed 5 --full`: every difference accounted for.
+- **The gain on kernel code**: the 13 kernel C sources of the tree with `cc -O
+  -c -1`: 59 shifts by a constant besides the 321 pushes, the text 25,520 bytes
+  without `-1`, 25,010 with V30-PUSH alone, 24,888 now (2.5%).
+- **Checked**: `make test`; `make check-docs`; `make check-realbin` on this
+  change: exit status 0, 63 minutes on two cores (the 13 triggers of both rules
+  linked and run under `mutosemu.py` among it).
+
+Not yet: V30-IMUL (`c1`, step V3 - `c2` must learn the form's length first, and
+the rule must keep `*n.` to -128 to 127, below); the hardware (V4).
 
 ## `mutos_as` opcode coverage
 
@@ -2495,7 +2574,7 @@ manual/corpus material to check it against.
 | `insw` | `0x6D` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6d`, `mch_insw_outsw.s`); the original `as` has no such mnemonic (AS-02) |
 | `outsb` | `0x6E` | implemented — no real corpus sample; cross-checked¹ |
 | `outsw` | `0x6F` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6f`, `mch_insw_outsw.s`); the original `as` has no such mnemonic (AS-02) |
-| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹ |
+| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹; its length in pass 1 corrected 2026-11-14 ("Step V2" above: the labels after it were a byte low); written by `c1 -1` since then (V30-SHIFT) |
 | `leave` | `0xC9` | implemented — no real corpus sample; cross-checked¹ |
 | `enter framesize,nestlevel` | `0xC8 iw ib` | implemented — no real corpus sample; cross-checked¹ |
 | `bound reg,mem` | `0x62 /r` | implemented (indirect-memory operand only, matching this codebase's LDS/LES/LEA convention) — no real corpus sample; cross-checked¹ |
@@ -2510,12 +2589,11 @@ no real MUTOS 1700 toolchain exists that supports these opcodes to produce genui
 hardware-linked golden output against. Do not read "cross-checked" as "verified"
 anywhere else in this document's terminology.
 
-² See that same README for a specific, deliberately-surfaced open question on this
-row: `encode_imul_imm()`'s marker-forces-form behavior (`imul cx,ax,*200.` truncates
-200 to `0xC8` rather than promoting to the word form) is something NASM's own encoder
-refuses to do even with its optimizer fully disabled — a genuine, unresolved design
-divergence between this codebase's established convention and a mainstream
-independent assembler's default behavior, not a bug that cross-checking fixed.
+² The question that README raised on this row - `encode_imul_imm()` took the form
+from the marker alone, so `imul cx,ax,*200.` was encoded with the low byte `0xC8`
+(a multiplication by -56), where NASM takes the word form - is closed since
+2026-11-14 by the owner's decision: `mutos_as` refuses a `*n` outside -128 to 127,
+for `imul` as for `push` ("Step V1" above).
 
 Every 80186 addition covered in this project's working spec (register/flag behavior
 aside, which is a CPU runtime distinction, not an assembler-encoding one) is now
@@ -2638,9 +2716,9 @@ far.
    independent-tooling cross-check for all twelve now exist in
    `tests/mutos_as/v30_speculative/` (see above) — this makes verification against a
    real sample, if one ever surfaces, a drop-in comparison rather than starting from
-   nothing, but does **not** reduce the priority of finding that real sample. In
-   particular, resolve the open `imul`-immediate marker-truncation question (see the
-   opcode-coverage table's footnote ²) one way or the other once real evidence exists.
+   nothing, but does **not** reduce the priority of finding that real sample. The
+   `imul`-immediate marker-truncation question (the opcode-coverage table's
+   footnote ²) is closed since 2026-11-14: a `*n` outside -128 to 127 is refused.
 3. ~~`esc`/`escb`, `ret`/`reti` with an immediate, the dedicated `int 3` encoding~~ -
    **closed 2026-10-25** by the measurement against the original (step 5): `ret N` and
    `int *3.` are done, `esc`/`escb` do not exist in the original. What differs

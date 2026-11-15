@@ -20,16 +20,13 @@
 | (see encode_group3's doc comment), so this 2/3-operand syntax
 | is purely speculative.
 |
-| Immediate width follows this codebase's documented, MARKER-
-| DRIVEN (not magnitude-driven) convention: '*' forces the short
-| ib form (0x6B) REGARDLESS of whether the value actually fits in
-| a signed byte, exactly like PUSH imm's own marker convention -
-| this is DIFFERENT from Group1 arithmetic's automatic sign-
-| extension logic (which picks 0x83 based on the value fitting,
-| not a marker). One test case below deliberately exploits this
-| to document the resulting (arguably surprising) truncation
-| behavior explicitly, rather than leaving it as an unverified
-| assumption.
+| Immediate width follows the marker: '*' gives the short ib form
+| (0x6B), '#' or no marker the iw form (0x69) - as with PUSH imm,
+| and unlike Group1 arithmetic, which picks 0x83 where the value
+| fits. The byte is multiplied sign-extended, so mutos_as refuses a
+| "*n" outside -128 to 127 since 2026-11-14 (it took the low byte
+| before: "imul cx,ax,*200." multiplied by -56) -
+| tests/mutos_as/check_switches.sh.
 | ============================================================
 
 .globl	_mulconst
@@ -81,17 +78,9 @@ _imul_imm_test:
 	imul	bx,_mulconst,*7.
 	imul	si,_multab,#100.
 
-	| ---- the marker-forces-form-regardless-of-fit case: *200.
-	| does NOT fit in a signed byte (max +127), but the '*' marker
-	| still forces the ib (0x6B) form per this codebase's
-	| documented convention - the assembler must truncate/wrap to
-	| a single byte (200 & 0xFF = 0xC8) rather than promote to the
-	| word form. This is the single most important case in this
-	| file: if a future real-hardware sample ever shows the real
-	| vendor assembler instead REJECTS this or auto-promotes to
-	| iw, that is exactly the kind of divergence a golden reference
-	| would catch that a hand-derived smoke test cannot. ----
-	imul	cx,ax,*200.
+	| (no "imul cx,ax,*200.": 200 is no value the sign-extended
+	| byte gives; refused, see above. The ends of the range:)
+	imul	cx,ax,*-128.
 
 	| ---- word-immediate SYMBOL reference - exercises this
 	| opcode's OWN relocation-emission site (independent of the

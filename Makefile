@@ -288,8 +288,9 @@ clean:
 # switch and as a link must with -F; tests/rules/check_v30.py shows that
 # what the V30 rules write under -1 computes what the same program
 # computes without -1: each rule's triggers and generated programs of
-# calls and of fuzz_c.py, c2's code under x86sim.py (V30_ARGS passes
-# options, e.g. "--calls 3000 --fuzz 3000 --seed 2").
+# calls, of shifts and of fuzz_c.py, c1's and c2's code under x86sim.py
+# (V30_ARGS passes options, e.g. "--calls 3000 --shifts 3000 --fuzz 3000
+# --seed 2").
 # tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
 # x86sim.py does with the three 80186/V30 forms (values, flags, V30
 # clocks), which mutos_as -1 must take.
@@ -547,7 +548,7 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em libc
 	@python3 tests/realbin/edfuzz.py $(REALBIN_EDFUZZ_ARGS) --tool em
 	@python3 tests/mutos_root/check_root.py --cc "$(CC)" --realbin $(MUTOS_ROOT_DEFAULT)
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py --realbin --fuzz 0
-	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_v30.py --realbin --calls 0 --fuzz 0
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_v30.py --realbin --calls 0 --shifts 0 --fuzz 0
 	@python3 tests/libc_runtime/rtcheck.py
 	@python3 tests/libc_runtime/rtcheck.py --copy
 	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt long

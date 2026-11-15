@@ -163,6 +163,7 @@ The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corr
 - Step F3: the runtime measured (2026-11-09)
 - Step F3b: the corrected copy of `libc.a` (2026-11-09; part 2, `c1` and `as` follow the copy, 2026-11-11; the kit for the check on the hardware, 2026-11-11; the check passed on the A7100 with the V30, 2026-11-14)
 - Step V1: V30-PUSH, the first rule of `-1` (2026-11-14)
+- Step V2: V30-SHIFT, and the length of a shift in `mutos_as` (2026-11-14)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

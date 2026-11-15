@@ -753,13 +753,31 @@ static bool encode_group2(CodeBuf *out, int opidx, const ParsedOperand *dst,
     bool is_one = false;
     long count = 0;
     if (!is_cl && src->expr) {
-        count = resolve_expr(src->expr, cur_addr, st, resolve);
-        is_one = !resolve || count == 1; /* during sizing (resolve=false) we
-                                           * cannot know the real value yet;
-                                           * assume the common count==1 case
-                                           * so Pass 1's size matches Pass 2's
-                                           * - every real corpus sample is
-                                           * count==1 or "cl" anyway. */
+        /* The form's length depends on the count: 2 bytes and the
+         * destination's for a count of 1 (D0/D1), one more for any other
+         * (C0/C1 ib, with -1). Pass 1 must give the length pass 2 writes,
+         * so a count made of numbers only is evaluated there too
+         * (const_value()). Until 2026-11-14 pass 1 took every count for 1:
+         * each "sal r,*3." put the labels after it one byte too low
+         * (found with step V2, the first use of the form with labels
+         * behind it). A count with a symbol in it cannot be known in pass
+         * 1 and is taken for 1 there, as before - every sample of the
+         * corpus is a number or "cl" -; if pass 2 then finds another
+         * value, the statement is refused rather than written longer
+         * than it was counted. */
+        long cv;
+        if (const_value(src->expr, &cv)) {
+            count = cv;
+            is_one = count == 1;
+        } else {
+            count = resolve_expr(src->expr, cur_addr, st, resolve);
+            is_one = !resolve || count == 1;
+            if (!is_one && g_opt_186) {
+                g_reason = "shift by a count that is not a number and not 1: "
+                           "its length is not known in pass 1; write the number";
+                return false;
+            }
+        }
     }
 
     /* A memory destination by register(s) or by an address ("sarb 2.+_gs,cl"
@@ -1676,7 +1694,10 @@ static bool encode_group3(CodeBuf *out, int digit, const ParsedOperand *op,
  * smoke test. Immediate width follows this codebase's established
  * "'*'=byte marker forces the short ib form, anything else (including
  * unmarked/DIRECT) gets the full iw form" convention - the same rule
- * PUSH imm already uses (see encode_pushpop). */
+ * PUSH imm already uses (see encode_pushpop). As there, a "*n" the
+ * sign-extended byte cannot give (outside -128 to 127) is refused in
+ * pass 2 (decided 2026-11-14): "imul cx,ax,*200." would multiply by
+ * -56. */
 static bool encode_imul_imm(CodeBuf *out, const ParsedOperand *dst, const ParsedOperand *rm,
                              const ParsedOperand *immop, long cur_addr, SymTab *st,
                              bool resolve, RelocList *relocs)
@@ -1687,6 +1708,14 @@ static bool encode_imul_imm(CodeBuf *out, const ParsedOperand *dst, const Parsed
     if ((immop->mode != ADDR_DIRECT && immop->mode != ADDR_IMMEDIATE) || !immop->expr) return false;
 
     bool byte_imm = (immop->mode == ADDR_IMMEDIATE && immop->size == SZ_BYTE);
+    if (byte_imm && resolve) {
+        long v = resolve_expr(immop->expr, cur_addr, st, resolve);
+        if (v < -128 || v > 127) {
+            g_reason = "imul by a byte constant (*n) outside -128 to 127: "
+                       "it is multiplied sign-extended; write #n for the word";
+            return false;
+        }
+    }
     codebuf_put(out, byte_imm ? 0x6B : 0x69);
 
     if (rm->mode == ADDR_REGISTER) {

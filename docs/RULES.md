@@ -77,6 +77,7 @@ A rule is in one of two states:
 | LD-08 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_08.c` | `src/mutos_ld/ld.c`, `middle()`: the six bytes of `jmp $` added to the text | [LD-08](MUTOS_ORIGINAL_BUGS.md) |
 | LD-09 | ld | `-F` | active | `src/mutos_ld/ldrules/ld_09.c` | `src/mutos_ld/ld.c`, `middle()`: the text rounded to 64 bytes for `-i` and `-n` | [LD-09](MUTOS_ORIGINAL_BUGS.md) |
 | V30-PUSH | c2 | `-1` | active | `src/mutos_cc/c2rules/v30_push.c` | `src/mutos_cc/c2port/c21.c`, `pushopt()`: the pair `mov r,`constant / `push r`, once `r` is seen not to be read again | [Section 7.4, step V1](TOOLCHAIN_PLAN.md) |
+| V30-SHIFT | c1 | `-1` | active | `src/mutos_cc/c1rules/v30_shift.c` | `src/mutos_cc/c1port/c10.c`, `cexpr()`: the template of a row once matched | [Section 7.4, step V2](TOOLCHAIN_PLAN.md) |
 | LIBC-F | ld | `-F` | active | `src/mutos_ld/ldrules/libc_f.c` | `src/mutos_ld/ld.c`, `getfile()`: `-lX`'s `/lib/libX.a` opened | [The corrected copy of `libc.a`](#the-corrected-copy-of-libca) |
 
 The rules directories: `src/mutos_cc/c1rules/` (`c1rules.c`: the mode,
@@ -105,6 +106,22 @@ where `-1` would apply it.
   iw; an address with its relocation). Neither form changes a flag.
   `mutos_as` takes both only with `-1`, and reports them (`as: -1: ...
   push n`).
+
+- **V30-SHIFT** (`c1`, step V2, since 2026-11-14): `mov cx,*n.` / `sal
+  r,cl` becomes `sal r,*n.` (and `sar`, `shr`). The rows of `c1`'s code
+  tables for a shift by an addressable count load it into CX and shift by
+  CL; for a count that is a constant from 3 to 15 (0 is folded, 1 has a
+  row of its own, 2 is made two shifts by 1) and a shift of a register -
+  the row's result register, or a register variable shifted in place -
+  the rule uses the row without the load and with the count for `cl`
+  (C1 /r ib). The result and the flags are those of the shift by CL with
+  that count; CX is not loaded, and `c1` keeps no account of a register's
+  contents. A shift in memory (`g <<= 3`) is left as it is: `c2` takes
+  any shift for 4 bytes when it measures a branch, and `sal _g,*3.` has
+  5 - a branch `c2` makes short might not reach (tried: it does not). The
+  code tables are generated from the binary and stay untouched; the row
+  is rewritten when it is matched, as C1-06 does. `mutos_as` takes the
+  form only with `-1`, and reports it (`as: -1: ... shift n`).
 
 What a rule of `c2` changes is not only its node: `c2` improves a
 function as a whole, and its passes run again after the rule. With one
@@ -273,10 +290,12 @@ change, `c2`'s output, the objects and the programs following from it.
 `--report` prints which rules the code met. The sources include the
 triggers of `tests/rules/check_corrected.py` (below), a program at least
 for each active correction of `c1`, which the corpus alone does not give,
-and, since step V1, the triggers of `tests/rules/check_v30.py` and 40 of
-its generated programs of calls (`--calls N`), which meet the V30 rules:
-under `-1` (and `-F -1`) `c2`'s output differs only inside the functions
-a V30 rule was applied in, and the objects and programs follow from it.
+and, since step V1, the triggers of `tests/rules/check_v30.py` and 40
+each of its generated programs of calls and of shifts (`--calls N`), which
+meet the V30 rules: under `-1` (and `-F -1`) `c1`'s output differs only in
+the statements V30-SHIFT was applied in, `c2`'s only where `c1`'s did or
+inside the functions a V30 rule of `c2` was applied in, and the objects
+and programs follow from it.
 
 The corpus's links never meet a rule of `ld`; the checker links cases
 that do, one per rule (those of `tests/realbin/ldcmp.py cases`), without

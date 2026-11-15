@@ -10,16 +10,16 @@ the 8086 does, so both must give the same values. Three parts:
 
   * Triggers: for each active V30 rule of docs/RULES.md, small programs
     that meet it, compiled by mutos_cc with "-O -S" and with "-O -S -1"
-    (c2's code; with "-S" and "-S -1" for a rule of c1), executed by
-    tests/mutos_cc/fuzz/x86sim.py. main()'s value is C's, pinned here,
+    (c2's code; a rule of c1 with "-S" and "-S -1", c1's code, and with
+    -O too), executed by tests/mutos_cc/fuzz/x86sim.py. main()'s value is C's, pinned here,
     either way; with -1 the code has exactly the pinned number of
     80186/V30 instructions of the rule's kind and the rule log as many
     "applied" entries of the rule (those with chunk=1 apart: c2's entry
     for the function the rule was applied in); without -1 there is none, and the log
     has "met" where -1 applies the rule. The -1 code is no 8086 code:
     x86sim.py without v30 stops on it, and mutos_as without -1 refuses
-    it. "cc -O -c -1" reports the pinned number ("as: -1: ...").
-    With --realbin the triggers are also linked ("cc -O -o", with and
+    it. "cc -c -1" reports the pinned number ("as: -1: ...").
+    With --realbin the triggers are also linked ("cc -o", with and
     without -1) and run under tests/realbin/mutosemu.py (which needs the
     Python module unicorn): the exit status is C's value modulo 256
     either way.
@@ -30,12 +30,20 @@ the 8086 does, so both must give the same values. Three parts:
     what V30-PUSH and the branches around it meet. Each is compiled with
     "-O -S" with and without -1 and executed: main()'s value and every
     file-scope variable must be the same. (Without -1 the program must
-    run under x86sim.py at all; a generated program that does not is
-    counted, and more than one in twenty fail the check.)
+    compile and run under x86sim.py at all; a generated program that does
+    not is counted, and more than one in twenty fail the check.)
+  * Programs of shifts (--shifts N): generated here - shifts by every
+    count from 0 to 17 and by a variable, of ints, unsigneds, chars and
+    register variables, as values, as assignments (=<<, =>>, in memory
+    too), as conditions (the branch on the shift's flags) and under
+    array indices, which is what V30-SHIFT meets. Each is compiled with
+    "-S" and with "-O -S", with and without -1, and compared as the
+    programs of calls are.
   * Programs of tests/mutos_cc/fuzz/fuzz_c.py (--fuzz N): expressions,
     arrays, longs - the same comparison, on fuzz_c.py's own judgement of
     the two codes (every variable at every statement against C's
-    semantics): with -1 it must be what it is without.
+    semantics): with -1 it must be what it is without. Compiled with
+    "-O -S"; every other one with "-S" as well.
 
 It reports what -1 gained in the generated programs: the bytes of text
 (from the objects of "cc -O -c") and the V30 clocks x86sim.py counted.
@@ -43,8 +51,8 @@ It reports what -1 gained in the generated programs: the bytes of text
 Every V30 rule that is active in docs/RULES.md must have a trigger here.
 
 Usage:
-    check_v30.py [--cc PATH] [--calls N] [--fuzz N] [--seed S] [--realbin]
-                 [--keep DIR] [-v]
+    check_v30.py [--cc PATH] [--calls N] [--shifts N] [--fuzz N] [--seed S]
+                 [--realbin] [--keep DIR] [-v]
 
 Exit status 1 if anything differs. Python 3; --realbin needs unicorn.
 """
@@ -74,9 +82,14 @@ MUTOSEMU = os.path.join(REPO, 'tests', 'realbin', 'mutosemu.py')
 # report has for them ("as: -1: 3 80186/V30 instructions: push 3")
 KIND = {
     'V30-PUSH': (re.compile(r'^(?:(?:L\d+|_\w+):)*push\t[*#][^(\n]*$', re.M), 'push'),
+    # c1 writes the shift by 1 as "*1", without the dot
+    'V30-SHIFT': (re.compile(r'^(?:(?:L\d+|_\w+):)*(?:sal|sar|shr)b?\t[^,\n]+,\*\d+\.$',
+                             re.M), 'shift'),
 }
-# the stage whose code a rule changes: c2's rules need -O
-OPTS = {'V30-PUSH': ['-O']}
+# the options a rule's triggers are compiled with: c2's rules need -O, c1's
+# are tried without it (c1's code) and with it (what c2 makes of it)
+OPTS = {'V30-PUSH': [['-O']], 'V30-SHIFT': [[], ['-O']]}
+TOOL = {'V30-PUSH': 'c2', 'V30-SHIFT': 'c1'}
 
 # (rule, name, source, C's value of main(), the 80186/V30 instructions of
 # the rule's kind with -1)
@@ -165,6 +178,94 @@ main()
 	return (int)(l >> 4);
 }
 ''', 14583, 0),
+    ('V30-SHIFT', 'the three shifts of a register: sal, sar of an int, shr of an unsigned',
+     '''int a;
+unsigned u;
+main()
+{
+	int x;
+
+	a = -1000;
+	u = 50000;
+	x = 7;
+	return (x << 5) + (a >> 3) + (u >> 9);
+}
+''', 196, 3),
+    ('V30-SHIFT', 'the ends: counts of 3 and 15 are shifted by a constant, 2 and 16 are not',
+     '''unsigned a;
+int b, c, d;
+main()
+{
+	a = 1;
+	b = 3;
+	c = 5;
+	d = 9;
+	return ((a << 15) >> 15) + (b << 3) + (c << 2) + (d << 16);
+}
+''', 45, 3),
+    ('V30-SHIFT', 'register variables shifted in place (=<<, =>>), and the value of one',
+     '''main()
+{
+	register int r;
+	register unsigned q;
+	int x;
+
+	r = 3;
+	q = 60000;
+	r <<= 4;
+	q >>= 3;
+	r >>= 3;
+	x = (r <<= 3) + 1;
+	return r + q + x;
+}
+''', 7597, 4),
+    ('V30-SHIFT', 'a shift in memory is left: a file-scope int, a local, through a pointer',
+     '''int g, v, *p;
+main()
+{
+	int l;
+
+	g = 5;
+	l = 3;
+	v = 1;
+	p = &v;
+	g <<= 3;
+	l <<= 4;
+	*p <<= 6;
+	return g + l + v;
+}
+''', 152, 0),
+    ('V30-SHIFT', 'branches on the flags of a shift by a constant',
+     '''main()
+{
+	int a, n;
+
+	a = 04000;
+	n = 0;
+	if (a << 4)
+		n += 1;
+	if ((a << 5) == 0)
+		n += 2;
+	if ((a >> 12) == 0)
+		n += 4;
+	if (a >> 3)
+		n += 8;
+	return n;
+}
+''', 15, 4),
+    ('V30-SHIFT', 'a char widened and shifted, and a product by 8 under an index',
+     '''int t[40];
+char c;
+main()
+{
+	int i;
+
+	i = 2;
+	t[8 * i] = 7;
+	c = 100;
+	return t[16] + (c >> 3) + (c << 3);
+}
+''', 819, 3),
 ]
 
 
@@ -235,66 +336,74 @@ def entries(log, rule, what):
 def triggers(cc, realbin):
     problems, lines = [], []
     for rule, name, src, want, count in CASES:
-        tag = '%s %s' % (rule, name)
-        kind, word = KIND[rule]
-        opts = OPTS[rule]
-        with tempfile.TemporaryDirectory(prefix='v30') as d:
-            st0, m0, s0, log0 = compile_s(cc, d, src, opts, log=True)
-            st1, m1, s1, log1 = compile_s(cc, d, src, opts + ['-1'], log=True)
-            if st0 or st1:
-                problems.append('%s: cc -S exit status %d, with -1 %d: %s'
-                                % (tag, st0, st1, (m0 + m1).strip()[-200:]))
-                continue
-            r0, r1 = simulate(s0, False), simulate(s1, True)
-            for r, how in ((r0, 'without -1'), (r1, 'with -1')):
-                if isinstance(r, str) or r[0] != want:
-                    problems.append('%s: %s %r, C says %d'
-                                    % (tag, how, r if isinstance(r, str) else r[0], want))
-            if not isinstance(r0, str) and not isinstance(r1, str) and r0[1] != r1[1]:
-                problems.append('%s: the file-scope variables differ with -1' % tag)
-            n0, n1 = len(kind.findall(s0)), len(kind.findall(s1))
-            if n0:
-                problems.append('%s: %d 80186/V30 instruction(s) without -1' % (tag, n0))
-            if n1 != count:
-                problems.append('%s: %d 80186/V30 instruction(s) with -1, pinned %d'
-                                % (tag, n1, count))
-            made = [ln for ln in entries(log1, rule, 'applied') if 'chunk=1' not in ln]
-            if len(made) != count:
-                problems.append('%s: the rule log has %d applied entries, pinned %d'
-                                % (tag, len(made), count))
-            if entries(log0, rule, 'applied'):
-                problems.append('%s: an applied entry without -1' % tag)
-            if len(entries(log0, rule, 'met')) != count:
-                problems.append('%s: the rule log has %d met entries without -1, -1 '
-                                'applies %d' % (tag, len(entries(log0, rule, 'met')), count))
-            if opts and compile_s(cc, d, src, ['-1'])[2] != compile_s(cc, d, src, [])[2]:
-                problems.append('%s: -1 changes c1\'s code' % tag)
-            if count:
-                if not isinstance(simulate(s1, False), str):
-                    problems.append('%s: x86sim.py runs the -1 code as 8086 code' % tag)
-                with open(os.path.join(d, 'q.s'), 'w') as f:
-                    f.write(s1)
-                r = subprocess.run([AS, '-o', 'q.o', 'q.s'], cwd=d, capture_output=True)
-                if r.returncode == 0:
-                    problems.append('%s: mutos_as takes the -1 code without -1' % tag)
-            size0, _ = textsize(cc, d, opts)
-            size1, msgs = textsize(cc, d, opts + ['-1'])
-            rep = 'as: -1: %d 80186/V30 instructions: %s %d' % (count, word, count) \
-                if count != 1 else 'as: -1: 1 80186/V30 instruction: %s 1' % word
-            if not count:
-                rep = 'as: -1: no 80186/V30 instructions'
-            if rep not in msgs:
-                problems.append('%s: cc -c -1 reports %r, not %r' % (tag, msgs.strip(), rep))
-            line = '%s: %d either way, %d instruction(s), text %s -> %s bytes' % (
-                tag, want, count, size0, size1)
-            if realbin:
-                for o in (opts, opts + ['-1']):
-                    got = emulated(cc, d, o)
-                    if got != want & 0xff:
-                        problems.append('%s: cc %s, run under mutosemu.py: %r, C says %d'
-                                        % (tag, ' '.join(o), got, want & 0xff))
-                line += '; linked and emulated'
-            lines.append(line)
+        for opts in OPTS[rule]:
+            p, ln = trigger(cc, realbin, rule, name, src, want, count, opts)
+            problems += p
+            lines += ln
+    return problems, lines
+
+
+def trigger(cc, realbin, rule, name, src, want, count, opts):
+    problems, lines = [], []
+    tag = '%s %s%s' % (rule, name, ' (%s)' % ' '.join(opts) if opts else '')
+    kind, word = KIND[rule]
+    with tempfile.TemporaryDirectory(prefix='v30') as d:
+        st0, m0, s0, log0 = compile_s(cc, d, src, opts, log=True)
+        st1, m1, s1, log1 = compile_s(cc, d, src, opts + ['-1'], log=True)
+        if st0 or st1:
+            return ['%s: cc -S exit status %d, with -1 %d: %s'
+                    % (tag, st0, st1, (m0 + m1).strip()[-200:])], lines
+        r0, r1 = simulate(s0, False), simulate(s1, True)
+        for r, how in ((r0, 'without -1'), (r1, 'with -1')):
+            if isinstance(r, str) or r[0] != want:
+                problems.append('%s: %s %r, C says %d'
+                                % (tag, how, r if isinstance(r, str) else r[0], want))
+        if not isinstance(r0, str) and not isinstance(r1, str) and r0[1] != r1[1]:
+            problems.append('%s: the file-scope variables differ with -1' % tag)
+        n0, n1 = len(kind.findall(s0)), len(kind.findall(s1))
+        if n0:
+            problems.append('%s: %d 80186/V30 instruction(s) without -1' % (tag, n0))
+        if n1 != count:
+            problems.append('%s: %d 80186/V30 instruction(s) with -1, pinned %d'
+                            % (tag, n1, count))
+        made = [ln for ln in entries(log1, rule, 'applied') if 'chunk=1' not in ln]
+        if len(made) != count:
+            problems.append('%s: the rule log has %d applied entries, pinned %d'
+                            % (tag, len(made), count))
+        if entries(log0, rule, 'applied'):
+            problems.append('%s: an applied entry without -1' % tag)
+        if len(entries(log0, rule, 'met')) != count:
+            problems.append('%s: the rule log has %d met entries without -1, -1 '
+                            'applies %d' % (tag, len(entries(log0, rule, 'met')), count))
+        if TOOL[rule] == 'c2' and \
+                compile_s(cc, d, src, ['-1'])[2] != compile_s(cc, d, src, [])[2]:
+            problems.append('%s: -1 changes c1\'s code' % tag)
+        if count:
+            if not isinstance(simulate(s1, False), str):
+                problems.append('%s: x86sim.py runs the -1 code as 8086 code' % tag)
+            with open(os.path.join(d, 'q.s'), 'w') as f:
+                f.write(s1)
+            r = subprocess.run([AS, '-o', 'q.o', 'q.s'], cwd=d, capture_output=True)
+            if r.returncode == 0:
+                problems.append('%s: mutos_as takes the -1 code without -1' % tag)
+        size0, _ = textsize(cc, d, opts)
+        size1, msgs = textsize(cc, d, opts + ['-1'])
+        rep = 'as: -1: %d 80186/V30 instructions: %s %d' % (count, word, count) \
+            if count != 1 else 'as: -1: 1 80186/V30 instruction: %s 1' % word
+        if not count:
+            rep = 'as: -1: no 80186/V30 instructions'
+        if rep not in msgs:
+            problems.append('%s: cc -c -1 reports %r, not %r' % (tag, msgs.strip(), rep))
+        line = '%s: %d either way, %d instruction(s), text %s -> %s bytes' % (
+            tag, want, count, size0, size1)
+        if realbin:
+            for o in (opts, opts + ['-1']):
+                got = emulated(cc, d, o)
+                if got != want & 0xff:
+                    problems.append('%s: cc %s, run under mutosemu.py: %r, C says %d'
+                                    % (tag, ' '.join(o), got, want & 0xff))
+            line += '; linked and emulated'
+        lines.append(line)
     return problems, lines
 
 
@@ -377,11 +486,109 @@ class Calls:
             body + '\treturn x + y + %s;\n}\n' % self.call()
 
 
-def generated(cc, ncalls, nfuzz, seed, keep):
+# ---- programs of shifts -----------------------------------------------------
+
+SCOUNTS = [0, 1, 2, 3, 3, 4, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, 13, 14, 15, 15, 16, 17]
+SVARS = ['g0', 'g1', 'x', 'y', 'r', 'u0', 'q', 'ga[1]', 'ga[5]']
+SLVALS = ['g0', 'g1', 'x', 'y', 'r', 'u0', 'q', 'ga[2]', 'ga[6]']
+
+
+class Shifts:
+    """Shifts by constants and by variables, of ints, unsigneds, a char
+    and register variables (r, q), as values, assignments, conditions and
+    under indices. No constant is shifted. No signed comparison of a shift with 0: the original
+    branches on the undefined overflow flag there (C1-15), where
+    x86sim.py stops."""
+
+    def __init__(self, rnd):
+        self.rnd = rnd
+
+    def count(self):
+        r = self.rnd
+        if r.random() < 0.12:
+            return '(%s & %d)' % (r.choice(['x', 'y', 'g1']), r.choice([3, 7, 15]))
+        return str(r.choice(SCOUNTS))
+
+    def atom(self):
+        r = self.rnd
+        k = r.random()
+        if k < 0.6:
+            return r.choice(SVARS)
+        if k < 0.7:
+            return 'c0'
+        if k < 0.8:
+            return 'ga[(%s) & 7]' % r.choice(['x', 'y', 'g0 >> 3', 'u0 >> 13', 'r << 4'])
+        return str(r.choice([1, -1, 3, 8, 100, 255, -256, 4095, -4096, 32767]))
+
+    def expr(self, depth=0):
+        r = self.rnd
+        k = r.random()
+        if depth > 3 or k < 0.2:
+            return self.atom()
+        if k < 0.65:
+            # no constant shifted by a constant: c1 folds it, and refuses
+            # some ("C error: const")
+            e = self.expr(depth + 1)
+            if e.lstrip('-').isdigit():
+                e = r.choice(SVARS)
+            return '(%s %s %s)' % (e, r.choice(['<<', '>>']), self.count())
+        if k < 0.75:
+            return '(%s * %d)' % (self.expr(depth + 1), r.choice([8, 16, 32, 64, 6]))
+        return '(%s %s %s)' % (self.expr(depth + 1), r.choice(['+', '-', '&', '|', '^']),
+                               self.expr(depth + 1))
+
+    def cond(self):
+        r = self.rnd
+        k = r.random()
+        e = '(%s %s %s)' % (self.atom(), r.choice(['<<', '>>']), self.count())
+        if k < 0.4:
+            return e
+        if k < 0.6:
+            return '!' + e
+        if k < 0.8:
+            return '%s %s 0' % (e, r.choice(['==', '!=']))
+        return '%s %s %s' % (self.expr(2), r.choice(['==', '!=', '<', '>']), self.atom())
+
+    def stmt(self, ind, depth=0):
+        r = self.rnd
+        k = r.random()
+        t = '\t' * ind
+        if k < 0.4 or depth > 1:
+            return '%s%s = %s;\n' % (t, r.choice(SLVALS), self.expr())
+        if k < 0.6:
+            return '%s%s %s %s;\n' % (t, r.choice(SLVALS), r.choice(['<<=', '>>=']),
+                                      self.count())
+        if k < 0.68:
+            return '%s%s = (%s %s %s) + %s;\n' % (
+                t, r.choice(SLVALS), r.choice(['r', 'q', 'x', 'g0']),
+                r.choice(['<<=', '>>=']), self.count(), self.atom())
+        if k < 0.85:
+            return '%sif (%s)\n%s%selse\n%s' % (
+                t, self.cond(), self.stmt(ind + 1, depth + 1), t,
+                self.stmt(ind + 1, depth + 1))
+        body = ''.join(self.stmt(ind + 1, depth + 1) for _ in range(r.randint(1, 5)))
+        return '%sfor (i%d = 0; i%d < %d; i%d++) {\n%s%s}\n' % (
+            t, depth, depth, r.randint(1, 3), depth, body, t)
+
+    def program(self):
+        r = self.rnd
+        body = ''.join(self.stmt(1) for _ in range(r.randint(4, 16)))
+        return ('int g0, g1, ga[8];\nunsigned u0;\nchar c0;\nmain()\n{\n'
+                '\tregister int r;\n\tregister unsigned q;\n\tint x, y, i0, i1;\n\n'
+                '\tg0 = %d;\n\tg1 = %d;\n\tu0 = %d;\n\tc0 = %d;\n\tx = %d;\n\ty = %d;\n'
+                '\tr = %d;\n\tq = %d;\n\tfor (i0 = 0; i0 < 8; i0++)\n'
+                '\t\tga[i0] = i0 * %d - %d;\n' % (
+                    r.randint(-2000, 2000), r.randint(-30000, 30000), r.randint(0, 65535),
+                    r.randint(-128, 127), r.randint(-100, 100), r.randint(-30000, 30000),
+                    r.randint(-2000, 2000), r.randint(0, 65535), r.randint(1, 4000),
+                    r.randint(0, 9000))
+                + body + '\treturn x + y + r + q + %s;\n}\n' % self.expr(1))
+
+
+def generated(cc, ncalls, nshifts, nfuzz, seed, keep):
     problems = []
-    t = {'calls': 0, 'changed': 0, 'unrun': 0, 'fuzz': 0, 'fchanged': 0, 'refused': 0,
-         'made': 0, 'b0': 0, 'b1': 0, 'c0': 0, 'c1': 0}
-    kind = KIND['V30-PUSH'][0]
+    t = {'fuzz': 0, 'fchanged': 0, 'refused': 0}
+    kinds = [k for k, _ in KIND.values()]
 
     def save(name, src, s0, s1):
         if keep:
@@ -391,69 +598,90 @@ def generated(cc, ncalls, nfuzz, seed, keep):
                 with open(os.path.join(d, n), 'w') as f:
                     f.write(x)
 
-    with tempfile.TemporaryDirectory(prefix='v30') as d:
-        for i in range(ncalls):
-            name = 'calls.s%d.%d' % (seed, i)
-            src = Calls(random.Random('v30 calls %d %d' % (seed, i))).program()
-            st0, m0, s0, _ = compile_s(cc, d, src, ['-O'])
-            st1, m1, s1, _ = compile_s(cc, d, src, ['-O', '-1'])
-            if st0 or st1:
-                problems.append('%s: cc -O -S exit status %d, with -1 %d: %s'
-                                % (name, st0, st1, (m0 + m1).strip()[-160:]))
-                save(name, src, s0, s1)
-                continue
-            t['calls'] += 1
-            r0, r1 = simulate(s0, False), simulate(s1, True)
-            if isinstance(r0, str):
-                t['unrun'] += 1
-                if not isinstance(r1, str):
-                    problems.append('%s: runs with -1 only (%s)' % (name, r0))
-                continue
-            if isinstance(r1, str) or r0[:2] != r1[:2]:
-                problems.append('%s: without -1 main() is %d, with -1 %s' % (
-                    name, r0[0], r1 if isinstance(r1, str) else
-                    '%d%s' % (r1[0], '' if r0[1] == r1[1] else
-                              ', and the file-scope variables differ')))
-                save(name, src, s0, s1)
-                continue
-            if s0 != s1:
-                t['changed'] += 1
-                t['made'] += len(kind.findall(s1))
-                b0, b1 = textsize(cc, d, ['-O'])[0], textsize(cc, d, ['-O', '-1'])[0]
-                if b0 is None or b1 is None:
-                    problems.append('%s: cc -O -c makes no object' % name)
+    def programs(d, what, n, gen, optsets):
+        """n generated programs, each compiled with every option set of
+        optsets with and without -1 and executed; the tally."""
+        c = {'n': 0, 'changed': 0, 'unrun': 0, 'made': 0, 'b0': 0, 'b1': 0, 'c0': 0,
+             'c1': 0}
+        for i in range(n):
+            src = gen(random.Random('v30 %s %d %d' % (what, seed, i))).program()
+            c['n'] += 1
+            for opts in optsets:
+                name = '%s.s%d.%d%s' % (what, seed, i, ''.join(opts))
+                o = ' '.join(opts + ['-S'])
+                st0, m0, s0, _ = compile_s(cc, d, src, opts)
+                st1, m1, s1, _ = compile_s(cc, d, src, opts + ['-1'])
+                if st0 or st1:
+                    # refused the same way either way (a constant c1 folds
+                    # and refuses, say): counted with those not run
+                    if st0 == st1 and m0 == m1:
+                        c['unrun'] += 1
+                        continue
+                    problems.append('%s: cc %s exit status %d, with -1 %d: %s'
+                                    % (name, o, st0, st1, (m0 + m1).strip()[-160:]))
+                    save(name, src, s0, s1)
                     continue
-                t['b0'] += b0
-                t['b1'] += b1
-                t['c0'] += r0[2][0]
-                t['c1'] += r1[2][0]
+                r0, r1 = simulate(s0, False), simulate(s1, True)
+                if isinstance(r0, str):
+                    # nothing to compare with (with -1 c2 may use other
+                    # registers and write forms x86sim.py does run)
+                    c['unrun'] += 1
+                    continue
+                if isinstance(r1, str) or r0[:2] != r1[:2]:
+                    problems.append('%s: without -1 main() is %d, with -1 %s' % (
+                        name, r0[0], r1 if isinstance(r1, str) else
+                        '%d%s' % (r1[0], '' if r0[1] == r1[1] else
+                                  ', and the file-scope variables differ')))
+                    save(name, src, s0, s1)
+                    continue
+                if s0 != s1:
+                    c['changed'] += 1
+                    c['made'] += sum(len(k.findall(s1)) for k in kinds)
+                    b0, b1 = textsize(cc, d, opts)[0], textsize(cc, d, opts + ['-1'])[0]
+                    if b0 is None or b1 is None:
+                        problems.append('%s: cc %s -c makes no object' % (name, ' '.join(opts)))
+                        continue
+                    c['b0'] += b0
+                    c['b1'] += b1
+                    c['c0'] += r0[2][0]
+                    c['c1'] += r1[2][0]
+        if c['unrun'] * 20 > max(c['n'] * len(optsets), 1):
+            problems.append('%d of the %d compilations of programs of %s do not run under '
+                            'x86sim.py without -1' % (c['unrun'], c['n'] * len(optsets), what))
+        return c
+
+    with tempfile.TemporaryDirectory(prefix='v30') as d:
+        t['calls'] = programs(d, 'calls', ncalls, Calls, [['-O']])
+        t['shifts'] = programs(d, 'shifts', nshifts, Shifts, [[], ['-O']])
         for i in range(nfuzz):
-            name = 'fuzz.s%d.%d' % (seed, i)
             rnd = random.Random('v30 fuzz %d %d' % (seed, i))
             src, fenv, ret, g = fuzz_c.generate(rnd, rnd.random() < 0.8, rnd.random() < 0.3,
                                                 rnd.random() < 0.5)
-            st0, m0, s0, _ = compile_s(cc, d, src, ['-O'])
-            st1, m1, s1, _ = compile_s(cc, d, src, ['-O', '-1'])
-            if st0 != st1 or m0 != m1:
-                problems.append('%s: cc -O -S ends otherwise with -1' % name)
-                save(name, src, s0, s1)
-                continue
-            if st0:
-                t['refused'] += 1
-                continue
-            t['fuzz'] += 1
-            if s0 == s1:
-                continue
-            t['fchanged'] += 1
-            j0 = fuzz_c.judge(s0, fenv, ret, g)
-            j1 = fuzz_c.judge(s1, fenv, ret, g, v30=True)
-            if j0 != j1:
-                problems.append('%s: without -1 %s, with -1 %s' % (
-                    name, ' '.join(j0)[:120], ' '.join(j1)[:120]))
-                save(name, src, s0, s1)
-    if t['unrun'] * 20 > max(t['calls'], 1):
-        problems.append('%d of the %d programs of calls do not run under x86sim.py '
-                        'without -1' % (t['unrun'], t['calls']))
+            counted = False
+            for opts in ([['-O'], []] if i % 2 else [['-O']]):
+                name = 'fuzz.s%d.%d%s' % (seed, i, ''.join(opts))
+                st0, m0, s0, _ = compile_s(cc, d, src, opts)
+                st1, m1, s1, _ = compile_s(cc, d, src, opts + ['-1'])
+                if st0 != st1 or m0 != m1:
+                    problems.append('%s: cc %s -S ends otherwise with -1'
+                                    % (name, ' '.join(opts)))
+                    save(name, src, s0, s1)
+                    continue
+                if st0:
+                    t['refused'] += not counted
+                    counted = True
+                    continue
+                t['fuzz'] += not counted
+                counted = True
+                if s0 == s1:
+                    continue
+                t['fchanged'] += 1
+                j0 = fuzz_c.judge(s0, fenv, ret, g)
+                j1 = fuzz_c.judge(s1, fenv, ret, g, v30=True)
+                if j0 != j1:
+                    problems.append('%s: without -1 %s, with -1 %s' % (
+                        name, ' '.join(j0)[:120], ' '.join(j1)[:120]))
+                    save(name, src, s0, s1)
     return problems, t
 
 
@@ -473,6 +701,8 @@ def main():
     ap.add_argument('--cc', default=CC)
     ap.add_argument('--calls', type=int, default=300, metavar='N',
                     help='generated programs of calls (300)')
+    ap.add_argument('--shifts', type=int, default=300, metavar='N',
+                    help='generated programs of shifts (300)')
     ap.add_argument('--fuzz', type=int, default=300, metavar='N',
                     help='programs of fuzz_c.py (300)')
     ap.add_argument('--seed', type=int, default=1)
@@ -492,7 +722,7 @@ def main():
         if rule not in rules:
             problems.append('%s has a trigger here but is no active V30 rule in '
                             'docs/RULES.md' % rule)
-    p, t = generated(a.cc, a.calls, a.fuzz, a.seed, a.keep)
+    p, t = generated(a.cc, a.calls, a.shifts, a.fuzz, a.seed, a.keep)
     problems += p
     if a.verbose or problems:
         for ln in lines:
@@ -503,18 +733,22 @@ def main():
         print('check_v30: %d problem(s)' % len(problems))
         return 1
     gain = ''
-    if t['b0']:
-        gain = '; in the %d programs of calls -1 changed: %d 80186/V30 instructions, text ' \
-               '%d -> %d bytes (%.1f%%), V30 clocks %d -> %d (%.1f%%)' % (
-                   t['changed'], t['made'], t['b0'], t['b1'],
-                   100.0 * (t['b0'] - t['b1']) / t['b0'], t['c0'], t['c1'],
-                   100.0 * (t['c0'] - t['c1']) / max(t['c0'], 1))
+    for what in ('calls', 'shifts'):
+        c = t[what]
+        if c['b0']:
+            gain += '; in the %d compilations of programs of %s -1 changed: %d 80186/V30 ' \
+                    'instructions, text %d -> %d bytes (%.1f%%), V30 clocks %d -> %d ' \
+                    '(%.1f%%)' % (c['changed'], what, c['made'], c['b0'], c['b1'],
+                                  100.0 * (c['b0'] - c['b1']) / c['b0'], c['c0'], c['c1'],
+                                  100.0 * (c['c0'] - c['c1']) / max(c['c0'], 1))
     print('check_v30: %d trigger(s) of %d V30 rule(s) (%s): C\'s value with and without '
-          '-1%s; %d programs of calls (seed %d; %d not run by x86sim.py) and %d of '
-          'fuzz_c.py (%d changed by -1; %d refused): the same values with -1%s'
+          '-1%s; %d programs of calls and %d of shifts (seed %d; %d and %d compilations '
+          'not run by x86sim.py) and %d of fuzz_c.py (%d compilations changed by -1; %d '
+          'refused): the same values with -1%s'
           % (len(CASES), len(rules), ', '.join(rules) or 'none',
-             ', linked and emulated too' if a.realbin else '', t['calls'], a.seed,
-             t['unrun'], t['fuzz'], t['fchanged'], t['refused'], gain))
+             ', linked and emulated too' if a.realbin else '', t['calls']['n'],
+             t['shifts']['n'], a.seed, t['calls']['unrun'], t['shifts']['unrun'],
+             t['fuzz'], t['fchanged'], t['refused'], gain))
     return 0
 
 

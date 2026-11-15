@@ -83,6 +83,47 @@ for v in '*127.' '*-128.' '#200.'; do
     fi
 done
 
+# imul by a byte constant: 6B ib is multiplied sign-extended - the same.
+for o in 'cx,ax,*200.' 'ax,*128.' 'dx,*-129.' 'bx,(si),*/80'; do
+    printf '.text\n\timul\t%s\n' "$o" > "$tmp/p.s"
+    if "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1 || \
+       ! grep -q 'imul by a byte constant .* outside -128 to 127' "$tmp/log"; then
+        echo "FAIL  imul $o: not refused as a byte out of range: $(head -n 1 "$tmp/log")"
+        bad=$((bad + 1))
+    fi
+done
+for o in 'cx,ax,*127.' 'ax,*-128.' 'cx,ax,#200.' 'bx,(si),*/7F'; do
+    printf '.text\n\timul\t%s\n' "$o" > "$tmp/p.s"
+    if ! "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1; then
+        echo "FAIL  imul $o: refused: $(head -n 1 "$tmp/log")"
+        bad=$((bad + 1))
+    fi
+done
+
+# A shift by a constant other than 1 is one byte longer than the shift by 1:
+# the labels after it (pass 1) are where pass 2 writes the code. "sal ax,*3."
+# is C1 E0 03, so the "je" at 3 back to 0 is 74 FB; with a word of address
+# ("sal _g,*7.", 5 bytes) 74 F9.
+printf '.text\nLa:\tsal\tax,*3.\nLb:\tje\tLa\nLc:\tsal\t_g,*7.\n\tje\tLc\n.comm _g,2\n' > "$tmp/l.s"
+if ! "$MUTOS_AS" -1 "$tmp/l.s" -o "$tmp/l.o" >"$tmp/log" 2>&1 || \
+   [ "$(od -An -tx1 -j16 -N12 "$tmp/l.o" | tr -d ' \n')" != "c1e00374fbc12600000774f9" ]; then
+    echo "FAIL  labels after a shift by a constant: $(od -An -tx1 -j16 -N12 "$tmp/l.o" 2>/dev/null) $(head -n 1 "$tmp/log")"
+    bad=$((bad + 1))
+fi
+# a count that is a symbol: 1 is taken, any other value refused (its length
+# is not known in pass 1)
+printf 'N=3\n.text\n\tsal\tax,*N\n' > "$tmp/p.s"
+if "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1 || \
+   ! grep -q 'not known in pass 1' "$tmp/log"; then
+    echo "FAIL  sal ax,*N with N=3: not refused: $(head -n 1 "$tmp/log")"
+    bad=$((bad + 1))
+fi
+printf 'N=1\n.text\n\tsal\tax,*N\n' > "$tmp/p.s"
+if ! "$MUTOS_AS" -1 "$tmp/p.s" -o "$tmp/p.o" >"$tmp/log" 2>&1; then
+    echo "FAIL  sal ax,*N with N=1: refused: $(head -n 1 "$tmp/log")"
+    bad=$((bad + 1))
+fi
+
 # -C: the symbol table's size is in the header (a_syms, bytes 8 and 9).
 printf '.globl _f\n.text\n_f:\tjmp\tL1\nL1:\tret\n.data\nLd:\t.word\t1\n_d:\t.word\t2\n' > "$tmp/c.s"
 syms() { od -An -tu2 -j8 -N2 "$1" | tr -d ' '; }
@@ -96,7 +137,7 @@ if [ "$(syms "$tmp/c0.o")" != 48 ] || [ "$(syms "$tmp/c1.o")" != 24 ] || \
 fi
 
 if [ "$bad" -eq 0 ]; then
-    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it), and refuses push of a byte constant outside -128 to 127; -C leaves out the local L symbols"
+    echo "switches: -1 gives the recorded object and report of $n/$n sources (not without it), and refuses push of and imul by a byte constant outside -128 to 127, and puts the labels after a shift by a constant where the code is; -C leaves out the local L symbols"
     exit 0
 fi
 echo "switches: $bad failures"

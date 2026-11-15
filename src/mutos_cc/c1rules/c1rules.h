@@ -71,6 +71,8 @@ struct	tnode *rule_c1_02(struct tnode *zero, int op, struct tnode **ops, int n);
 void	rule_c1_03(struct tnode *incdec);
 /* C1-06: cexpr()'s template, once matched (c10.c) - returns the template */
 char	*rule_c1_06(char *tabstring);
+/* V30-SHIFT: cexpr()'s template, once matched (c10.c) - returns the template */
+char	*rule_v30_shift(struct tnode *tree, char *tabstring);
 /*
  * The re-enactments of libc.a's routines (c1lib.c, c12.c) that the
  * corrected copy of libc.a corrects (docs/RULES.md, "The corrected copy

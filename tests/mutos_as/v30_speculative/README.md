@@ -69,22 +69,20 @@ encoding is unambiguous.
 
 ## Findings worth your attention
 
-1. **`imul` immediate-marker truncation is a real, deliberate, and
-   non-obvious behavior.** `encode_imul_imm()` picks `0x6B` (byte immediate)
-   purely because of the `*` marker, not because the value fits in a signed
-   byte - so `imul cx,ax,*200.` truncates 200 to `0xC8` (i.e. multiplies by
-   -56, not 200). NASM, even with its optimizer fully disabled (`-O0`),
-   refuses to do this: it always promotes an out-of-range immediate to the
-   safe `0x69` word form instead of silently corrupting the value. This
-   isn't a bug in either tool - it's a genuine design choice unique to this
-   codebase's "the marker always wins" convention. (`push *imm8` behaved
-   the same way until 2026-11-14: by the owner's decision `mutos_as` now
-   refuses `push *n` for an `n` outside -128 to 127, with a message that
-   names `#n`; `imul` is as described here still.) It's worth deciding, consciously,
-   whether that is really what you want here before this goes in front of
-   any real MUTOS toolchain comparison, since it's exactly the kind of
-   place a real vendor assembler's behavior (once you have a sample) could
-   turn out to disagree with.
+1. **`imul` and `push` with a byte constant outside -128 to 127 are
+   refused (since 2026-11-14).** `encode_imul_imm()` picks `0x6B` (byte
+   immediate) because of the `*` marker, not because the value fits in a
+   signed byte - so `imul cx,ax,*200.` was encoded with the low byte `0xC8`
+   and multiplied by -56, not 200; `push *200.` pushed -56 in the same way.
+   NASM, even with its optimizer disabled (`-O0`), takes the word form
+   `0x69` for such a value. By the owner's decision `mutos_as` now refuses
+   both, with a message that names `#n` - the marker still chooses the
+   form, but a value the form cannot give is an error (in pass 2, where
+   the value is known). `imul_imm_test.s` has `imul cx,ax,*-128.` in the
+   place of its `*200.` case, `push_imm_test.s` lost its `push */80`;
+   `tests/mutos_as/check_switches.sh` checks the refusals and the ends of
+   the range. A real vendor assembler's behaviour, should a sample ever
+   surface, is still unknown.
 
 2. **The command first proposed for decoding
    (`x86dis -L -e 16 -s intel -f file.o`) silently truncates its output**
@@ -102,6 +100,19 @@ encoding is unambiguous.
    `objdump -m i8086` correctly prints `%es:(%di),%ds:(%si)`. One concrete,
    reproducible data point (not an exhaustive audit) that `x86dis`/
    `libdisasm`'s 16-bit-mode support has real gaps.
+
+4. **The length of a shift by a constant was wrong in pass 1 (found and
+   corrected 2026-11-14, with step V2).** `encode_group2()` took every
+   count for 1 while sizing, since pass 1 does not evaluate expressions -
+   so `sal ax,*3.`, three bytes in pass 2, counted as two, and every label
+   after one was a byte low: a branch to it went one byte short of its
+   target. None of the sources here has a label behind such a shift, and
+   a disassembly of the bytes shows nothing wrong, so neither check could
+   see it; the compiler's first use of the form did (the linked triggers
+   of `tests/rules/check_v30.py`). A count made of numbers is now
+   evaluated in pass 1 too; one with a symbol in it is taken for 1 there,
+   and refused in pass 2 if it is not 1. `tests/mutos_as/check_switches.sh`
+   assembles a branch back over such a shift and compares the bytes.
 
 ## Independent-encoder cross-check
 

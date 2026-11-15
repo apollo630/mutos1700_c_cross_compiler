@@ -47,4 +47,4 @@ imul cx,1000            ; expect 69 C9 E8 03
 imul dx,-1              ; expect 6B D2 FF
 imul cx,ax,4            ; expect 6B C8 04
 imul dx,bx,2000         ; expect 69 D3 D0 07
-imul cx,ax,200          ; expect 6B C8 C8   (byte truncation of 200)
+imul cx,ax,-128         ; expect 6B C8 80   (*200. is refused by mutos_as since 2026-11-14)
