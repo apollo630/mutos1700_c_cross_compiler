@@ -76,6 +76,16 @@ pages.
   come from it, in rounds (the round-14 `fltprobe` goldens since 2026-10-12). Its
   8086 has been replaced by a NEC V30 (the 8086 is no longer available on
   it, said 2026-11-14), and an IDE interface added (said 2026-11-08): the machine for the hardware checks of the 80186/V30 code.
+  The V30 runs at 15 MHz (a clock of 67 ns), not the A7100's original 4.9152 MHz;
+  a read of the memory has 3 or 4 wait states, 7 clocks at best (said
+  2026-11-21) - a prediction of run times has to count the bus
+  (`tests/rules/v30bus.py`). MUTOS there has a `time` command (user time in
+  tenths of a second).
+- How kits reach the machine (said 2026-11-21): unpacked on Linux and copied
+  onto a v7-formatted CF card, which MUTOS reads through the IDE interface.
+  Step V4's kit arrived that way with its subdirectory `expect/` empty - a kit's
+  script must not rely on its subdirectories silently, and the owner checks
+  that they arrived.
 - The kernel's `conf/arith.a` is in the repository since 2026-11-09
   (`tests/mutos1700_arith/`, added by the owner): `locking.o` and the six long
   helpers, which are `libc.a`'s byte for byte.
@@ -165,3 +175,11 @@ pages.
   step 8 (`make CFLAGS="-c -O -K1024 -1"`, `scripts/v30report.py`). The
   run on the A7100, the kernel's build and boot and the measured times
   are the owner's; V4 is open until they are back.
+- 2026-11-21, step V4, the kit's run on the A7100 (V30 at 15 MHz): every
+  value as predicted (the log said `DIFFERENT` only because `expect/` had
+  arrived empty; `v30check.sh` runs `cmp` without `-s` and the timing
+  programs under `time` since). Gains by user time: push 2.6%, shift 14.7%,
+  imul 12.8%; `tests/rules/v30bus.py` explains them by the wait states of
+  the bus, but for `imul r,r,imm`, about 10 clocks slower than the NEC
+  manual says (`STATUS.md`, "Step V4"; `tests/rules/hwlog_2026-11-21.txt`).
+  Open of V4: the kernel built with `-1` and booted.

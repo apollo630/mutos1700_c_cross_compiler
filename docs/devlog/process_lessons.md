@@ -180,3 +180,12 @@ These apply to *every* milestone, not just the one where they were first learned
   MUTOS's objects segment offsets. Only running a program linked through `-r`
   against the same program linked at once showed it. Where the port goes beyond the
   original, build the semantic check before trusting the code.
+- **A check run on another machine must say why it fails, and must know
+  the machine.** Step V4's kit compared with `cmp -s`; when its `expect/`
+  arrived empty on the A7100, eighteen correct outputs were reported
+  `DIFFERENT`, indistinguishable from eighteen wrong ones, and only the
+  files brought back showed it. Its times were predicted for the A7100 as
+  built, 4.9152 MHz and no wait states; the machine has a V30 at 15 MHz
+  with 3 or 4 wait states, and the prediction was off by half. A script
+  for someone else's hardware lets its tools print their reasons into the
+  log, and a prediction of time starts by asking the clock and the memory.

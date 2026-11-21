@@ -268,7 +268,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   on the hardware - a probe of every form the rules write, a program per rule as 8086
   code and as V30 code, timing programs, `v30check.sh`, every line predicted in Python
   and printed so under `mutosemu.py`; `--check` (in `make check-realbin`) is the
-  prediction alone.
+  prediction alone. Run on the owner's A7100 2026-11-21 (`hwlog_2026-11-21.txt`).
+  `v30bus.py` (since 2026-11-21): the kit's timing programs under a model of the
+  owner's bus (the V30 at 15 MHz, wait states, the queue), beside the measured times.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of

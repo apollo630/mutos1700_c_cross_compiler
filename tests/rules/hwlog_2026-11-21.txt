@@ -1,0 +1,115 @@
+Step V4: the kit of tests/rules/v30kit.py run on the owner's A7100 (NEC V30
+at 15 MHz, memory with 3 or 4 wait states) under MUTOS 1700, reported
+2026-11-21 (STATUS.md, "Step V4"). Three parts, each as the machine printed
+it; the lines starting "#" are not the machine's.
+
+# 1. "time sh v30check.sh >log 2>&1" - the file log. Every DIFFERENT is
+#    the kit's directory expect/ having arrived empty (part 2): the outputs
+#    themselves are expect/'s byte for byte, compared on the host.
+probe.v
+probe.v: exit status 0
+probe.out: DIFFERENT from expect/probe.out
+probe.tw: not as under the emulator, it is
+push: 46 twins, result differs 0, flag differs: CY 0 P 0 AC 0 Z 0 S 0 V 0
+shift: 7410 twins, result differs 0, flag differs: CY 0 P 0 AC 0 Z 0 S 0 V 0
+imul: 1140 twins, result differs 0, flag differs: CY 0 P 0 AC 0 Z 0 S 0 V 0
+pushO.8: exit status 0
+pushO.o8: DIFFERENT from expect/pushO.out
+pushO.v: exit status 0
+pushO.ov: DIFFERENT from expect/pushO.out
+shift.8: exit status 0
+shift.o8: DIFFERENT from expect/shift.out
+shift.v: exit status 0
+shift.ov: DIFFERENT from expect/shift.out
+shiftO.8: exit status 0
+shiftO.o8: DIFFERENT from expect/shiftO.out
+shiftO.v: exit status 0
+shiftO.ov: DIFFERENT from expect/shiftO.out
+imul.8: exit status 0
+imul.o8: DIFFERENT from expect/imul.out
+imul.v: exit status 0
+imul.ov: DIFFERENT from expect/imul.out
+imulO.8: exit status 0
+imulO.o8: DIFFERENT from expect/imulO.out
+imulO.v: exit status 0
+imulO.ov: DIFFERENT from expect/imulO.out
+bpush.8 takes
+23 s
+bpush.o8: DIFFERENT from expect/bpush.out
+bpush.v takes
+22 s
+bpush.ov: DIFFERENT from expect/bpush.out
+bshift.8 takes
+21 s
+bshift.o8: DIFFERENT from expect/bshift.out
+bshift.v takes
+18 s
+bshift.ov: DIFFERENT from expect/bshift.out
+bimul.8 takes
+15 s
+bimul.o8: DIFFERENT from expect/bimul.out
+bimul.v takes
+14 s
+bimul.ov: DIFFERENT from expect/bimul.out
+values: DIFFERENT, see above
+
+real     3:17.0
+user     2:55.7
+sys        20.2
+
+# 2. The owner's checks in the kit's directory afterwards (the file diag):
+#    ls -l expect; cmp probe.out expect/probe.out; cmp bpush.o8
+#    expect/bpush.out; each timing program under time.
+total 0
+cmp: cannot open expect/probe.out
+cmp: cannot open expect/bpush.out
+bpush.8
+23 s
+12345
+
+real       23.0
+user       23.0
+sys         0.1
+bpush.v
+22 s
+12345
+
+real       22.0
+user       22.4
+sys         0.0
+bshift.8
+21 s
+-32376
+
+real       22.0
+user       21.1
+sys         0.1
+bshift.v
+18 s
+-32376
+
+real       18.0
+user       18.0
+sys         0.0
+bimul.8
+16 s
+26828
+
+real       16.0
+user       15.6
+sys         0.0
+bimul.v
+19 s
+26828
+
+real       19.0
+user       13.6
+sys         0.0
+
+# 3. "time ./bimul.8" at the terminal.
+26828
+15 s
+
+real       15.0
+user       15.6
+sys         0.0

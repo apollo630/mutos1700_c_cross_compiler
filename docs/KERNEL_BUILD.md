@@ -227,7 +227,8 @@ Step V4 of `docs/TOOLCHAIN_PLAN.md`: the kernel with the 80186/V30 code of
 `-1` (`docs/RULES.md`, "The V30 rules"). **Such a kernel runs on the NEC V30
 (or an 80186) only** - boot it from a test disk and keep the original kernel
 bootable. Run the kit of `tests/rules/v30kit.py` on the machine first
-(`STATUS.md`, "Step V4"): it shows each form the kernel will execute.
+(`STATUS.md`, "Step V4"): it shows each form the kernel will execute - done
+on the owner's A7100 2026-11-21, every form as defined.
 
 The makefile stays as it is; `CFLAGS` is given on the command line, which
 takes precedence over the makefile's `CFLAGS = -c -O -K1024`. In a fresh copy

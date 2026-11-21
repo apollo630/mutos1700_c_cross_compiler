@@ -424,4 +424,6 @@ per rule prints its values as 8086 code and as V30 code, against the
 source's arithmetic computed in Python. Every 80186/V30 instruction of
 the kit's programs and of the kernel sources of the tree must be a probed
 form, so a rule that came to write another form would fail the kit
-(`v30kit.py --check`, in `make check-realbin`) until it is probed.
+(`v30kit.py --check`, in `make check-realbin`) until it is probed. On the
+owner's V30 (2026-11-21) every form computed as defined, and set even the
+flags it leaves undefined as its 8086 twin does (`STATUS.md`, "Step V4").

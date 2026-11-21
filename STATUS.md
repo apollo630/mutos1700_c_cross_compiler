@@ -11,7 +11,7 @@ the project applies to any unverified claim. The plan for the work ahead is
 held until 2026-10-20 are in [`docs/history/`](docs/history/), the narrative behind
 them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
-Last updated: 2026-11-15.
+Last updated: 2026-11-21.
 
 ---
 
@@ -1274,8 +1274,12 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    below): `tests/rules/v30kit.py` makes the kit for the check on the hardware - a probe of
    every 80186/V30 form the rules write, a program per rule as 8086 code and as V30 code, a
    timing program per rule, every line they print predicted -, and `docs/KERNEL_BUILD.md`,
-   step 8, has the kernel with `-1`. The run on the A7100 and the kernel are the owner's;
-   until they are back, V4 is open.
+   step 8, has the kernel with `-1`. **The kit's run on the A7100 (NEC V30 at 15 MHz),
+   2026-11-21**: every value as predicted - each form, each program as 8086 code and as
+   V30 code -; the gains measured, by user time: push 2.6%, shift 14.7%, imul 12.8%
+   (the bus with its wait states explains them, but for `imul r,r,imm`, which is slower
+   than the NEC manual says - `tests/rules/v30bus.py`). Open of V4: the kernel built
+   with `-1` and booted, the owner's.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2640,7 +2644,7 @@ rule to keep and to prove on the hardware. It was in the tree for one commit
 (`fa7afb8`, with step V3) and is taken out again; `stepV3_03_shift_mem_optional.patch`
 of that day has it.
 
-### Step V4: the 80186/V30 code on the hardware - the kit (verified 2026-11-15; the run is open)
+### Step V4: the 80186/V30 code on the hardware - the kit (verified 2026-11-15; run on the A7100 2026-11-21; the kernel is open)
 
 The plan's last step of stage V (`docs/TOOLCHAIN_PLAN.md`, section 7.4): probes of
 each form with edge values, a program per rule that prints its values, the kernel
@@ -2713,8 +2717,58 @@ done; the run on the owner's A7100 (NEC V30) and the kernel are not.
 - **Checked**: `make test`; `make check-docs`; `v30kit.py --check`. No tool's source
   changed, so the whole `make check-realbin` was not run again (its new line is that
   check).
-- **Open, the owner's**: the kit's run on the A7100 (the log back), the kernel built
-  with `-1` and booted from a test disk, the seconds of the timing programs.
+- **The run on the A7100 (reported 2026-11-21)**: the owner's machine, its NEC V30 at
+  15 MHz (a clock of 67 ns) and its memory with 3 or 4 wait states (a bus cycle of 7
+  clocks at best), under MUTOS 1700; the kit unpacked on Linux and copied onto a
+  v7-formatted CF card, read through the machine's IDE interface. The log, the times
+  and the owner's checks are `tests/rules/hwlog_2026-11-21.txt`.
+  - **Every value as predicted.** `probe.out`, `probe.tw` and the sixteen `N.o8`/`N.ov`
+    are `expect/`'s byte for byte (compared on the host); every exit status 0. So all
+    287 forms compute as defined on the V30, defined flags included, and `probe.tw`
+    has no difference at all in the 8,596 pairs: the V30 sets even the flags a form
+    leaves undefined as its 8086 twin does - as the emulator does.
+  - **The log said `DIFFERENT` for every file all the same**: `expect/` had arrived
+    empty (`ls -l expect`: `total 0`; `cmp: cannot open expect/probe.out`), and `cmp
+    -s` had hidden why. The kit's script runs `cmp` without `-s` since, so the reason
+    is in the log, and its README says that `expect/` must arrive with its files.
+  - **The times** (user time of MUTOS's `time`, in tenths of a second; the programs'
+    own `time()` seconds as well in the log):
+
+    | program | 8086 code | V30 code | gain measured | predicted (manual, 4.9152 MHz) | bus model (15 MHz, 3 wait states) |
+    |---|---|---|---|---|---|
+    | `bpush` | 23.0 s | 22.4 s | 2.6% | 4.2% (40 / 38 s) | 2.2% (24.7 / 24.2 s) |
+    | `bshift` | 21.1 s | 18.0 s | 14.7% | 12.5% (40 / 35 s) | 13.4% (20.6 / 17.8 s) |
+    | `bimul` | 15.6 s | 13.6 s | 12.8% | 27.5% (38-42 / 27-31 s) | 27.2% (15.1-16.5 / 10.8-12.2 s) |
+
+    The kit's prediction assumed the A7100's original clock, 4.9152 MHz, and memory
+    without wait states; hence its seconds. `tests/rules/v30bus.py` (new) runs one
+    turn of each timing program under the emulator, instruction by instruction, and
+    counts the NEC manual's clocks with a 6-byte queue, a bus cycle of 4 + 3 clocks
+    for each word fetched and each data transfer, and the queue emptied by a taken
+    branch. It gives five of the six times within 8% (`bpush` 7-8% slow, `bshift`
+    within 3%, `bimul.8` within its range) and the gains of push and shift: at 3.5
+    clocks a byte of code, the short instructions wait for the bus, and a rule gains
+    by the bytes it saves about as much as by the clocks. (With 4 wait states the
+    model is 10-22% too slow for `bpush` and `bshift`.)
+  - **`imul r,r,imm` is slower than the manual says.** `bimul.v` took 13.6 s, 1.4 s
+    above the model's highest (12.2 s); the model gives 13.6 s when the form takes
+    about 9 to 12 clocks more than the manual's 28-34 (36-42 with a word), as the
+    data fall in its range -
+    `v30bus.py --imul3 12`. `imul cx` of the 8086 code, 41-47 clocks, fits as
+    printed. So V30-IMUL gains about half of what was predicted - still 12.8% in a
+    loop of products. One program says it; a timing kit that measures each form
+    alone would confirm it (not made; the owner's to decide).
+  - In the second run `bimul.v`'s `real` was 19.0 s against its user time of 13.6 s
+    (something else ran meanwhile); its user time is the one compared, and agrees
+    with the first run (14 seconds by `time()`).
+- **The kit since 2026-11-21**: `v30check.sh` runs `cmp` without `-s` and the timing
+  programs under `time`; the README says so. The programs and `expect/` are the same
+  as in the run (two builds still give the same kit byte for byte). Tried on the host
+  under `dash` as before, with the emulator for each program and a stand-in for
+  `time`: `values: every output as expected`; with `expect/` empty every file is
+  reported with `cmp`'s "No such file or directory", with a changed line with the
+  character and line where it differs.
+- **Open, the owner's**: the kernel built with `-1` and booted from a test disk.
 
 ## `mutos_as` opcode coverage
 
@@ -2886,6 +2940,9 @@ far.
    nothing, but does **not** reduce the priority of finding that real sample. The
    `imul`-immediate marker-truncation question (the opcode-coverage table's
    footnote ²) is closed since 2026-11-14: a `*n` outside -128 to 127 is refused.
+   What the V30 does with PUSH imm, the IMUL immediate forms and a shift by a
+   constant other than 1 - each form `-1` writes - is confirmed on the hardware since
+   2026-11-21 (step V4's kit); their spelling in a real MUTOS source is not.
 3. ~~`esc`/`escb`, `ret`/`reti` with an immediate, the dedicated `int 3` encoding~~ -
    **closed 2026-10-25** by the measurement against the original (step 5): `ret N` and
    `int *3.` are done, `esc`/`escb` do not exist in the original. What differs

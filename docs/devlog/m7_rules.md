@@ -1080,3 +1080,50 @@ What the hardware can and cannot check, and how the kit is made
   tree (their headers beside them, as the corpus has them). `as` reports
   once per `cc` command; `scripts/v30report.py` sums the lines and takes
   the source's name from the `+ cc` line `set -x` prints before each.
+
+### The run on the A7100 (2026-11-21)
+
+The owner unpacked the kit on Linux, copied it onto a v7-formatted CF card
+and ran it on the A7100 (`time sh v30check.sh >log 2>&1`; the log, his
+checks after it and the times are `tests/rules/hwlog_2026-11-21.txt`).
+
+- **The log said `DIFFERENT` for everything, and nothing was.** Every
+  comparison against `expect/` failed, the six-byte files included -
+  while F3b's `hwcheck.sh` had compared against `expect/` with the same
+  `cmp -s` on the same machine. The files the owner brought back were
+  `expect/`'s byte for byte. `ls -l expect` there said `total 0`: the copy
+  onto the card had left the subdirectory empty, and `cmp -s` had said
+  nothing about "cannot open". The script runs `cmp` without `-s` since.
+- **The values.** All 287 forms as defined, flags included; `probe.tw`
+  without a single difference in 8,596 pairs, so the V30 sets the flags
+  a form leaves undefined as its 8086 twin does. For C1-15 that means a
+  program with the original's bug behaves alike with `-1` and without.
+- **The times were half the prediction - and the prediction was of
+  another machine.** All six runs took 1.7 to 2.7 times less than the
+  manual's clocks allow at 4.9152 MHz; `bimul.8` needs at least 37.9 s by
+  them and took 15. The owner's answer: the V30 runs at 15 MHz, and the
+  memory has 3 or 4 wait states - 7 clocks a word at best. At 15 MHz the
+  runs are 1.1 to 1.8 times slower than the manual's clocks, the more so
+  the shorter the instructions: a bus model was needed.
+- **The bus model** (`tests/rules/v30bus.py`). One turn of each timing
+  program traced under `mutosemu.py` - `work(2)` less `work(1)`, every
+  instruction executed with its bytes, data transfers and CL for a shift
+  by CL -, decoded by capstone, counted with the manual's clocks, a 6-byte
+  queue filled a word per bus cycle of 4 + w clocks, a data transfer of the
+  EU taking the bus before the next fetch, the queue emptied by a taken
+  branch. With w = 3 and nothing fitted: `bpush` 24.7/24.2 s (measured
+  23.0/22.4), `bshift` 20.6/17.8 (21.1/18.0), `bimul.8` 15.1-16.5 (15.6),
+  and the gains of push and shift, 2.2% and 13.4% (2.6%, 14.7%). The
+  prediction's gain for shift held, the one for push too - but not for
+  the reason the clocks gave: at 3.5 clocks a byte, a rule gains by the
+  bytes it saves.
+- **`bimul.v` is the exception.** 13.6 s against the model's 10.8-12.2:
+  the three-operand `imul` must take about 9 to 12 clocks more than the
+  manual's 28-34 for the model to agree (`--imul3 12`), while the 8086
+  code's `imul cx` fits the manual's 41-47. The rule still gains 12.8% in
+  a loop of products, half the 27.5% predicted. One program is not a
+  measurement of a form; a kit timing each form alone would be.
+- **`time()` was too coarse.** The kit timed with `time()` in whole
+  seconds because whether MUTOS has a `time` command was not known; it has
+  (user time in tenths of a second), and the owner ran each program under
+  it. The script does so since.

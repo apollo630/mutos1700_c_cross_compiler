@@ -35,7 +35,10 @@ kit and predicts, line for line, what the V30 must print:
     of the rule's instructions, which prints a sum and, on the standard
     error, the seconds it took (time()).
   - v30check.sh, for the hardware's sh: runs them all and compares what
-    they print with expect/; README, with the table of what to expect.
+    they print with expect/ (cmp without -s, so that the reason of a
+    difference - or a missing expect/ file - is in the log), the timing
+    programs under MUTOS's time (its user time in tenths of a second);
+    README, with the table of what to expect.
 
 The prediction: what a program must print is computed here in Python
 (C's arithmetic on 16 bits; for the probes the forms' definitions), not
@@ -1000,8 +1003,8 @@ SCRIPT = '''\
 : and V30 code of the switch -1 on the hardware. It needs the NEC V30.
 : probe.v runs every form the rules of -1 write. Each program N prints
 : its values twice, as 8086 code N.8 and as V30 code N.v. All of it is
-: compared with expect. Then three timing programs run, each as 8086
-: code and as V30 code, and print the seconds they took. Nothing
+: compared with expect, which must hold its files. Then three timing
+: programs run, each as 8086 code and as V30 code, under time. Nothing
 : outside this directory is changed. Run it here with sh v30check.sh,
 : see README.
 chmod 755 probe.v %(images)s
@@ -1009,13 +1012,13 @@ bad=
 echo probe.v
 ./probe.v >probe.out 2>probe.tw
 echo probe.v: exit status $?
-if cmp -s probe.out expect/probe.out
+if cmp probe.out expect/probe.out
 then :
 else
 	echo probe.out: DIFFERENT from expect/probe.out
 	bad=yes
 fi
-if cmp -s probe.tw expect/probe.tw
+if cmp probe.tw expect/probe.tw
 then
 	echo probe.tw: as expected
 else
@@ -1028,7 +1031,7 @@ do
 	do
 		./$n.$x >$n.o$x
 		echo $n.$x: exit status $?
-		if cmp -s $n.o$x expect/$n.out
+		if cmp $n.o$x expect/$n.out
 		then :
 		else
 			echo $n.o$x: DIFFERENT from expect/$n.out
@@ -1041,8 +1044,8 @@ do
 	for x in 8 v
 	do
 		echo $n.$x takes
-		./$n.$x >$n.o$x
-		if cmp -s $n.o$x expect/$n.out
+		time ./$n.$x >$n.o$x
+		if cmp $n.o$x expect/$n.out
 		then :
 		else
 			echo $n.o$x: DIFFERENT from expect/$n.out
@@ -1067,7 +1070,10 @@ constant, imul by a constant), run on the hardware.
 THE PROGRAMS *.v AND probe.v NEED THE NEC V30 (or an 80186): on an 8086
 they do not run. Nothing outside this directory is changed.
 
-On MUTOS 1700, in this directory (with its subdirectory expect/):
+On MUTOS 1700, in this directory (with its subdirectory expect/ and
+its files - unpack the tar on MUTOS, or copy the subdirectories with
+their files: with expect/ empty every comparison fails, and the log
+says "cmp: cannot open"):
 
     sh v30check.sh >log 2>&1
     cat log
@@ -1119,10 +1125,14 @@ source's arithmetic (and which both print under the emulator).
 3. The timing programs
 
 Each runs a loop of its rule's instructions and prints a sum (compared)
-and the seconds it took, by time(), on the standard error (in the log,
-after "N.8 takes" and "N.v takes"). By the V30's clocks, counted by
-x86sim.py from the NEC manual's figures (at %(mhz).4f MHz, the fastest and
-the slowest case; the machine takes longer - the bus, the interrupts):
+and the seconds it took, by time(), on the standard error; the script
+runs it under time, whose user time - in tenths of a second - is the
+one to compare (in the log, after "N.8 takes" and "N.v takes"). By the
+V30's clocks, counted by x86sim.py from the NEC manual's figures (at
+%(mhz).4f MHz, the A7100's clock, the fastest and the slowest case, memory
+without wait states; a machine with wait states takes longer, and gains
+less where the code waits for the bus - tests/rules/v30bus.py models
+that):
 
     program  turns   as 8086 code      as V30 code       gain
 %(benches)s

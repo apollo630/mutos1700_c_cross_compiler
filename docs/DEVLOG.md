@@ -167,7 +167,7 @@ The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corr
 - A short jump that does not reach: refused by `mutos_as` (2026-11-15)
 - Step V3: V30-IMUL, and the length `c2` counts (2026-11-15)
 - After V3: the external target, and no shift in memory (2026-11-15)
-- Step V4: the kit for the hardware (2026-11-15)
+- Step V4: the kit for the hardware (2026-11-15; its run on the A7100 with the V30 at 15 MHz, 2026-11-21)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 
