@@ -1389,7 +1389,7 @@ settled ahead of it and stands: code built for the V30 must stay link-compatible
 with the real, unmodified `libc.a`/`crt0.o` - no separate runtime is planned, so the
 ABI-visible frame layout from Milestone 4's ABI research can never change for it.
 Under that constraint, real NEC
-µPD70116 (V30) timing data (`docs/V20_V30_Users_Manual_Oct86.pdf` - NEC calls
+µPD70116 (V30) timing data (NEC's V20/V30 manual, `docs/CPU_REFERENCE.md` - NEC calls
 `ENTER`/`LEAVE` `PREPARE`/`DISPOSE`) shows the only layout-compatible use of
 `PREPARE`/`DISPOSE` is an exact cycle-for-cycle tie against the discrete-instruction
 prologue/epilogue, with a small code-size regression - so not those. `PUSHA`/`POPA`,

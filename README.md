@@ -19,6 +19,7 @@ MUTOS 1700 was a lesser-known operating system for the East German (DDR) office 
 * [`CLAUDE.md`](CLAUDE.md) — the project guide: layout, rules, roadmap.
 * [`docs/DEVLOG.md`](docs/DEVLOG.md) — the development log (index of `docs/devlog/`).
 * [`docs/MUTOS_C_ABI.md`](docs/MUTOS_C_ABI.md), [`docs/MUTOS_ORIGINAL_BUGS.md`](docs/MUTOS_ORIGINAL_BUGS.md) — the calling convention, and the bugs found in the original binaries.
+* [`docs/CPU_REFERENCE.md`](docs/CPU_REFERENCE.md) — the 8086, the 80186 and the NEC V30: their differences, the forms `-1` writes, the V30's clocks.
 * [`mutos/`](mutos/README.md) — the original MUTOS 1700 files: binaries, header files, manual pages.
 
 ### License

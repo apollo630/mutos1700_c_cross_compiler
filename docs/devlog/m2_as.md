@@ -18,7 +18,10 @@ Guideline 6.
 ## CPU reference (8086/80186/V30/80188)
 
 Confirmed via the AP-186 app note (Appendix A/G/H/I) against user-supplied specs, all
-consistent with `docs/210973-001_AP-186_Introduction_to_the_80186_Microprocessor_Mar83.pdf`:
+consistent with Intel's *Introduction to the 80186 Microprocessor* (AP-186, order
+number 210973-001, March 1983; a copy was in `docs/` until 2026-11-21 -
+`docs/CPU_REFERENCE.md` keeps the facts the project uses from it and from the NEC
+manual):
 
 - **PCB** (Peripheral Control Block) is 256 bytes, relocatable to any 256-byte
   boundary (reset default `FF00h`, relocation register at PCB offset `FEh`); all PCB
@@ -54,8 +57,8 @@ consistent with `docs/210973-001_AP-186_Introduction_to_the_80186_Microprocessor
   - Interrupted `REP` string-move resume/prefix-repush behavior differs.
   - `LOCK` prefix timing differs (not codegen-relevant).
 - **The V30 behaves as the 8086 in both of the differences above that change
-  what code computes** (`docs/V20_V30_Users_Manual_Oct86.pdf`, checked
-  2026-10-18): every shift and rotate by CL is "temp <- CL, while temp != 0"
+  what code computes** (NEC's V20/V30 user's manual of October 1986,
+  checked 2026-10-18; `docs/CPU_REFERENCE.md`): every shift and rotate by CL is "temp <- CL, while temp != 0"
   (no masking of the count), and the signed division's most negative quotient
   is -32,767 (8001H) - -32768 is a divide error, as on the 8086. The 80386 -
   which Unicorn, the emulator of `tests/realbin/`, executes - masks the count
@@ -346,9 +349,9 @@ Chronological, most important first for future reference:
 ## Opcode coverage audit
 
 A full systematic audit (not just corpus-reactive fixing) was done by reading
-`MUTOS1700_Assembler_as.pdf` directly (a genuine text-layer PDF, 51 pages — like
-`docs/V20_V30_Users_Manual_Oct86.pdf`, `pdftotext` extracts the full Anlage A/B/C
-tables straight out of it, no unzipping needed) and cross-checking every documented
+`MUTOS1700_Assembler_as.pdf` directly (a genuine text-layer PDF, 51 pages —
+`pdftotext` extracts the full Anlage A/B/C tables straight out of it, no unzipping
+needed) and cross-checking every documented
 mnemonic against `encode.c`'s dispatch table one by one. Found and fixed ~30 real gaps in one pass, including `not`/`notb`, `idiv`/
 `idivb`, all the simple fixed single/double-byte no-operand instructions (`clc`,
 `hlt`, `lahf`, `daa`, `aam`, etc.), `cmps`/`scas` families, `repe`/`repne` synonyms,

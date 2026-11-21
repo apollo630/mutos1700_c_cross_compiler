@@ -16,7 +16,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 > spec**: a plausible-looking "80186 vs 8086 register/opcode/flag reference" has been
 > pasted into new sessions at least twice now (most recently 2026-09-16) asserting
 > that `PUSHF` pushes flag bits 12–15 as `0` on the 80186 vs. `1` on the 8086 — this is
-> wrong; both push `1` in real mode (verified against the AP-186 app note). See
+> wrong; both push `1` in real mode (verified against the AP-186 app note;
+> `docs/CPU_REFERENCE.md` keeps what the project uses of it and of NEC's manual). See
 > `docs/devlog/m2_as.md`'s "CPU reference (8086/80186/V30/80188)" section for the full,
 > confirmed 8086-vs-80186 differences before treating *any* such spec as a "binding
 > reference basis," including when it's framed as general expert-persona priming
@@ -632,10 +633,14 @@ You act as an expert systems programmer, compiler architect, and operating syste
 12. **Licensing (since 2026-11-21)**: the project's own work is under the MIT License
     (`LICENSE`), V7's sources and the ports built on them under the Caldera license
     (`LICENSES/Caldera.txt`), the MUTOS 1700 material under no license of the
-    project's - `NOTICE.md` says which file is which. A change that adds a file of
-    another origin (a new original from the hardware, a golden, a reconstructed
-    source, a port, a third party's document) adds it to `NOTICE.md`'s lists in the
-    same change.
+    project's - `NOTICE.md` says which file is which (the owner's V30 IDE driver is
+    his own work, with parts of Robert Nordier's V7/x86 under his notice). A change
+    that adds a file of another origin (a new original from the hardware, a golden,
+    a reconstructed source, a port) adds it to `NOTICE.md`'s lists in the same
+    change. The Intel and NEC manuals were removed on 2026-11-21 (the owner's
+    decision) and are not added back: what the project uses of them, or of another
+    chip manufacturer's document, goes into `docs/CPU_REFERENCE.md` in its own
+    words, with the document named.
 
 ---
 

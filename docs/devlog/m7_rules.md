@@ -134,7 +134,7 @@ C1-13.
 
 The three forms of section 7.4 run only with `v30=True`; without it they
 are errors, as `mutos_as` refuses them without `-1`. Their flags are the
-NEC manual's (`docs/V20_V30_Users_Manual_Oct86.pdf`, the pages of `SHL
+NEC manual's (`docs/CPU_REFERENCE.md`; the manual's pages of `SHL
 reg,imm8`, `SHR reg,imm8`, `SHRA reg,imm8` and `MUL reg16,reg16,imm8/16`):
 for a shift by a constant CY is the last bit out, S and Z come from the
 result, V and AC are undefined; for the multiplication CY and V say whether

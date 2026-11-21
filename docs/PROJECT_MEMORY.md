@@ -57,6 +57,7 @@ Guideline 11).
 | 2026-11-15 | V30-SHIFT keeps to registers: a shift in memory by a constant is not written as `sal x,*n.` (measured: no gain in the kernel). | `STATUS.md`, "Step V3" ("A shift in memory stays as it is") |
 | 2026-11-21 | To understand why `imul r,r,imm` measured slower than the model: a timing kit if need be (step V4b, each form timed alone). | `STATUS.md`, "Step V4b" |
 | 2026-11-21 | A license: the code freely available, without breaking the terms of the V7 or the Robotron parts; Claude's proposal built into the patch at his request - MIT for the project's own work, the Caldera license kept for V7's sources and the ports built on them, the MUTOS 1700 material not licensed by the project and removed at a rights holder's request. | `LICENSE`, `LICENSES/Caldera.txt`, `NOTICE.md`; `CLAUDE.md`, Workflow Guideline 12 |
+| 2026-11-21 | The license refined: the Intel and NEC manuals (PDFs) removed from the repository, what the project uses of them kept in its own words in `docs/CPU_REFERENCE.md` (and in Claude's memory as a pointer to it); the copyright line without a personal name ("The MUTOS 1700 Cross-Compiler Toolchain authors" - a name is not required); the V30 IDE driver (`v30ide.h`, `v30ide.c`) is the owner's own work, with parts from Robert Nordier's V7/x86 under his notice; the SCO-v.-Novell caveat and the section on third parties' documents taken out of `NOTICE.md`. | `NOTICE.md`; `docs/CPU_REFERENCE.md`; `CLAUDE.md`, Workflow Guideline 12 |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -191,3 +192,7 @@ pages.
   predicted and printed so under the emulator (`tests/rules/v30time.py`;
   `STATUS.md`, "Step V4b"). The run is the owner's. The same day the
   repository got its license (`NOTICE.md`).
+- 2026-11-21, the license refined at the owner's request (the table above):
+  the PDFs of Intel's AP-186 and NEC's V20/V30 manual are gone from the
+  tree (they stay in the git history unless it is rewritten); their facts
+  are in `docs/CPU_REFERENCE.md`, to which every former path now points.

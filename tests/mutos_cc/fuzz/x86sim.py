@@ -60,7 +60,7 @@ them 05_nestst (40), 06_union (3) and 07_bitfield (12: "and *-6.(bp),
 
 The 80186/V30 forms that cc's -1 may produce (docs/TOOLCHAIN_PLAN.md,
 section 7.4; since 2026-11-08) run with v30=True only, with the flags
-the NEC V20/V30 manual (docs/V20_V30_Users_Manual_Oct86.pdf) gives them:
+the NEC V20/V30 manual gives them (docs/CPU_REFERENCE.md):
 "push" of a constant (no flags); a shift by a constant count other than
 1 ("sal r,*3.": CY the last bit out, S and Z of the result, V undefined);
 "imul" by a constant ("imul ax,*30.", "imul ax,cx,*30.": the low word of
