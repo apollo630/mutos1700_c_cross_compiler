@@ -102,6 +102,8 @@ tested. That is:
   original `c1` (`tests/realbin/c1_tables.txt`);
 - `src/libc_fixed/orig/` and `src/libc_fixed/fixed/` - sources of `libc.a`'s
   members, reconstructed from the archive, and their corrected copies;
+  likewise `tests/mutos_as/libc_recon/ldexp.s`, reconstructed from `libc.a`'s
+  `ldexp.o`;
 - `docs/MUTOS1700_Assembler_as.pdf`, a Robotron manual;
 - in the ports of section 2 and in `src/mutos_em/` (a port of MUTOS's `em`, for
   which there is no V7 source): what they reproduce of the MUTOS programs beyond

@@ -67,6 +67,18 @@ what was intended by an independent, actively-maintained disassembler, and
 that it matches an independent, actively-maintained assembler wherever the
 encoding is unambiguous.
 
+**Run on the hardware since 2026-11-21** (not these files, the same
+encodings): the forms the rules of `-1` write - `push` of a byte and of a
+word, `sal`/`sar`/`shr` of a register by 3 to 15, `imul ax,*n.` and `imul
+ax,#n` - and, in step V4b, `imul` with three operands ran on the owner's
+A7100 with its NEC V30 in the kits of steps V4 and V4b
+(`tests/rules/v30kit.py`, `v30time.py`): every result and every defined
+flag as the forms' definitions give them (`STATUS.md`, "Step V4", "Step
+V4b"; footnote ³ of its 80186/V30 table). That shows what the CPU does
+with `mutos_as`'s bytes; it is still no golden. `pusha`/`popa`,
+`insb`/`outsb`, `enter`/`leave`, `bound` and the rotates have not run on
+the hardware.
+
 ## Findings worth your attention
 
 1. **`imul` and `push` with a byte constant outside -128 to 127 are

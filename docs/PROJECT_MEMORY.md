@@ -58,7 +58,7 @@ Guideline 11).
 | 2026-11-21 | To understand why `imul r,r,imm` measured slower than the model: a timing kit if need be (step V4b, each form timed alone). | `STATUS.md`, "Step V4b" |
 | 2026-11-21 | A license: the code freely available, without breaking the terms of the V7 or the Robotron parts; Claude's proposal built into the patch at his request - MIT for the project's own work, the Caldera license kept for V7's sources and the ports built on them, the MUTOS 1700 material not licensed by the project and removed at a rights holder's request. | `LICENSE`, `LICENSES/Caldera.txt`, `NOTICE.md`; `CLAUDE.md`, Workflow Guideline 12 |
 | 2026-11-21 | The license refined: the Intel and NEC manuals (PDFs) removed from the repository, what the project uses of them kept in its own words in `docs/CPU_REFERENCE.md` (and in Claude's memory as a pointer to it); the copyright line without a personal name ("The MUTOS 1700 Cross-Compiler Toolchain authors" - a name is not required); the V30 IDE driver (`v30ide.h`, `v30ide.c`) is the owner's own work, with parts from Robert Nordier's V7/x86 under his notice; the SCO-v.-Novell caveat and the section on third parties' documents taken out of `NOTICE.md`. | `NOTICE.md`; `docs/CPU_REFERENCE.md`; `CLAUDE.md`, Workflow Guideline 12 |
-| 2026-11-21 | The two PDFs removed from the history as well: the owner rewrites it with `git filter-repo` and force-pushes (every commit hash changes; the hashes the documents cite are mapped to the new ones in the commit after the rewrite). | this file, below |
+| 2026-11-21 | The two PDFs removed from the history as well: the owner rewrites it with `git filter-repo` and force-pushes (every commit hash changes; the hashes the documents cite are mapped to the new ones in the commit after the rewrite). Done the same day: the rewrite, then commit `4f2458f` with the documents' hashes mapped (one, round 6's `fltprobe` goldens, was mapped only later, to `e6ef9e1`). | the git history; `4f2458f` |
 | 2026-11-21 | `_isNEC` and `_hdio` in the kernel's `mch.c` (and so `mch.s`, `mch_insw_outsw.s`) are the owner's code, `_isNEC` after "Processor Identification" by Chris Dragan and Chili. | `NOTICE.md`, section 1 |
 | 2026-11-21 | Also the owner's code: the other `#ifdef V30IDE` part of `mch.c`, in `_haltcpu` (the CPU back to the slow clock before a reboot or the return to the monitor), and the `V30IDE` lines of the kernel's makefile (`tests/mutos_ed/kernel/conf.Makefile`). | `NOTICE.md`, section 1 |
 | 2026-11-21 | The MUTOS 1700 files marked plainly as historical files of the GDR (VEB Kombinat Robotron), provided exclusively for archival, scientific and educational purposes, with immediate removal offered if a rights holder objects. | `NOTICE.md`, section 3; `README.md`; `mutos/README.md` |
@@ -70,7 +70,8 @@ and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
 Milestone 2, "Step 5 of the plan"); which of step F4's corrections
 (C1-12 and C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and
 LD-11, found with F2, are among the candidates); `make install`; the manual
-pages.
+pages. Still the owner's to run: step V4's kernel, built with `-1` and booted from a
+test disk (`docs/KERNEL_BUILD.md`, step 8).
 
 ## The owner's setup
 
@@ -104,7 +105,8 @@ pages.
   after F3b's copy, 68 after F3b's part 2, 86 after V1, 63 after V2, 92 after V3 (the cores shared): run it in the background with a
   log, and record the result in `STATUS.md`.
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
-  the kernel build, of the plan of 2026-11-08 and of steps F0 to F3b and V1 to V4 (`claude/step*_*.md`,
+  the kernel build, of the plan of 2026-11-08, of steps F0 to F3b and V1 to V4b and of the
+  license work of 2026-11-21 (`claude/step*_*.md`,
   `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
@@ -183,7 +185,8 @@ pages.
   so under the emulator; the kernel with `-1` is `docs/KERNEL_BUILD.md`,
   step 8 (`make CFLAGS="-c -O -K1024 -1"`, `scripts/v30report.py`). The
   run on the A7100, the kernel's build and boot and the measured times
-  are the owner's; V4 is open until they are back.
+  are the owner's; V4 is open until they are back (the kit's run came back on
+  2026-11-21, below; the kernel is still open).
 - 2026-11-21, step V4, the kit's run on the A7100 (V30 at 15 MHz): every
   value as predicted (the log said `DIFFERENT` only because `expect/` had
   arrived empty; `v30check.sh` runs `cmp` without `-s` and the timing
@@ -196,11 +199,11 @@ pages.
   of `-1` and the 8086 code it replaces timed alone - blocks of 8 and 72
   copies, `times()`, 80 measurements, about 13 minutes -, every value
   predicted and printed so under the emulator (`tests/rules/v30time.py`;
-  `STATUS.md`, "Step V4b"). The run is the owner's. The same day the
-  repository got its license (`NOTICE.md`).
+  `STATUS.md`, "Step V4b"). Its run on the A7100 came back the same day
+  (below). The same day the repository got its license (`NOTICE.md`).
 - 2026-11-21, the license refined at the owner's request (the table above):
   the PDFs of Intel's AP-186 and NEC's V20/V30 manual are gone from the
-  tree (they stay in the git history unless it is rewritten); their facts
+  tree, and - by the owner's rewrite the same day - from the git history; their facts
   are in `docs/CPU_REFERENCE.md`, to which every former path now points.
 - 2026-11-21, step V4b, the timing kit's run on the A7100: every value as
   predicted. On the owner's V30 `imul r,r,imm` takes 40 clocks (44 with a

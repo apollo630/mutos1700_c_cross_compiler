@@ -262,7 +262,11 @@ the highest where the manual gives a range; the uPD70116 at even
 addresses; a runtime call counted as the call alone, `Result.runtime_calls`).
 `check_x86sim_v30.py` (in `make test`) pins twelve programs' values and
 clocks, three undefined flags, and that `mutos_as -1` assembles them.
-`x86sim.py --v30 --clocks file.s` from the command line.
+`x86sim.py --v30 --clocks file.s` from the command line. The clocks are
+the manual's; the owner's V30 measured three of them otherwise (step V4b,
+2026-11-21: `imul` with an immediate, a shift by n, `mul` of a word -
+`docs/CPU_REFERENCE.md`), which `tests/rules/v30bus.py --measured` counts
+and `x86sim.py` does not.
 
 ## Formerly known `mutos_c1` bugs
 

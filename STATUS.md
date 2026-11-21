@@ -13,6 +13,23 @@ them in [`docs/DEVLOG.md`](docs/DEVLOG.md).
 
 Last updated: 2026-11-21.
 
+## At a glance (2026-11-21)
+
+Where each milestone and stage stands; the sections below hold the evidence and
+the dates of each check.
+
+| Milestone or stage | State | Section |
+|---|---|---|
+| 1 - `mutos_ld` | a port of the original `ld` (2026-10-22), `-r`/`-d` an extension; in the corrected mode LD-06, LD-08, LD-09 corrected (F2) and the corrected `libc.a` linked (LIBC-F, F3b) | Milestone 1 |
+| 2 - `mutos_as` | a re-implementation, provisionally complete; measured against the original (step 5, 2026-10-25); whether to port it is still the owner's decision | Milestone 2 |
+| 3 - `mutos_cpp` | a port of the original `cpp` (2026-10-22) | Milestone 3 |
+| 4 - `mutos_cc`, `mutos_c0`, `mutos_c1` | ports of the originals (2026-10-24, 2026-10-18, 2026-10-13) | Milestone 4 |
+| 5 - `mutos_c2` and 80186/V30 code | `c2` a port of the original (2026-10-25); the three rules of `-1` done (V1 to V3, 2026-11-14 and 2026-11-15); the kit's run on the owner's A7100 (NEC V30) and the timing kit's (V4, V4b, 2026-11-21): every value as predicted. **Open**: the kernel built with `-1` and booted (V4, the owner's) | Milestone 5; "Step V1" to "Step V4b" |
+| 6 - `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | ports of the originals (steps 6 to 9, 2026-10-26 and 2026-11-02; `lorder` the original script) | Milestone 6 |
+| The MUTOS kernel | built with its unchanged makefile through the cross toolchain: the original kernel byte for byte (2026-11-07) | "The MUTOS kernel, built with the cross toolchain" |
+| The corrected mode (stage F) | F0 to F3b done (2026-11-08 to 2026-11-11; F3b's check on the hardware passed 2026-11-14). **Next**: F4 (the corrections the owner chooses), then F5 (the corrected mode becomes the default) | "The corrected mode and `-1`" |
+| Afterwards | `make install` and the manual pages | `docs/TOOLCHAIN_PLAN.md`, sections 3 and 7.5 |
+
 ---
 
 ## Top-level build (verified 2026-10-25)
@@ -181,6 +198,21 @@ tree built from the repository's sources (13 of 61 objects the goldens, the rest
 linked through the kernel's makefile (`same: 61`). The kernel build itself: "The MUTOS kernel, built with the cross
 toolchain" below.
 
+Since the steps of section 7 of `docs/TOOLCHAIN_PLAN.md` (2026-11-08 on; each step's own
+section below says how it was verified): `make` also builds the corrected copy of `libc.a`
+and of the kernel's `arith.a` (`src/libc_fixed/`, step F3b), and the root has
+`lib/fixed/libc.a`. `make test` also runs `src/libc_fixed/check_copy.py`, `fltmodel.py
+check --copy`, `scripts/check_rules.py`, `tests/rules/check_accounting.py`,
+`check_corrected.py` and `check_v30.py`, and `tests/mutos_cc/fuzz/check_x86sim_v30.py`;
+`make check-libcatof` the copy's `atof()` (`libcatof.py copy`); `make check-runtime` (new
+with step F3, needs `unicorn`) the runtime of `libc.a`, of the copy and of both
+`arith.a` (`tests/libc_runtime/rtcheck.py`, `linkcheck.py`, `foldcheck.py`); and `make
+check-realbin` in addition `ldcmp.py`/`ldfuzz.py --mode corrected`, the triggers of
+`check_corrected.py` and `check_v30.py` linked and run under the emulator,
+`v30kit.py --check`, `v30time.py --check` and the checks of `make check-runtime`. The
+last whole `make check-realbin`: step V3, 2026-11-15 (exit status 0); steps V4 and V4b
+changed no tool's source.
+
 ---
 
 ## The MUTOS kernel, built with the cross toolchain (verified 2026-11-07)
@@ -246,7 +278,10 @@ extension: `-r` and `-d`, which the original refuses. The port of v7's `ld.c` it
 replaces (`mutos_ld.c`) is deleted; its record is in
 [`docs/history/status_m1_ld.md`](docs/history/status_m1_ld.md). The original's
 behaviour, the deltas and what the port refuses: `src/mutos_ld/README.md`; how it
-went: `docs/devlog/originals_and_ports.md`, "The port of `ld`".
+went: `docs/devlog/originals_and_ports.md`, "The port of `ld`". Since 2026-11-08 it
+takes `-F` and `-H`; in the corrected mode it corrects LD-06, LD-08 and LD-09 ("Step
+F2", 2026-11-09) and `-lX` takes the corrected copy of `libc.a` (LIBC-F, "Step F3b");
+without a switch it is the original still.
 
 ### The port (verified 2026-10-22)
 
@@ -339,7 +374,12 @@ done, the differential fuzzer built and run, below) measured how far the
 re-implementation differs from the original `as`: in its options, its messages, its
 instruction words and in what it accepts beyond the corpus. The decision on a port
 (`docs/TOOLCHAIN_PLAN.md`, decision 9) is the project owner's; the measurements and a
-recommendation are in "Step 5 of the plan" below.
+recommendation are in "Step 5 of the plan" below. Since then: `-F` and `-H` and the
+report of `-1` (step F0, 2026-11-08); the rule L-05 in the corrected mode (step F3b,
+2026-11-11); a `push *n`/`imul ...,*n` outside -128 to 127 refused under `-1`
+(2026-11-14); a shift by a constant sized right in pass 1 (step V2, 2026-11-14); a short
+jump that does not reach, or that goes to an external symbol, refused as the original
+refuses it (2026-11-15, below).
 
 `mutos_as` (`src/mutos_as/`: `mutos_as.h`, `lexer.c`, `parser.c`, `pass2.c`,
 `symtab.c`, `encode.c`, `objwrite.c`, `fltconst.c`, `assemble.c`; secondary tools
@@ -680,10 +720,11 @@ not of `mutos_as`.
   golden-file generator.
 - CLI: `-o output` (also `-ooutput`), `-W` (suppress diagnostics), `-v`, `-g` (accepted,
   no effect) and `-C` (leaves out the compiler's `L` symbols - the original `cc` passes
-  `-gC`; since 2026-10-25), `-1` (the 80186/V30 instructions; since 2026-10-25),
-  multi-file concatenation, stdin fallback, exec-bit on success, `asf` argv[0]
-  alias. `-L` (control 'L'-prefixed compiler-internal label output) was implemented,
-  found to break golden parity, and was **deliberately removed** per explicit prior
+  `-gC`; since 2026-10-25), `-1` (the 80186/V30 instructions; since 2026-10-25,
+  with its report since 2026-11-08), `-F`/`-H` (the corrected mode and the original's
+  behaviour, `docs/RULES.md`; since 2026-11-08), multi-file concatenation, stdin
+  fallback, exec-bit on success, `asf` argv[0] alias. `-L` (control 'L'-prefixed
+  compiler-internal label output) was implemented, found to break golden parity, and was **deliberately removed** per explicit prior
   user decision; the original does not have it either (it is `Unknown option L
   ignored.`), while its `-C` is what the manual's `-L` seems to have been.
 - `tests/realbin/ascmp.py` and `asfuzz.py` - the differential comparator and fuzzer
@@ -794,7 +835,11 @@ rounds - 132 files, `fltprobe/p19_open3` up to the real compiler's own invalid
 output -, and since the driver also through `mutos_cc` itself. `mutos_c2` followed
 (Milestone 5, 2026-10-25). `src/mutos_cc/README.md` describes the three ports; the records of the
 hand-written `mutos_c0`/`mutos_c1` before them are in
-[`docs/history/status_m4_compiler.md`](docs/history/status_m4_compiler.md).
+[`docs/history/status_m4_compiler.md`](docs/history/status_m4_compiler.md). Since 2026-11-08
+`mutos_cc` takes `-F`, `-H` and `-1` and passes them on, and `mutos_c1` holds rules: the
+corrections C1-01, C1-02, C1-03, C1-06 ("Step F1") and L-01, L-03, L-04, L-05, L-11 ("Step
+F3b", part 2) in the corrected mode, V30-SHIFT and V30-IMUL under `-1` ("Step V2", "Step V3");
+without a switch every output is the original's ("The corrected mode and `-1`" below).
 
 ### `mutos_cc` is the port of the real `cc` (verified 2026-10-24)
 
@@ -1162,7 +1207,7 @@ screen.
 ### Next up
 
 The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (decided
-2026-10-20):
+2026-10-20), and after step 9 its section 7.5 (decided 2026-11-08):
 
 0. ~~**Infrastructure**~~ - **done 2026-10-20**: `tests/realbin/mutosemu.py` fakes
    `fork`/`exece`/`wait` and serves `stat`/`fstat`, `chmod`, `umask` and `link`;
@@ -1246,8 +1291,8 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    and accounting checks, diagnostic hooks at C1-01, C1-02, C1-03, C1-06, LD-06 and
    LD-08 (real kernel code meets C1-03), `mutos_as`'s report of `-1`, longs in
    `fuzz_c.py`, the V30 forms and clocks in `x86sim.py`; every output unchanged.
-   **F1 done 2026-11-08**: the four corrections of `c1`. **F2** (2026-11-09, "Step F2"
-   below): the corrections of `ld`. **F3** (2026-11-09, "Step F3" below): the runtime
+   **F1 done 2026-11-08**: the four corrections of `c1`. **F2 done 2026-11-09** ("Step F2"
+   below): the corrections of `ld`. **F3 done 2026-11-09** ("Step F3" below): the runtime
    of `libc.a` measured - `tests/libc_runtime/rtcheck.py`, L-01 to L-05 measured at
    run time, seven new bugs (L-08 to L-14). **F3b done 2026-11-11** ("Step F3b"
    below): the corrected copy of `libc.a` - the reconstructed sources, the
@@ -1288,6 +1333,12 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    (29-30). With these clocks the bus model gives all six timing programs of V4 as
    measured (`v30bus.py --measured`); V30-IMUL gains 8 clocks a product by a byte (15%),
    3.7 by a word (7%).
+   **Next by the plan** (section 7.5): F4 - the corrections the owner chooses among what
+   the ports refuse or the originals report (C1-07 first in the plan's list; C1-12 to
+   C1-15, LD-10, LD-11 among the candidates) -, then F5, the change of default (the
+   corrected mode what `cc` and `ld` do without a switch, the kernel built in it and
+   booted). Then `make install` and the manual pages; the decision on a port of `as`
+   is still open.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -1307,8 +1358,13 @@ right operands, small frames); the ports refuse none of them, and
 ## Milestone 5 — Optimizer (`c2`) & NEC V30 (`-1`)
 
 **Status: the optimizer is a port of the original `c2`, for the 8086** (since
-2026-10-25, `docs/TOOLCHAIN_PLAN.md`, decision 7 and step 4); the 80186/V30 half was
-decided on 2026-11-08 and is not begun (below). `src/mutos_cc/README.md` ("The port of the real `c2`") describes the
+2026-10-25, `docs/TOOLCHAIN_PLAN.md`, decision 7 and step 4); **the 80186/V30 half,
+decided on 2026-11-08, has its three rules** - V30-PUSH in `c2` (step V1, 2026-11-14),
+V30-SHIFT in `c1` (step V2, 2026-11-14) and V30-IMUL in `c1`, with a half in `c2` (step
+V3, 2026-11-15) -, checked on the owner's A7100 with its NEC V30 (steps V4 and V4b,
+2026-11-21: every value as predicted); open is the kernel built with `-1` and booted
+(step V4, the owner's). The rules: "The corrected mode and `-1`" below, "Step V1" to "Step
+V4b". `src/mutos_cc/README.md` ("The port of the real `c2`") describes the
 port; how it went: `docs/devlog/originals_and_ports.md`, "The port of `c2`".
 
 ### `mutos_c2` is the port of the real `c2` (verified 2026-10-25)
@@ -1385,7 +1441,8 @@ two more bytes, the registers read and written (`regmask()`).
 (`docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4; step F0 made
 `-1` reach `c1` and `c2`, with their output unchanged, and `x86sim.py` run the three
 forms; the first rule, V30-PUSH in `c2`, and the second, V30-SHIFT in `c1`, since
-2026-11-14: "The corrected mode and `-1`" below, "Step V1" and "Step V2"): behind `-1`, the
+2026-11-14, the third, V30-IMUL in `c1` with a half in `c2`, since 2026-11-15: "The
+corrected mode and `-1`" below, "Step V1" to "Step V3"): behind `-1`, the
 name `mutos_as` has for the 80186/V30 instructions (section 4), three rules - a
 constant pushed (`c2`), a shift by a constant count and a multiplication by a constant
 (`c1`) -, and every assembly with `-1` reports the 80186/V30 instructions it produced
@@ -2209,7 +2266,7 @@ of step F3b is made from.
   (9 triggers of `c1`, 13 of `ld`) - and, new at its end, `rtcheck.py` (1,000 cases
   per entry point and set).
 
-### Step F3b: the corrected copy of `libc.a` (verified 2026-11-09 and 2026-11-11)
+### Step F3b: the corrected copy of `libc.a` (verified 2026-11-09 and 2026-11-11; run on the A7100 2026-11-14)
 
 Decided by the project owner on 2026-11-09, after step F3: the copy corrects
 L-01, L-04, L-05, L-08 and L-11 (wrong in ordinary programs, decision 14) and
@@ -2659,7 +2716,8 @@ each form with edge values, a program per rule that prints its values, the kerne
 built with `-1`, the gain measured. The hardware has no tool that takes `-1` - the
 original `as` has none of the 80186 instructions -, so everything is built by the
 cross toolchain and the kit carries linked programs. The kit and its prediction are
-done; the run on the owner's A7100 (NEC V30) and the kernel are not.
+done (2026-11-15), and so is its run on the owner's A7100 (NEC V30, 2026-11-21, below);
+the kernel built with `-1` and booted is not.
 
 - **The kit** (`tests/rules/v30kit.py [--out DIR] [--tar FILE]`, by default `v30kit/`,
   ignored by git): `probe.v`; the programs `pushO`, `shift`, `shiftO`, `imul`, `imulO`,
@@ -2878,18 +2936,18 @@ manual/corpus material to check it against.
 |---|---|---|
 | `pusha` | `0x60` | implemented — no real corpus sample; cross-checked¹ |
 | `popa` | `0x61` | implemented — no real corpus sample; cross-checked¹ |
-| `push #imm16` | `0x68 iw` | implemented — no real corpus sample; cross-checked¹ |
-| `push *imm8` | `0x6A ib` | implemented — no real corpus sample; cross-checked¹ |
+| `push #imm16` | `0x68 iw` | implemented — no real corpus sample; cross-checked¹; run on the V30³ |
+| `push *imm8` | `0x6A ib` | implemented — no real corpus sample; cross-checked¹; run on the V30³ |
 | `insb` | `0x6C` | implemented — no real corpus sample; cross-checked¹ |
 | `insw` | `0x6D` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6d`, `mch_insw_outsw.s`); the original `as` has no such mnemonic (AS-02) |
 | `outsb` | `0x6E` | implemented — no real corpus sample; cross-checked¹ |
 | `outsw` | `0x6F` | implemented — encoding **confirmed real** (`mch.s`'s `.byte /6f`, `mch_insw_outsw.s`); the original `as` has no such mnemonic (AS-02) |
-| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹; its length in pass 1 corrected 2026-11-14 ("Step V2" above: the labels after it were a byte low); written by `c1 -1` since then (V30-SHIFT) |
+| shift/rotate, immediate count ≠1/CL | `C0`/`C1 /digit ib` | implemented (register + indirect-memory dest) — no real sample (every real sample uses count=1 or CL); cross-checked¹; its length in pass 1 corrected 2026-11-14 ("Step V2" above: the labels after it were a byte low); written by `c1 -1` since then (V30-SHIFT); `sal`/`sar`/`shr` of a register run on the V30³ |
 | `leave` | `0xC9` | implemented — no real corpus sample; cross-checked¹ |
 | `enter framesize,nestlevel` | `0xC8 iw ib` | implemented — no real corpus sample; cross-checked¹ |
 | `bound reg,mem` | `0x62 /r` | implemented (indirect-memory operand only, matching this codebase's LDS/LES/LEA convention) — no real corpus sample; cross-checked¹ |
-| `imul dst,imm` (2-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ² |
-| `imul dst,src,imm` (3-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ² |
+| `imul dst,imm` (2-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ²; run on the V30³ |
+| `imul dst,src,imm` (3-op) | `0x69`/`0x6B /r` | implemented — no real corpus sample; cross-checked¹ ²; run on the V30³ |
 
 ¹ "Cross-checked" = independently re-encoded with NASM (`CPU 186`, `BITS 16`, `-O0`)
 and/or independently re-decoded with `objdump -D -b binary -m i8086`; see
@@ -2905,14 +2963,24 @@ from the marker alone, so `imul cx,ax,*200.` was encoded with the low byte `0xC8
 2026-11-14 by the owner's decision: `mutos_as` refuses a `*n` outside -128 to 127,
 for `imul` as for `push` ("Step V1" above).
 
+³ "Run on the V30" = `mutos_as -1`'s bytes executed on the owner's A7100 with its NEC V30
+(2026-11-21): step V4's probes (`push *n.`, `push #n`, `push #`address; `sal`, `sar`,
+`shr` of each of six registers by 3 to 15; `imul ax,*n.`, `imul ax,#n`) and step V4b's
+timing kit (`imul ax,bx,*n.`, `imul ax,bx,#n`) - every result and every defined flag as
+the forms' definitions give them ("Step V4", "Step V4b"). That confirms what the CPU does
+with these encodings; it is not a golden - no MUTOS 1700 tool on the hardware writes
+them.
+
 Every 80186 addition covered in this project's working spec (register/flag behavior
 aside, which is a CPU runtime distinction, not an assembler-encoding one) is now
 implemented in at least best-effort form. **Only INSW/OUTSW carry real hardware
-confirmation** — the other twelve entries are unconfirmed and should be the first
-candidates for verification if real V30-targeted source/object pairs ever become
-available; they now additionally carry independent-tooling cross-checks (see above),
-which is the best available substitute in the absence of a real MUTOS 1700 toolchain
-that supports them, but is explicitly NOT a replacement for that real evidence.
+confirmation** in the sense of a golden — the other twelve entries are unconfirmed by
+a real sample and should be the first candidates for verification if real V30-targeted
+source/object pairs ever become available; they now additionally carry
+independent-tooling cross-checks (see above), and the five rows marked ³ - every form
+`-1`'s rules write among them - ran on the V30, which is the best available
+substitute in the absence of a real MUTOS 1700 toolchain that supports them, but is
+explicitly NOT a replacement for that real evidence.
 
 **Behind the switch `-1` since 2026-10-25 (`docs/TOOLCHAIN_PLAN.md` section 4, step 5).**
 Until then `mutos_as` always accepted these instructions; the original `as` has
@@ -3044,7 +3112,9 @@ far.
    `mutos_as`'s differential fuzzer (Milestone 2, step 5), then `mutos_ar` and
    `mutos_ranlib` (Milestone 6, step 6), `mutos_make` (step 7) and `mutos_nm`, `mutos_size`,
    `mutos_strip`, `mutos_tsort`, `mutos_lorder` (step 8) and `mutos_ed`, `mutos_em` (step 9);
-   what follows is the project owner's to order - see "Next up".
+   what follows the owner ordered on 2026-11-08 (`docs/TOOLCHAIN_PLAN.md`, section 7):
+   stages F and V - F0 to F3b and V1 to V3 done, V4's kits run on the hardware, F4 and F5
+   next; see "Next up".
 5. ~~`mutos_cpp`'s documented simplifications~~ - **closed 2026-10-22**: the port of
    `cpp` does what the original does in each (a formal inside a string of a macro body,
    a macro with parameters named without `(` - CPP-11 -, a macro call across lines -

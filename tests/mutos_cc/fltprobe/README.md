@@ -45,7 +45,7 @@ not compared), and skips the others.
   round-5 fltprobe goldens". The real `as` refuses those lines as well
   (`***ERROR*** syntax error`, `p19_as.log`, see "The real assembler on
   `p19_open3.s`" below).
-- **Round 6** (goldens 2026-10-03, commit `2540271`): floating lvalues
+- **Round 6** (goldens 2026-10-03, commit `e6ef9e1`): floating lvalues
   beyond variables (`p20_fltlv` - struct members, pointers to double,
   elements as compound-assignment targets, `&d`), floating expression
   forms (`p21_fltexp` - chained assignments, `++`/`--`, char operands,

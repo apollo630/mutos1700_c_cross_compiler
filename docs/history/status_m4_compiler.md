@@ -588,7 +588,7 @@ derivation in `docs/DEVLOG.md`'s "The round-7 fltprobe goldens".
 
 **62/62 corpus files, 26/27 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 6
-came back in commit `2540271`; all four files had been refused (`mutos_c0`
+came back in commit `e6ef9e1`; all four files had been refused (`mutos_c0`
 `p20`/`p21`/`p22`, `mutos_c1` `p23`). Full derivation in
 `docs/DEVLOG.md`'s "The round-6 fltprobe goldens".
 
@@ -640,11 +640,11 @@ came back in commit `2540271`; all four files had been refused (`mutos_c0`
   `p21_fltexp` in category 9, 0 mismatches, zero warnings; `mutos_as`
   76/76, `check_floatdat.sh` 13/13, 97/97 compiler goldens assemble (and
   `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
-- Against the previous build (`2540271`), all 98 golden inputs: identical
+- Against the previous build (`e6ef9e1`), all 98 golden inputs: identical
   but for the four round-6 files, `01_delay`, and later diagnostics and
   partial `.1` output in six other kernel files (each still refuses at
   the same first error).
-- `fuzz_c.py` against `2540271`: 22,000 programs (seeds 1, 7 `--scope`,
+- `fuzz_c.py` against `e6ef9e1`: 22,000 programs (seeds 1, 7 `--scope`,
   3 scalars only, 21): 0 WRONG, 0 BAD, 172 changed and still correct, 104
   now correct that were refused; 1,500 more (seed 31) through ASan/UBSan
   builds: 0 WRONG, 0 BAD.

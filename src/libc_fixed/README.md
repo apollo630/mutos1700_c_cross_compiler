@@ -14,7 +14,10 @@ code calls without the programmer naming it - the routines step F3 measured
 `lib/libc.a`. In the corrected mode `ld`'s `-lX` looks for `/lib/fixed/libX.a`
 before `/lib/libX.a` (decided by the project owner on 2026-11-09). On the
 hardware the copy is an ordinary MUTOS archive: it can take the place of
-`/lib/libc.a`, or be linked by name.
+`/lib/libc.a`, or be linked by name - shown on the owner's A7100 on
+2026-11-14, where the original `cc` and `ld` linked the nine trigger programs
+with it and each computed C's result (`tests/libc_runtime/README.md`, "The
+check on the hardware").
 
 `make` also builds `src/libc_fixed/arith.a`, the corrected copy of the MUTOS
 kernel's `conf/arith.a` (`tests/mutos1700_arith/`, the project owner's): its

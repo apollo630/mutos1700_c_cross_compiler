@@ -1024,7 +1024,7 @@ floating shapes): every one compiled gives the host's value.
 ## The round-6 fltprobe goldens (`mutos_c0`/`mutos_c1` extended and verified this session, 2026-10-04)
 
 The four round-6 programs (`p20_fltlv`, `p21_fltexp`, `p22_long2`,
-`p23_elem3`) came back in commit `2540271`, all four kinds of file - and,
+`p23_elem3`) came back in commit `e6ef9e1`, all four kinds of file - and,
 for `p21`, with two messages from the real compiler. All four had been
 refused (`mutos_c0` refused `p20`/`p21`/`p22`, `mutos_c1` `p23`). Now all
 four are byte-exact at every stage, `p21` together with the real
@@ -1226,11 +1226,11 @@ category 8, `p21_fltexp` in category 9 (two messages, exit status 1, the
 `.s` byte-exact), 0 mismatches, zero warnings; `mutos_as` 76/76,
 `check_floatdat.sh` 13/13, 97/97 compiler goldens assemble and
 `p19_open3`'s is refused as listed, `mutos_cpp` 5/5. Against the previous
-build (`2540271`) over all 98 golden inputs: identical output but for the
+build (`e6ef9e1`) over all 98 golden inputs: identical output but for the
 round-6 files, `11_kernel/01_delay` and, in six other kernel files, later
 diagnostics and partial `.1` output (constructs accepted now further
 down; each still refuses, at the same first error). `fuzz_c.py` against
-`2540271`: 22,000 programs (seeds 1, 7 `--scope`, 3 scalars only, 21), 0
+`e6ef9e1`: 22,000 programs (seeds 1, 7 `--scope`, 3 scalars only, 21), 0
 WRONG, 0 BAD, 172 changed and still correct, 104 now correct that the old
 build refused; 1,500 more (seed 31) through ASan/UBSan builds: 0 WRONG, 0
 BAD. ASan/UBSan builds over the 98 golden inputs, the five round-7 probes

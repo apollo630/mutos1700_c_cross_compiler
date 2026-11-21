@@ -501,10 +501,15 @@ is the original build's byte for byte
 and `mutos_c2` was decided by the project owner on 2026-11-08
 (`../../docs/TOOLCHAIN_PLAN.md`, decision 15 and section 7.4), and the
 corrections of the originals' bugs with it (section 7.3); step F0 laid
-what they share (2026-11-08, "The corrected mode and `-1`" below), the
-rules themselves come from step F1 on.
+what they share (2026-11-08, "The corrected mode and `-1`" below). Done
+since: the corrections of `c1` (step F1, 2026-11-08) and its rules that
+follow the corrected copy of `libc.a` (step F3b, 2026-11-11), and the three
+V30 rules (steps V1 to V3, 2026-11-14 and 2026-11-15), whose code ran on
+the owner's V30 as predicted (steps V4 and V4b, 2026-11-21). Next by the
+plan (section 7.5): F4, the corrections the owner chooses, then F5, the
+corrected mode as the default.
 
-## The corrected mode and `-1` (steps F0 and F1, 2026-11-08)
+## The corrected mode and `-1` (since step F0, 2026-11-08)
 
 `../../docs/RULES.md` has the whole of it; for the compiler:
 
@@ -524,7 +529,12 @@ rules themselves come from step F1 on.
   Since step V1 (2026-11-14) V30-PUSH of `c2` uses `-1`, since step V2
   (the same day) V30-SHIFT of `c1` (`c1rules/v30_shift.c`, hooked in
   `cexpr()`): a shift of a register by a constant from 3 to 15 is written
-  `sal r,*n.` instead of `mov cx,*n.` / `sal r,cl`.
+  `sal r,*n.` instead of `mov cx,*n.` / `sal r,cl`; since step V3
+  (2026-11-15) V30-IMUL of `c1` (`c1rules/v30_imul.c`, hooked in
+  `cexpr()`): a product by a constant is written `imul ax,*n.` (-128 to
+  127) or `imul ax,#n` instead of `mov cx,`constant / `imul cx`, and its
+  half in `c2` (`c2rules/v30_imul.c`, hooked in `toofar()`) counts the
+  form's length when a branch is made short.
 - `c2`'s rules are in `c2rules/`: `c2rules.c` (the rule log: an entry
   noted at the hook for a node, written when `output()` writes that
   node, `c2_rule_node()` there, and an entry for the whole function of
@@ -534,7 +544,8 @@ rules themselves come from step F1 on.
   `push r` becomes `push` constant where the original's own test finds
   `r` not read again; the port notes the constant and leaves the pair
   after that test instead of before it, which changes nothing without
-  `-1`.
+  `-1`. V30-IMUL's half (`v30_imul.c`, hooked in `toofar()`): under `-1`
+  the constant's bytes of an `imul` with an immediate counted.
 - `c1`'s rules are in `c1rules/`: `c1rules.c` (the mode, `-1`, the
   rule log: an entry noted at the hook, written with the bytes of output
   of the statement once it is compiled, `c1_rule_mark()` in `getree()` -
@@ -592,6 +603,9 @@ assembler step either way.
   temp2 output.s [options] [-1]`.
 - `c1rules/` - `mutos_c1`'s rules of the corrected mode and of `-1`
   (`../../docs/RULES.md`): `c1rules.h`, `c1rules.c` and one file per rule.
+- `c2rules/` (since step V1) - `mutos_c2`'s rules of `-1`
+  (`../../docs/RULES.md`): `c2rules.h`, `c2rules.c` (the rule log) and one
+  file per rule.
 - `c1_fltdec.h`/`c1_fltdec.c` - `libc.a`'s `ecvt()` on the MUTOS double,
   for `mutos_c1`'s `%.17e` (and `fltdec_test`, below).
 
