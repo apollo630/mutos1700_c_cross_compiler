@@ -8,7 +8,7 @@ Sections moved here from `STATUS.md` on 2026-10-20, unchanged: the session recor
 
 **62/62 corpus files, 56/57 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 13
-came back in commit `1b97d3e` with `round13.log` - five messages from
+came back in commit `82bffd3` with `round13.log` - five messages from
 `p53_fltstk7`'s `cc -S`, as planned, and twenty-two from `p52_fltinf8`'s,
 not planned ("Floating point stack overflow; simplify expression"). `.i`,
 `.1` and `.2` were byte-exact already; `mutos_c1` refused `p50` and `p51`,
@@ -72,9 +72,9 @@ binaries come first (see "Next up"). Full derivation in
   mismatches, zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13,
   127/127 compiler goldens assemble (and `p19_open3`'s is refused, as
   listed), `mutos_cpp` 5/5.
-- Against the previous build (`1b97d3e`), all 128 golden inputs:
+- Against the previous build (`82bffd3`), all 128 golden inputs:
   identical but for `p50`..`p53`.
-- `fuzz_c.py` against `1b97d3e`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `82bffd3`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, 44 now correct that were refused (a quotient or remainder
   `&`, `|` or `^` an element), 3 changed and still correct (a remainder as
@@ -96,7 +96,7 @@ binaries come first (see "Next up"). Full derivation in
 
 **62/62 corpus files, 52/53 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 12
-came back in commit `2cab774` with `round12.log` - twenty-six messages
+came back in commit `ce5b473` with `round12.log` - twenty-six messages
 from `p49_fltstk6`'s `cc -S`, none from the other three. `.i`, `.1` and
 `.2` were byte-exact already; `mutos_c1` refused `p46`, `p47` and `p48`
 and gave `p49` its golden and all its messages (as inferred). Of some
@@ -159,9 +159,9 @@ derivation in `docs/DEVLOG.md`'s "The round-12 fltprobe goldens".
   status 1, the `.s` byte-exact), 0 mismatches, zero warnings; `mutos_as`
   76/76, `check_floatdat.sh` 13/13, 123/123 compiler goldens assemble
   (and `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
-- Against the previous build (`2cab774`), all 124 golden inputs:
+- Against the previous build (`ce5b473`), all 124 golden inputs:
   identical but for `p46`, `p47` and `p48` (refused before).
-- `fuzz_c.py` against `2cab774`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `ce5b473`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, 156 now correct that were refused (an int `+`/`-` computed
   into SI while DI holds a value, every computed divisor pushed), 56
@@ -188,7 +188,7 @@ derivation in `docs/DEVLOG.md`'s "The round-12 fltprobe goldens".
 
 **62/62 corpus files, 48/49 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 11
-came back in commit `12731f2` with `round11.log` - twenty-three messages
+came back in commit `9df8628` with `round11.log` - twenty-three messages
 from `p45_fltstk5`'s `cc -S`, none from the other three. `.i`, `.1` and
 `.2` were byte-exact already; `mutos_c1` refused `p42`, `p43` and `p44`
 and gave `p45` two messages too many. Of some seventy inferred shapes
@@ -239,12 +239,12 @@ fltprobe goldens".
   1, the `.s` byte-exact), 0 mismatches, zero warnings; `mutos_as` 76/76,
   `check_floatdat.sh` 13/13, 119/119 compiler goldens assemble (and
   `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
-- Against the previous build (`12731f2`), all 120 golden inputs:
+- Against the previous build (`9df8628`), all 120 golden inputs:
   identical but for the four round-11 files; of the four round-12 probes
   `p46`..`p48` are refused by both builds, `p49` gets the same `.s` and
   four messages fewer (`*p`, `p[1]`, a float element and an element as
   the second argument pushed unchecked now).
-- `fuzz_c.py` against `12731f2`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `9df8628`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, 5 now correct that were refused, 7 changed and still
   correct (a remainder minus a variable in DX, a divisor that divides
@@ -269,7 +269,7 @@ fltprobe goldens".
 
 **62/62 corpus files, 44/45 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 10
-came back in commit `074b6de` with `round10.log` - twenty-three messages
+came back in commit `c4f53b3` with `round10.log` - twenty-three messages
 from `p41_fltstk4`'s `cc -S`, none from the other three. `.i`, `.1` and
 `.2` were byte-exact already; `mutos_c1` refused `p38` and `p39`, gave
 `p40` three wrong shapes and `p41` one message too many. Full derivation
@@ -324,10 +324,10 @@ in `docs/DEVLOG.md`'s "The round-10 fltprobe goldens".
   mismatches, zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13,
   115/115 compiler goldens assemble (and `p19_open3`'s is refused, as
   listed), `mutos_cpp` 5/5.
-- Against the previous build (`074b6de`), all 116 golden inputs and the
+- Against the previous build (`c4f53b3`), all 116 golden inputs and the
   four round-11 probes: identical but for the four round-10 files and the
   four new probes.
-- `fuzz_c.py` against `074b6de`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `c4f53b3`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, 112 now correct that were refused, 349 changed and still
   correct (a value in AX or DX shifted there - `p39`'s rule); 1,500 more
@@ -352,7 +352,7 @@ in `docs/DEVLOG.md`'s "The round-10 fltprobe goldens".
 
 **62/62 corpus files, 40/41 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 9
-came back in commits `ee6c08e` and `f03faae` (the second completing the
+came back in commits `944f121` and `679c759` (the second completing the
 set) with `round9.log` - seventeen messages from `p37_fltstk3`'s `cc -S`,
 none from the other three. All four files had been byte-different or
 refused (`mutos_c0` wrote `p34`'s `l <<= 3` wrongly, `mutos_c1` refused
@@ -414,10 +414,10 @@ derivation in `docs/DEVLOG.md`'s "The round-9 fltprobe goldens".
   warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 111/111 compiler
   goldens assemble (and `p19_open3`'s is refused, as listed), `mutos_cpp`
   5/5.
-- Against the previous build (`f03faae`), all 112 golden inputs and the
+- Against the previous build (`679c759`), all 112 golden inputs and the
   four round-10 probes: identical but for the four round-9 files and the
   four new probes.
-- `fuzz_c.py` against `f03faae`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `679c759`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, no output changed; 1,500 more (seed 31) through ASan/UBSan
   builds: 0 WRONG, 0 BAD. A first run found one regression (`(t == x) +
@@ -441,7 +441,7 @@ derivation in `docs/DEVLOG.md`'s "The round-9 fltprobe goldens".
 
 **62/62 corpus files, 36/37 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 8
-came back in commit `2eaa65f` with `round8.log` - which has no compiler
+came back in commit `9d16685` with `round8.log` - which has no compiler
 message at all (`p30_fltstk2` was written to provoke some); all five files
 had been refused. Full derivation in `docs/DEVLOG.md`'s "The round-8
 fltprobe goldens".
@@ -487,9 +487,9 @@ fltprobe goldens".
   warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 107/107 compiler
   goldens assemble (and `p19_open3`'s is refused, as listed), `mutos_cpp`
   5/5.
-- Against the previous build (`2eaa65f`), all 108 golden inputs: identical
+- Against the previous build (`9d16685`), all 108 golden inputs: identical
   but for the five round-8 files.
-- `fuzz_c.py` against `2eaa65f`: 28,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `9d16685`: 28,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21, 41 `--scope`, 55 scalars only): 0 WRONG, 0 BAD, no
   regression, no output changed, 138 now correct that were refused; 1,500
   more (seed 31) through ASan/UBSan builds: 0 WRONG, 0 BAD.
@@ -509,7 +509,7 @@ fltprobe goldens".
 
 **62/62 corpus files, 31/32 `fltprobe` files and `11_kernel/01_delay`
 byte-exact at every stage; `p19_open3` as before (to line 223).** Round 7
-came back in commit `bdb2728` with the real compiler's messages for
+came back in commit `a1077b6` with the real compiler's messages for
 `p28_fltstk` (`round7.log`); all five files had been refused. Full
 derivation in `docs/DEVLOG.md`'s "The round-7 fltprobe goldens".
 
@@ -565,9 +565,9 @@ derivation in `docs/DEVLOG.md`'s "The round-7 fltprobe goldens".
   warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13, 102/102 compiler
   goldens assemble (and `p19_open3`'s is refused, as listed), `mutos_cpp`
   5/5.
-- Against the previous build (`bdb2728`), all 103 golden inputs: identical
+- Against the previous build (`a1077b6`), all 103 golden inputs: identical
   but for the five round-7 files.
-- `fuzz_c.py` against `bdb2728`: 22,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `a1077b6`: 22,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21): 0 WRONG, 0 BAD, no regression, 2,636 changed and still
   correct, 401 now correct that were refused; 1,500 more (seed 31) through
   ASan/UBSan builds: 0 WRONG, 0 BAD.
@@ -666,7 +666,7 @@ came back in commit `2540271`; all four files had been refused (`mutos_c0`
 
 **62/62 corpus files and 22/23 `fltprobe` files byte-exact, all at every
 stage; `p19_open3` byte-exact at `.i`/`.1`/`.2` and in its `.s` up to line
-223 of 251.** Round 5 came back in commit `434c320`. `p18_fltop3` matched
+223 of 251.** Round 5 came back in commit `8edf2c1`. `p18_fltop3` matched
 at once; `mutos_c1` differed from `p17_elem2` in two places; `mutos_c0`
 refused `p19_open3`. Full derivation in `docs/DEVLOG.md`'s "The round-5
 fltprobe goldens".
@@ -724,12 +724,12 @@ fltprobe goldens".
   `fltprobe`), `p19_open3` in category 8, 0 mismatches, zero warnings;
   `mutos_as` 76/76, `check_floatdat.sh` 13/13, 93/93 compiler goldens
   assemble (and `p19_open3`'s is refused, as listed), `mutos_cpp` 5/5.
-- Against the previous build (`434c320`), all 98 inputs (the 84, `p19`,
+- Against the previous build (`8edf2c1`), all 98 inputs (the 84, `p19`,
   the nine `11_kernel` refusals and round 6): identical but for `p17`,
   `p19`, `p21`/`p22`'s diagnostics, and in three kernel files reworded or
   dropped diagnostics and partial `.1` output (`03_mem`'s two long `&`
   are converted now) - all nine still refuse.
-- `fuzz_c.py` against `434c320`: 14,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `8edf2c1`: 14,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21): 0 WRONG, 0 BAD, 69 changed and still correct, 632 now
   correct that were refused; 1,000 more
   (seed 31) through ASan/UBSan builds: 0 WRONG, 0 BAD.
@@ -748,7 +748,7 @@ fltprobe goldens".
 ## `mutos_c0`/`mutos_c1`: verified this session (the round-4 `fltprobe` goldens - 3/3 byte-exact; a right element at offset 0 computed first, the context in a chain, `unsigned` locals; silent `long`-mixing miscompiles refused)
 
 **62/62 corpus files and 20/20 `fltprobe` files byte-exact, all at every
-stage.** Round 4 came back in commit `27d0cea`. `mutos_c0` matched `p14`'s
+stage.** Round 4 came back in commit `9db6ec2`. `mutos_c0` matched `p14`'s
 and `p15`'s `.1`/`.2` at once and refused `p16`; `mutos_c1` differed from
 `p14` in two places and `p15` in one. Full derivation in `docs/DEVLOG.md`'s
 "The round-4 fltprobe goldens".
@@ -787,11 +787,11 @@ and `p15`'s `.1`/`.2` at once and refused `p16`; `mutos_c1` differed from
   `fltprobe`), 0 mismatches, zero warnings; `mutos_as` 76/76,
   `check_floatdat.sh` 13/13, 91/91 compiler goldens assemble, `mutos_cpp`
   5/5.
-- Against the previous build (`27d0cea`), all 94 inputs: identical but for
+- Against the previous build (`9db6ec2`), all 94 inputs: identical but for
   the round-4/5 files and, in five `11_kernel` files, new or changed
   diagnostics and two partial `.1` outputs (the octal constants) - all
   nine still refuse.
-- `fuzz_c.py` against `27d0cea`: 14,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `9db6ec2`: 14,000 programs (seeds 1, 7 `--scope`, 3
   scalars only, 21): 0 WRONG, 0 BAD, 53 changed and still correct, 353 now
   correct that were refused; 1,000 more (seed 31) through ASan/UBSan
   builds: 0 WRONG, 0 BAD.
@@ -804,8 +804,8 @@ and `p15`'s `.1`/`.2` at once and refused `p16`; `mutos_c1` differed from
 ## `mutos_c0`/`mutos_c1`: verified this session (the round-3 `fltprobe` goldens - 4/4 byte-exact; an element's degree, an int `*`'s left operand, `+ 0`, a value kept in AX, `j /= e`, a floating zero)
 
 **62/62 corpus files and 17/17 `fltprobe` files byte-exact, all at every
-stage.** Round 3 came back in commit `33ec944` with all four kinds of file,
-round 2's four `.i` files in commit `34c9195` - byte-identical with
+stage.** Round 3 came back in commit `ca14172` with all four kinds of file,
+round 2's four `.i` files in commit `5226854` - byte-identical with
 `mutos_cpp`'s, so `p6`..`p9` moved into category 1 unchanged and category 7
 is empty. `p11_itof2` and `p12_init2` matched at once; `p10_elem` differed in
 two places of its `.s`, and `mutos_c0` refused `p13_open`. Full derivation
@@ -854,10 +854,10 @@ in `docs/DEVLOG.md`'s "The round-3 fltprobe goldens".
   `fltprobe`), category 7 empty, 0 mismatches, zero warnings; `mutos_as`
   76/76, `check_floatdat.sh` 13/13, 88/88 compiler goldens assemble,
   `mutos_cpp` 5/5.
-- Against the previous build (`33ec944`), all 88 inputs (the 79 and the
+- Against the previous build (`ca14172`), all 88 inputs (the 79 and the
   nine `11_kernel` refusals): output and diagnostics identical but for
   `p10` and `p13`.
-- `fuzz_c.py` against `33ec944`: 8,000 programs (seeds 1, 7 `--scope`, 3
+- `fuzz_c.py` against `ca14172`: 8,000 programs (seeds 1, 7 `--scope`, 3
   scalars only): 0 WRONG, 0 BAD, 37 changed and still correct (the dropped
   `+ 0`, a value kept in AX); 500 more (seed 11) through ASan/UBSan builds:
   0 WRONG, 0 BAD.
@@ -870,7 +870,7 @@ in `docs/DEVLOG.md`'s "The round-3 fltprobe goldens".
 ## `mutos_c0`/`mutos_c1`: verified this session (the round-2 `fltprobe` goldens - 4/4 byte-exact; an 8-byte constant's degree, the register an int is converted in, elements by a variable, `i += d`, v7's `doinit()`)
 
 **62/62 corpus files and 13/13 `fltprobe` files byte-exact** - the four of
-round 2 (commit `4c668c2`) from `mutos_c0` on: their `.s`, `.1` and `.2`
+round 2 (commit `a743dc1`) from `mutos_c0` on: their `.s`, `.1` and `.2`
 came back, their `.i` did not, and `run_goldens.sh` skipped them silently.
 It now checks such a file from `mutos_c0` on (`mutos_cpp`'s own `.i`
 feeding it) and lists a match apart (category 7); bringing back `p6`..`p9`'s
@@ -924,10 +924,10 @@ fltprobe goldens".
   mismatches, zero warnings; `mutos_as` 76/76, `check_floatdat.sh` 13/13,
   84/84 compiler goldens assemble, `mutos_cpp` 5/5. With scratch `.i`
   goldens from `mutos_cpp`, all 75 in category 1.
-- Against the previous build (`4c668c2`), all 84 inputs (the 71, round 2,
+- Against the previous build (`a743dc1`), all 84 inputs (the 71, round 2,
   the nine `11_kernel` refusals): output and diagnostics identical but for
   round 2's four.
-- `fuzz_c.py` against `4c668c2`: 30,000 programs (seeds 411, 421 `--scope`,
+- `fuzz_c.py` against `a743dc1`: 30,000 programs (seeds 411, 421 `--scope`,
   431 scalars only): all identical, 0 WRONG, 0 BAD; 3,000 more (seed 441)
   through ASan/UBSan builds: 0 WRONG, 0 BAD.
 - ASan/UBSan builds over the 84 inputs: no reports, output identical to
@@ -943,7 +943,7 @@ fltprobe goldens".
 ## `mutos_c0`/`mutos_c1`: verified this session (the `fltprobe` goldens - 9/9 byte-exact; v7's floating operand order; constant text from the MUTOS `ecvt()`)
 
 **62/62 corpus files and 9/9 `fltprobe` files byte-exact.** The nine
-programs came back from real hardware (commit `ac4ba38`); `mutos_c0` matched
+programs came back from real hardware (commit `4a463f8`); `mutos_c0` matched
 every `.1`/`.2` golden it could produce at once, `mutos_c1`'s four
 confirmation files differed in a few lines each, and the five open-question
 goldens showed every shape `mutos_c1` had refused. Full derivation in
@@ -1014,7 +1014,7 @@ goldens showed every shape `mutos_c1` had refused. Full derivation in
   `run_goldens.sh`'s list), 0 genuine mismatches, zero warnings; `mutos_as`,
   `check_floatdat.sh`, the compiler goldens' assembly and `mutos_cpp`
   unchanged.
-- `fuzz_c.py` against the previous build (`3c801a0`): 30,000 programs (seeds
+- `fuzz_c.py` against the previous build (`dfc894d`): 30,000 programs (seeds
   111, 121 `--scope`, 131 scalars only): 0 WRONG, 0 BAD, 398 changed but
   still correct (`x - c`, `p[i - 1]`), 1 formerly refused now correct;
   3,000 more through ASan/UBSan builds: 0 WRONG, 0 BAD.
@@ -1088,7 +1088,7 @@ from libc.a's compiled C".
 - `make test`: 62/62 byte-exact, 0 genuine mismatches, zero warnings;
   `mutos_as` 76/76, `check_floatdat.sh` 13/13, 71/71 compiler goldens
   assemble, `mutos_cpp` 5/5.
-- Against the previous build (`3c801a0`), all 71 golden inputs:
+- Against the previous build (`dfc894d`), all 71 golden inputs:
   `mutos_c0` and `mutos_c1` alone byte-identical, diagnostics included.
 - `fuzz_c.py` against the previous build: 42000 programs (18000 with
   arrays, seed 11; 18000 `--scope`, seed 21; 6000 scalars only, seed 31):
@@ -1171,7 +1171,7 @@ section of the same name.
 
 - `make test` (clean build): 62/62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
-- Against the previous build (`c2c7a68`): `mutos_c0` on all 71 golden `.i`
+- Against the previous build (`36f5430`): `mutos_c0` on all 71 golden `.i`
   files changed the two `08_float` files (refusals -> their `.1`/`.2`
   goldens) and, for four `11_kernel` files, only the wording of the
   local-declaration diagnostic (it now lists `float`/`double`; their
@@ -1199,7 +1199,7 @@ section of the same name.
 ## Test corpus: `11_kernel/` added (nine real kernel driver files, own real-hardware goldens); `mutos_c0`/`mutos_c1` coverage assessed at 0/9
 
 Not a change to `mutos_c0`/`mutos_c1` themselves. `tests/mutos_cc/11_kernel/`
-(commit `dd5dd73`) adds a second, separate golden corpus - nine real,
+(commit `c5ecedd`) adds a second, separate golden corpus - nine real,
 unmodified MUTOS kernel driver source files (`01_delay.c` … `09_amx.c`)
 plus their header tree, with real-hardware-verified goldens already
 present, mirroring what `tests/mutos_cpp/c/` already does for `mutos_cpp`.
@@ -1294,7 +1294,7 @@ Full derivation in `docs/DEVLOG.md`'s section of the same name.
 
 - `make test` (clean build): 60/62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
-- Against the previous build (`84d6548`): `mutos_c0` on the 62 golden
+- Against the previous build (`78b5f73`): `mutos_c0` on the 62 golden
   `.i` files changed exactly the ten struct files (refusals -> their
   `.1`/`.2` goldens; 60 of 62 now match through `c0` alone); `mutos_c1`
   alone on the 62 golden pairs changed `02_stptr`, `03_starray`,

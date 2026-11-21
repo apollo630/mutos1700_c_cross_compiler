@@ -120,7 +120,7 @@ pages.
 - 2026-11-08: step F1 - the four bugs of `c1` that make wrong code silently (C1-03,
   C1-06, C1-02, C1-01) corrected in the corrected mode, four patches; without a
   switch every output is still the original's (`STATUS.md`, "Step F1"). The same
-  day, a whole `make check-realbin` on `2a10c55`: exit 0.
+  day, a whole `make check-realbin` on `2caa54d`: exit 0.
 - 2026-11-09: step F2 - the bugs of `ld` that end a link wrongly (LD-06, LD-08)
   corrected in the corrected mode, a patch each; `ld`'s corrections checked by how
   a link must end and, with `--mode corrected`, against the emulated original.
@@ -172,7 +172,7 @@ pages.
   original does ("Short jump to external not allowed") - done; and
   V30-SHIFT is not extended to shifts in memory (built and measured: no
   gain in the kernel, 8 places at most in the Version 7 tools) - the
-  optional patch, committed with V3 in `fa7afb8`, is taken out again.
+  optional patch, committed with V3 in `d26ee1c`, is taken out again.
 - 2026-11-15, step V4 (the hardware), the kit: `tests/rules/v30kit.py`
   makes `v30kit/` - `probe.v` (every 80186/V30 form the rules write, with
   edge values), a program per rule as 8086 code and as V30 code, timing

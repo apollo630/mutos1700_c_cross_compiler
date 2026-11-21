@@ -8,7 +8,7 @@ binary, checked against the original running under the emulator
 
 **Status (2026-10-18): done - `mutos_c0` is the port** (`src/mutos_cc/c0port/`);
 the old from-scratch front end (`c0_lex.c`, `c0_parser.c`, ...) is deleted
-(its last version is in the git history, commit `ff1e589`). All nine
+(its last version is in the git history, commit `be26579`). All nine
 kernel files go through `mutos_cpp`, `mutos_c0` and `mutos_c1`
 byte-exact. The port was written on 2026-10-14 and checked, finished and
 switched on 2026-10-18 (section 5).

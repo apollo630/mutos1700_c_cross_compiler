@@ -19,7 +19,7 @@ original itself, run under an 8086 emulator (`../../tests/realbin/`), on
 every golden and on random programs - see "The port of the real `c0`"
 below. Until then `mutos_c0` was a from-scratch C11 front end
 (`c0_parser.c` and its companions - their last version is in the git
-history, commit `ff1e589`); the grammar and wire-format explanations in
+history, commit `be26579`); the grammar and wire-format explanations in
 "Current scope" (now `../../docs/history/cc_current_scope.md`) come from
 that time.
 
@@ -33,8 +33,8 @@ against the original itself, run under an 8086 emulator
 (`../../tests/realbin/`), on every golden and on random programs - see
 "The port of the real `c1`" below. Until then `mutos_c1` was `c1_gen.c`,
 a generator of the shapes the goldens had shown (its last version is in
-the git history: commit `a870e55`, unchanged until its deletion in
-`ff1e589`); the code-generation explanations in "Current scope" (now
+the git history: commit `46ee949`, unchanged until its deletion in
+`be26579`); the code-generation explanations in "Current scope" (now
 `../../docs/history/cc_current_scope.md`) come from that time.
 
 **Status: verified byte-exact, end-to-end (`.c` → `mutos_cpp` → `mutos_c0` →

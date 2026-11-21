@@ -1,6 +1,6 @@
 # `STATUS.md` history — Milestone 1 (`mutos_ld`), the port of v7's `ld.c`
 
-Section moved here from `STATUS.md` on 2026-10-22, unchanged: the record of `mutos_ld.c` (deleted 2026-10-22, the last version in commit `36e69a5`), a port of v7's `ld.c` with the MUTOS deltas as they were known then, which was replaced by a port of the original binary. It was true when written ("this session" means that session); the current state is in [`STATUS.md`](../../STATUS.md), the narrative in [`docs/devlog/`](../devlog/). Where it describes the original `ld`, the port's reading of the binary has the final word (`src/mutos_ld/README.md`).
+Section moved here from `STATUS.md` on 2026-10-22, unchanged: the record of `mutos_ld.c` (deleted 2026-10-22, the last version in commit `151a1b0`), a port of v7's `ld.c` with the MUTOS deltas as they were known then, which was replaced by a port of the original binary. It was true when written ("this session" means that session); the current state is in [`STATUS.md`](../../STATUS.md), the narrative in [`docs/devlog/`](../devlog/). Where it describes the original `ld`, the port's reading of the binary has the final word (`src/mutos_ld/README.md`).
 
 ---
 

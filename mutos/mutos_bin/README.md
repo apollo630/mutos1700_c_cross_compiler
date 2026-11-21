@@ -5,8 +5,8 @@ brought from MUTOS 1700 hardware, stored as base64 text like every other
 binary reference in this repo - `<name>.golden.base64.txt`, decoded with
 `base64 -d`. They are reference data of the same kind as the `*.o.golden`
 files (`CLAUDE.md`'s Golden Master Integrity rule): never regenerate,
-re-encode or alter them. The toolchain came in commit `e8c7516`, the
-other tools in commit `c4e8b6b` (2026-10-25); until 2026-10-25 the
+re-encode or alter them. The toolchain came in commit `8ae4e58`, the
+other tools in commit `2598701` (2026-10-25); until 2026-10-25 the
 directory was `mutos_bin/` at the top of the repository (the other
 originals beside it: [`../README.md`](../README.md)).
 

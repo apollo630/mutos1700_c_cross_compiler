@@ -2773,7 +2773,7 @@ uses) and emit `CON` first unless the right operand folds too.
 constant unwritten so it can fold with a constant sibling;
 `emit_materialize()` wrote it only when the operator was reached - after
 the right operand had streamed its own bytes. `git log -S` puts the
-pattern in `mutos_c0`'s first commit (`0688fbe`, 2026-09-14). Probed end to
+pattern in `mutos_c0`'s first commit (`57d73b6`, 2026-09-14). Probed end to
 end (x=5, y=3, c=1) before the fix: `7 - x` gave -2, `2 - 9 - x` 12, `7 -
 x * y` 8, `7 < x` 1, `c ? 7 : y` 3 (the branches swapped, since `COLON`
 received them in the wrong order), `y + (x = 1, 5)` 7 (a constant last
@@ -3988,7 +3988,7 @@ already ran all nine `06_struct` goldens.
 
 - `make test` (clean build): 60/62 byte-exact, 0 genuine mismatches, zero
   warnings; `mutos_as` 67/67, `mutos_cpp` 5/5.
-- Against the previous build (`84d6548`): `mutos_c0` on the 62 golden
+- Against the previous build (`78b5f73`): `mutos_c0` on the 62 golden
   `.i` files changed exactly the ten struct files (60 of 62 match through
   `c0` alone); `mutos_c1` alone on the 62 golden pairs changed exactly
   `02_stptr`, `03_starray`, `04_stassign`, `05_nestst`, `07_bitfield` and
@@ -4020,7 +4020,7 @@ already ran all nine `06_struct` goldens.
 corpus, initial `mutos_c0`/`mutos_c1` coverage assessed (2026-09-27)
 
 Nine real, unmodified MUTOS 1700 kernel driver source files were added to
-`tests/mutos_cc/` as `11_kernel/` (commit `dd5dd73`): `01_delay.c`,
+`tests/mutos_cc/` as `11_kernel/` (commit `c5ecedd`): `01_delay.c`,
 `02_prim.c`, `03_mem.c`, `04_pipe.c`, `05_nami.c`, `06_fio.c`, `07_v24.c`,
 `08_tty.c` and `09_amx.c` (the AMX serial-board driver, the largest at
 ~40 KB), plus the local `h/`-tree headers they `#include` and their own
@@ -4033,7 +4033,7 @@ had already been run on real MUTOS 1700 hardware for all nine files before
 the directory was added here.
 
 **Coverage assessment (this session, `tests/mutos_cc/run_goldens.sh`
-against the `06_struct`-era build, commit `dd5dd73`).** `mutos_cpp`
+against the `06_struct`-era build, commit `c5ecedd`).** `mutos_cpp`
 matches all nine `.i.golden`s byte-for-byte (0 mismatches) - `mutos_c0`
 refuses all nine, each with a diagnosed error, never silent wrong output,
 so the construct-coverage corpus's 60/62 pass fraction is unaffected;
@@ -4281,7 +4281,7 @@ store truncated like `fstsp`, AX/BX/CX/DX poisoned after each call.
 
 **Verification.** `make test` (clean build): 62/62, 0 genuine mismatches,
 zero warnings; `mutos_as` 67/67, `mutos_cpp` 5/5. Against the previous
-build (`c2c7a68`), on all 71 golden inputs: `mutos_c0` changed the two
+build (`36f5430`), on all 71 golden inputs: `mutos_c0` changed the two
 `08_float` files and the wording of one diagnostic in four `11_kernel`
 files (it now lists `float`/`double`; identical temp1), `mutos_c1` the two
 `08_float` files only. `fuzz_c.py`: 42000 programs against the previous

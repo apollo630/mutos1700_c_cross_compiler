@@ -9,7 +9,7 @@ the specification, v7's source the skeleton - and the port does what the
 binary does, its bugs included (`docs/MUTOS_ORIGINAL_BUGS.md`, CPP-01 ..).
 It replaced, on 2026-10-22, a from-scratch re-implementation of the
 observable behaviour (the last version is in the git history, commit
-`03b72f7`); see `docs/TOOLCHAIN_PLAN.md`, decision 4 and step 1.
+`f138c0d`); see `docs/TOOLCHAIN_PLAN.md`, decision 4 and step 1.
 
 `tests/realbin/cppmap.txt` maps every function to its text offset in the
 binary, which - alone among the originals - still has its symbol table,

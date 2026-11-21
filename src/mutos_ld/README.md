@@ -8,7 +8,7 @@ source the skeleton - and the port does what the binary does, its bugs
 included (`docs/MUTOS_ORIGINAL_BUGS.md`, LD-01 ..), with one documented
 extension: `-r` and `-d`, which the original refuses. It replaced, on
 2026-10-22, a port of v7's `ld.c` with the MUTOS deltas as they were
-known then (the last version is in the git history, commit `36e69a5`);
+known then (the last version is in the git history, commit `151a1b0`);
 see `docs/TOOLCHAIN_PLAN.md`, decision 5 and step 2.
 
 `tests/realbin/ldmap.txt` maps every function to its text offset in the

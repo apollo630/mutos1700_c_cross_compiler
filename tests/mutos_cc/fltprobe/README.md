@@ -17,22 +17,22 @@ not compared), and skips the others.
   fltprobe goldens". They stay here rather than moving into `../08_float/`
   (the plan when they were written): the corpus's "62" is restated across
   the documentation, and nothing is gained by renumbering it.
-- **Round 2** (goldens 2026-09-30, commit `4c668c2`; their `.i` files
-  2026-10-02, commit `34c9195`): four files for what `mutos_c1` refused or
+- **Round 2** (goldens 2026-09-30, commit `a743dc1`; their `.i` files
+  2026-10-02, commit `5226854`): four files for what `mutos_c1` refused or
   only inferred, all **4/4 byte-exact** end-to-end. See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-2 fltprobe goldens".
-- **Round 3** (goldens 2026-10-02, commit `33ec944`): three files for what
+- **Round 3** (goldens 2026-10-02, commit `ca14172`): three files for what
   `mutos_c1` compiled by inference, one for what it refused - now all **4/4
   byte-exact** end-to-end. `p11` and `p12` matched at once; `p10` corrected
   two inferences, `p13` settled every refusal. See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-3 fltprobe goldens".
-- **Round 4** (goldens 2026-10-02, commit `27d0cea`): two files for what
+- **Round 4** (goldens 2026-10-02, commit `9db6ec2`): two files for what
   `mutos_c1` compiled by inference, one for what it refused - now all
   **3/3 byte-exact** end-to-end. `p14_axint` corrected two inferences (a
   right element at offset 0 is computed first), `p15_fltinf` one (the
   register context in a chain), `p16_open2` settled every refusal. See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-4 fltprobe goldens".
-- **Round 5** (goldens 2026-10-02, commit `434c320`): two files for what
+- **Round 5** (goldens 2026-10-02, commit `8edf2c1`): two files for what
   `mutos_c1` compiled by inference only, one for what was still refused -
   `p17_elem2` and `p18_fltop3` now **byte-exact** end-to-end (`p18` at
   once; `p17` corrected two inferences: '^' pushes the right element's
@@ -60,7 +60,7 @@ not compared), and skips the others.
   same code and the same two messages and exits with 1 too - see
   `../c1_errors.txt` and `../../../docs/devlog/m4_fltprobe.md`'s "The round-6
   fltprobe goldens".
-- **Round 7** (goldens 2026-10-04, commit `bdb2728`, with `round7.log`):
+- **Round 7** (goldens 2026-10-04, commit `a1077b6`, with `round7.log`):
   what `mutos_c1` compiled by inference only or still refused after round
   6 - floating (`p24_fltinf2`), `long` (`p25_long3`) and int element
   (`p26_elem4`) shapes, the frames from 82 to 127 bytes (`p27_frame`) and,
@@ -76,7 +76,7 @@ not compared), and skips the others.
   (`x = half(d = 3.0)` - right code); v7's `distrib()`; compound
   assignments into elements and through pointers; every `long` shape
   asked. See `../../../docs/devlog/m4_fltprobe.md`'s "The round-7 fltprobe goldens".
-- **Round 8** (goldens 2026-10-07, commit `2eaa65f`, with `round8.log`):
+- **Round 8** (goldens 2026-10-07, commit `9d16685`, with `round8.log`):
   the frames of 92 to 98 bytes (`p29_frame2`), which store an assignment
   under a call gets (`p30_fltstk2`, written to make the real `c1` report
   again - it reported nothing) and what `mutos_c1` compiled by inference
@@ -95,8 +95,8 @@ not compared), and skips the others.
   float's `f++`/`++f` as values, `e = (q->x += d)`, `e = ++d * 2.0` (the
   increment first). See `../../../docs/devlog/m4_fltprobe.md`'s "The round-8 fltprobe
   goldens".
-- **Round 9** (goldens 2026-10-07 and 2026-10-08, commits `ee6c08e` and
-  `f03faae`, with `round9.log`): what `mutos_c1` compiled by inference
+- **Round 9** (goldens 2026-10-07 and 2026-10-08, commits `944f121` and
+  `679c759`, with `round9.log`): what `mutos_c1` compiled by inference
   only or still refused after round 8 - `long` (`p34_long5`), int
   (`p35_elem6`) and floating (`p36_fltinf4`) shapes - and, on purpose not
   a program to run, which store an assignment passed as a floating
@@ -125,7 +125,7 @@ not compared), and skips the others.
   pushed and loaded first, `fstd`), `d++ * 2.0` (the `++` first, degree
   2), `++d > 2.0` (hoisted, the constant loaded first). See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-9 fltprobe goldens".
-- **Round 10** (`p38`..`p41`, goldens 2026-10-09, commit `074b6de`, with
+- **Round 10** (`p38`..`p41`, goldens 2026-10-09, commit `c4f53b3`, with
   `round10.log`): what `mutos_c1` compiled by inference only or still
   refused after round 9 - `long` (`p38_long6`), int (`p39_elem7`) and
   floating (`p40_fltinf5`) shapes - and, on purpose not a program to run,
@@ -155,7 +155,7 @@ not compared), and skips the others.
   move the left value into DI; `(y > 2) - (x < 3)` is `sub di,si`, `(y >
   2) + (x < y)` compares through SI (`mov si,y` / `cmp x,si`). See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-10 fltprobe goldens".
-- **Round 11** (`p42`..`p45`, goldens 2026-10-10, commit `12731f2`, with
+- **Round 11** (`p42`..`p45`, goldens 2026-10-10, commit `9df8628`, with
   `round11.log`): what `mutos_c1` compiled by inference only or still
   refused after round 10 - `long` (`p42_long7`), int (`p43_elem8`) and
   floating (`p44_fltinf6`) shapes - and, on purpose not a program to run,
@@ -180,7 +180,7 @@ not compared), and skips the others.
   += ++w + ++y) * 2.0` hoisting `++w`, then `++y`, inside the hoisted `+=`
   (its template's `reorder()` of the `+` as a node, left to right). See
   `../../../docs/devlog/m4_fltprobe.md`'s "The round-11 fltprobe goldens".
-- **Round 12** (`p46`..`p49`, goldens 2026-10-10, commit `2cab774`, with
+- **Round 12** (`p46`..`p49`, goldens 2026-10-10, commit `ce5b473`, with
   `round12.log`): what `mutos_c1` compiled by inference only or still
   refused after round 11 - `long` (`p46_long8`), int (`p47_elem9`) and
   floating (`p48_fltinf7`) shapes - and, on purpose not a program to run,
@@ -210,7 +210,7 @@ not compared), and skips the others.
   first (its degree the lower), and two hoists under a `*` or a `-` inside
   a hoisted `+=` left to right. See `../../../docs/devlog/m4_fltprobe.md`'s "The
   round-12 fltprobe goldens".
-- **Round 13** (`p50`..`p53`, goldens 2026-10-10, commit `1b97d3e`, with
+- **Round 13** (`p50`..`p53`, goldens 2026-10-10, commit `82bffd3`, with
   `round13.log`): round 12's eleven corrections' neighbours - `long`
   (`p50_long9`), int (`p51_elem10`) and floating (`p52_fltinf8`) shapes -
   and, not a program to run, whether the real `c1`'s stack model counts the

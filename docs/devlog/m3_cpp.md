@@ -7,7 +7,7 @@ Part of the development log; the index of all parts is [`docs/DEVLOG.md`](../DEV
 **Since 2026-10-22 `mutos_cpp` is a port of the original binary** - see
 `originals_and_ports.md`, "The port of `cpp`", and `src/mutos_cpp/README.md`. This
 part records the re-implementation it replaced (deleted that day, the last version in
-commit `03b72f7`; its `STATUS.md` records are in `docs/history/status_m3_cpp.md`): it
+commit `f138c0d`; its `STATUS.md` records are in `docs/history/status_m3_cpp.md`): it
 was complete for the real corpus — 5/5 golden files byte-for-byte identical, 0
 ASan/UBSan errors. What follows was true of it when written; where it describes the
 original `cpp`, the port's reading of the binary has the final word.

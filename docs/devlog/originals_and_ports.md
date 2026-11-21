@@ -46,7 +46,7 @@ disassembling anything, and the few key functions can be compared with
 
 ## The original binaries (2026-10-12)
 
-The binaries came from the hardware in commit `e8c7516` -
+The binaries came from the hardware in commit `8ae4e58` -
 `mutos/mutos_bin/<name>.golden.base64.txt` (at the top as `mutos_bin/`
 until 2026-10-25) for `as`, `c0`, `c1`, `c2`, `cc`,
 `cpp` and `ld` (headers in `mutos/mutos_bin/README.md`): all stripped of
@@ -205,7 +205,7 @@ lists the file apart.
 
 ### Round 14, through the binary
 
-The round-14 goldens (commit `148efa3`) and `round14.log` (`71f0a07`)
+The round-14 goldens (commit `f47f704`) and `round14.log` (`a1f0942`)
 came back while the binaries were being read. The emulated `c1` gives
 all four `.s` and both message lists (`p56_fltinf9`, `p57_fltstk8`,
 eighteen each) exactly. `mutos_c1` does not yet (`make test`: `p54`,
@@ -1236,8 +1236,8 @@ they ran the emulated original `c2` before.
 ## The originals of 2026-10-25
 
 The project owner brought more of MUTOS 1700 from the hardware (commit
-`c4e8b6b`) and moved every original file into one top-level directory,
-`mutos/` (commit `a53afdc`): the binaries `mutos/mutos_bin/` (until then
+`2598701`) and moved every original file into one top-level directory,
+`mutos/` (commit `d58f110`): the binaries `mutos/mutos_bin/` (until then
 `mutos_bin/`), the header files `mutos/mutos_include/`, the manual pages
 `mutos/mutos_man/`; v7's sources of the tools that came with them went
 into `v7/`. What reading them showed, on the day:
@@ -1306,7 +1306,7 @@ into `v7/`. What reading them showed, on the day:
   `-a`, `-K`, `-2`, `-20`, and names `/usr/c/` for `-B`/`-t`, where the
   binary has `/usr/src/cmd/c/` (`src/mutos_cc/README.md`). The `make`
   page, which decision 11 asked for, was not among them; it followed the
-  same day (`make.1.d`, commit `adaf28a`). It says what the corpus's
+  same day (`make.1.d`, commit `100d6fb`). It says what the corpus's
   makefiles were written against (`docs/devlog/m4_foundations.md`,
   "MUTOS 1700 host-tooling findings"): `=` macros and two-suffix rules
   only, each command line in a shell of its own, options `-f`, `-i`,

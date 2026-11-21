@@ -83,7 +83,7 @@ as before, line for line, but `check_root.py` without the dangling `lib/c2` and 
 `check_driver.py`'s two new lines (`cc -O -S` 9/9, `cc -O -o` 62/62) -, `make
 check-realbin` with the port's new checks, `make check-libcatof`, `make check-docs`.
 
-Verified 2026-10-25 after the original files moved into `mutos/` (commit `a53afdc`:
+Verified 2026-10-25 after the original files moved into `mutos/` (commit `d58f110`:
 `mutos_bin/` became `mutos/mutos_bin/`): `tests/realbin/`'s scripts
 (`mutosemu.py` and the `*tables.py`, `c1dis.py`) read the binaries from
 `mutos/mutos_bin/` - after the move `make check-realbin` stopped at its first check,
@@ -1089,7 +1089,7 @@ re-enacted as the binary has them (`c1lib.c`). `c1_gen.c` (15,143 lines),
 ### The original binaries: an emulated oracle, `c1`'s tables (verified 2026-10-12, re-run 2026-10-20)
 
 The original `as`, `c0`, `c1`, `c2`, `cc`, `cpp` and `ld` came from the
-hardware (commit `e8c7516`; since 2026-10-25 in `mutos/mutos_bin/`, until then
+hardware (commit `8ae4e58`; since 2026-10-25 in `mutos/mutos_bin/`, until then
 `mutos_bin/` - see its `README.md`). They run on
 the modern host under an 8086 emulator - `tests/realbin/` (`make
 check-realbin`, needs the Python module `unicorn`, not part of `make
@@ -1887,7 +1887,7 @@ Nothing any tool writes changed; what F1 and the rules after it need is in place
   goldens give what they gave. `tests/mutos_cc/fuzz/check_x86sim_v30.py` (in `make
   test`) pins twelve programs' values and clocks, three undefined flags, and that
   `mutos_as -1` takes their syntax.
-- **Verified** on a fresh clone of `5d40048` with the patch: `make clean && make all`
+- **Verified** on a fresh clone of `c46bd94` with the patch: `make clean && make all`
   without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0,
   its output the same as before but for the new lines (the `-1` report in
   `check_switches.sh`, `check_rules.py`, `check_accounting.py`,
@@ -1982,7 +1982,7 @@ own; without a switch every output is still the original's (`check_accounting.py
   four: seed 3 without longs 3,000 of 3,000 correct (the original mode: 2,989, C1-01
   11); seed 5, 5,000 with longs and file scope, 4,934 correct, 18 refused, 48 C1-13.
 - **Verified** - each of the four patches (C1-03, C1-06, C1-02, C1-01, applied in
-  that order) on a fresh clone of `5d578a8` with the ones before it: `make clean &&
+  that order) on a fresh clone of `10baa57` with the ones before it: `make clean &&
   make all` without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test`
   exit 0, its output the same as before but for the new line of
   `check_corrected.py` (and the section's title); `make check-docs` clean. Without a
@@ -1996,7 +1996,7 @@ own; without a switch every output is still the original's (`check_accounting.py
   (100/100) - and `check_corrected.py --realbin` (the nine triggers linked and run
   under `mutosemu.py`, with and without `c2`).
 - **`make check-realbin` whole** (2026-11-08, after F0 and F1): on a fresh clone of
-  `2a10c55` (the four patches committed) in a cloud session, two cores, after
+  `2caa54d` (the four patches committed) in a cloud session, two cores, after
   `make all` without a warning: exit 0, every check passed, 75 minutes. The
   numbers are those of the steps before: `c1trees.py` 131/132 at depths 2-4 (1
   refused on purpose), `c1fuzz.py` 175 the same, 0 different; `c0cmp.py` 137/137;
@@ -2076,7 +2076,7 @@ patch of its own; without a switch every link is still the original's.
   is corrected with F2 (above), as a patch of its own; LD-10 and LD-11 are candidates
   for step F4.
 - **Verified** - each of the three patches (LD-06, LD-08, LD-09, applied in that
-  order) on a fresh clone of `14db7e6` with the ones before it: `make clean && make
+  order) on a fresh clone of `5630a5a` with the ones before it: `make clean && make
   all` without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit
   0, its output the same as before but for two lines (`check_accounting.py`'s "ld's
   cases", `check_corrected.py`'s triggers of `ld`) and, with LD-09,
@@ -2093,7 +2093,7 @@ patch of its own; without a switch every link is still the original's.
   LD-06, `ldfuzz.py --mode corrected` on seeds 2 to 4, 1,500 cases each, plain and
   damaged: 41 corrected, no difference.
 - **`make check-realbin` whole** (2026-11-09, after F2): on the fresh clone of
-  `14db7e6` with the three patches, in a cloud session, two cores: exit 0, every
+  `5630a5a` with the three patches, in a cloud session, two cores: exit 0, every
   check passed, 63 minutes. The numbers of the tools F2 did not touch are those of
   F1's run: `c1trees.py` 131/132 at depths 2-4 (1 refused on purpose), `c1fuzz.py`
   175 the same, 0 different; `c0cmp.py` 137/137; `cppcmp.py` 411/411; `cccmp.py`
@@ -2191,7 +2191,7 @@ of step F3b is made from.
   the tree then; `rtcheck.py --archive ~/sys/conf/arith.a long` shows whether its long
   helpers are `libc.a`'s. (The owner added it the same day,
   `tests/mutos1700_arith/`: they are, byte for byte - "Step F3b".)
-- **Verified** on a fresh clone of `db09ec3` with the patch: `make clean && make all`
+- **Verified** on a fresh clone of `bd43454` with the patch: `make clean && make all`
   without a warning under `-std=c11 -Wall -Wextra -Wpedantic`; `make test` exit 0, its
   output line for line an unchanged clone's but for a temporary directory's name;
   `make check-docs` clean; `make check-runtime` exit 0 (every result right or
@@ -2318,7 +2318,7 @@ results as `libc.a`'s, L-04 and L-08 included).
   for a kernel with the corrected long helpers - the makefile names
   `arith.a` by path, which LIBC-F does not reach. `fix_archive.py` now keeps
   a replaced member's owner, group and mode as well as its date.
-- **Verified** on a fresh clone of `370fc4f` with the thirteen patches: `make clean
+- **Verified** on a fresh clone of `e83785d` with the thirteen patches: `make clean
   && make all` without a warning; `make test` exit 0, its output an unchanged
   clone's with the new checks added (the copy, the root's `lib/fixed/libc.a`,
   LIBC-F, the copy's register); `make check-docs` clean (after `git add -A`);
@@ -2400,7 +2400,7 @@ what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
   0 with the exact one - L-06's wrapped exponent, which the copy keeps
   (`docs/MUTOS_ORIGINAL_BUGS.md`, L-06).
 - **Verified** 2026-11-11: each of the eight patches (with those before it)
-  on a clone of `d6facb6` - `make clean && make all` without a warning, `make
+  on a clone of `1b15f29` - `make clean && make all` without a warning, `make
   test` exit 0 (its output an unchanged clone's with the new checks' lines),
   `make check-docs` clean, `check_corrected.py --realbin` passed, from patch
   19 on `foldcheck.py` too. The whole series: `make check-runtime` and `make
@@ -2427,7 +2427,7 @@ what the copy does not correct (L-06, L-07, the bytes of a zero) stays.
   `hwcheck.sh` for the hardware's `sh`: `cc -c`, then `ld -X /lib/crt0.o
   -o N.H [-i] N.o -lc` and the same with `fixlibc.a` alone for `N.F`, both
   run, every file compared with the kit's `expect/`. The prediction,
-  verified 2026-11-11 on `be11e09`: the original `cc`'s chain and the
+  verified 2026-11-11 on `6e954a7`: the original `cc`'s chain and the
   original `ld` under the emulator make what `mutos_cc -c` and `mutos_ld`
   make, `mutos_cc -F` makes the same `N.F`, the original `ld` with the
   copy's table of contents out of date warns and links the same `N.F`, and
@@ -2649,7 +2649,7 @@ _g,*n.` in `toofar()` - and passed (1,500 programs of shifts, 1,500 of
 it; 24,574 bytes either way) and 8 places at most in the 28 Version 7 tool sources
 of `v7/` that compile, 2 bytes and 4 clocks each, against a second half of the
 rule to keep and to prove on the hardware. It was in the tree for one commit
-(`fa7afb8`, with step V3) and is taken out again; `stepV3_03_shift_mem_optional.patch`
+(`d26ee1c`, with step V3) and is taken out again; `stepV3_03_shift_mem_optional.patch`
 of that day has it.
 
 ### Step V4: the 80186/V30 code on the hardware - the kit (verified 2026-11-15; run on the A7100 2026-11-21; the kernel is open)

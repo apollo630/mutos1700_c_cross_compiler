@@ -1,6 +1,6 @@
 # `STATUS.md` history — Milestone 3 (`mutos_cpp`), the re-implementation
 
-Sections moved here from `STATUS.md` on 2026-10-22, unchanged: the records of the from-scratch `mutos_cpp` (`util.c`, `source.c`, `macro.c`, `ifexpr.c`, `directive.c`, `scan.c`, `main.c`, `mutos_cpp.h` - deleted 2026-10-22, the last version in commit `03b72f7`), which re-implemented the observable behaviour of the original and was replaced by a port of the original binary. Each was true when written ("this session" means that session); the current state is in [`STATUS.md`](../../STATUS.md), the narrative in [`docs/devlog/`](../devlog/). Where these records describe the original `cpp` (the "simplifications" below, the line accounting), the port's reading of the binary has the final word (`src/mutos_cpp/README.md`).
+Sections moved here from `STATUS.md` on 2026-10-22, unchanged: the records of the from-scratch `mutos_cpp` (`util.c`, `source.c`, `macro.c`, `ifexpr.c`, `directive.c`, `scan.c`, `main.c`, `mutos_cpp.h` - deleted 2026-10-22, the last version in commit `f138c0d`), which re-implemented the observable behaviour of the original and was replaced by a port of the original binary. Each was true when written ("this session" means that session); the current state is in [`STATUS.md`](../../STATUS.md), the narrative in [`docs/devlog/`](../devlog/). Where these records describe the original `cpp` (the "simplifications" below, the line accounting), the port's reading of the binary has the final word (`src/mutos_cpp/README.md`).
 
 ---
 
