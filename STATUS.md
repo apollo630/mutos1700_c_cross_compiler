@@ -24,7 +24,7 @@ the dates of each check.
 | 2 - `mutos_as` | a re-implementation, provisionally complete; measured against the original (step 5, 2026-10-25); whether to port it is still the owner's decision | Milestone 2 |
 | 3 - `mutos_cpp` | a port of the original `cpp` (2026-10-22) | Milestone 3 |
 | 4 - `mutos_cc`, `mutos_c0`, `mutos_c1` | ports of the originals (2026-10-24, 2026-10-18, 2026-10-13) | Milestone 4 |
-| 5 - `mutos_c2` and 80186/V30 code | `c2` a port of the original (2026-10-25); the three rules of `-1` done (V1 to V3, 2026-11-14 and 2026-11-15); the kit's run on the owner's A7100 (NEC V30) and the timing kit's (V4, V4b, 2026-11-21): every value as predicted. **Open**: the kernel built with `-1` and booted (V4, the owner's) | Milestone 5; "Step V1" to "Step V4b" |
+| 5 - `mutos_c2` and 80186/V30 code | `c2` a port of the original (2026-10-25); the three rules of `-1` done (V1 to V3, 2026-11-14 and 2026-11-15); the kit's run on the owner's A7100 (NEC V30) and the timing kit's (V4, V4b, 2026-11-21): every value as predicted. **Open**: the kernel built with `-1` and booted (V4, the owner's; the guide: `docs/KERNEL_BUILD_V30.md`) | Milestone 5; "Step V1" to "Step V4b" |
 | 6 - `make`, `ar`, `ranlib`, `nm`, `size`, `strip`, `tsort`, `lorder`, `ed`, `em` | ports of the originals (steps 6 to 9, 2026-10-26 and 2026-11-02; `lorder` the original script) | Milestone 6 |
 | The MUTOS kernel | built with its unchanged makefile through the cross toolchain: the original kernel byte for byte (2026-11-07) | "The MUTOS kernel, built with the cross toolchain" |
 | The corrected mode (stage F) | F0 to F3b done (2026-11-08 to 2026-11-11; F3b's check on the hardware passed 2026-11-14). **Next**: F4 (the corrections the owner chooses), then F5 (the corrected mode becomes the default) | "The corrected mode and `-1`" |
@@ -1324,7 +1324,8 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    V30 code -; the gains measured, by user time: push 2.6%, shift 14.7%, imul 12.8%
    (the bus with its wait states explains them, but for `imul r,r,imm`, which is slower
    than the NEC manual says - `tests/rules/v30bus.py`). Open of V4: the kernel built
-   with `-1` and booted, the owner's. **V4b, the timing kit, 2026-11-21** ("Step V4b"
+   with `-1` and booted, the owner's - its guide since 2026-11-21,
+   `docs/KERNEL_BUILD_V30.md`, with `scripts/v30report.py --forms`. **V4b, the timing kit, 2026-11-21** ("Step V4b"
    below), asked for by the owner to understand `imul`: `tests/rules/v30time.py` times
    each form of `-1`, and the 8086 code it replaces, alone. **Its run on the A7100,
    2026-11-21**: every value as predicted; on the owner's V30 `imul r,r,imm` takes 40
@@ -2834,7 +2835,8 @@ the kernel built with `-1` and booted is not.
   `time`: `values: every output as expected`; with `expect/` empty every file is
   reported with `cmp`'s "No such file or directory", with a changed line with the
   character and line where it differs.
-- **Open, the owner's**: the kernel built with `-1` and booted from a test disk.
+- **Open, the owner's**: the kernel built with `-1` and booted from a test disk (its
+  guide since 2026-11-21: `docs/KERNEL_BUILD_V30.md`, below).
 
 ### Step V4b: each form timed alone - the kit (verified 2026-11-21; run on the A7100 2026-11-21)
 
@@ -2916,6 +2918,39 @@ ignored by git); `--analyze LOG` turns the machine's log into clocks.
   falls in the range the model gives with these clocks, within a clock - but
   `push ax`/`pop ax`, 27.2 against 26: the stack is where the model is least exact.
   `docs/CPU_REFERENCE.md` has them beside the manual's.
+
+### The kernel with `-1`: the guide and `v30report.py --forms` (verified 2026-11-21)
+
+Asked for by the owner for the open part of step V4, the kernel built with `-1` and
+booted.
+
+- **The guide**: [`docs/KERNEL_BUILD_V30.md`](docs/KERNEL_BUILD_V30.md) - a working
+  copy beside the reference build of `docs/KERNEL_BUILD.md` (step 5), `$M/make
+  CFLAGS="-c -O -K1024 -1"` with the unchanged makefile in the original mode and with
+  the tree's own `arith.a` (one change at a time), the checks of the build, the kernel
+  as `/mutos` of a test medium (the original medium unchanged), the boot, what to try
+  and what to bring back. `docs/KERNEL_BUILD.md`, step 8, points to it.
+- **`scripts/v30report.py --forms`** (new): each source of the build's log compiled
+  with `-1` is compiled again with the same command and `-S` for `-c`, in a scratch
+  directory, and its assembler text checked: as many 80186/V30 instructions by kind as
+  the build's report counted (`as` counts them from the bytes, so an instruction the
+  text check would not see shows), each one a form the kit ran on the V30. So the
+  forms the hardware has run are checked for all 58 of the owner's sources, not only
+  for the 13 of the tree. `V30_LINE` and `PROBED` moved from `tests/rules/v30kit.py`
+  to `v30report.py`, which `v30kit.py` takes them from (`v30kit.py --check` as
+  before: the 13 kernel sources push 321, shift 59, imul 210, each a probed form).
+- **`tests/rules/check_v30report.py`** (new, in `make test`): in
+  `check_editors.py`'s scratch kernel tree the four real kernel sources of
+  `tests/mutos_cpp/c/` (`main.c` in `mdep/`, `sys.c`, `tty.c`, `v30ide.c` in `io/`)
+  built through the makefile - without the macro 8086 code and no report; with
+  `CFLAGS="-c -O -K1024 -1"` every `cc` with `-1`, each followed by its report (194
+  80186/V30 instructions: push 129, shift 36, imul 29); `v30report.py`'s sum;
+  `--forms` exit status 0, the tree unchanged; `--forms` fails on a changed report, a
+  missing source and a log without `-1`; what `PROBED` takes and refuses (52 checks).
+- **Found on the way**: `docs/KERNEL_BUILD.md`, step 1, still said that `make test`
+  ends with `check_editors`' line; since step F0 more checks follow it.
+- **Checked**: `make test` (exit status 0); `v30kit.py --check`; `make check-docs`.
+- **Open, the owner's**: the build on the whole tree and the boot, by the guide.
 
 ## `mutos_as` opcode coverage
 

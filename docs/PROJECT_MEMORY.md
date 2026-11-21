@@ -64,6 +64,7 @@ Guideline 11).
 | 2026-11-21 | The MUTOS 1700 files marked plainly as historical files of the GDR (VEB Kombinat Robotron), provided exclusively for archival, scientific and educational purposes, with immediate removal offered if a rights holder objects. | `NOTICE.md`, section 3; `README.md`; `mutos/README.md` |
 | 2026-11-21 | MUTOS 1700 is not binary- or architecture-compatible with V7 (V7 ran on the PDP-11): it is based on V7 and keeps V7's system call numbers (its `sysent`) and `a.out` format. The wrong claim corrected everywhere, the two manual pages that made it included (a correction of the fact, not the end-of-project rewrite). | `README.md`, "Overview"; `CLAUDE.md`, "Project Background & Goal"; `man/mutos_aout.h.5`, `man/mutos_ld.1` |
 | 2026-11-21 | `LICENSE` points to `NOTICE.md` in a paragraph above the MIT text; the MIT text itself stays the standard text. | `LICENSE`; `CLAUDE.md`, Workflow Guideline 12 |
+| 2026-11-21 | `README.md`'s bullet "100% V7 Compatibility" removed. | `README.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -71,7 +72,7 @@ Milestone 2, "Step 5 of the plan"); which of step F4's corrections
 (C1-12 and C1-13, found with F0, C1-14 and C1-15, found with F1, and LD-10 and
 LD-11, found with F2, are among the candidates); `make install`; the manual
 pages. Still the owner's to run: step V4's kernel, built with `-1` and booted from a
-test disk (`docs/KERNEL_BUILD.md`, step 8).
+test disk (`docs/KERNEL_BUILD_V30.md`).
 
 ## The owner's setup
 
@@ -107,7 +108,9 @@ test disk (`docs/KERNEL_BUILD.md`, step 8).
 - The claude.ai project also holds short German summaries of steps 5 to 9, of
   the kernel build, of the plan of 2026-11-08, of steps F0 to F3b and V1 to V4b and of the
   license work of 2026-11-21 (`claude/step*_*.md`,
-  `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`);
+  `claude/kernelbuild_pruefung_2026-11-07.md`, `claude/plan_korrekturen_v30_2026-11-08.md`),
+  and a German version of `docs/KERNEL_BUILD_V30.md`
+  (`claude/anleitung_kernel_v30_2026-11-21.md`);
   their content is in `STATUS.md` and the development log, which are
   authoritative.
 
@@ -215,3 +218,14 @@ test disk (`docs/KERNEL_BUILD.md`, step 8).
   3.7 by a word (7%) (`STATUS.md`, "Step V4b";
   `tests/rules/hwlog_v4b_2026-11-21.txt`; `docs/CPU_REFERENCE.md`). Open of
   V4: the kernel with `-1`, the owner's.
+- 2026-11-21, a docs audit (milestone states brought up to date across the
+  Markdown files, `STATUS.md`'s table "At a glance"), then at the owner's
+  request a guide for the kernel with `-1`: `docs/KERNEL_BUILD_V30.md` - the
+  build in the original mode with the tree's own `arith.a`, its checks, the
+  kernel as `/mutos` of a test medium, the boot, what to bring back - and
+  `scripts/v30report.py --forms`, which checks that every 80186/V30
+  instruction of the build is a form the kit ran on the V30
+  (`tests/rules/check_v30report.py`, in `make test`). The corrected copy of
+  the kernel's `arith.a` has been in the tree since step F3b
+  (`src/libc_fixed/arith.a`; `docs/KERNEL_BUILD.md`, step 7); a kernel with
+  it is not built or booted yet.

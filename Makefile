@@ -292,6 +292,12 @@ clean:
 # x86sim.py, and the lengths c2 counts for the forms (V30_ARGS passes
 # options, e.g. "--calls 3000 --shifts 3000 --products 3000 --fuzz 3000
 # --seed 2").
+# tests/rules/check_v30report.py builds four real kernel sources through
+# the kernel's makefile with CFLAGS="-c -O -K1024 -1" on mutos_make's
+# command line (docs/KERNEL_BUILD_V30.md) and checks scripts/v30report.py
+# on the log: the sum of as's reports, and --forms - each source compiled
+# again with -S has as many 80186/V30 instructions as its report, each a
+# form step V4's kit ran on the V30.
 # tests/mutos_cc/fuzz/check_x86sim_v30.py pins what
 # x86sim.py does with the three 80186/V30 forms (values, flags, V30
 # clocks), which mutos_as -1 must take.
@@ -339,6 +345,8 @@ test: all
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_accounting.py $(ACCOUNTING_ARGS)
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py $(CORRECTED_ARGS)
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_v30.py $(V30_ARGS)
+	@echo "== the kernel with -1 through its makefile, scripts/v30report.py and its --forms =="
+	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_v30report.py
 	@echo "== x86sim.py: the 80186/V30 forms of -1 and the V30 clocks =="
 	@python3 tests/mutos_cc/fuzz/check_x86sim_v30.py --as $(CURDIR)/src/mutos_as/mutos_as
 

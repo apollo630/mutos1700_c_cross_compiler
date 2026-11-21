@@ -127,8 +127,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   since 2026-11-08 `check_rules.py` (`make test`, `make check-docs`: the rules against
   `docs/RULES.md`) and `rulelog_summary.py` (a rule log summed up by rule - which hooked
   bugs a build, the kernel's for one, meets); since 2026-11-15 `v30report.py`, which sums
-  the lines `as: -1: ...` of a build's log (the kernel with `-1`, `docs/KERNEL_BUILD.md`,
-  step 8).
+  the lines `as: -1: ...` of a build's log (the kernel with `-1`,
+  `docs/KERNEL_BUILD_V30.md`); since 2026-11-21 with `--forms`, each source of the log
+  compiled again with `-S`: as many 80186/V30 instructions as its report, each a form
+  the kit of `v30kit.py` ran on the V30 (whose `V30_LINE` and `PROBED` are here).
 
 ### 🧪 Test Suites & Golden Masters (`/tests`)
 * `/tests/mutos1700_crt0/`: MUTOS1700 C runtime startup code (crt0), includes `crt0.o.base64.txt`.
@@ -267,6 +269,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   generated programs of calls, of shifts (since step V2), of products (since step V3) and of `fuzz_c.py`, `c1`'s and `c2`'s code under `x86sim.py` - the
   same values with `-1` as without (`docs/RULES.md`, "What `-1` computes"); with
   `--realbin` the triggers linked and run under `mutosemu.py`.
+  `check_v30report.py` (in `make test`, since 2026-11-21): four real kernel sources
+  built with `-1` through the kernel's makefile (`mutos_make CFLAGS=...`), and
+  `scripts/v30report.py` on the log - its sum and `--forms`.
   `v30kit.py` (since 2026-11-15, step V4): the kit for the check of the 80186/V30 code
   on the hardware - a probe of every form the rules write, a program per rule as 8086
   code and as V30 code, timing programs, `v30check.sh`, every line predicted in Python
@@ -332,7 +337,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
     stages F and V) and the order of work.
   * **`docs/KERNEL_BUILD.md`** (since 2026-11-07): building the MUTOS 1700 kernel with
     the cross toolchain and its original, unchanged makefile, step by step - the result
-    is the original kernel byte for byte.
+    is the original kernel byte for byte. **`docs/KERNEL_BUILD_V30.md`** (since
+    2026-11-21): the same kernel with `-1`, for the NEC V30 - the build, its checks, the
+    test medium, the boot and what to bring back (step V4).
   * **`docs/RULES.md`** (since 2026-11-08): the register of the rules of the corrected
     mode and of `-1` (`docs/TOOLCHAIN_PLAN.md`, section 7) - each rule's file, hook,
     state and bug -, the switches and variables, the rule log and the accounting.
@@ -763,7 +770,8 @@ looked up under `$MUTOS_ROOT` - an environment variable, by default the build tr
   2026-11-14), V30-SHIFT in `c1` (step V2, 2026-11-14), V30-IMUL in `c1` with a half in
   `c2` (step V3, 2026-11-15); checked on the owner's A7100 with its NEC V30 (step V4's
   kit and step V4b's timing kit, 2026-11-21: every value as predicted). Open: the kernel
-  built with `-1` and booted (step V4, the owner's). Settled ahead of it: such code
+  built with `-1` and booted (step V4, the owner's; `docs/KERNEL_BUILD_V30.md`). Settled
+  ahead of it: such code
   must stay link-compatible with the real `libc.a`/`crt0.o` (`docs/devlog/m5_c2_v30.md`).
   Decided with it: the bugs of the originals are corrected in a mode that becomes the
   default at the end, the original's behaviour selectable (section 7.3; Milestone 7).

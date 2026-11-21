@@ -1194,3 +1194,39 @@ it gives the clocks (`STATUS.md`, "Step V4b", has them all).
   range, but `push ax`/`pop ax` (27.2 against 26). V30-IMUL gains 8.0
   clocks a product by a byte (15%) and 3.7 by a word (7%); V30-SHIFT
   gains the `mov cx,*n.` it drops, since both shifts take 10 + n.
+
+## The kernel with `-1`: the guide, and the forms checked (2026-11-21)
+
+The owner asked for a guide to the open part of step V4, the kernel built
+with `-1` and booted: `docs/KERNEL_BUILD_V30.md`.
+
+- **One change at a time.** The guide builds in the original mode
+  (`MUTOS_MODE` unset) and with the tree's own `arith.a` - its `cmp`
+  against `tests/mutos1700_arith/` says so -, so the kernel differs from
+  the original by `-1` alone. The corrected mode and the corrected copy of
+  `arith.a` (step F3b) are a boot of their own (step F5).
+- **What the kit proved, and for what.** Step V4's kit ran every form the
+  rules write on the V30, and `v30kit.py --check` shows that the 13 kernel
+  sources of the tree have no other form. The owner's tree has 58 sources
+  compiled with `$(CFLAGS)`, 45 of them not in the repository. The rules
+  write only those shapes by construction - V30-IMUL only `imul ax,`,
+  V30-SHIFT a word register's shift by 3 to 15, a shift in memory left -,
+  but nothing checked it for the 45. `scripts/v30report.py --forms` does,
+  on the owner's machine: each `+ cc` line of the log with `-1` is run
+  again in a scratch directory with `-S` for `-c` (the directory its
+  recipe changed to is the last `+ cd` before it: every recipe of the
+  makefile that passes `$(CFLAGS)` begins with one; a source not found
+  there is an error, not a guess), and the text is checked against
+  `PROBED`. A text check alone could miss an instruction written in
+  another spelling (a count without its dot, say), so it also compares
+  the count by kind with the build's report, which `mutos_as` makes from
+  the bytes it wrote: an instruction the text check does not see makes
+  the two differ.
+- **No file in the tree.** `cc -S` writes `x.s` into its directory; in
+  the kernel's `io/`, a `.s` newer than its `.o` would let the next `make`
+  assemble it by the default rule `.s.o`. Hence the scratch directory: the
+  quoted `#include "../h/..."` is looked up beside the source, not in the
+  directory `cc` runs in, so the absolute source path is enough.
+- `V30_LINE` and `PROBED` moved from `v30kit.py` to `v30report.py`
+  (standard library only, which the owner's host needs), and `v30kit.py`
+  takes them from there: one definition of what the hardware has run.

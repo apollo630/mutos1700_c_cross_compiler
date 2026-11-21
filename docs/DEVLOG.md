@@ -169,6 +169,7 @@ The plan of 2026-11-08, section 7: the bugs of the originals corrected in a corr
 - After V3: the external target, and no shift in memory (2026-11-15)
 - Step V4: the kit for the hardware (2026-11-15; its run on the A7100 with the V30 at 15 MHz, 2026-11-21)
 - Step V4b: each form timed alone (2026-11-21; its run on the A7100 the same day: the three-operand `imul` as slow with a byte as with a word)
+- The kernel with `-1`: the guide, and the forms checked (2026-11-21)
 
 ## [Recurring process lessons](devlog/process_lessons.md)
 

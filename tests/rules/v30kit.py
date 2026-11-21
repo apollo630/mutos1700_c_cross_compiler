@@ -84,6 +84,8 @@ try:
 except ImportError:
     sys.exit('v30kit.py: needs the Python module "unicorn" (pip install unicorn)')
 import x86sim  # noqa: E402
+sys.path.append(os.path.join(ROOT, 'scripts'))
+import v30report  # noqa: E402
 
 MUTOS_ROOT = os.path.join(ROOT, 'mutos_root')
 CC = os.path.join(MUTOS_ROOT, 'bin', 'cc')
@@ -739,13 +741,11 @@ PROGRAMS = (                     # name, the rule, cc's options besides -1
 )
 WORD = {'V30-PUSH': 'push', 'V30-SHIFT': 'shift', 'V30-IMUL': 'imul'}
 REPORT = re.compile(r'^as: -1: (?:no|\d+) 80186/V30 instructions?(?:: (.*))?$')
-# the 80186/V30 instructions cc -S -1 writes, by their text: the probed
-# forms are "push" of "*n." or "#...", a word shift of a probed register by
-# 3 to 15, and "imul ax," with "*n." or "#n"
-V30_LINE = re.compile(r'^(?:(?:L\d+|_\w+):)*(push\t[*#][^(\n]*|(?:sal|sar|shr|rol|ror|rcl|rcr)b?'
-                      r'\t[^,\n]+,\*\d+\.|imulb?\t[^,\n]+,.*)$', re.M)
-PROBED = re.compile(r'^(?:push\t(?:\*-?\d+\.|#[^(\n]+)|(?:sal|sar|shr)\t(?:ax|bx|cx|dx|si|di),'
-                    r'\*(?:[3-9]|1[0-5])\.|imul\tax,[*#]-?\d+\.)$')
+# the 80186/V30 instructions cc -S -1 writes, by their text, and the forms
+# among them the kit probes: scripts/v30report.py's, which checks a kernel
+# build with -1 against them (its --forms)
+V30_LINE = v30report.V30_LINE
+PROBED = v30report.PROBED
 
 
 def env():
@@ -797,9 +797,7 @@ def counts(msgs):
     return total
 
 
-def unprobed(text):
-    """The 80186/V30 instructions of a .s that are no probed form."""
-    return [m.group(1) for m in V30_LINE.finditer(text) if not PROBED.match(m.group(1))]
+unprobed = v30report.unprobed
 
 
 def symbols(image_path, cwd):
