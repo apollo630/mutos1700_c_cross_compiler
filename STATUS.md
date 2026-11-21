@@ -1281,7 +1281,13 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    than the NEC manual says - `tests/rules/v30bus.py`). Open of V4: the kernel built
    with `-1` and booted, the owner's. **V4b, the timing kit, 2026-11-21** ("Step V4b"
    below), asked for by the owner to understand `imul`: `tests/rules/v30time.py` times
-   each form of `-1`, and the 8086 code it replaces, alone; its run is the owner's.
+   each form of `-1`, and the 8086 code it replaces, alone. **Its run on the A7100,
+   2026-11-21**: every value as predicted; on the owner's V30 `imul r,r,imm` takes 40
+   clocks (44 with a negative product) with a byte as with a word - the NEC manual has
+   28-34 for a byte -, a shift of a register by n 10 + n (7 + n), `mul` of a word 32-33
+   (29-30). With these clocks the bus model gives all six timing programs of V4 as
+   measured (`v30bus.py --measured`); V30-IMUL gains 8 clocks a product by a byte (15%),
+   3.7 by a word (7%).
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2772,7 +2778,7 @@ done; the run on the owner's A7100 (NEC V30) and the kernel are not.
   character and line where it differs.
 - **Open, the owner's**: the kernel built with `-1` and booted from a test disk.
 
-### Step V4b: each form timed alone - the kit (verified 2026-11-21; the run is open)
+### Step V4b: each form timed alone - the kit (verified 2026-11-21; run on the A7100 2026-11-21)
 
 The owner asked (2026-11-21) to understand why `bimul.v` was slower than the bus
 model with the NEC manual's clocks allows (step V4, above), with a timing kit if need
@@ -2816,8 +2822,42 @@ ignored by git); `--analyze LOG` turns the machine's log into clocks.
 - **Found on the way**: a symbol has eight characters, so the routines are numbered
   (`_t14a`, `_t14b`); a comment line of the script is a command of the shell (`:`),
   so a redirection in it is one - `>log` in a comment would have emptied the log.
-- **Open, the owner's**: the run (`sh v30time.sh >log 2>&1` in the kit's directory,
-  the log back).
+- **The run on the A7100 (2026-11-21)**, `tests/rules/hwlog_v4b_2026-11-21.txt`
+  (`v30time.py --analyze` on it): `values: as expected` - every routine returned
+  what was computed. The clocks of a copy, ±2 ticks 0.1 to 0.7 clocks:
+  - **The clock and the bus are as assumed.** The units that wait for the bus take
+    3.55 clocks a byte of code (a word per bus cycle of 7 clocks: 3.5 - 3 wait
+    states at 15 MHz); `aam`, which waits for the execution unit, 15.1 (the manual:
+    15). (The analysis of the kit as built took the clock from the shift by 15 and
+    gave 13.2 MHz; that shift is not 22 clocks on this V30, the next point.)
+  - **A shift of a register by n takes 10 + n clocks**, by CL as by an immediate
+    count (`sal ax,cl` 25.1 and 13.2 for 15 and 3, `sal ax,*15.` 25.4, `sal ax,*3.`
+    13.1); the manual says 7 + n. **`mul cx` 32.6** (29-30). V30-SHIFT is not
+    touched: the shift it writes and the one it replaces take the same; it saves
+    the `mov cx,*n.`.
+  - **`imul r,r,imm` takes 40 clocks, 44 when the product is negative - with a byte
+    as with a word**: `imul ax,bx,*n.` 40.4 / 44.5 for the nine bytes and eight
+    values, `imul ax,bx,#n` 40.6 / 44.4 for the five words; the manual has 28-34 for
+    the byte form, 36-42 for the word form. The word form fits the manual (but its
+    negative products, 2 clocks above), the byte form is 6 to 12 clocks slower than
+    the manual says. That is the discrepancy of V4: `bimul.v` has four products by a
+    byte in its loop. The one-operand `imul cx` takes as the manual says: 42.2 / 46.5
+    after `mov ax,bx` (41-47).
+  - **As `c1` writes it** (`mov ax,bx`/`imul ax,*10.`) the form takes 43.4 / 47.3 -
+    the `mov` and the product, nothing more. The 8086 code it replaces
+    (`mov ax,bx`/`mov cx,*10.`/`imul cx`) 52.3 on average: **V30-IMUL gains 8.0 clocks
+    a product by a byte (15%), 3.7 by a word (7%)**, and 2 bytes of code and CX.
+  - **The loop bodies**: 301 clocks as 8086 code, 257 as V30 code (bus model with
+    the manual: 287-317 and 196-226).
+- **The model with these clocks**: `v30bus.A7100` holds the three differences, and
+  `v30bus.py --measured` and `v30time.py --analyze` (its last column) count them.
+  The six timing programs of V4 then come out as measured: `bimul.v` 13.3-14.2 s
+  (measured 13.6), `bshift.8`/`.v` 21.0 / 18.4 s (21.1 / 18.0), `bimul.8` 15.1-16.5
+  (15.6); `bpush` stays 7% above (24.7 against 23.0). The gains by the model: push
+  2.2%, shift 12.5%, imul 13.3% (measured 2.6%, 14.7%, 12.8%). Each unit of the kit
+  falls in the range the model gives with these clocks, within a clock - but
+  `push ax`/`pop ax`, 27.2 against 26: the stack is where the model is least exact.
+  `docs/CPU_REFERENCE.md` has them beside the manual's.
 
 ## `mutos_as` opcode coverage
 

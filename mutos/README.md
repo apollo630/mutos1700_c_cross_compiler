@@ -1,5 +1,13 @@
 # `mutos/` — the original MUTOS 1700 files
 
+**Historical files from the German Democratic Republic (GDR), of the VEB Kombinat
+Robotron, provided exclusively for archival, scientific and educational purposes.
+They are not licensed by this project; if a holder of rights in them objects, they
+will be removed immediately - please open an issue in the repository
+([`NOTICE.md`](../NOTICE.md), section 3).** The one exception in this directory is
+`mutos_include/sys/h/v30ide.h`, the project owner's own code (`NOTICE.md`,
+section 1).
+
 Every file in this directory comes from MUTOS 1700 itself (moved here on
 2026-10-25; until then `mutos_bin/` sat at the top of the repository). It
 is reference data under `CLAUDE.md`'s Golden Master Integrity rule

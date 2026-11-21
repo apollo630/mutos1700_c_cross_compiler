@@ -20,24 +20,35 @@ repository's history. That is in particular:
   for the project in `tests/` (the emulator, the simulators, the fuzzers, the
   checks, the kits for the hardware), and the tools in `src/libc_fixed/`;
 - the documentation: the Markdown documents and the manual pages in `man/`;
-- the IDE driver for the NEC V30 expansion of the A7100 (below).
+- the project owner's code in the MUTOS kernel for the V30 expansion of his A7100
+  (below).
 
-### The V30 IDE driver
+### The owner's code in the kernel: the V30 IDE driver
 
-The driver for the IDE adapter of the project owner's A7100 (an expansion board
-that also switches in the NEC V30) is the owner's own work, written for his MUTOS
-1700 kernel: `mutos/mutos_include/sys/h/v30ide.h`, and in `tests/` its copy
-`tests/mutos_cpp/h/v30ide.h`, the driver `tests/mutos_cpp/c/v30ide.c`, and what the
-toolchain made of it (`tests/mutos_cpp/c/v30ide.i.golden`,
-`tests/mutos_as/kernel_opt/v30ide.s`, `v30ide.o.golden` and
-`v30ide.o.golden_base64.txt`). It is under the MIT License as above.
+The project owner's A7100 has an expansion board with an IDE adapter that also
+switches in the NEC V30. The code he wrote for it, in his MUTOS 1700 kernel, is his
+own work and under the MIT License as above:
 
-Some parts of it were taken from V7/x86, Robert Nordier's port of UNIX Version 7
-to the PC (www.nordier.com; its `/usr/sys/dev/hd.c`). Those parts remain his work:
-his notice, "Copyright (c) 2006 Robert Nordier. All rights reserved.", stays in
-the files, and they are used under the terms of V7/x86, which the MIT License of
-the rest does not change. What V7/x86 has of UNIX Version 7 is under section 2's
-license.
+- the driver: `mutos/mutos_include/sys/h/v30ide.h`, its copy
+  `tests/mutos_cpp/h/v30ide.h`, `tests/mutos_cpp/c/v30ide.c`, and what the toolchain
+  made of it (`tests/mutos_cpp/c/v30ide.i.golden`,
+  `tests/mutos_as/kernel_opt/v30ide.s`, `v30ide.o.golden`,
+  `v30ide.o.golden_base64.txt`);
+- the routines `_isNEC` and `_hdio` in the kernel's `mch.c` (the part under `#ifdef
+  V30IDE` at its end), and so in `tests/mutos_cpp/c/mch.c`, `mch.i.golden`,
+  `tests/mutos_as/kernel_opt/mch.s`, `mch_insw_outsw.s` and their objects. The rest
+  of these files is MUTOS's (section 3).
+
+Some parts of the driver were taken from V7/x86, Robert Nordier's port of UNIX
+Version 7 to the PC (www.nordier.com; its `/usr/sys/dev/hd.c`). Those parts remain
+his work: his notice, "Copyright (c) 2006 Robert Nordier. All rights reserved.",
+stays in the files, and they are used under the terms of V7/x86, which the MIT
+License of the rest does not change. What V7/x86 has of UNIX Version 7 is under
+section 2's license.
+
+`_isNEC` tells a NEC V20/V30 from an Intel 8086/8088 by the zero flag after `mul`,
+the method of "Processor Identification" by Chris Dragan and Chili (Assembly
+Programmer's Journal, issue 6), which its comment names.
 
 ## 2. UNIX Version 7 - the Caldera license
 
@@ -56,15 +67,20 @@ that mentions the software:
 
 > This product includes software developed or owned by Caldera International, Inc.
 
-## 3. MUTOS 1700 - not licensed by this project
+## 3. MUTOS 1700 - historical files, not licensed by this project
 
-MUTOS 1700 was developed by the VEB Kombinat Robotron for the A7100 and A7150. Its
-files and what was derived from them are not the project's work, and this
-repository grants no license to them. Who holds the rights in Robotron's software
-today is not known to the project. The material is kept for the preservation of
-this system, for interoperability, and as the reference against which the
-toolchain is tested. It will be removed at the request of a rights holder (open an
-issue in the repository). That is:
+**The MUTOS 1700 files in this repository are historical files from the German
+Democratic Republic (GDR): software and documentation of the VEB Kombinat
+Robotron. They are provided exclusively for archival, scientific and educational
+purposes. If a holder of rights in them objects, they will be removed immediately:
+please open an issue in the repository.**
+
+MUTOS 1700 was developed by the VEB Kombinat Robotron for its office computers A7100
+and A7150. Its files and what was derived from them are not the project's work, and
+this repository grants no license to them. Who holds the rights in Robotron's
+software today is not known to the project. The files are kept to preserve this
+system, for interoperability, and as the reference against which the toolchain is
+tested. That is:
 
 - `mutos/`: the original binaries, header files and manual pages (but the V30 IDE
   driver's header, section 1);
@@ -74,7 +90,7 @@ issue in the repository). That is:
   `tests/mutos1700_arith/`), and the sources and makefile of the MUTOS kernel
   used as test input (`tests/mutos_cc/11_kernel/`, `tests/mutos_cpp/c/`,
   `tests/mutos_cpp/h/`, `tests/mutos_as/kernel_opt/`, `tests/mutos_ed/kernel/`;
-  but the V30 IDE driver's files, section 1), and the code tables read from the
+  but the owner's code in them, section 1), and the code tables read from the
   original `c1` (`tests/realbin/c1_tables.txt`);
 - `src/libc_fixed/orig/` and `src/libc_fixed/fixed/` - sources of `libc.a`'s
   members, reconstructed from the archive, and their corrected copies;

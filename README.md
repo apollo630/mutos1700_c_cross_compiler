@@ -27,6 +27,11 @@ MUTOS 1700 was a lesser-known operating system for the East German (DDR) office 
 The project's own work is under the MIT License ([`LICENSE`](LICENSE)). The parts
 taken from UNIX Version 7, and the ports built on them, keep the Caldera license
 ([`LICENSES/Caldera.txt`](LICENSES/Caldera.txt)) - this product includes software
-developed or owned by Caldera International, Inc. The original MUTOS 1700 files
-(Robotron) are kept for preservation and as the reference of the tests, and are
-not licensed by the project. Which files are which: [`NOTICE.md`](NOTICE.md).
+developed or owned by Caldera International, Inc.
+
+The original MUTOS 1700 files are historical files from the German Democratic
+Republic (GDR), of the VEB Kombinat Robotron. They are provided exclusively for
+archival, scientific and educational purposes, are the reference of the tests, and
+are not licensed by the project. If a holder of rights in them objects, they will
+be removed immediately - please open an issue. Which files are which:
+[`NOTICE.md`](NOTICE.md).

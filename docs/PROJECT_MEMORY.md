@@ -58,6 +58,9 @@ Guideline 11).
 | 2026-11-21 | To understand why `imul r,r,imm` measured slower than the model: a timing kit if need be (step V4b, each form timed alone). | `STATUS.md`, "Step V4b" |
 | 2026-11-21 | A license: the code freely available, without breaking the terms of the V7 or the Robotron parts; Claude's proposal built into the patch at his request - MIT for the project's own work, the Caldera license kept for V7's sources and the ports built on them, the MUTOS 1700 material not licensed by the project and removed at a rights holder's request. | `LICENSE`, `LICENSES/Caldera.txt`, `NOTICE.md`; `CLAUDE.md`, Workflow Guideline 12 |
 | 2026-11-21 | The license refined: the Intel and NEC manuals (PDFs) removed from the repository, what the project uses of them kept in its own words in `docs/CPU_REFERENCE.md` (and in Claude's memory as a pointer to it); the copyright line without a personal name ("The MUTOS 1700 Cross-Compiler Toolchain authors" - a name is not required); the V30 IDE driver (`v30ide.h`, `v30ide.c`) is the owner's own work, with parts from Robert Nordier's V7/x86 under his notice; the SCO-v.-Novell caveat and the section on third parties' documents taken out of `NOTICE.md`. | `NOTICE.md`; `docs/CPU_REFERENCE.md`; `CLAUDE.md`, Workflow Guideline 12 |
+| 2026-11-21 | The two PDFs removed from the history as well: the owner rewrites it with `git filter-repo` and force-pushes (every commit hash changes; the hashes the documents cite are mapped to the new ones in the commit after the rewrite). | this file, below |
+| 2026-11-21 | `_isNEC` and `_hdio` in the kernel's `mch.c` (and so `mch.s`, `mch_insw_outsw.s`) are the owner's code, `_isNEC` after "Processor Identification" by Chris Dragan and Chili. | `NOTICE.md`, section 1 |
+| 2026-11-21 | The MUTOS 1700 files marked plainly as historical files of the GDR (VEB Kombinat Robotron), provided exclusively for archival, scientific and educational purposes, with immediate removal offered if a rights holder objects. | `NOTICE.md`, section 3; `README.md`; `mutos/README.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -196,3 +199,13 @@ pages.
   the PDFs of Intel's AP-186 and NEC's V20/V30 manual are gone from the
   tree (they stay in the git history unless it is rewritten); their facts
   are in `docs/CPU_REFERENCE.md`, to which every former path now points.
+- 2026-11-21, step V4b, the timing kit's run on the A7100: every value as
+  predicted. On the owner's V30 `imul r,r,imm` takes 40 clocks (44 with a
+  negative product) with a byte as with a word - the NEC manual's 28-34 for
+  a byte do not hold -, a register shift by n 10 + n (7 + n), `mul` of a word
+  32-33 (29-30); the clock (15 MHz) and the bus (3 wait states) as assumed.
+  With these clocks (`v30bus.py --measured`) the six timing programs of V4
+  come out as measured. V30-IMUL gains 8 clocks a product by a byte (15%),
+  3.7 by a word (7%) (`STATUS.md`, "Step V4b";
+  `tests/rules/hwlog_v4b_2026-11-21.txt`; `docs/CPU_REFERENCE.md`). Open of
+  V4: the kernel with `-1`, the owner's.

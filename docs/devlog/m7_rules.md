@@ -1164,3 +1164,33 @@ allows, with a timing kit if need be (`tests/rules/v30time.py`;
   any: `: Run it with sh v30time.sh >log 2>&1` would have opened `log`
   for writing and emptied it while the script wrote into it. `dash`
   refused `2>&1.` as a bad descriptor, which is how it was found.
+
+### The run on the A7100 (2026-11-21)
+
+The owner ran the kit (`sh v30time.sh >log 2>&1`, about 13 minutes); the
+log is `tests/rules/hwlog_v4b_2026-11-21.txt`, `v30time.py --analyze` on
+it gives the clocks (`STATUS.md`, "Step V4b", has them all).
+
+- **Which of the four explanations: the first.** `imul ax,bx,*n.` takes
+  40 clocks (44 with a negative product) for every byte n and every value
+  - the form itself, not its source, not the data beyond the sign, not
+  the loop. The word form `imul ax,bx,#n` takes the same 40/44, where the
+  manual has 36-42; the byte form's 28-34 do not hold on this V30. In
+  `bimul.v` four of the five products are by a byte; with 40/44 the model
+  gives 13.3-14.2 s, measured 13.6. As `c1` writes it the form costs its
+  `mov ax,bx` and nothing more, and the loop bodies cost what their units
+  do: nothing is hidden in the loop.
+- **The clock was taken from the wrong instruction.** The kit as built
+  took the processor's clock from the shift by 15, 22 clocks by the
+  manual, and gave 13.2 MHz. Two other measures say 15: the units that
+  wait for the bus take 3.55 clocks a byte (3.5 at 3 wait states), and
+  `aam` 15.1 (the manual: 15). It is the shift that is slower - 10 + n
+  clocks, by CL as by an immediate, where the manual says 7 + n -, and
+  `mul cx` too (32.6 against 29-30). `--analyze` now takes the clock from
+  the bus and from `aam` and says what a shift and a product take.
+- **The model with these clocks.** `v30bus.A7100` has the three figures;
+  with `--measured` all six programs of V4 come out as measured, but
+  `bpush` 7% above, and every unit of the kit within a clock of its
+  range, but `push ax`/`pop ax` (27.2 against 26). V30-IMUL gains 8.0
+  clocks a product by a byte (15%) and 3.7 by a word (7%); V30-SHIFT
+  gains the `mov cx,*n.` it drops, since both shifts take 10 + n.

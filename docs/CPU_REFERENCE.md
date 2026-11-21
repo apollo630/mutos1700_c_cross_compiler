@@ -132,10 +132,25 @@ the figures `tests/mutos_cc/fuzz/x86sim.py` (`v30_clocks()`) and
 A range is "according to data". At an odd address a word transfer costs 4 clocks
 more (`push` reg 12, imm8 11, imm16 12; `ret` 19).
 
-**On the owner's machine** (the V30 at 15 MHz, 3 or 4 wait states - a bus cycle of 7
-clocks at best, 3.5 clocks a byte of code): short instructions wait for the bus, not
-for the execution unit, and `tests/rules/v30bus.py`'s model of that gives the
-measured times of step V4's timing programs within a few percent - but for the loop
-of products with `imul r,r,imm`, which took about 9 to 12 clocks a product more than
-the table above (`STATUS.md`, "Step V4"). Step V4b's kit (`tests/rules/v30time.py`)
-times each form alone to find out why.
+### Measured on the owner's V30
+
+Step V4b (2026-11-21, `tests/rules/v30time.py`, the log
+`tests/rules/hwlog_v4b_2026-11-21.txt`; `STATUS.md`, "Step V4b") timed the forms one
+by one on the owner's A7100: the V30 at 15 MHz, the memory with 3 wait states - a
+bus cycle of 7 clocks, 3.5 clocks a byte of code. Short instructions wait for the
+bus, not for the execution unit (`tests/rules/v30bus.py` models that). Where the
+execution unit differs from the manual:
+
+| Instruction | Manual | Measured |
+|---|---|---|
+| `imul` reg16,reg16,imm8 | 28-34 | 40; 44 when the product is negative |
+| `imul` reg16,reg16,imm16 | 36-42 | 40; 44 when the product is negative |
+| shift reg by CL or imm8 (n) | 7+n | 10+n |
+| `mul` reg16 (unsigned) | 29-30 | 32-33 |
+
+The same as the manual: `aam` (15), the one-operand `imul` reg16 (42, 46.5 with a
+negative product; 41-47). So on this chip the three-operand `imul` takes as long
+with a byte as with a word, and about 2 clocks less than the one-operand form:
+`-1`'s product by a constant gains 8 clocks over the 8086 code by a byte, 3.7 by a
+word (`mov cx,*n.`/`imul cx` against `imul ax,*n.`). `v30bus.A7100` holds these
+figures; `v30bus.py --measured` counts with them.

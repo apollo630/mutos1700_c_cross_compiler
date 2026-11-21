@@ -26,14 +26,22 @@ seconds by the manual's clocks alone, by the model, and as measured (the
 user time MUTOS's time printed), and the gains. A multiplication's clocks
 depend on the data; the model gives the manual's lowest and highest.
 
+With --measured the EU counts what step V4b's timing kit measured on the
+owner's V30 (v30time.py, tests/rules/hwlog_v4b_2026-11-21.txt) where it
+differs from the manual (A7100 below): "imul r,r,imm" 40 clocks, 44 when
+the product is negative, with a byte as with a word (the manual: 28-34,
+36-42); a shift of a register by CL or by a count n other than 1 10 + n
+(7 + n); "mul" of a word register 32-33 (29-30).
+
 Usage:
-    v30bus.py [--mhz F] [--wait W] [--imul3 N]
+    v30bus.py [--mhz F] [--wait W] [--imul3 N] [--measured]
 
 --mhz: the processor clock in MHz (default 15). --wait: wait states of a
 bus cycle (default 3). --imul3: clocks added to the manual's figures for
 "imul r,r,imm" (28-34, 36-42 with a word), default 0 - with 12 the model
-gives what bimul.v measured. Requires the Python modules unicorn and
-capstone and a built tree ("make").
+gives what bimul.v measured. --measured: the clocks measured on the
+owner's V30 (above). Requires the Python modules unicorn and capstone and
+a built tree ("make").
 """
 
 import io
@@ -74,6 +82,12 @@ REGS = set('ax bx cx dx si di sp bp al ah bl bh cl ch dl dh'.split())
 BRANCHES = set('jo jno jb jae je jne jbe ja js jns jp jnp jl jge jle jg '
                'jcxz loop'.split())
 SHIFTS = ('shl', 'sal', 'shr', 'sar', 'rol', 'ror', 'rcl', 'rcr')
+# the clocks step V4b measured on the owner's V30 where they differ from
+# the manual (hwlog_v4b_2026-11-21.txt; docs/CPU_REFERENCE.md): the
+# lowest and the highest (a negative product) of "imul r,r,imm" with a
+# register source, a byte or a word alike; what a register shift by CL or
+# by a count other than 1 takes beyond n; "mul" of a word register
+A7100 = dict(imul3=(40, 44), shift=10, mulu16=(32, 33))
 
 
 def kind(op):
@@ -83,9 +97,10 @@ def kind(op):
     return 'm' if '[' in op else 'i'
 
 
-def eu_clocks(mnem, ops, size, cl, taken, high, imul3):
+def eu_clocks(mnem, ops, size, cl, taken, high, imul3, measured=False):
     """The manual's clocks of an instruction (capstone's spelling), as
-    x86sim.v30_clocks() has them; high: a multiplication's highest."""
+    x86sim.v30_clocks() has them; high: a multiplication's highest;
+    measured: A7100's figures where the owner's V30 differs."""
     k = tuple(kind(o) for o in ops.split(',')) if ops else ()
     if mnem == 'mov':
         return {('r', 'r'): 2, ('r', 'i'): 4, ('m', 'r'): 9, ('r', 'm'): 11,
@@ -120,6 +135,8 @@ def eu_clocks(mnem, ops, size, cl, taken, high, imul3):
             return (47 if high else 41) if k == ('r',) else (53 if high else 47)
         # "imul r,r,*n." is 3 bytes, "imul r,r,#n" 4; a source in memory,
         # which -1 never writes, is counted as with a word
+        if measured and k[1] == 'r':
+            return A7100['imul3'][1 if high else 0] + imul3
         byte = k[1] == 'r' and size == 3
         lo = (28 if byte else 36) if k[1] == 'r' else 42
         return lo + (6 if high else 0) + imul3
@@ -129,6 +146,8 @@ def eu_clocks(mnem, ops, size, cl, taken, high, imul3):
         if count == '1':
             return 16 if mem else 2
         n = cl if count == 'cl' else int(count, 0)
+        if measured and not mem:
+            return A7100['shift'] + n
         return (19 if mem else 7) + n
     if mnem in ('cbw', 'cwde'):
         return 2
@@ -136,6 +155,8 @@ def eu_clocks(mnem, ops, size, cl, taken, high, imul3):
         return 5
     if mnem == 'mul':           # MULU: a byte 21 or 22, a word 29 or 30
         word = ops.strip() not in ('al', 'ah', 'bl', 'bh', 'cl', 'ch', 'dl', 'dh')
+        if measured and word and k == ('r',):
+            return A7100['mulu16'][1 if high else 0]
         return (29 if word else 21) + (1 if high else 0) if k == ('r',) else \
             (35 if word else 27) + (1 if high else 0)
     if mnem == 'nop':
@@ -208,16 +229,17 @@ def one_turn(work, name, tag):
     return dec, s2[p - WARM:p], s2[p - WARM:p + extra]
 
 
-def clocks(dec, seq, wait, high, imul3, bus=True):
-    """The clocks of the instructions seq; bus=False: the EU's alone."""
+def clocks(dec, seq, wait, high, imul3, bus=True, measured=False):
+    """The clocks of the instructions seq; bus=False: the EU's alone;
+    measured: the EU's clocks as measured on the owner's V30."""
     n = len(seq)
     info = []
     for i, (off, data, cl) in enumerate(seq):
         mnem, ops, size = dec[off]
         nxt = seq[i + 1][0] if i + 1 < n else off + size
         taken = nxt != off + size
-        info.append((size, data, eu_clocks(mnem, ops, size, cl, taken, high, imul3),
-                     taken, nxt))
+        info.append((size, data, eu_clocks(mnem, ops, size, cl, taken, high, imul3,
+                                           measured), taken, nxt))
     if not bus:
         return sum(x[2] for x in info)
     cycle = 4 + wait
@@ -270,7 +292,7 @@ def clocks(dec, seq, wait, high, imul3, bus=True):
 
 
 def main(argv):
-    mhz, wait, imul3 = 15.0, 3, 0
+    mhz, wait, imul3, measured = 15.0, 3, 0, False
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -280,15 +302,19 @@ def main(argv):
             wait = int(args.pop(0))
         elif a == '--imul3' and args:
             imul3 = int(args.pop(0))
+        elif a == '--measured':
+            measured = True
         else:
             print(__doc__)
             return 2
     if not os.access(CC, os.X_OK):
         sys.exit('v30bus.py: %s is not built - run "make" first' % CC)
     hz = mhz * 1e6
-    print('v30bus: one turn of each timing program, at %g MHz, %d wait states%s'
-          % (mhz, wait, ', imul r,r,imm +%d clocks' % imul3 if imul3 else ''))
-    print('    program  manual\'s clocks   bus model        measured')
+    print('v30bus: one turn of each timing program, at %g MHz, %d wait states%s%s'
+          % (mhz, wait, ', imul r,r,imm +%d clocks' % imul3 if imul3 else '',
+             ', the clocks measured on the V30 (step V4b)' if measured else ''))
+    print('    program  %-16s bus model        measured' % (
+        'EU alone' if measured else 'manual\'s clocks'))
     got = {}
     with tempfile.TemporaryDirectory(prefix='v30bus.') as work:
         for name in ('bpush', 'bshift', 'bimul'):
@@ -296,8 +322,8 @@ def main(argv):
                 dec, warm, full = one_turn(work, name, tag)
                 row = []
                 for bus in (False, True):
-                    lo, hi = [(clocks(dec, full, wait, h, imul3, bus) -
-                               clocks(dec, warm, wait, h, imul3, bus))
+                    lo, hi = [(clocks(dec, full, wait, h, imul3, bus, measured) -
+                               clocks(dec, warm, wait, h, imul3, bus, measured))
                               * TURNS[name] / hz for h in (False, True)]
                     row.append((lo, hi))
                 got[(name, tag)] = row[1]

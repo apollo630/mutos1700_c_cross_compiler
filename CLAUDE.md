@@ -271,11 +271,13 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   and printed so under `mutosemu.py`; `--check` (in `make check-realbin`) is the
   prediction alone. Run on the owner's A7100 2026-11-21 (`hwlog_2026-11-21.txt`).
   `v30bus.py` (since 2026-11-21): the kit's timing programs under a model of the
-  owner's bus (the V30 at 15 MHz, wait states, the queue), beside the measured times.
+  owner's bus (the V30 at 15 MHz, wait states, the queue), beside the measured times;
+  `--measured` counts the clocks step V4b measured where the V30 differs from the NEC
+  manual (`v30bus.A7100`; `docs/CPU_REFERENCE.md`).
   `v30time.py` (since 2026-11-21, step V4b): the timing kit - each form of `-1` and the
   8086 code it replaces timed alone on the hardware; `--analyze` turns the machine's
   log into clocks; `--check` (in `make check-realbin`) builds it and runs it under
-  `mutosemu.py`.
+  `mutosemu.py`. Run on the owner's A7100 2026-11-21 (`hwlog_v4b_2026-11-21.txt`).
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
@@ -633,8 +635,12 @@ You act as an expert systems programmer, compiler architect, and operating syste
 12. **Licensing (since 2026-11-21)**: the project's own work is under the MIT License
     (`LICENSE`), V7's sources and the ports built on them under the Caldera license
     (`LICENSES/Caldera.txt`), the MUTOS 1700 material under no license of the
-    project's - `NOTICE.md` says which file is which (the owner's V30 IDE driver is
-    his own work, with parts of Robert Nordier's V7/x86 under his notice). A change
+    project's - `NOTICE.md` says which file is which (the owner's code in the kernel,
+    the V30 IDE driver and `_isNEC`/`_hdio` in `mch.c`, is his own work, with parts of
+    Robert Nordier's V7/x86 under his notice). The MUTOS 1700 files are marked as
+    historical files of the GDR's VEB Kombinat Robotron, provided exclusively for
+    archival, scientific and educational purposes, and removed immediately if a
+    rights holder objects (`NOTICE.md`, `README.md`, `mutos/README.md`). A change
     that adds a file of another origin (a new original from the hardware, a golden,
     a reconstructed source, a port) adds it to `NOTICE.md`'s lists in the same
     change. The Intel and NEC manuals were removed on 2026-11-21 (the owner's

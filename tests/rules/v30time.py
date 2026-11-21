@@ -24,7 +24,9 @@ with F the processor's clock (15 MHz; --mhz). The units:
     by 3, "sal ax,*15." and "sal ax,*3.", "aam", "mov ax,bx"/"mul cx".
     The short ones wait for the bus (a word fetched per bus cycle of 4 +
     w clocks), the long ones (a shift by 15: 22 clocks, aam: 15, mul:
-    29-30) for the execution unit - they show the clock and w;
+    29-30) for the execution unit - they show the clock and w. (On the
+    owner's V30 the shift and mul took 3 clocks more than the manual
+    says, aam as it says: the run of 2026-11-21, hwlog_v4b_2026-11-21.txt);
   - "imul ax,bx,*n." (the form of -1, a source other than its target,
     so that the data stay the same) for nine bytes n and eight values;
     "imul ax,bx,#n" for five words; "mov ax,bx" / "imul cx" with cx = n
@@ -57,7 +59,9 @@ empty). --tar: also a tar file of the kit. --check: the kit built and
 checked, none written (in "make check-realbin"). --scale: the divisor of
 the iterations for the run under the emulator (default 500). --analyze:
 the clocks of each unit from a log (or vtime.tim) the machine wrote,
-beside the manual's and the bus model's. Exit status 0 if the values
+beside the manual's, the bus model's, and the bus model's with the clocks
+step V4b measured (v30bus.A7100), then the clock and the bus, a shift, a
+product as measured. Exit status 0 if the values
 hold, 1 otherwise. Requires the Python modules unicorn and capstone and a
 built tree ("make").
 """
@@ -365,9 +369,10 @@ def data_cycles(mnem, ops):
     return 1 if '[' in ops else 0
 
 
-def turn_clocks(text, start, cl, wait, high):
+def turn_clocks(text, start, cl, wait, high, measured=False):
     """The bus model's clocks of a turn of the routine's loop (and the
-    EU's alone), in the steady state: three turns less two."""
+    EU's alone), in the steady state: three turns less two; measured: the
+    EU's clocks as step V4b measured them (v30bus.A7100)."""
     ins = decode(text, start)
     jmp = [x for x in ins if x[1] == 'jmp'][-1]
     top = int(jmp[2], 0)
@@ -377,12 +382,12 @@ def turn_clocks(text, start, cl, wait, high):
             for x in turn]
     got = []
     for bus in (True, False):
-        c = [v30bus.clocks(dec, seq1 * r, wait, high, 0, bus) for r in (2, 3)]
+        c = [v30bus.clocks(dec, seq1 * r, wait, high, 0, bus, measured) for r in (2, 3)]
         got.append(c[1] - c[0])
     return got
 
 
-def predict(image, syms, us, wait):
+def predict(image, syms, us, wait, measured=False):
     """{unit: (lowest, highest) clocks of a copy by the bus model, and by
     the EU alone; the clocks of a K2 turn (the average)}."""
     text = image[16:16 + int.from_bytes(image[2:4], 'little')]
@@ -390,8 +395,8 @@ def predict(image, syms, us, wait):
     for u in us:
         per = {}
         for high in (False, True):
-            t1 = turn_clocks(text, syms[label(u, K1)], u.cl, wait, high)
-            t2 = turn_clocks(text, syms[label(u, K2)], u.cl, wait, high)
+            t1 = turn_clocks(text, syms[label(u, K1)], u.cl, wait, high, measured)
+            t2 = turn_clocks(text, syms[label(u, K2)], u.cl, wait, high, measured)
             per[high] = ([(b - a) / (K2 - K1) for a, b in zip(t1, t2)], t2[0])
         out[u.name] = dict(bus=(per[False][0][0], per[True][0][0]),
                            eu=(per[False][0][1], per[True][0][1]),
@@ -523,7 +528,7 @@ def build(work, bad, scale):
     secs = sum(n * r * (pred[name]['turn2'] * (1 + K1 / K2)) for (name, _, _), (n, r)
                in zip(measurements(), plan)) / (MHZ * 1e6)
     return dict(image=image, exp=exp, source=source, pred=pred, plan=plan, secs=secs,
-                units=us)
+                units=us, syms=syms)
 
 
 def write_kit(out, kit):
@@ -573,32 +578,64 @@ def analyze(path, mhz, wait):
         kit = build(work, bad, 500)
     if kit is None:
         sys.exit('v30time.py: the kit does not build: %s' % bad)
-    pred = kit['pred']
+    pred = predict(kit['image'], kit['syms'], kit['units'], wait)
+    meas = predict(kit['image'], kit['syms'], kit['units'], wait, measured=True)
     hz = mhz * 1e6
     got = {}
     print('v30time: clocks of a copy of each unit, at %g MHz (%d wait states in the '
           'model)' % (mhz, wait))
-    print('    unit      x     m       measured (+-2 ticks)  manual (EU)  bus model')
+    print('    unit      x     m     measured (+-2 ticks)  manual (EU)  bus model    '
+          'with V4b\'s clocks')
     for m in rows:
         name, x, mm = m.group(1), int(m.group(2), 16), int(m.group(3), 16)
         n, reps, t1, t2 = (int(v) for v in m.groups()[3:])
         tick = hz / TICKS / (n * reps * (K2 - K1))
         c = (t2 - t1) * tick
         got.setdefault(name, []).append((x, mm, c))
-        p = pred.get(name)
-        print('    %-9s %04x  %04x  %7.2f (%.2f)       %-12s %s' % (
+        p, q = pred.get(name), meas.get(name)
+        print('    %-9s %04x  %04x  %7.2f (%.2f)       %-12s %-12s %s' % (
             name, x, mm, c, 2 * tick, rng(p['eu']) if p else '?',
-            rng(p['bus']) if p else '?'))
-    cal = got.get('salcl15')
-    if cal:
-        f = 22.0 / cal[0][2]
-        print('    the clock from "sal ax,cl" by 15 (22 clocks by the manual): '
-              '%.3f MHz' % (mhz * f))
+            rng(p['bus']) if p else '?', rng(q['bus']) if q else '?'))
+
+    def mean(name, keep=lambda x, m: True):
+        v = [c for x, m, c in got.get(name, ()) if keep(x, m)]
+        return sum(v) / len(v) if v else None
+
+    size = dict(nop=1, inc=1, movrr=2, movri=3)
+    per = [mean(u) / b for u, b in size.items() if mean(u) is not None]
+    if per:
+        print('    the bus: %.2f clocks a byte of code (nop, inc ax, mov ax,bx, mov ax,#n;'
+              ' a word per %d clocks: %.1f)' % (sum(per) / len(per), 4 + wait,
+                                               (4 + wait) / 2))
+    if mean('aam') is not None:
+        print('    aam: %.2f clocks (the manual: 15)' % mean('aam'))
+    sh = [mean(u) - n for u, n in (('salcl15', 15), ('salcl3', 3), ('sali15', 15),
+                                    ('sali3', 3)) if mean(u) is not None]
+    if sh:
+        print('    a shift of a register by n: %.1f + n clocks (the manual: 7 + n)'
+              % (sum(sh) / len(sh)))
+    if mean('mul') is not None:
+        print('    mul cx: %.1f clocks with "mov ax,bx" (the manual: 31-32)' % mean('mul'))
+
+    def sign(x, m):
+        return x & 0x8000
+
+    for what, units in (('imul r,r,*n.', [u.name for u in kit['units']
+                                          if u.name.startswith('i3b')]),
+                        ('imul r,r,#n', [u.name for u in kit['units']
+                                         if u.name.startswith('i3w')])):
+        pos, neg = [], []
+        for u in units:
+            n = -int(u[4:]) if u[3] == 'm' else int(u[3:])
+            for x, m, c in got.get(u, ()):
+                (neg if (s16(x) * n) < 0 else pos).append(c)
+        if pos and neg:
+            print('    %s: %.1f clocks, %.1f with a negative product' % (
+                what, sum(pos) / len(pos), sum(neg) / len(neg)))
     for a, b, what in (('i8b10', 'i2b10', 'a product by *10.'),
                        ('i8w300', 'i2w300', 'a product by #300.')):
         if a in got and b in got:
-            ca = sum(c for _, _, c in got[a]) / len(got[a])
-            cb = sum(c for _, _, c in got[b]) / len(got[b])
+            ca, cb = mean(a), mean(b)
             print('    V30-IMUL on %s: %.1f clocks as 8086 code, %.1f as V30 code - '
                   '%.1f gained (%.0f%%)' % (what, ca, cb, ca - cb, 100 * (ca - cb) / ca))
     return 0
