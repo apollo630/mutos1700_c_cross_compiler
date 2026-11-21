@@ -551,6 +551,7 @@ check-realbin: cc cpp as ld ar ranlib make nm size strip tsort lorder ed em libc
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_corrected.py --realbin --fuzz 0
 	@MUTOS_ROOT=$(MUTOS_ROOT_DEFAULT) python3 tests/rules/check_v30.py --realbin --calls 0 --shifts 0 --products 0 --fuzz 0
 	@python3 tests/rules/v30kit.py --check --seconds 2
+	@python3 tests/rules/v30time.py --check
 	@python3 tests/libc_runtime/rtcheck.py
 	@python3 tests/libc_runtime/rtcheck.py --copy
 	@python3 tests/libc_runtime/rtcheck.py --archive tests/mutos1700_arith/arith.a.base64.txt long

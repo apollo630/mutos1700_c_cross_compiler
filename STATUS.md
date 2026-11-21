@@ -1279,7 +1279,9 @@ The order of [`docs/TOOLCHAIN_PLAN.md`](docs/TOOLCHAIN_PLAN.md), section 3 (deci
    V30 code -; the gains measured, by user time: push 2.6%, shift 14.7%, imul 12.8%
    (the bus with its wait states explains them, but for `imul r,r,imm`, which is slower
    than the NEC manual says - `tests/rules/v30bus.py`). Open of V4: the kernel built
-   with `-1` and booted, the owner's.
+   with `-1` and booted, the owner's. **V4b, the timing kit, 2026-11-21** ("Step V4b"
+   below), asked for by the owner to understand `imul`: `tests/rules/v30time.py` times
+   each form of `-1`, and the 8086 code it replaces, alone; its run is the owner's.
 
 With steps 0 to 9 done, the MUTOS kernel was built with the cross toolchain on
 2026-11-07 - its original makefile unchanged, all 61 objects the real-hardware goldens,
@@ -2757,7 +2759,7 @@ done; the run on the owner's A7100 (NEC V30) and the kernel are not.
     `v30bus.py --imul3 12`. `imul cx` of the 8086 code, 41-47 clocks, fits as
     printed. So V30-IMUL gains about half of what was predicted - still 12.8% in a
     loop of products. One program says it; a timing kit that measures each form
-    alone would confirm it (not made; the owner's to decide).
+    alone would confirm it - asked for by the owner the same day: step V4b below.
   - In the second run `bimul.v`'s `real` was 19.0 s against its user time of 13.6 s
     (something else ran meanwhile); its user time is the one compared, and agrees
     with the first run (14 seconds by `time()`).
@@ -2769,6 +2771,53 @@ done; the run on the owner's A7100 (NEC V30) and the kernel are not.
   reported with `cmp`'s "No such file or directory", with a changed line with the
   character and line where it differs.
 - **Open, the owner's**: the kernel built with `-1` and booted from a test disk.
+
+### Step V4b: each form timed alone - the kit (verified 2026-11-21; the run is open)
+
+The owner asked (2026-11-21) to understand why `bimul.v` was slower than the bus
+model with the NEC manual's clocks allows (step V4, above), with a timing kit if need
+be. `tests/rules/v30time.py [--out DIR] [--tar FILE]` makes it (by default `v30time/`,
+ignored by git); `--analyze LOG` turns the machine's log into clocks.
+
+- **The method.** A measurement runs a block of copies of one unit - an instruction,
+  or the few a rule writes or replaces - in a loop, once with 8 copies and once with
+  72, each timed by `times()` in ticks of 1/20 s. The difference is 64 copies, with
+  the loop - its counter, its jump, the queue filled again after the jump - cancelled
+  out. The iterations are set by the bus model (15 MHz, 3 wait states) so that the run
+  of 72 takes about 9 seconds (5 for the units of the clock and the bus); a tick is
+  then 0.2 to 0.33 clocks of a product, 1.3 to 1.9 of a loop body. 80 measurements,
+  about 13 minutes.
+- **The units.** The bus: `nop`, `inc ax` (1 byte), `mov ax,bx` (2), `mov ax,#n` (3),
+  `push ax`/`pop ax` - they wait for the bus, so they show the wait states. The clock:
+  `sal ax,cl` by 15 and by 3, `sal ax,*15.` and `sal ax,*3.`, `aam`, `mul cx` - the
+  long ones wait for the execution unit, so they show the clock (by the manual a
+  shift by 15 is 22 clocks). The products: `imul ax,bx,*n.` (the form of `-1` with a
+  source other than its target, so that the data stay the same) for nine bytes n
+  from -128 to 127 and eight values from 0 to /ffff; `imul ax,bx,#n` for five words;
+  `mov ax,bx`/`imul cx` (the 8086's one-operand form) for the same data;
+  `mov ax,bx`/`imul ax,*10.` (`#300.`), the form as `c1` writes it, and
+  `mov ax,bx`/`mov cx,*10.`/`imul cx` (`#300.`), the 8086 code it replaces - their
+  difference is what V30-IMUL gains per product. And the body of `bimul`'s inner
+  loop as 8086 code and as V30 code, i from 100.
+- **What it tells apart**: a form slower than the manual alone (the products), slower
+  only as `c1` writes it (its source its target), or only in the context of the loop
+  (the bodies against their units); the clock and the wait states come with it.
+- **The values are predicted.** Every routine returns AX; what the routines of 8
+  and of 72 copies return is computed in Python and must be what `vtime.v` prints -
+  under `mutosemu.py` with the iterations divided by 500, and on the machine. For
+  that the emulator serves `times()` since (every time 0). The kit is flat, with no
+  subdirectory (step V4's `expect/` arrived empty), and its script compares the
+  values with `cmp` and copies the timings into the log. Tried on the host under
+  `dash`, the emulator in the place of `vtime.v`: `values: as expected`; with a
+  changed line in `vtime.exp`, `cmp`'s line and `values: DIFFERENT`. `--analyze` was
+  tried on timings made from the model: it gives back the clocks they were made
+  from. Two builds give the same kit byte for byte. `v30time.py --check` is in `make
+  check-realbin`.
+- **Found on the way**: a symbol has eight characters, so the routines are numbered
+  (`_t14a`, `_t14b`); a comment line of the script is a command of the shell (`:`),
+  so a redirection in it is one - `>log` in a comment would have emptied the log.
+- **Open, the owner's**: the run (`sh v30time.sh >log 2>&1` in the kit's directory,
+  the log back).
 
 ## `mutos_as` opcode coverage
 

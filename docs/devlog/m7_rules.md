@@ -1127,3 +1127,40 @@ checks after it and the times are `tests/rules/hwlog_2026-11-21.txt`).
   seconds because whether MUTOS has a `time` command was not known; it has
   (user time in tenths of a second), and the owner ran each program under
   it. The script does so since.
+
+## Step V4b: each form timed alone (2026-11-21)
+
+The owner asked to understand why `bimul.v` was slower than the bus model
+allows, with a timing kit if need be (`tests/rules/v30time.py`;
+`STATUS.md`, "Step V4b").
+
+- **Why not refine the model.** `--imul3 12` makes the model agree, but
+  it was fitted to one number, and four explanations fit it as well: the
+  three-operand form slower than the manual says; slower only when its
+  source is its target, as `c1` writes it; slower with some data only;
+  or as fast as printed and the loop slow for a reason the model lacks
+  (the queue, an alignment). Only a measurement of each form alone tells
+  them apart.
+- **The difference of two blocks.** A loop of n turns of k copies costs
+  n (k c + L), where L - the counter, the jump, the queue filled again
+  after it - is not known and is not small (about 30 clocks at 7 clocks a
+  bus cycle). Two runs, k = 8 and k = 72, give c = (T72 - T8) / 64 n with
+  L gone, as long as the loop is the same in both: the routines start on
+  an even address with the same prologue, and 8 and 72 copies of any unit
+  have the same parity, so the loop's jump and its target sit alike.
+- **The resolution.** `times()` counts ticks of 1/20 s; a run of 9 seconds
+  for the 72 copies of a product makes a tick about 0.2 clocks of one,
+  and either run's count is a tick off at most - enough to tell 28-34
+  from 40. The emulator did not serve `times()`; it does now, returning
+  0, which is what the check needs: the values, not the times.
+- **The data stay put.** `imul ax,*n.` - the form `c1` writes - feeds its
+  product back into AX, so after a few copies AX is 0 and every product
+  after it is one with 0. The kit times `imul ax,bx,*n.` instead, the
+  same opcode with BX as the source, whose data do not change; the form
+  as `c1` writes it is timed with `mov ax,bx` before each copy, beside
+  the 8086 code it replaces with the same `mov`.
+- **A comment of the script is a command.** `sh` reads a line `: text` as
+  the command `:` with arguments - and with redirections, if the text has
+  any: `: Run it with sh v30time.sh >log 2>&1` would have opened `log`
+  for writing and emptied it while the script wrote into it. `dash`
+  refused `2>&1.` as a bad descriptor, which is how it was found.

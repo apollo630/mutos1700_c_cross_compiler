@@ -20,3 +20,12 @@ MUTOS 1700 was a lesser-known operating system for the East German (DDR) office 
 * [`docs/DEVLOG.md`](docs/DEVLOG.md) — the development log (index of `docs/devlog/`).
 * [`docs/MUTOS_C_ABI.md`](docs/MUTOS_C_ABI.md), [`docs/MUTOS_ORIGINAL_BUGS.md`](docs/MUTOS_ORIGINAL_BUGS.md) — the calling convention, and the bugs found in the original binaries.
 * [`mutos/`](mutos/README.md) — the original MUTOS 1700 files: binaries, header files, manual pages.
+
+### License
+
+The project's own work is under the MIT License ([`LICENSE`](LICENSE)). The parts
+taken from UNIX Version 7, and the ports built on them, keep the Caldera license
+([`LICENSES/Caldera.txt`](LICENSES/Caldera.txt)) - this product includes software
+developed or owned by Caldera International, Inc. The original MUTOS 1700 files
+(Robotron) are kept for preservation and as the reference of the tests, and are
+not licensed by the project. Which files are which: [`NOTICE.md`](NOTICE.md).

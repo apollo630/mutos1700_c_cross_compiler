@@ -547,8 +547,8 @@ oracles"):
 - System calls served: `exit`, `fork`, `read`, `write`, `open`, `close`,
   `wait`, `creat`, `link`, `unlink`, `exece` (and `exec`), `chmod`,
   `break`, `stat`, `lseek`, `getpid`, `fstat`, `access`, `kill`,
-  `signal`, `ioctl` (always "not a tty"), `umask`, and since 2026-10-26 `time`
-  and `ftime`; anything else gets `EINVAL` and a warning. `stat`/`fstat` give v7's `struct stat` from the
+  `signal`, `ioctl` (always "not a tty"), `umask`, since 2026-10-26 `time`
+  and `ftime`, and since 2026-11-21 `times` (every time 0); anything else gets `EINVAL` and a warning. `stat`/`fstat` give v7's `struct stat` from the
   host's (the longs high word first); `umask` is the emulated process's,
   starting from the host's, and `creat` applies it to a new file's mode.
 - `fork`/`exece`/`wait` are faked: one process at a time. `fork` saves

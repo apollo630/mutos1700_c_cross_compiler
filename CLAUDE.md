@@ -271,6 +271,10 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   prediction alone. Run on the owner's A7100 2026-11-21 (`hwlog_2026-11-21.txt`).
   `v30bus.py` (since 2026-11-21): the kit's timing programs under a model of the
   owner's bus (the V30 at 15 MHz, wait states, the queue), beside the measured times.
+  `v30time.py` (since 2026-11-21, step V4b): the timing kit - each form of `-1` and the
+  8086 code it replaces timed alone on the hardware; `--analyze` turns the machine's
+  log into clocks; `--check` (in `make check-realbin`) builds it and runs it under
+  `mutosemu.py`.
 * `/tests/mutos_root/`: `check_root.py` (in `make test`) checks `mutos_root/` - its
   `crt0.o`/`libc.a` against the references, `libc.a`'s time, the links, the headers
   (and that a program with `<stdio.h>` compiles through them) -, the lookup of
@@ -286,6 +290,8 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `STATUS.md`'s Open Items.
 
 ### 📜 Legacy & Reference (`/v7`, `/mutos` & Documentation)
+* Licensing: `LICENSE` (MIT, the project's own work), `LICENSES/Caldera.txt` (UNIX V7),
+  and `NOTICE.md`, which says which file is under which terms (Workflow Guideline 12).
 * `/mutos/`: every original file from MUTOS 1700, in one directory since 2026-10-25 (until
   then `/mutos_bin/` at the top) - reference data under the Golden Master Integrity rule
   (Workflow Guideline 2): never regenerate, re-encode or alter it. See its `README.md`.
@@ -623,6 +629,13 @@ You act as an expert systems programmer, compiler architect, and operating syste
     after a turn is caught at the next session start: Claude compares its memory with
     the file and puts what is missing into that session's patch. Where the two
     disagree, the repository wins and the memory is corrected.
+12. **Licensing (since 2026-11-21)**: the project's own work is under the MIT License
+    (`LICENSE`), V7's sources and the ports built on them under the Caldera license
+    (`LICENSES/Caldera.txt`), the MUTOS 1700 material under no license of the
+    project's - `NOTICE.md` says which file is which. A change that adds a file of
+    another origin (a new original from the hardware, a golden, a reconstructed
+    source, a port, a third party's document) adds it to `NOTICE.md`'s lists in the
+    same change.
 
 ---
 

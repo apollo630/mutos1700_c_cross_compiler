@@ -55,6 +55,8 @@ Guideline 11).
 | 2026-11-15 | `mutos_as` refuses a short jump that does not reach its target (127 bytes ahead, 128 back), as the original `as` does; it wrote the low byte of the distance. | `STATUS.md`, Milestone 2 ("A short jump that does not reach"); `docs/devlog/m7_rules.md` |
 | 2026-11-15 | `mutos_as` refuses a short jump to an external symbol (undefined, `.comm`, or either plus a number), as the original `as` does. | `STATUS.md`, Milestone 2 ("A short jump that does not reach") |
 | 2026-11-15 | V30-SHIFT keeps to registers: a shift in memory by a constant is not written as `sal x,*n.` (measured: no gain in the kernel). | `STATUS.md`, "Step V3" ("A shift in memory stays as it is") |
+| 2026-11-21 | To understand why `imul r,r,imm` measured slower than the model: a timing kit if need be (step V4b, each form timed alone). | `STATUS.md`, "Step V4b" |
+| 2026-11-21 | A license: the code freely available, without breaking the terms of the V7 or the Robotron parts; Claude's proposal built into the patch at his request - MIT for the project's own work, the Caldera license kept for V7's sources and the ports built on them, the MUTOS 1700 material not licensed by the project and removed at a rights holder's request. | `LICENSE`, `LICENSES/Caldera.txt`, `NOTICE.md`; `CLAUDE.md`, Workflow Guideline 12 |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -183,3 +185,9 @@ pages.
   the bus, but for `imul r,r,imm`, about 10 clocks slower than the NEC
   manual says (`STATUS.md`, "Step V4"; `tests/rules/hwlog_2026-11-21.txt`).
   Open of V4: the kernel built with `-1` and booted.
+- 2026-11-21, step V4b, the timing kit (at the owner's request): each form
+  of `-1` and the 8086 code it replaces timed alone - blocks of 8 and 72
+  copies, `times()`, 80 measurements, about 13 minutes -, every value
+  predicted and printed so under the emulator (`tests/rules/v30time.py`;
+  `STATUS.md`, "Step V4b"). The run is the owner's. The same day the
+  repository got its license (`NOTICE.md`).

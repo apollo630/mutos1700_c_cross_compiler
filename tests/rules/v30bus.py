@@ -134,6 +134,16 @@ def eu_clocks(mnem, ops, size, cl, taken, high, imul3):
         return 2
     if mnem in ('cwd', 'cdq'):
         return 5
+    if mnem == 'mul':           # MULU: a byte 21 or 22, a word 29 or 30
+        word = ops.strip() not in ('al', 'ah', 'bl', 'bh', 'cl', 'ch', 'dl', 'dh')
+        return (29 if word else 21) + (1 if high else 0) if k == ('r',) else \
+            (35 if word else 27) + (1 if high else 0)
+    if mnem == 'nop':
+        return 3
+    if mnem == 'aam':           # CVTBD
+        return 15
+    if mnem == 'aad':           # CVTDB
+        return 7
     return 8            # not in a turn of the timing programs
 
 

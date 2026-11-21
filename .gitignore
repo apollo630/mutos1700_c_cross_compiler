@@ -52,6 +52,9 @@
 # The kit of tests/rules/v30kit.py, where it is made by default
 /v30kit/
 /v30kit.tar
+# and of tests/rules/v30time.py
+/v30time/
+/v30time.tar
 
 # Python's byte-code caches (tests/realbin/ imports its own modules)
 __pycache__/

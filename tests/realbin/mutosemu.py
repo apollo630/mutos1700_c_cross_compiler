@@ -30,7 +30,8 @@ fstat, access, kill, signal, ioctl (always "not a tty"), umask, time
 (the host's clock, or Emu's now) and ftime (the same time; the time
 zone Emu's tz in minutes west of Greenwich and its dst flag, 0 and 0 -
 UTC - unless a run says otherwise; until 2026-10-26 ftime was not
-served and libc's ctime() took the zone from the stack).
+served and libc's ctime() took the zone from the stack), and times
+(since 2026-11-21: every time 0 - no tick passes here).
 Signals: signal() records the handler (libc.a's per-signal trampoline);
 kill() of the process itself delivers the signal as v7's kernel does -
 a caught one through an interrupt frame into its trampoline, the handler
@@ -834,6 +835,11 @@ class Emu:
             self.uc.mem_write(self.dbase + bx,       # dstflag (BSD's timeb)
                               struct.pack('<HHHhh', t >> 16, t & 0xFFFF, 0,
                                           self.tz, self.dst))
+            return ret(0)
+        if n == 43:                                  # times(&tms): four longs,
+            # the user and system times and the children's, in ticks - none
+            # pass here, so all are 0 (tests/rules/v30time.py's timings)
+            self.uc.mem_write(self.dbase + bx, bytes(16))
             return ret(0)
         if n == 33:                                  # access(name, mode)
             if os.path.exists(self._path(self.cstr(bx))):
