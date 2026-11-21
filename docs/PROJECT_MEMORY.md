@@ -65,6 +65,7 @@ Guideline 11).
 | 2026-11-21 | MUTOS 1700 is not binary- or architecture-compatible with V7 (V7 ran on the PDP-11): it is based on V7 and keeps V7's system call numbers (its `sysent`) and `a.out` format. The wrong claim corrected everywhere, the two manual pages that made it included (a correction of the fact, not the end-of-project rewrite). | `README.md`, "Overview"; `CLAUDE.md`, "Project Background & Goal"; `man/mutos_aout.h.5`, `man/mutos_ld.1` |
 | 2026-11-21 | `LICENSE` points to `NOTICE.md` in a paragraph above the MIT text; the MIT text itself stays the standard text. | `LICENSE`; `CLAUDE.md`, Workflow Guideline 12 |
 | 2026-11-21 | `README.md`'s bullet "100% V7 Compatibility" removed. | `README.md` |
+| 2026-11-21 | The kernel with `-1` is booted first with the tree's own `arith.a`; the corrected copy of `arith.a` follows as an optional second boot once the first works (it changes no result of this kernel: none of its long divisions meets L-04 or L-08). | `docs/KERNEL_BUILD_V30.md`, step 8; `STATUS.md` |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,
@@ -228,4 +229,5 @@ test disk (`docs/KERNEL_BUILD_V30.md`).
   (`tests/rules/check_v30report.py`, in `make test`). The corrected copy of
   the kernel's `arith.a` has been in the tree since step F3b
   (`src/libc_fixed/arith.a`; `docs/KERNEL_BUILD.md`, step 7); a kernel with
-  it is not built or booted yet.
+  it is not built or booted yet - since the same day the guide's optional
+  step 8, after the first boot of the kernel with `-1`.

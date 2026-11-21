@@ -1230,3 +1230,21 @@ with `-1` and booted: `docs/KERNEL_BUILD_V30.md`.
 - `V30_LINE` and `PROBED` moved from `v30kit.py` to `v30report.py`
   (standard library only, which the owner's host needs), and `v30kit.py`
   takes them from there: one definition of what the hardware has run.
+- **The corrected `arith.a`, a second boot.** Asked whether the kernel
+  with `-1` should not be linked with the corrected `arith.a`: the guide
+  keeps the tree's own for the first boot and has the copy as an optional
+  step 8, once the first kernel works (it only links again: `arith.a` is a
+  prerequisite of `mutos`). What the copy would change in this kernel was
+  read off the compiler output of all its objects
+  (`tests/mutos_as/kernel_opt/*.s`), the divisor being the long pushed
+  first before each `call`: `ldiv` and `lrem` 14 times each, `aldiv` twice
+  (`k5170`, `msdos`), `alrem` never; the divisors 2, 512 and 1024
+  (`v30ide`), 1024 (`main`, `ramfl`), 7, 60 and 86400 (`msdos`: 86400 is
+  `#20864.` with a high word of 1), 16 and 2048 (`amx`), 2048 (`mem`),
+  `printn`'s base (8 or 10 from `printf`; `printn` makes its number
+  positive first), and the K5170 driver's words, zero-extended (`sub
+  dx,dx`). L-04 needs a divisor from 98304, a negative one or -2\*\*31 -
+  or `-2**31 % 32768` -, L-08 `alrem`: no result of the kernel changes.
+  In the scratch tree the 61 objects linked as 50,496 bytes of text, with
+  the copy 50,560: `alrem.o` is not linked, the other three are 38 bytes
+  longer, and `ld -i` rounds the text to 64 bytes.

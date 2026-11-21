@@ -29,9 +29,9 @@ below checks that the kernel's code has no other form.
   code.
 - **One change at a time**: the build runs in the original mode
   (`MUTOS_MODE` unset) with the tree's own `arith.a`, so the kernel differs
-  from the original only by `-1`. The corrected mode and the corrected copy
-  of `arith.a` are a change of their own (`KERNEL_BUILD.md`, step 7, and
-  the plan's step F5) - not in the same boot.
+  from the original only by `-1`. The corrected copy of `arith.a` is a
+  second boot of its own, once the first one works (step 8, optional); the
+  corrected mode is the plan's step F5 (`KERNEL_BUILD.md`, step 7).
 
 ## What it needs
 
@@ -173,13 +173,76 @@ medium is the owner's setup; this repository does not record it.) Then:
 
 Nothing on the original medium changes; to go back, boot it.
 
+## Step 8 (optional): the same kernel with the corrected `arith.a`
+
+Only once the kernel of step 7 boots and works. The corrected copy of the
+kernel's `arith.a` (step F3b, `src/libc_fixed/arith.a`; `make` builds it
+from the owner's archive in `tests/mutos1700_arith/`) has the long helpers
+`aldiv.o`, `ldiv.o`, `alrem.o` and `lrem.o` of the corrected `libc.a`, byte
+for byte - the routines that ran on the owner's V30 on 2026-11-14 in the
+trigger programs (`tests/libc_runtime/README.md`, "The check on the
+hardware"); `almul.o`, `lmul.o` and `locking.o` are the original's.
+
+**What it changes in this kernel: no result.** The original routines are
+wrong only for a divisor from 98304 to 131071, a negative one or -2\*\*31
+(L-04), and `alrem` for a divisor outside -32768 to 32767 (L-08;
+`docs/MUTOS_ORIGINAL_BUGS.md`). The kernel's code - the compiler output of
+all its objects, `tests/mutos_as/kernel_opt/*.s` - calls `ldiv` 14 times,
+`lrem` 14 times, `aldiv` twice and `alrem` never, and divides only by the
+constants 2, 7, 16, 60, 512, 1024, 2048 and 86400, by the number base 8 or
+10 (`printn`, `prf`) and by unsigned words of the K5170 driver (`k5170`, 0
+to 65535): none of them meets a bug, unless a K5170 word of 32768 met a
+dividend of -2\*\*31 in `lrem` (`-2**31 % 32768`, the one remainder L-04
+gets wrong below 2\*\*16). So this boot shows that the corrected
+routines work in the kernel; the kernel computes what it computed before.
+`c1`'s folding of long constants is the original's here (the original
+mode); in the corrected mode it follows the copy - that kernel is the plan's
+step F5.
+
+`arith.a` is a prerequisite of `mutos` in the makefile, so the newer copy
+makes `make` link again and compile nothing:
+
+```sh
+cd ~/sys_v30/conf
+cp mutos mutos.v30                                 # the kernel of steps 3 to 7
+cp ~/mutos1700_c_cross_compiler/src/libc_fixed/arith.a arith.a
+$M/make CFLAGS="-c -O -K1024 -1" 2>&1 | tee ../build_fixarith.log; echo "Exit: ${PIPESTATUS[0]}"
+grep -c '^+ cc' ../build_fixarith.log              # 0
+cmp mutos mutos.v30                                # differs
+```
+
+- The log has the `ld` command and the `size` line, no `cc`.
+- The `size` line: data and bss as in step 3 (8288, 44600); the text
+  as in step 3 or 64 bytes more. The kernel links `aldiv.o`, `ldiv.o` and
+  `lrem.o` (38 bytes longer together; `alrem.o` is not linked, nothing calls
+  it), and `ld -i` rounds the text up to a multiple of 64 bytes - the
+  original 8086 kernel's text goes from 50,496 to 50,560 bytes with the copy.
+- No `ld:arith.a(__.SYMDEF): out of date` warning: the copy has no table
+  of contents, as the original has none.
+
+Then steps 6 and 7 with this `mutos`: onto the test medium as `/mutos`
+(keep the kernel of step 7 there as `/mutos.v30`), boot, try. What uses the
+long helpers: every number the kernel prints (`printf`, through `printn`),
+the memory message at the start (`main`), the IDE driver (`v30ide`), the
+K5170 driver and its drives (`k5170`), reading `/dev/mem` and `/dev/kmem`
+(`mem`, e.g. `ps`).
+
+Back to the tree's own `arith.a` - and to the kernel of step 7 - with:
+
+```sh
+base64 -d ~/mutos1700_c_cross_compiler/tests/mutos1700_arith/arith.a.base64.txt >arith.a
+$M/make CFLAGS="-c -O -K1024 -1"
+cmp mutos mutos.v30 && echo "the kernel of step 7"
+```
+
 ## What to bring back
 
 - the two lines of `v30report.py`, the line of `v30report.py --forms`, the
   `size` line and the summary line of `kcmp.py -t`;
 - whether the kernel boots, what was tried in step 7 and how it went (the
   log of `v30check.sh`), any message of the kernel;
-- the times of step 7.4, if taken.
+- the times of step 7.4, if taken;
+- with step 8: its `size` line, and whether that kernel boots and works.
 
 ## How this was verified
 
@@ -196,5 +259,14 @@ Nothing on the original medium changes; to go back, boot it.
   instructions (`STATUS.md`, "Step V4").
 - `v30kit.py --check`: every 80186/V30 instruction of the 13 kernel
   sources of the repository with `cc -O -S -1` is a probed form.
+- Step 8 (2026-11-21), in a scratch kernel tree (`check_editors.py`'s)
+  with the 61 objects of `tests/mutos_as/kernel_opt/` in their places and
+  the owner's `arith.a`: `mutos_make CFLAGS="-c -O -K1024 -1"` linked
+  without a `cc` (`50496+8288+44600`); with the copy in place of `arith.a`
+  the commands of step 8 linked again without a `cc` and without a warning,
+  `50560+8288+44600`, the kernel different; with the original back the
+  kernel was the first one byte for byte. The divisors: every `call` of
+  `ldiv`, `lrem`, `aldiv`, `alrem` in `kernel_opt/*.s` with the long pushed
+  first before it (the divisor).
 - **Not yet**: the build on the owner's whole tree, and the boot - that is
   this guide.

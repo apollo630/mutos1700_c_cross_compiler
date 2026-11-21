@@ -2950,6 +2950,19 @@ booted.
 - **Found on the way**: `docs/KERNEL_BUILD.md`, step 1, still said that `make test`
   ends with `check_editors`' line; since step F0 more checks follow it.
 - **Checked**: `make test` (exit status 0); `v30kit.py --check`; `make check-docs`.
+- **Step 8 of the guide (optional, added 2026-11-21 at the owner's request)**: once
+  the first kernel boots, the same kernel linked with the corrected copy of `arith.a`
+  (`src/libc_fixed/arith.a`, step F3b) and booted as a second test. It changes no
+  result of this kernel: every call of the long helpers in the compiler output of the
+  kernel's objects (`tests/mutos_as/kernel_opt/*.s`: `ldiv` 14, `lrem` 14, `aldiv` 2,
+  `alrem` none) divides by 2, 7, 16, 60, 512, 1024, 2048, 86400, by `printn`'s base 8
+  or 10, or by an unsigned word of the K5170 driver - none a divisor of L-04, and L-08
+  is `alrem`'s - but `-2**31 % 32768`, should a K5170 word of 32768 meet that
+  dividend. Its commands tried in a scratch kernel tree with the 61 objects of
+  `kernel_opt/` and the owner's `arith.a`: the copy in place makes `mutos_make` link
+  again without a `cc` or a warning, the text 50,496 to 50,560 bytes (`aldiv.o`,
+  `ldiv.o`, `lrem.o` 38 bytes longer together, `ld -i` rounding to 64), data and bss
+  the same; the original back gives the first kernel byte for byte.
 - **Open, the owner's**: the build on the whole tree and the boot, by the guide.
 
 ## `mutos_as` opcode coverage
