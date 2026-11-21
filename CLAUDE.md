@@ -636,8 +636,9 @@ You act as an expert systems programmer, compiler architect, and operating syste
     (`LICENSE`), V7's sources and the ports built on them under the Caldera license
     (`LICENSES/Caldera.txt`), the MUTOS 1700 material under no license of the
     project's - `NOTICE.md` says which file is which (the owner's code in the kernel,
-    the V30 IDE driver and `_isNEC`/`_hdio` in `mch.c`, is his own work, with parts of
-    Robert Nordier's V7/x86 under his notice). The MUTOS 1700 files are marked as
+    the V30 IDE driver, its two `#ifdef V30IDE` parts in `mch.c` and the `V30IDE`
+    lines of the kernel's makefile, is his own work, with parts of Robert Nordier's
+    V7/x86 under his notice). The MUTOS 1700 files are marked as
     historical files of the GDR's VEB Kombinat Robotron, provided exclusively for
     archival, scientific and educational purposes, and removed immediately if a
     rights holder objects (`NOTICE.md`, `README.md`, `mutos/README.md`). A change

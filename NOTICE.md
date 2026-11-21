@@ -26,18 +26,26 @@ repository's history. That is in particular:
 ### The owner's code in the kernel: the V30 IDE driver
 
 The project owner's A7100 has an expansion board with an IDE adapter that also
-switches in the NEC V30. The code he wrote for it, in his MUTOS 1700 kernel, is his
-own work and under the MIT License as above:
+switches in the NEC V30. The code he wrote for it, in his MUTOS 1700 kernel and its
+makefile, is his own work and under the MIT License as above:
 
 - the driver: `mutos/mutos_include/sys/h/v30ide.h`, its copy
   `tests/mutos_cpp/h/v30ide.h`, `tests/mutos_cpp/c/v30ide.c`, and what the toolchain
   made of it (`tests/mutos_cpp/c/v30ide.i.golden`,
   `tests/mutos_as/kernel_opt/v30ide.s`, `v30ide.o.golden`,
   `v30ide.o.golden_base64.txt`);
-- the routines `_isNEC` and `_hdio` in the kernel's `mch.c` (the part under `#ifdef
-  V30IDE` at its end), and so in `tests/mutos_cpp/c/mch.c`, `mch.i.golden`,
-  `tests/mutos_as/kernel_opt/mch.s`, `mch_insw_outsw.s` and their objects. The rest
-  of these files is MUTOS's (section 3).
+- in the kernel's `mch.c`, the `#include` of `v30ide.h` and the two parts under
+  `#ifdef V30IDE`: the one in `_haltcpu`, which switches the CPU back to the slow
+  clock before a reboot or the return to the monitor, and the one at the end, the
+  routines `_isNEC` and `_hdio`. So also in `tests/mutos_cpp/c/mch.c`,
+  `mch.i.golden`, `tests/mutos_as/kernel_opt/mch.s`, `mch_insw_outsw.s` and their
+  objects;
+- in the kernel's makefile, `tests/mutos_ed/kernel/conf.Makefile`, what serves the
+  option `V30IDE`: its name in the list of drivers and in `DRIVER`, `-DV30IDE` in
+  `CONFOPT`, `v30ide.o` among the objects, in their rule and in the link, and the
+  targets `V30IDE` and `noV30IDE`.
+
+The rest of `mch.c` and of the makefile is MUTOS's (section 3).
 
 Some parts of the driver were taken from V7/x86, Robert Nordier's port of UNIX
 Version 7 to the PC (www.nordier.com; its `/usr/sys/dev/hd.c`). Those parts remain
