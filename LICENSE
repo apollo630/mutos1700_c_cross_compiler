@@ -1,3 +1,10 @@
+Not every file in this repository is under the MIT License below. NOTICE.md
+says which files are the project's own work under it, which are under the
+Caldera license of UNIX Version 7 (LICENSES/Caldera.txt), and which are
+historical MUTOS 1700 files that the project does not license.
+
+--------------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2026 The MUTOS 1700 Cross-Compiler Toolchain authors

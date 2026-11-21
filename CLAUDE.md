@@ -293,8 +293,9 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
   `STATUS.md`'s Open Items.
 
 ### 📜 Legacy & Reference (`/v7`, `/mutos` & Documentation)
-* Licensing: `LICENSE` (MIT, the project's own work), `LICENSES/Caldera.txt` (UNIX V7),
-  and `NOTICE.md`, which says which file is under which terms (Workflow Guideline 12).
+* Licensing: `LICENSE` (MIT, the project's own work; its first lines point to
+  `NOTICE.md`), `LICENSES/Caldera.txt` (UNIX V7), and `NOTICE.md`, which says which file
+  is under which terms (Workflow Guideline 12).
 * `/mutos/`: every original file from MUTOS 1700, in one directory since 2026-10-25 (until
   then `/mutos_bin/` at the top) - reference data under the Golden Master Integrity rule
   (Workflow Guideline 2): never regenerate, re-encode or alter it. See its `README.md`.
@@ -365,7 +366,7 @@ sandboxes without SSH keys configured, e.g. `git clone https://github.com/apollo
 ## 🎯 Project Background & Goal
 The objective is to develop a historically accurate Cross-Compiler Toolchain under modern Linux (x86_64) that generates executable binaries for the **MUTOS 1700** operating system.
 * **Target System**: MUTOS 1700 ran on the East German Robotron A7100 and A7150 office computers.
-* **Compatibility**: Binary and architecture compatible with **Version 7 Unix (V7)**, but running on an x86 16-bit architecture (Intel 8086 / NEC V30 Real Mode).
+* **Compatibility**: Based on **Version 7 Unix (V7)**, whose system call numbers and `a.out` object format it keeps, but running on an x86 16-bit architecture (Intel 8086 / NEC V30 Real Mode) instead of the PDP-11.
 * **Codebase**: Built upon the original Unix V7 source codes by Dennis Ritchie (`cc`, `as`, `ld`) and, since the ports of `c1` and `c0`, upon the original MUTOS 1700 binaries themselves (`mutos/mutos_bin/`), read and re-enacted with the V7 sources as the scaffold.
 
 ---
@@ -638,7 +639,8 @@ You act as an expert systems programmer, compiler architect, and operating syste
     project's - `NOTICE.md` says which file is which (the owner's code in the kernel,
     the V30 IDE driver, its two `#ifdef V30IDE` parts in `mch.c` and the `V30IDE`
     lines of the kernel's makefile, is his own work, with parts of Robert Nordier's
-    V7/x86 under his notice). The MUTOS 1700 files are marked as
+    V7/x86 under his notice). `LICENSE` points to `NOTICE.md` in a paragraph above
+    the MIT text, which stays the standard text word for word. The MUTOS 1700 files are marked as
     historical files of the GDR's VEB Kombinat Robotron, provided exclusively for
     archival, scientific and educational purposes, and removed immediately if a
     rights holder objects (`NOTICE.md`, `README.md`, `mutos/README.md`). A change

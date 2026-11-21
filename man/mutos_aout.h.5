@@ -9,9 +9,9 @@ defines, and provides explicit little-endian (de)serialization helpers
 for, the on-disk
 .I a.out
 object and executable file format used by MUTOS 1700 on the Robotron
-A7100/A7150 (an x86-16, 8086/NEC-V30-based machine that is binary- and
-architecture-compatible with Unix Version 7). It is consumed by every
-component of the MUTOS 1700 cross-compiler toolchain that reads or
+A7100/A7150 (an x86-16, 8086/NEC-V30-based machine; MUTOS 1700 is based on
+Unix Version 7 and keeps its system call numbers and a.out format). It is
+consumed by every component of the MUTOS 1700 cross-compiler toolchain that reads or
 writes object, executable, or archive files on the 64-bit Linux host
 (currently
 .IR mutos_ld (1)).

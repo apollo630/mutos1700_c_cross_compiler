@@ -62,6 +62,8 @@ Guideline 11).
 | 2026-11-21 | `_isNEC` and `_hdio` in the kernel's `mch.c` (and so `mch.s`, `mch_insw_outsw.s`) are the owner's code, `_isNEC` after "Processor Identification" by Chris Dragan and Chili. | `NOTICE.md`, section 1 |
 | 2026-11-21 | Also the owner's code: the other `#ifdef V30IDE` part of `mch.c`, in `_haltcpu` (the CPU back to the slow clock before a reboot or the return to the monitor), and the `V30IDE` lines of the kernel's makefile (`tests/mutos_ed/kernel/conf.Makefile`). | `NOTICE.md`, section 1 |
 | 2026-11-21 | The MUTOS 1700 files marked plainly as historical files of the GDR (VEB Kombinat Robotron), provided exclusively for archival, scientific and educational purposes, with immediate removal offered if a rights holder objects. | `NOTICE.md`, section 3; `README.md`; `mutos/README.md` |
+| 2026-11-21 | MUTOS 1700 is not binary- or architecture-compatible with V7 (V7 ran on the PDP-11): it is based on V7 and keeps V7's system call numbers (its `sysent`) and `a.out` format. The wrong claim corrected everywhere, the two manual pages that made it included (a correction of the fact, not the end-of-project rewrite). | `README.md`, "Overview"; `CLAUDE.md`, "Project Background & Goal"; `man/mutos_aout.h.5`, `man/mutos_ld.1` |
+| 2026-11-21 | `LICENSE` points to `NOTICE.md` in a paragraph above the MIT text; the MIT text itself stays the standard text. | `LICENSE`; `CLAUDE.md`, Workflow Guideline 12 |
 
 Still the owner's to decide (`docs/TOOLCHAIN_PLAN.md`, sections 3, 6 and 7,
 and `STATUS.md`, "Next up"): a port of `as` (recommendation in `STATUS.md`,

@@ -32,8 +32,9 @@ format) object files and archive libraries into a single executable or
 relocatable output file. It is a cross-linker: it runs on a 64-bit Linux
 host but reads and writes the original 16-bit little-endian MUTOS 1700
 .I a.out
-format used on the Robotron A7100/A7150 (an x86-16, 8086/V30-based system
-that is binary- and architecture-compatible with Unix Version 7).
+format used on the Robotron A7100/A7150 (an x86-16, 8086/V30-based system;
+MUTOS 1700 is based on Unix Version 7 and keeps its system call numbers and
+a.out format).
 .PP
 .B mutos_ld
 is a faithful C11 port of the original MUTOS/Unix V7
